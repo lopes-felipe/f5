@@ -42,9 +42,9 @@ Opening a profile starts its backend and opens a window in its own persistent pa
 
 ## GitHub authentication
 
-Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection. Disconnect does not revoke the OAuth app grant on GitHub.
+Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** runs the installed GitHub CLI (`gh auth login --web`), shows its one-time code, and opens GitHub in your browser. It works for github.com and GitHub Enterprise hosts; choose the host first. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection.
 
-A personal access token remains available for github.com and GitHub Enterprise hosts. The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials. Existing saved profile tokens migrate automatically, without requiring network access at startup.
+A personal access token remains available for github.com and GitHub Enterprise hosts, and is the only option when gh is not installed. The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials. Existing saved profile tokens migrate automatically, without requiring network access at startup.
 
 Credentials are stored in the existing profile secret store and projected into `<profile-state>/github/hosts.yml`. The directory and files are private to the OS user (0700/0600 on POSIX, a user-only DACL on Windows). This is file-based credential storage, not encryption at rest. If reconciliation fails, the backend remains available and logs the cause, while GitHub consumers fail closed until the connection is repaired. Windows permission updates are batched into one PowerShell invocation per projection write. Generated CLI files are excluded from backups; restore regenerates them from secrets supplied through the encrypted-backup flow. Do not edit the generated file or run `gh auth login/logout/switch` to manage an F5 connection: use Settings so all consumers stay consistent and workstation keychain entries remain untouched.
 
@@ -52,15 +52,29 @@ F5 installs a profile CLI launcher and restores its PATH entry after Default she
 
 Non-default profiles require explicit HTTPS remotes without embedded credentials or URL rewrites for managed Git network operations and use the profile’s token. Default preserves workstation Git transports, SSH agents, URL rewrites, and credential helpers for unconnected hosts. For a single HTTPS remote with a saved profile token, F5 selects that token through a host-specific credential helper. Configure Git author name/email separately; signing into GitHub does not change commit authorship. Default retains its local Git settings and author fallback.
 
+Agents and terminals get two Git settings through `GIT_CONFIG_*` environment entries:
+
+- **Credential helper (non-default profiles):** inherited helpers are reset, and the profile `gh` launcher (`gh auth git-credential`) becomes the only helper. It reads the live profile projection, so connecting, reconnecting, or disconnecting applies to already-running sessions. For hosts that are not connected it answers nothing; the placeholder token is never offered.
+- **Credential helper (Default):** workstation helpers stay untouched, and F5 adds none. An appended helper would let Git `store` the profile token into helpers such as the OS keychain. A workstation `!gh auth git-credential` helper (from `gh auth setup-git`) resolves to the profile launcher through PATH. It uses the profile token for connected hosts and, for other hosts, answers nothing so the next workstation helper is used.
+- **Git author:** `<profile-state>/git-author.gitconfig` is included. F5 rewrites it whenever the Git author setting changes. Once both name and email are set, they override repository and global `user.name`/`user.email` for agent and terminal commits. Clearing both restores normal Git resolution.
+
 ### Shared repositories
 
 Profiles can open the same repository. Linked worktrees share Git metadata; separate clones are the strongest way to avoid accidental source changes affecting another profile. Profiles isolate F5-owned state, not access to the host filesystem. Deliberately sourcing external shell configuration or manually entering a preview URL is outside the account-isolation guarantee. Automatic preview discovery only considers URLs emitted by owned terminals and provider command output, rather than scanning unrelated listening processes. This applies to Default too: externally started servers and URLs emitted before an F5 restart must be entered manually.
 
-### Browser sign-in deployment
+### Browser sign-in
 
-Register an **F5-owned GitHub OAuth app**, enable **Device Flow**, leave expiring tokens disabled, and set `F5_GITHUB_OAUTH_CLIENT_ID` in the backend launch environment to its public client ID. No client secret belongs in the application or frontend. The application requests `repo`, `read:org`, and `notifications`. Every agent and terminal in the connected profile can exercise those privileges, including repository writes allowed by the account. This also applies to Default; prompt injection into an agent can misuse those credentials. Profile separation selects accounts predictably and does not sandbox agent permissions. Organization approval/SSO restrictions can still require additional authorization on GitHub.
+F5 does not register its own OAuth app. Browser sign-in runs the real `gh` found on PATH, skipping F5 launcher directories. It runs with a private throwaway config directory (`<profile-state>/github-login/<id>`, mode 0700):
 
-Without a configured client ID, Settings explains that browser sign-in is unavailable and offers token login. Enterprise uses token login in this version. Pending device grants are held only in memory; after a backend restart, start sign-in again. Do not configure expiring OAuth tokens until refresh-token support is implemented; F5 rejects that unsupported response instead of silently persisting a short-lived connection.
+- **Isolated from your workstation gh.** Inherited `GH_*`/`GITHUB_*` token and routing variables are removed. `--insecure-storage` writes the token to that directory instead of the OS keychain. Git configuration is redirected into the same directory. The workstation gh login, keychain entries, and global Git configuration are not read or changed.
+- **Token handling.** After gh reports success, F5 reads the token with `gh auth token`, verifies it, and saves it through the profile secret store. It then deletes the throwaway directory. The directory is also deleted on cancel, on failure, after 15 minutes, and at the next backend start.
+- **Clipboard.** gh 2.x copies the one-time code to the clipboard when it runs without a terminal.
+
+GitHub lists the grant under **Authorized OAuth Apps** as “GitHub CLI”. Revoking it there also signs out gh sessions on this computer that use the same app. Disconnect in F5 does not revoke anything on GitHub.
+
+The token has gh's default scopes (`repo`, `read:org`, `gist`) plus `notifications`. Every agent and terminal in the connected profile can exercise those privileges, including repository writes allowed by the account. This also applies to Default; prompt injection into an agent can misuse those credentials. Profile separation selects accounts predictably and does not sandbox agent permissions. Organization approval/SSO restrictions can still require additional authorization on GitHub.
+
+Without gh installed, Settings links to the GitHub CLI download and opens the personal access token form. Pending sign-ins are held only in memory; after a backend restart, start sign-in again.
 
 ## Removal and restore
 

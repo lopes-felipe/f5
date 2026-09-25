@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./cliLoginOutput": {
+      "types": "./src/cliLoginOutput.ts",
+      "import": "./src/cliLoginOutput.ts"
+    },
+    "./github": {
+      "types": "./src/github.ts",
+      "import": "./src/github.ts"
+    },
     "./codexCliVersion": {
       "types": "./src/codexCliVersion.ts",
       "import": "./src/codexCliVersion.ts"

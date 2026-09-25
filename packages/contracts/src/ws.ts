@@ -2,6 +2,7 @@ import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
   GithubLoginHandleInput,
+  GithubLoginStartInput,
   GithubAccountHostInput,
   ProfileSummary,
   ProfileRegistryDiagnostic,
@@ -415,7 +416,7 @@ const tagMcpAccountRequestBody = <
   );
 
 const WebSocketRequestBody = Schema.Union([
-  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginHandleInput),
+  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginStartInput),
   tagRequestBody(WS_METHODS.githubLoginStatus, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubLoginCancel, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubAccountSet, GithubAccountInput),

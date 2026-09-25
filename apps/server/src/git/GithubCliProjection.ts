@@ -37,11 +37,16 @@ export async function secureGithubPaths(paths: ProtectedPath[]): Promise<void> {
   ]);
 }
 
+/** Token projected for known-but-disconnected hosts so gh never falls back to the OS keychain. */
+export const GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN = "f5-profile-not-connected";
+export const isGithubPlaceholderToken = (token: string | null | undefined): boolean =>
+  token?.trim() === GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN;
+
 const disconnected = {
   user: "f5-disconnected",
-  oauth_token: "f5-profile-not-connected",
+  oauth_token: GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN,
   git_protocol: "https",
-  users: { "f5-disconnected": { oauth_token: "f5-profile-not-connected" } },
+  users: { "f5-disconnected": { oauth_token: GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN } },
 };
 
 /** Disposable profile projection, never an OS-keychain credential source. */

@@ -1,4 +1,6 @@
 import { prepareGithubShellStartup } from "./githubShellStartup";
+import { findGhBinary } from "./ghBinary";
+import { GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN } from "./GithubCliProjection";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 
@@ -32,14 +34,28 @@ if (fs.existsSync(${JSON.stringify(githubUnavailablePath(stateDir))})) {
 }
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:(?:GH|GITHUB)_.*TOKEN|GH_CONFIG_DIR|GH_DEBUG|ELECTRON_RUN_AS_NODE)$/i.test(key)));
 env.GH_CONFIG_DIR = ${JSON.stringify(Path.join(stateDir, "github"))};
-const own = ${JSON.stringify(directory)};
-const paths = (env.PATH || env.Path || "").split(path.delimiter).filter(p => path.resolve(p).toLowerCase() !== own.toLowerCase());
+const findGhBinary = ${findGhBinary.toString()};
+const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH");
+const { paths, binary } = findGhBinary((pathKey && env[pathKey]) || "", ${JSON.stringify(directory)}, process.platform, fs, path);
 for (const key of Object.keys(env)) if (key.toUpperCase() === "PATH") delete env[key];
 env.PATH = paths.join(path.delimiter);
-const binary = paths.map(p => path.join(p, process.platform === "win32" ? "gh.exe" : "gh")).find(p => { try { fs.accessSync(p, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; } });
 if (!binary) { process.stderr.write("GitHub CLI (gh) is not installed on PATH.\\n"); process.exit(127); }
 if (process.argv[2] === "auth" && ["login", "logout", "switch", "refresh", "setup-git"].includes(process.argv[3])) {
   process.stderr.write("Manage this profile's GitHub connection in F5 Settings > Integrations.\\n"); process.exit(1);
+}
+if (process.argv[2] === "auth" && process.argv[3] === "git-credential") {
+  // Git credential helper protocol: answering nothing lets Git fall through to the next helper,
+  // so disconnected hosts never receive the placeholder token.
+  const input = fs.readFileSync(0, "utf8");
+  if (process.argv[4] === "get") {
+    const host = /^host=(.+)$/m.exec(input)?.[1]?.trim();
+    if (!host) process.exit(0);
+    const saved = spawnSync(binary, ["auth", "token", "--hostname", host], { env, encoding: "utf8" });
+    const token = saved.status === 0 ? saved.stdout.trim() : "";
+    if (!token || token === ${JSON.stringify(GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN)}) process.exit(0);
+  }
+  const forwarded = spawnSync(binary, process.argv.slice(2), { env, input, stdio: ["pipe", "inherit", "inherit"] });
+  process.exit(forwarded.status ?? 1);
 }
 const result = spawnSync(binary, process.argv.slice(2), { env, stdio: "inherit" });
 if (result.error) process.stderr.write("Could not start GitHub CLI.\\n");

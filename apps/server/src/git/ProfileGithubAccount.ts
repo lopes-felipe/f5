@@ -1,4 +1,5 @@
 import * as FS from "node:fs/promises";
+import { GITHUB_HOST_PATTERN } from "@t3tools/contracts";
 import { githubUnavailablePath, prepareGithubLauncher } from "./GithubCliLauncher";
 import { GithubCliProjection, type GithubProfilePaths } from "./GithubCliProjection";
 import { Effect } from "effect";
@@ -11,7 +12,7 @@ export type GithubAccountRequest = (
 
 function accountHost(host: string): string {
   const normalized = host.toLowerCase();
-  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(normalized) || normalized.includes(".."))
+  if (!GITHUB_HOST_PATTERN.test(normalized) || normalized.includes(".."))
     throw new Error("Invalid GitHub hostname.");
   return normalized;
 }

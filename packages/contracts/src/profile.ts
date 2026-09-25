@@ -94,14 +94,21 @@ export const ProviderAccountEvent = Schema.Struct({
   data: Schema.String,
 });
 
+/** Lowercase GitHub or GitHub Enterprise hostname, without scheme, port, or path. */
+export const GITHUB_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+export const GithubHost = Schema.String.check(Schema.isPattern(GITHUB_HOST_PATTERN));
+
 export const GithubAccountInput = Schema.Struct({
-  host: Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/)),
+  host: GithubHost,
   token: TrimmedNonEmptyString,
 });
-export const GithubAccountHostInput = Schema.Struct({ host: GithubAccountInput.fields.host });
+export const GithubAccountHostInput = Schema.Struct({ host: GithubHost });
 
 export const GithubLoginHandleInput = Schema.Struct({
   handle: Schema.optional(TrimmedNonEmptyString),
+});
+export const GithubLoginStartInput = Schema.Struct({
+  host: Schema.optional(GithubHost),
 });
 export const GithubLoginStatus = Schema.Struct({
   available: Schema.Boolean,

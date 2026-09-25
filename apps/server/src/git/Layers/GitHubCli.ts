@@ -1,4 +1,5 @@
 import { ProfileGithubAccount, assertGithubCredentialsAvailable } from "../ProfileGithubAccount";
+import { isGithubPlaceholderToken } from "../GithubCliProjection";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import * as NodePath from "node:path";
 import { ServerConfig } from "../../config";
@@ -305,11 +306,17 @@ const makeGitHubCli = Effect.gen(function* () {
         .map((name) => Object.entries(process.env).find(([key]) => key.toUpperCase() === name)?.[1])
         .find((value) => value?.trim());
       if (ambient) return ambient.trim();
-      return (yield* execute({
+      // The profile projection answers disconnected hosts with a placeholder; treat it (and a
+      // failed lookup) as "not connected" so callers get an actionable unauthenticated error.
+      const projected = yield* execute({
         cwd,
         args: ["auth", "token", "--hostname", host],
         maxStdoutBytes: 65536,
-      })).stdout.trim();
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.catch(() => Effect.succeed("")),
+      );
+      return isGithubPlaceholderToken(projected) ? "" : projected;
     }),
   );
   const service = {
