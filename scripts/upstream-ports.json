@@ -265,8 +265,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/hooks/useCopyToClipboard.ts:3"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/hooks/useCopyToClipboard.ts:3",
+        "apps/web/src/hooks/inputSafety.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "03e135577cbf861c2948981601c070dab038ea11",
@@ -410,8 +416,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/server/src/mcp/PreviewMcpHttpServer.ts:516"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/server/src/mcp/PreviewMcpHttpServer.ts:516",
+        "apps/server/src/mcp/PreviewMcpHttpServer.test.ts:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "062987b2fb0ef48cc7776d654931bd9f3bcf1f9f",
@@ -4888,12 +4900,18 @@
     {
       "upstreamSha": "438bf466fd7e97bb80f0d1f936b2c857830249b7",
       "subject": "fix(web): close menus when clicking into the browser tab (#11148)",
-      "reason": "Preview guest focus dispatches a host pointer event to dismiss open menus and popovers; the listener is removed on teardown.",
+      "reason": "Preview guest focus closes host menus through their explicit close API, without synthetic pointer events that could dismiss unrelated surfaces; listeners are removed on teardown.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/PreviewPanel.tsx:421"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/components/PreviewPanel.tsx:421",
+        "apps/web/src/components/ui/menu.tsx:13"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "43bafd4674841fb8782f5174033b684aa0d83f67",
@@ -12723,8 +12741,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/timestampFormat.ts:23"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": ["apps/web/src/timestampFormat.ts:23", "apps/web/src/timestampFormat.ts:1"],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "b73232bdd31e83914a8a943960c7dc4b6390b39b",
@@ -13188,12 +13209,18 @@
     {
       "upstreamSha": "bd7f7ea0931127c26cfd283c9c2e98e0a425a06b",
       "subject": "fix(web): keep bulk thread deletion going after failures (#4615)",
-      "reason": "Bulk thread deletion attempts all selected threads, leaves failed rows selected, and reports the successful and total counts.",
+      "reason": "Bulk deletion attempts every selected thread and reports failures. Cleanup and navigation use only confirmed deletions, recheck surviving references after confirmation, and remove worktrees without force. Sidebar and archive settings share this flow.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/Sidebar.tsx:1419"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1419",
+        "apps/web/src/archiveActions.test.ts:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c",
@@ -15014,12 +15041,18 @@
     {
       "upstreamSha": "d7fe47fd0957a34fc2e8bb05f12db19bac3403b6",
       "subject": "fix(server): dismiss native questions when their turn ends (#9851)",
-      "reason": "Turn completion and abort append idempotent resolution activities for each pending blocking question on that turn; message-mode payloads are excluded for future async question support.",
+      "reason": "Turn completion and abort append idempotent dismissal activities for pending blocking questions on that turn. Typed answers are preserved in the persisted composer draft; async message-mode support remains Phase 8 work.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:4093"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:4093",
+        "apps/web/src/components/ChatView.browser.tsx:1950"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "d81278aa6b272bb3d3314266c6d17f22504d19d6",
@@ -15634,12 +15667,18 @@
     {
       "upstreamSha": "e09b88b6a51bb7e4309498f01c2f36bf5ada43f4",
       "subject": "fix(web): keep right panel synced with agent edits (#8803)",
-      "reason": "File contents use a finite stale time and are invalidated together with project queries after turn diffs or reverts.",
+      "reason": "File queries refresh after diffs and reverts. Dirty drafts retain their original content hash and refetches raise a save conflict rather than authorizing an overwrite.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/routes/__root.tsx:510"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/routes/__root.tsx:510",
+        "apps/web/src/components/FileViewPanel.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "e0adcc8a24db604c522282edea2823e3ef7a2bc6",
@@ -15858,8 +15897,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/pendingUserInput.ts:180"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/pendingUserInput.ts:180",
+        "apps/web/src/components/ChatView.browser.tsx:1950"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "e3723e06b5b154a3e0ede55c02e2cabc5301d3bf",
@@ -16948,8 +16993,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:214"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": [
+        "apps/web/src/components/FileBrowserPanel.tsx:214",
+        "apps/web/src/components/FileViewPanel.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "f2d2fb2f2444bcabc31bf906b5b334aee0d9d79c",
