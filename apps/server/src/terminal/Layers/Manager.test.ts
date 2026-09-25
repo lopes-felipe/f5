@@ -8,7 +8,7 @@ import {
   type TerminalOpenInput,
   type TerminalRestartInput,
 } from "@t3tools/contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PtySpawnError,
@@ -19,6 +19,7 @@ import {
   type PtySpawnInput,
 } from "../Services/PTY";
 import { TerminalManager } from "../Services/Manager";
+import { TERMINAL_HISTORY_MAX_BYTES } from "../BoundedTerminalHistory";
 import { TerminalManagerLive, TerminalManagerRuntime } from "./Manager";
 import { Effect, Encoding, Layer, Metric } from "effect";
 import { ServerConfig, type ServerConfigShape } from "../../config";
@@ -77,7 +78,7 @@ class FakePtyAdapter implements PtyAdapterShape {
   readonly spawnInputs: PtySpawnInput[] = [];
   readonly processes: FakePtyProcess[] = [];
   readonly spawnFailures: Error[] = [];
-  private nextPid = 9000;
+  nextPid = 9000;
 
   constructor(private readonly mode: "sync" | "async" = "sync") {}
 
@@ -232,8 +233,8 @@ describe("TerminalManager", () => {
     historyLineLimit = 5,
     options: {
       shellResolver?: () => string;
-      subprocessChecker?: (terminalPid: number) => Promise<boolean>;
       subprocessPollIntervalMs?: number;
+      processTableReader?: () => Promise<ReadonlySet<number>>;
       processKillGraceMs?: number;
       maxRetainedInactiveSessions?: number;
       ptyAdapter?: FakePtyAdapter;
@@ -245,9 +246,9 @@ describe("TerminalManager", () => {
     const manager = new TerminalManagerRuntime({
       logsDir,
       ptyAdapter,
+      ...(options.processTableReader ? { processTableReader: options.processTableReader } : {}),
       historyLineLimit,
       shellResolver: options.shellResolver ?? (() => "/bin/bash"),
-      ...(options.subprocessChecker ? { subprocessChecker: options.subprocessChecker } : {}),
       ...(options.subprocessPollIntervalMs
         ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
         : {}),
@@ -531,7 +532,7 @@ describe("TerminalManager", () => {
   it("emits subprocess activity events when child-process state changes", async () => {
     let hasRunningSubprocess = false;
     const { manager } = makeManager(5, {
-      subprocessChecker: async () => hasRunningSubprocess,
+      processTableReader: async () => new Set(hasRunningSubprocess ? [9000] : []),
       subprocessPollIntervalMs: 20,
     });
     const events: TerminalEvent[] = [];
@@ -559,6 +560,139 @@ describe("TerminalManager", () => {
 
     manager.dispose();
   });
+
+  it("shares one process table per poll and preserves activity after failed reads", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const reader = vi.fn(async () => new Set(Array.from({ length: 20 }, (_, i) => 9000 + i)));
+    const { manager } = makeManager(5, { processTableReader: reader });
+    const events: TerminalEvent[] = [];
+    manager.on("event", (event) => events.push(event));
+    try {
+      for (let i = 0; i < 20; i++) await manager.open({ ...openInput(), threadId: `poll-${i}` });
+      await waitFor(() => reader.mock.calls.length === 1);
+      reader.mockClear();
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(reader).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reader).toHaveBeenCalledOnce();
+      expect(
+        events.filter((event) => event.type === "activity" && event.hasRunningSubprocess),
+      ).toHaveLength(20);
+      events.length = 0;
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const info = vi.spyOn(console, "log").mockImplementation(() => {});
+      reader.mockRejectedValue(new Error("snapshot unavailable"));
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(events.filter((event) => event.type === "activity")).toHaveLength(0);
+      reader.mockResolvedValue(new Set());
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(
+        events.filter((event) => event.type === "activity" && !event.hasRunningSubprocess),
+      ).toHaveLength(20);
+      expect(info).toHaveBeenCalledWith(expect.stringContaining("reads recovered"));
+      reader.mockRejectedValue(new Error("failed again"));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(warning).toHaveBeenCalledTimes(2);
+      warning.mockRestore();
+      info.mockRestore();
+    } finally {
+      manager.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds retained and persisted output while delivering every live byte", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager(5000);
+    const events: TerminalEvent[] = [];
+    manager.on("event", (event) => events.push(event));
+    try {
+      await manager.open(openInput());
+      const data = "🙂".repeat(TERMINAL_HISTORY_MAX_BYTES / 4 + 200);
+      ptyAdapter.processes[0]!.emitData(data);
+      expect(
+        events
+          .filter((event) => event.type === "output")
+          .map((event) => event.data)
+          .join(""),
+      ).toBe(data);
+      const attached = await manager.open(openInput());
+      expect(Buffer.byteLength(attached.history)).toBe(TERMINAL_HISTORY_MAX_BYTES);
+      await manager.close({ threadId: "thread-1" });
+      expect(fs.statSync(historyLogPath(logsDir)).size).toBe(TERMINAL_HISTORY_MAX_BYTES);
+      expect((await manager.open(openInput())).history).toBe(attached.history);
+      await manager.clear({ threadId: "thread-1" });
+      ptyAdapter.processes.at(-1)!.emitData("\ud83d");
+      ptyAdapter.processes.at(-1)!.emitData("\ude42\r\n");
+      await manager.close({ threadId: "thread-1" });
+      expect((await manager.open(openInput())).history).toBe("🙂\r\n");
+    } finally {
+      manager.dispose();
+    }
+  });
+
+  it("coalesces output while a persistence write is blocked", async () => {
+    const { manager, ptyAdapter, logsDir } = makeManager(5000, {
+      processTableReader: async () => new Set(),
+    });
+    const release = Promise.withResolvers<void>();
+    const write = fs.promises.writeFile.bind(fs.promises);
+    let blocked = false;
+    const spy = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (...args) => {
+      if (!blocked && args[0] === historyLogPath(logsDir)) {
+        blocked = true;
+        await release.promise;
+      }
+      return write(...args);
+    });
+    try {
+      await manager.open(openInput());
+      ptyAdapter.processes[0]!.emitData("first\n");
+      await waitFor(() => blocked);
+      for (let i = 0; i < 50; i++) ptyAdapter.processes[0]!.emitData(`${i}\n`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(spy).toHaveBeenCalledTimes(1);
+      release.resolve();
+      await manager.close({ threadId: "thread-1" });
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(fs.readFileSync(historyLogPath(logsDir), "utf8")).toBe(
+        "first\n" + Array.from({ length: 50 }, (_, i) => `${i}\n`).join(""),
+      );
+    } finally {
+      release.resolve();
+      spy.mockRestore();
+      manager.dispose();
+    }
+  });
+
+  it.each(["restart", "replace with reused PID"] as const)(
+    "ignores a process-table result after %s",
+    async (operation) => {
+      const pending = Promise.withResolvers<ReadonlySet<number>>();
+      const reader = vi.fn(() => pending.promise);
+      const { manager, ptyAdapter } = makeManager(5, { processTableReader: reader });
+      const events: TerminalEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      try {
+        await manager.open(openInput());
+        expect(reader).toHaveBeenCalledOnce();
+        if (operation === "restart") {
+          await manager.restart({ ...openInput(), cols: 120, rows: 30 });
+        } else {
+          await manager.close({ threadId: "thread-1" });
+          ptyAdapter.nextPid = 9000;
+          expect((await manager.open(openInput())).pid).toBe(9000);
+        }
+        events.length = 0;
+        pending.resolve(new Set([9000, 9001]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(events.filter((event) => event.type === "activity")).toHaveLength(0);
+      } finally {
+        pending.resolve(new Set());
+        manager.dispose();
+      }
+    },
+  );
 
   it("caps persisted history to configured line limit", async () => {
     const { manager, ptyAdapter } = makeManager(3);

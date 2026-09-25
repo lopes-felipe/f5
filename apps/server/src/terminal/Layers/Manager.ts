@@ -1,3 +1,6 @@
+import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
+import { readTerminalHistory } from "../historyPersistence";
+import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
 import { githubTerminalStartup } from "../../git/githubShellStartup";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import type { ServerConfigShape } from "../../config";
@@ -31,7 +34,6 @@ import {
   type PtyExitEvent,
   type PtyProcess,
 } from "../Services/PTY";
-import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
 import { resolveExecutable } from "../../spawn/resolveCommand.ts";
 import {
@@ -46,7 +48,7 @@ import {
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
-const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
+const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
@@ -59,8 +61,6 @@ const decodeTerminalWriteInput = Schema.decodeUnknownSync(TerminalWriteInput);
 const decodeTerminalResizeInput = Schema.decodeUnknownSync(TerminalResizeInput);
 const decodeTerminalClearInput = Schema.decodeUnknownSync(TerminalClearInput);
 const decodeTerminalCloseInput = Schema.decodeUnknownSync(TerminalCloseInput);
-
-type TerminalSubprocessChecker = (terminalPid: number) => Promise<boolean>;
 
 let cachedDefaultWindowsShell: string | undefined;
 
@@ -168,98 +168,6 @@ function isRetryableShellSpawnError(error: unknown): boolean {
   return Schema.is(PtySpawnError)(error) && error.reason === "notFound";
 }
 
-async function checkWindowsSubprocessActivity(terminalPid: number): Promise<boolean> {
-  const command = [
-    `$children = Get-CimInstance Win32_Process -Filter "ParentProcessId = ${terminalPid}" -ErrorAction SilentlyContinue`,
-    "if ($children) { exit 0 }",
-    "exit 1",
-  ].join("; ");
-  try {
-    const result = await runProcess(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", command],
-      {
-        env: process.env,
-        timeoutMs: 1_500,
-        allowNonZeroExit: true,
-        maxBufferBytes: 32_768,
-        outputMode: "truncate",
-      },
-    );
-    return result.code === 0;
-  } catch {
-    return false;
-  }
-}
-
-async function checkPosixSubprocessActivity(terminalPid: number): Promise<boolean> {
-  try {
-    const pgrepResult = await runProcess("pgrep", ["-P", String(terminalPid)], {
-      env: process.env,
-      timeoutMs: 1_000,
-      allowNonZeroExit: true,
-      maxBufferBytes: 32_768,
-      outputMode: "truncate",
-    });
-    if (pgrepResult.code === 0) {
-      return pgrepResult.stdout.trim().length > 0;
-    }
-    if (pgrepResult.code === 1) {
-      return false;
-    }
-  } catch {
-    // Fall back to ps when pgrep is unavailable.
-  }
-
-  try {
-    const psResult = await runProcess("ps", ["-eo", "pid=,ppid="], {
-      env: process.env,
-      timeoutMs: 1_000,
-      allowNonZeroExit: true,
-      maxBufferBytes: 262_144,
-      outputMode: "truncate",
-    });
-    if (psResult.code !== 0) {
-      return false;
-    }
-
-    for (const line of psResult.stdout.split(/\r?\n/g)) {
-      const [pidRaw, ppidRaw] = line.trim().split(/\s+/g);
-      const pid = Number(pidRaw);
-      const ppid = Number(ppidRaw);
-      if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
-      if (ppid === terminalPid) {
-        return true;
-      }
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-async function defaultSubprocessChecker(terminalPid: number): Promise<boolean> {
-  if (!Number.isInteger(terminalPid) || terminalPid <= 0) {
-    return false;
-  }
-  if (process.platform === "win32") {
-    return checkWindowsSubprocessActivity(terminalPid);
-  }
-  return checkPosixSubprocessActivity(terminalPid);
-}
-
-function capHistory(history: string, maxLines: number): string {
-  if (history.length === 0) return history;
-  const hasTrailingNewline = history.endsWith("\n");
-  const lines = history.split("\n");
-  if (hasTrailingNewline) {
-    lines.pop();
-  }
-  if (lines.length <= maxLines) return history;
-  const capped = lines.slice(lines.length - maxLines).join("\n");
-  return hasTrailingNewline ? `${capped}\n` : capped;
-}
-
 function legacySafeThreadId(threadId: string): string {
   return threadId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -334,7 +242,7 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
   shellResolver?: () => string;
-  subprocessChecker?: TerminalSubprocessChecker;
+  processTableReader?: () => Promise<TerminalProcessTable>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -349,10 +257,11 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly shellResolver: () => string;
   private readonly persistQueues = new Map<string, Promise<void>>();
   private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly pendingPersistHistory = new Map<string, string>();
+  private readonly pendingPersistHistory = new Map<string, BoundedTerminalHistory>();
   private readonly threadLocks = new Map<string, Promise<void>>();
   private readonly persistDebounceMs: number;
-  private readonly subprocessChecker: TerminalSubprocessChecker;
+  private processTableReadFailed = false;
+  private readonly processTableReader: () => Promise<TerminalProcessTable>;
   private readonly subprocessPollIntervalMs: number;
   private readonly processKillGraceMs: number;
   private readonly maxRetainedInactiveSessions: number;
@@ -369,7 +278,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.ptyAdapter = options.ptyAdapter;
     this.shellResolver = options.shellResolver ?? defaultShellResolver;
     this.persistDebounceMs = DEFAULT_PERSIST_DEBOUNCE_MS;
-    this.subprocessChecker = options.subprocessChecker ?? defaultSubprocessChecker;
+    this.processTableReader = options.processTableReader ?? readTerminalProcessTable;
     this.subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
     this.processKillGraceMs = options.processKillGraceMs ?? DEFAULT_PROCESS_KILL_GRACE_MS;
@@ -425,12 +334,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         this.stopProcess(existing);
         existing.cwd = input.cwd;
         existing.runtimeEnv = nextRuntimeEnv;
-        existing.history = "";
-        await this.persistHistory(existing.threadId, existing.terminalId, existing.history);
+        existing.history.clear();
+        await this.persistHistory(existing.threadId, existing.terminalId, existing.history.value());
       } else if (existing.status === "exited" || existing.status === "error") {
         existing.runtimeEnv = nextRuntimeEnv;
-        existing.history = "";
-        await this.persistHistory(existing.threadId, existing.terminalId, existing.history);
+        existing.history.clear();
+        await this.persistHistory(existing.threadId, existing.terminalId, existing.history.value());
       } else if (currentRuntimeEnv !== nextRuntimeEnv) {
         existing.runtimeEnv = nextRuntimeEnv;
       }
@@ -487,9 +396,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const input = decodeTerminalClearInput(raw);
     await this.runWithThreadLock(input.threadId, async () => {
       const session = this.requireSession(input.threadId, input.terminalId);
-      session.history = "";
+      session.history.clear();
       session.updatedAt = new Date().toISOString();
-      await this.persistHistory(input.threadId, input.terminalId, session.history);
+      await this.persistHistory(input.threadId, input.terminalId, session.history.value());
       this.emitEvent({
         type: "cleared",
         threadId: input.threadId,
@@ -515,7 +424,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           cwd: input.cwd,
           status: "starting",
           pid: null,
-          history: "",
+          history: new BoundedTerminalHistory(this.historyLineLimit),
           exitCode: null,
           exitSignal: null,
           updatedAt: new Date().toISOString(),
@@ -538,8 +447,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const cols = input.cols ?? session.cols;
       const rows = input.rows ?? session.rows;
 
-      session.history = "";
-      await this.persistHistory(input.threadId, input.terminalId, session.history);
+      session.history.clear();
+      await this.persistHistory(input.threadId, input.terminalId, session.history.value());
       await this.startSession(session, { ...input, cols, rows }, "restarted");
       return this.snapshot(session);
     });
@@ -769,7 +678,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private onProcessData(session: TerminalSessionState, data: string): void {
-    session.history = capHistory(`${session.history}${data}`, this.historyLineLimit);
+    session.history.append(data);
     session.updatedAt = new Date().toISOString();
     this.queuePersist(session.threadId, session.terminalId, session.history);
     this.emitEvent({
@@ -782,6 +691,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private onProcessExit(session: TerminalSessionState, event: PtyExitEvent): void {
+    if (session.history.finish())
+      this.queuePersist(session.threadId, session.terminalId, session.history);
     this.clearKillEscalationTimer(session.process);
     this.cleanupProcessHandles(session);
     session.process = null;
@@ -806,6 +717,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private stopProcess(session: TerminalSessionState): void {
     const process = session.process;
     if (!process) return;
+    if (session.history.finish())
+      this.queuePersist(session.threadId, session.terminalId, session.history);
     this.cleanupProcessHandles(session);
     session.process = null;
     session.pid = null;
@@ -894,7 +807,11 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
   }
 
-  private queuePersist(threadId: string, terminalId: string, history: string): void {
+  private queuePersist(
+    threadId: string,
+    terminalId: string,
+    history: BoundedTerminalHistory,
+  ): void {
     const persistenceKey = toSessionKey(threadId, terminalId);
     this.pendingPersistHistory.set(persistenceKey, history);
     this.schedulePersist(threadId, terminalId);
@@ -949,13 +866,13 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private schedulePersist(threadId: string, terminalId: string): void {
     const persistenceKey = toSessionKey(threadId, terminalId);
-    if (this.persistTimers.has(persistenceKey)) return;
+    if (this.persistTimers.has(persistenceKey) || this.persistQueues.has(persistenceKey)) return;
     const timer = setTimeout(() => {
       this.persistTimers.delete(persistenceKey);
       const pendingHistory = this.pendingPersistHistory.get(persistenceKey);
       if (pendingHistory === undefined) return;
       this.pendingPersistHistory.delete(persistenceKey);
-      void this.enqueuePersistWrite(threadId, terminalId, pendingHistory);
+      void this.enqueuePersistWrite(threadId, terminalId, pendingHistory.value());
     }, this.persistDebounceMs);
     this.persistTimers.set(persistenceKey, timer);
   }
@@ -968,15 +885,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.persistTimers.delete(persistenceKey);
   }
 
-  private async readHistory(threadId: string, terminalId: string): Promise<string> {
+  private async readHistory(threadId: string, terminalId: string): Promise<BoundedTerminalHistory> {
     const nextPath = this.historyPath(threadId, terminalId);
     try {
-      const raw = await fs.promises.readFile(nextPath, "utf8");
-      const capped = capHistory(raw, this.historyLineLimit);
-      if (capped !== raw) {
-        await fs.promises.writeFile(nextPath, capped, "utf8");
-      }
-      return capped;
+      const { history, truncated } = await readTerminalHistory(nextPath, this.historyLineLimit);
+      if (truncated) await fs.promises.writeFile(nextPath, history.value(), "utf8");
+      return history;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;
@@ -984,16 +898,15 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
 
     if (terminalId !== DEFAULT_TERMINAL_ID) {
-      return "";
+      return new BoundedTerminalHistory(this.historyLineLimit);
     }
 
     const legacyPath = this.legacyHistoryPath(threadId);
     try {
-      const raw = await fs.promises.readFile(legacyPath, "utf8");
-      const capped = capHistory(raw, this.historyLineLimit);
+      const { history } = await readTerminalHistory(legacyPath, this.historyLineLimit);
 
       // Migrate legacy transcript filename to the terminal-scoped path.
-      await fs.promises.writeFile(nextPath, capped, "utf8");
+      await fs.promises.writeFile(nextPath, history.value(), "utf8");
       try {
         await fs.promises.rm(legacyPath, { force: true });
       } catch (cleanupError) {
@@ -1003,10 +916,10 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         });
       }
 
-      return capped;
+      return history;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return "";
+        return new BoundedTerminalHistory(this.historyLineLimit);
       }
       throw error;
     }
@@ -1036,7 +949,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const pendingHistory = this.pendingPersistHistory.get(persistenceKey);
       if (pendingHistory !== undefined) {
         this.pendingPersistHistory.delete(persistenceKey);
-        await this.enqueuePersistWrite(threadId, terminalId, pendingHistory);
+        await this.enqueuePersistWrite(threadId, terminalId, pendingHistory.value());
       }
 
       const pending = this.persistQueues.get(persistenceKey);
@@ -1076,10 +989,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private async pollSubprocessActivity(): Promise<void> {
     if (this.subprocessPollInFlight) return;
 
-    const runningSessions = [...this.sessions.values()].filter(
-      (session): session is TerminalSessionState & { pid: number } =>
-        session.status === "running" && Number.isInteger(session.pid),
-    );
+    const runningSessions = [...this.sessions.values()]
+      .filter(
+        (session): session is TerminalSessionState & { pid: number } =>
+          session.status === "running" && Number.isInteger(session.pid),
+      )
+      .map((session) => ({ session, terminalPid: session.pid }));
     if (runningSessions.length === 0) {
       this.stopSubprocessPolling();
       return;
@@ -1087,41 +1002,41 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
     this.subprocessPollInFlight = true;
     try {
-      await Promise.all(
-        runningSessions.map(async (session) => {
-          const terminalPid = session.pid;
-          let hasRunningSubprocess = false;
-          try {
-            hasRunningSubprocess = await this.subprocessChecker(terminalPid);
-          } catch (error) {
-            this.logger.warn("failed to check terminal subprocess activity", {
-              threadId: session.threadId,
-              terminalId: session.terminalId,
-              terminalPid,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return;
-          }
+      const table = await this.processTableReader();
+      if (this.processTableReadFailed) {
+        this.logger.info("terminal process table reads recovered");
+        this.processTableReadFailed = false;
+      }
+      for (const { session, terminalPid } of runningSessions) {
+        const hasRunningSubprocess = table.has(terminalPid);
+        const liveSession = this.sessions.get(toSessionKey(session.threadId, session.terminalId));
+        if (
+          liveSession !== session ||
+          liveSession.status !== "running" ||
+          liveSession.pid !== terminalPid
+        ) {
+          continue;
+        }
+        if (liveSession.hasRunningSubprocess === hasRunningSubprocess) {
+          continue;
+        }
 
-          const liveSession = this.sessions.get(toSessionKey(session.threadId, session.terminalId));
-          if (!liveSession || liveSession.status !== "running" || liveSession.pid !== terminalPid) {
-            return;
-          }
-          if (liveSession.hasRunningSubprocess === hasRunningSubprocess) {
-            return;
-          }
-
-          liveSession.hasRunningSubprocess = hasRunningSubprocess;
-          liveSession.updatedAt = new Date().toISOString();
-          this.emitEvent({
-            type: "activity",
-            threadId: liveSession.threadId,
-            terminalId: liveSession.terminalId,
-            createdAt: new Date().toISOString(),
-            hasRunningSubprocess,
-          });
-        }),
-      );
+        liveSession.hasRunningSubprocess = hasRunningSubprocess;
+        liveSession.updatedAt = new Date().toISOString();
+        this.emitEvent({
+          type: "activity",
+          threadId: liveSession.threadId,
+          terminalId: liveSession.terminalId,
+          createdAt: new Date().toISOString(),
+          hasRunningSubprocess,
+        });
+      }
+    } catch (error) {
+      if (!this.processTableReadFailed)
+        this.logger.warn("failed to read terminal process table; retaining previous activity", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      this.processTableReadFailed = true;
     } finally {
       this.subprocessPollInFlight = false;
     }
@@ -1203,7 +1118,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       cwd: session.cwd,
       status: session.status,
       pid: session.pid,
-      history: session.history,
+      history: session.history.value(),
       exitCode: session.exitCode,
       exitSignal: session.exitSignal,
       updatedAt: session.updatedAt,
