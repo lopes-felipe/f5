@@ -29,7 +29,7 @@ The six equivalents are: disconnected-send interaction blocking, strict HTTP(S)-
 - `bun run --cwd apps/desktop test`: 110 passed across 20 files.
 - `bun run test:desktop-smoke`: passed on macOS with the built renderer and Electron application.
 - Follow-up pending-input and timestamp unit tests: 23 passed.
-- `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`: required after the proof commit and ledger update; coverage remains 2,332 records.
+- `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`: passed after the proof commit and ledger update; coverage remains 2,332 records, with zero pending reviews. Ledger totals are 187 ported, 40 equivalent, two already-present and 722 planned records.
 
 Browser regressions exercise clipboard failure cleanup, composition events (including keyCode 229), uppercase WSS, and collapsed folders plus file-query invalidation. Server tests cover multiple blocking questions at completion/abort, non-object MCP results, snapshot-save forwarding, app-bundled editor launch and terminal color overrides. Desktop tests cover locale precedence, save-flag validation, and persistence of the original screenshot bytes.
 
