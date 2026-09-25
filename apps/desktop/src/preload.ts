@@ -48,9 +48,10 @@ const argument = (name: string) =>
 // Keep the synchronous bridge contract; credentials are obtained only by the owning preload.
 const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
 const profileId = argument("f5-profile-id");
+const systemLocale = argument("f5-system-locale");
 
 contextBridge.exposeInMainWorld("desktopBridge", {
-  getSystemLocale: () => argument("f5-system-locale"),
+  getSystemLocale: () => systemLocale,
   getWsUrl: () => wsUrl,
   getProfileId: () => profileId,
   switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),

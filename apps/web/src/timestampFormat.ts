@@ -33,15 +33,16 @@ export function resolveTimestampLocale(
   }
 }
 
+const locale = resolveTimestampLocale(
+  typeof window === "undefined" ? null : window.desktopBridge?.getSystemLocale?.(),
+);
+
 const timestampFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getTimestampFormatter(
   timestampFormat: TimestampFormat,
   includeSeconds: boolean,
 ): Intl.DateTimeFormat {
-  const locale = resolveTimestampLocale(
-    typeof window === "undefined" ? null : window.desktopBridge?.getSystemLocale?.(),
-  );
   const cacheKey = `${locale ?? "default"}:${timestampFormat}:${includeSeconds ? "seconds" : "minutes"}`;
   const cachedFormatter = timestampFormatterCache.get(cacheKey);
   if (cachedFormatter) {

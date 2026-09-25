@@ -1,3 +1,4 @@
+import { notifyPreviewFocused } from "../lib/previewFocus";
 import {
   type DesktopPreviewBridge,
   type DesktopPreviewTabState,
@@ -418,12 +419,7 @@ function PreviewBrowserWebview(props: {
       });
     };
 
-    const dismissHostPopups = () => {
-      webview.dispatchEvent(
-        new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
-      );
-    };
-    webview.addEventListener("focus", dismissHostPopups);
+    webview.addEventListener("focus", notifyPreviewFocused);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("did-start-loading", onStart);
     webview.addEventListener("did-finish-load", onSuccess);
@@ -433,7 +429,7 @@ function PreviewBrowserWebview(props: {
     webview.addEventListener("did-fail-load", onFail);
     register();
     return () => {
-      webview.removeEventListener("focus", dismissHostPopups);
+      webview.removeEventListener("focus", notifyPreviewFocused);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("did-start-loading", onStart);
       webview.removeEventListener("did-finish-load", onSuccess);

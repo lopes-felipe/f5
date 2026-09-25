@@ -4077,11 +4077,7 @@ const make = Effect.gen(function* () {
             const payload = activity.payload as Record<string, unknown> | null;
             const requestId = payload?.requestId;
             if (typeof requestId !== "string") continue;
-            if (
-              activity.kind === "user-input.requested" &&
-              activity.turnId === turnId &&
-              payload?.responseMode !== "message"
-            ) {
+            if (activity.kind === "user-input.requested" && activity.turnId === turnId) {
               pending.add(requestId);
             } else if (activity.kind === "user-input.resolved") {
               pending.delete(requestId);
@@ -4098,7 +4094,7 @@ const make = Effect.gen(function* () {
                 tone: "info",
                 kind: "user-input.resolved",
                 summary: "User input dismissed because its turn ended",
-                payload: { requestId },
+                payload: { requestId, resolution: "dismissed" },
                 turnId,
               },
               createdAt: now,

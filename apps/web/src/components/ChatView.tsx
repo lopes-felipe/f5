@@ -1695,6 +1695,26 @@ export default function ChatView({
     [threadActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const preservedDismissedAnswers = useRef(new Set<string>());
+  useEffect(() => {
+    for (const activity of threadActivities) {
+      if (activity.kind !== "user-input.resolved") continue;
+      const payload = activity.payload as { requestId?: string; resolution?: string } | null;
+      if (payload?.resolution !== "dismissed" || !payload.requestId) continue;
+      const key = `${threadId}:${payload.requestId}`;
+      if (preservedDismissedAnswers.current.has(key)) continue;
+      const answers = pendingUserInputAnswersByRequestId[payload.requestId];
+      if (!answers) continue;
+      preservedDismissedAnswers.current.add(key);
+      const original = useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "";
+      const restored = Object.values(answers).reduce(
+        (text, answer) => carryDisplacedCustomAnswerIntoPrompt(text, answer.customAnswer),
+        original,
+      );
+      if (restored !== original) setComposerDraftPrompt(threadId, restored);
+    }
+  }, [threadActivities, threadId, pendingUserInputAnswersByRequestId, setComposerDraftPrompt]);
+
   const activePendingDraftAnswers = useMemo(
     () =>
       activePendingUserInput

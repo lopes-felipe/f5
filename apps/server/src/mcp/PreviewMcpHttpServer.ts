@@ -209,9 +209,9 @@ const PREVIEW_MCP_TOOLS: ReadonlyArray<McpToolDefinition> = [
       properties: { save: { type: "boolean" } },
     },
     annotations: {
-      readOnlyHint: true,
+      readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: true,
+      idempotentHint: false,
       openWorldHint: false,
       title: "Inspect browser page",
     },

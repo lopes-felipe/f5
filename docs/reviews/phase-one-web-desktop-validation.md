@@ -15,7 +15,7 @@ Based on main `060aa353f9ad6840088c4895431534eb43846e99`. This closes the 28 led
 
 ## Compatibility and native adaptations
 
-Protocol version is **4**, so stale tabs follow the existing upgrade/reload flow. The desktop locale bridge is optional for older persisted/test bridge objects. Snapshot saving defaults to false and uses opaque artifact IDs, preserving f5's existing artifact boundary instead of exposing upstream's absolute screenshot paths. Inline chat rendering and rich file viewing remain Phase 7 work.
+Protocol version is **4**, so stale tabs follow the existing upgrade/reload flow. This is intentional: older clients silently ignore the additive snapshot-save field. The desktop locale bridge is optional for older persisted/test bridge objects. Snapshot saving defaults to false and uses opaque artifact IDs, preserving f5's existing artifact boundary instead of exposing upstream's absolute screenshot paths. Inline chat rendering and rich file viewing remain Phase 7 work.
 
 No new settings or capability flags are introduced. Locale defaults apply only to macOS when no locale is inherited or available from the login shell. Other platforms and explicit COLORTERM values remain unchanged.
 
@@ -36,3 +36,13 @@ Browser regressions exercise clipboard failure cleanup, composition events (incl
 The full browser run initially exposed outdated assertions that assumed a rejected Clipboard API call could not fall back. Those tests now fail both copy mechanisms when checking the error path. The new clipboard test also caught and verified a correction to selection-restoration order.
 
 Packaged custom Dock icons, Linux/Windows Electron behavior, and remote-device HTTP clipboard permissions have not been manually exercised on those environments. No performance thresholds were changed; Phase 2 measurements remain separate.
+
+## PR #41 review follow-up
+
+- File drafts retain the content hash they were based on. A refetch with changed content preserves the draft, shows a conflict, and blocks manual save and autosave until an explicit reload. Browser coverage includes a second refetch while the conflict is visible and a save after reloading.
+- Sidebar, project removal and archive settings delete all selected threads before considering worktree cleanup. Only accepted deletions affect navigation and survivor checks; failures remain selected and show their errors. Cleanup rechecks surviving threads after confirmation and uses non-force removal. Tests cover either deletion order and a thread linking to the worktree during confirmation.
+- Blocking-question dismissal carries typed answers into the persisted composer draft. Full-app browser tests cover both option selection and turn-end dismissal. The unused message-mode condition was removed; async questions remain Phase 8 work.
+- Saving a preview snapshot is advertised as neither read-only nor idempotent. A tools/list regression checks both annotations. PNG bytes are encoded once and reused.
+- Locale lookup is cached. Preview focus closes menus through their explicit close API instead of broadcasting a synthetic pointer event to dialogs and other surfaces. Clipboard fallback preserves the API error as a cause and suppresses only its synchronous focus round trip, avoiding incidental blur commits.
+
+Review validation: 441 browser tests pass across 47 files, including the actual ChatView wiring; four batch-deletion tests and five preview MCP tests pass. The macOS desktop smoke test passes. `bun fmt`, `bun lint`, `bun typecheck`, and `bun run test:full` pass, including 2,586 server unit tests, 16 integration tests and 131 exhaustive Git tests. All 110 desktop unit tests pass. Online ledger validation passes with unchanged coverage and disposition totals. Existing optional live tests remain skipped.

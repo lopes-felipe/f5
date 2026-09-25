@@ -1,3 +1,5 @@
+import { Menu, MenuTrigger, MenuPopup, MenuItem } from "../components/ui/menu";
+import { notifyPreviewFocused } from "../lib/previewFocus";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
@@ -70,4 +72,42 @@ describe("input safety", () => {
 it("preserves TLS for an uppercase configured WebSocket URL", () => {
   vi.stubEnv("VITE_WS_URL", "WSS://remote.example.com");
   expect(getServerHttpOrigin()).toBe("https://remote.example.com");
+});
+
+it("does not commit a focused settings draft during fallback copy and keeps the API error as cause", async () => {
+  const original = new Error("Permission denied");
+  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(original);
+  vi.spyOn(document, "execCommand").mockReturnValue(false);
+  const commit = vi.fn();
+  const screen = await render(<BufferedInput commit={commit} />);
+  await screen.getByRole("textbox").fill("unsaved setting");
+  await expect(writeTextToClipboard("copy")).rejects.toMatchObject({ cause: original });
+  expect(commit).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(screen.getByRole("textbox").element());
+  (document.activeElement as HTMLInputElement).blur();
+  expect(commit).toHaveBeenCalledWith("unsaved setting");
+});
+
+it("closes host menus on preview focus without simulating a document pointer press", async () => {
+  const press = vi.fn();
+  document.addEventListener("pointerdown", press);
+  const screen = await render(
+    <Menu modal={false}>
+      <MenuTrigger>Menu</MenuTrigger>
+      <MenuPopup>
+        <MenuItem>Action</MenuItem>
+      </MenuPopup>
+    </Menu>,
+  );
+  try {
+    await screen.getByRole("button", { name: "Menu" }).click();
+    await expect.element(screen.getByRole("menuitem", { name: "Action" })).toBeVisible();
+    press.mockClear();
+    notifyPreviewFocused();
+    await expect.element(screen.getByRole("menuitem", { name: "Action" })).not.toBeInTheDocument();
+    expect(press).not.toHaveBeenCalled();
+  } finally {
+    document.removeEventListener("pointerdown", press);
+    await screen.unmount();
+  }
 });

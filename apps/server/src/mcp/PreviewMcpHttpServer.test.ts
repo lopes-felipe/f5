@@ -100,12 +100,25 @@ it.effect("serves preview MCP tools and routes calls through the broker", () =>
         id: 1,
         method: "tools/list",
         params: {},
-      })) as { result?: { tools?: Array<{ name: string }> } };
+      })) as {
+        result?: {
+          tools?: Array<{
+            name: string;
+            annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean };
+          }>;
+        };
+      };
 
       assert.equal(
         listResponse.result?.tools?.some((tool) => tool.name === "preview_status"),
         true,
       );
+
+      const snapshotTool = listResponse.result?.tools?.find(
+        (tool) => tool.name === "preview_snapshot",
+      );
+      assert.equal(snapshotTool?.annotations?.readOnlyHint, false);
+      assert.equal(snapshotTool?.annotations?.idempotentHint, false);
 
       const callResponse = (yield* postMcp(server.getUrl(), token, {
         jsonrpc: "2.0",

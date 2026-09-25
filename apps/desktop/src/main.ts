@@ -1047,20 +1047,17 @@ async function previewAutomationSnapshot(
     : null;
   const image = await guest.capturePage(rect ?? undefined);
   const size = image.getSize();
+  const png = image.toPNG();
   return {
     ...page,
     ...(save
       ? {
-          savedScreenshot: await previewRuntime.saveScreenshot(
-            image.toPNG(),
-            size.width,
-            size.height,
-          ),
+          savedScreenshot: await previewRuntime.saveScreenshot(png, size.width, size.height),
         }
       : {}),
     screenshot: {
       mimeType: "image/png",
-      data: image.toPNG().toString("base64"),
+      data: png.toString("base64"),
       width: size.width,
       height: size.height,
     },
