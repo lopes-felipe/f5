@@ -160,6 +160,43 @@ export function formatKeybindingCommandLabel(
 
   const staticCommand = command as StaticKeybindingCommand;
   switch (staticCommand) {
+    case "thread.stop":
+      return "Stop active turn";
+    case "thread.togglePin":
+      return "Pin or unpin thread";
+    case "thread.copyReference":
+      return "Copy thread reference";
+    case "thread.undo":
+      return "Undo thread action";
+    case "navigation.back":
+      return "Navigate back";
+    case "navigation.forward":
+      return "Navigate forward";
+    case "chat.pageUp":
+      return "Page chat up";
+    case "chat.pageDown":
+      return "Page chat down";
+    case "chat.newBackground":
+      return "Send new thread in background";
+    case "rightPanel.closeTab":
+      return "Close active right panel tab";
+    case "composer.effort":
+      return "Choose effort";
+    case "composer.runtimeMode":
+      return "Choose permissions";
+    case "composer.envMode":
+      return "Choose workspace mode";
+    case "composer.branch":
+      return "Choose branch";
+    case "composer.interactionMode":
+      return "Toggle Plan mode";
+    case "modelPicker.previousProvider":
+      return "Previous provider";
+    case "modelPicker.nextProvider":
+      return "Next provider";
+    case "prHub.copyNumber":
+      return "Copy PR number";
+
     case "sidebar.toggle":
       return "Toggle main sidebar";
     case "terminal.toggle":

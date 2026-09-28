@@ -373,6 +373,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       lastPolledAt: null,
     };
   }
+  if (tag === WS_METHODS.projectsCloneList) return [];
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }

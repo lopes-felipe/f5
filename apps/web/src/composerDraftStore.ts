@@ -258,7 +258,7 @@ interface PersistedComposerDraftStoreState {
   promptStashes: PromptStashEntry[];
 }
 
-interface ComposerThreadDraftState {
+export interface ComposerThreadDraftState {
   prompt: string;
   images: ComposerImageAttachment[];
   nonPersistedImageIds: string[];
@@ -327,7 +327,7 @@ export interface DraftThreadState {
   envMode: DraftThreadEnvMode;
 }
 
-interface ProjectDraftThread extends DraftThreadState {
+export interface ProjectDraftThread extends DraftThreadState {
   threadId: ThreadId;
 }
 

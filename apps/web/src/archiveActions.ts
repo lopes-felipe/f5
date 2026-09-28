@@ -1,3 +1,4 @@
+import { recordThreadUndo } from "./threadUndo";
 import {
   type CodeReviewWorkflowId,
   type InvestigationWorkflowId,
@@ -16,6 +17,29 @@ import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "
 export type WorkflowArchiveKind = "planning" | "codeReview" | "investigation";
 export type WorkflowArchiveId = PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId;
 
+export async function dispatchThreadArchive(input: {
+  readonly threadId: ThreadId;
+  readonly archived: boolean;
+}) {
+  const api = readNativeApi();
+  if (!api) throw new Error("Thread actions are unavailable.");
+  await api.orchestration.dispatchCommand({
+    type: input.archived ? "thread.archive" : "thread.unarchive",
+    commandId: newCommandId(),
+    threadId: input.threadId,
+    createdAt: new Date().toISOString(),
+  });
+  if (input.archived)
+    recordThreadUndo("Thread archived", async () => {
+      await api.orchestration.dispatchCommand({
+        type: "thread.unarchive",
+        commandId: newCommandId(),
+        threadId: input.threadId,
+        createdAt: new Date().toISOString(),
+      });
+    });
+}
+
 export async function setThreadArchived(input: {
   readonly threadId: ThreadId;
   readonly archived: boolean;
@@ -24,12 +48,7 @@ export async function setThreadArchived(input: {
   if (!api) return;
 
   try {
-    await api.orchestration.dispatchCommand({
-      type: input.archived ? "thread.archive" : "thread.unarchive",
-      commandId: newCommandId(),
-      threadId: input.threadId,
-      createdAt: new Date().toISOString(),
-    });
+    await dispatchThreadArchive(input);
   } catch (error) {
     toastManager.add({
       type: "error",

@@ -27,6 +27,7 @@ type ChatHeaderProps = ComponentProps<typeof ChatHeader>;
 
 function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
   return {
+    isServerThread: true,
     activeThreadId: "thread-1" as never,
     activeThreadTitle: "Thread",
     estimatedContextTokens: null,

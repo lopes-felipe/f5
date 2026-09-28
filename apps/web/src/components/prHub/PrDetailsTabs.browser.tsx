@@ -291,8 +291,8 @@ describe("PrDetailsTabs", () => {
     await expect.element(page.getByText("Original comment")).toBeInTheDocument();
 
     await page.getByRole("tab", { name: "Files (1)" }).click();
-    await expect.element(page.getByRole("button", { name: /src\/detail.ts/ })).toBeInTheDocument();
-    await page.getByRole("button", { name: /src\/detail.ts/ }).click();
+    await expect.element(page.getByRole("button", { name: /^src\/detail.ts/ })).toBeInTheDocument();
+    await page.getByRole("button", { name: /^src\/detail.ts/ }).click();
     await expect.element(page.getByText("secondValue", { exact: true })).toBeInTheDocument();
     await page.getByText("2", { exact: true }).click();
     const inline = page.getByRole("textbox", { name: "src/detail.ts:2 (new)" });

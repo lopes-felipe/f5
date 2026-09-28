@@ -277,10 +277,12 @@
     {
       "upstreamSha": "03e135577cbf861c2948981601c070dab038ea11",
       "subject": "fix(web): complete thread status icons and keep input threads prominent (#11461)",
-      "reason": "Phase 3f: fix(web): complete thread status icons and keep input threads prominent. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: thread status resolution includes pending input/approval, and the sidebar renders a dedicated attention pill independently of active/unread state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/threadStatus.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "044a6e168ad1eb213c2c7c277034e65c638cc937",
@@ -331,10 +333,12 @@
     {
       "upstreamSha": "0508792c572abd39b1afd6f68cd420f2ca00a484",
       "subject": "feat(web): confirm before closing a terminal (#7592)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): confirm before closing a terminal. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: terminal close confirms a running process and waits for server close before removing the pane.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ChatView.tsx:2638"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "051a4057a67ceebc7a36b13678f404b7ee871a46",
@@ -487,10 +491,15 @@
     {
       "upstreamSha": "06dd9993b6292e61de8890956a3ce3c50495a6eb",
       "subject": "fix(web): reserve sibling column width when resizing the right panel (#6279)",
-      "reason": "Phase 3e: fix(web): reserve sibling column width when resizing the right panel. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: sidebar rail teardown clears cursor/user-select, and right-panel resize tests available composer width before accepting a size.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": [
+        "apps/web/src/routes/_chat.$threadId.tsx:211",
+        "apps/web/src/components/ui/sidebar.tsx:516"
+      ],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "06de59b3d67e5be427ce4c7c8d41e91265709aec",
@@ -775,26 +784,32 @@
     {
       "upstreamSha": "09df91f729c1c61e637e7dd0ef22827cfc8a6cb1",
       "subject": "fix(web): restore right panel toggle clicks after closing on desktop (#8016)",
-      "reason": "Phase 3e: fix(web): restore right panel toggle clicks after closing on desktop. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: right-panel controls explicitly opt out of the Electron drag region and remain in a persistent panel host with controlled open/close state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/RightPanelTabs.tsx:374"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "09e8de9c655ae85410bf6b00446f272a01da81c7",
       "subject": "Add stop thread keybinding command (#4308)",
-      "reason": "Phase 3b (keybindings and undo): Add stop thread keybinding command. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "0a0b6be96833adae68b36540c00d347eda278736",
       "subject": "fix(web): keep right panel controls clickable (#9517)",
-      "reason": "Phase 3e: fix(web): keep right panel controls clickable. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: right-panel controls explicitly opt out of the Electron drag region and remain in a persistent panel host with controlled open/close state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/RightPanelTabs.tsx:374"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "0a37240a87bb2fed8f48cf20dc8312ee3b94eba6",
@@ -940,10 +955,12 @@
     {
       "upstreamSha": "0c5771d60a8ef2db34dfbbc142f7524badc829e0",
       "subject": "fix(web): match draft row heights to thread rows (#11512)",
-      "reason": "Phase 3c (composer behavior): fix(web): match draft row heights to thread rows. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: local drafts and persisted threads use the same sidebar thread-row renderer and sizing.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:2831"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "0c91f687de606f62e157209f34e6aa74744b555a",
@@ -1039,10 +1056,12 @@
     {
       "upstreamSha": "0dec07d91488e08206ad32f9758a95acd746c424",
       "subject": "fix(web): keep large image previews from stalling composer typing (#11324)",
-      "reason": "Phase 3c (composer behavior): fix(web): keep large image previews from stalling composer typing. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: draft preview object URLs are created once during import, not during composer renders. Imported files pass through the existing bounded compression path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/composerDraftStore.ts:2184"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "0df043fd4eaa190eb491a3060836156eb0ae915e",
@@ -1200,18 +1219,20 @@
     {
       "upstreamSha": "105cd5e0c57ab8b6df3bd8af5b534a5bc682fdce",
       "subject": "fix(web): remove the terminal pane's app-canvas gutter (#6222)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): remove the terminal pane's app-canvas gutter. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream terminal sidebar/app-canvas gutter differs from f5 thread-owned terminal groups. Existing terminal layout and grouping are retained.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadTerminalDrawer.tsx:45"]
     },
     {
       "upstreamSha": "10626c537886b41b6d9fc404521512f4f3702157",
       "subject": "fix(web): clarify terminal sidebar grouping (#7967)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): clarify terminal sidebar grouping. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream terminal sidebar/app-canvas gutter differs from f5 thread-owned terminal groups. Existing terminal layout and grouping are retained.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadTerminalDrawer.tsx:45"]
     },
     {
       "upstreamSha": "10882bea739a98f11b942c20c6570eb6126dd010",
@@ -1267,10 +1288,12 @@
     {
       "upstreamSha": "112a7088da63ea4fa48fee63dc8f29557c545ed7",
       "subject": "fix(web): use project monograms for automatic icon fallbacks (#11572)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): use project monograms for automatic icon fallbacks. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: consistent automatic project initials and user-configured tinted monograms in project settings, sidebar and palette; existing emoji/symbol/favicon choices remain.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ProjectIcon.tsx:79"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "1153afb4fb694944b5c25e2153b904a85cf47d70",
@@ -1318,10 +1341,12 @@
     {
       "upstreamSha": "120fab18d84f1eb993ecc7fa858a8dd212747079",
       "subject": "fix(web): keep the slash menu above the composer when vertical space is short (#9625)",
-      "reason": "Phase 3c (composer behavior): fix(web): keep the slash menu above the composer when vertical space is short. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: composer suggestions are absolutely anchored above the composer with a bounded scrolling list, independent of the upstream state drawer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:425"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "12391bd0d38eef6655b7a9f8945d0cb5febadc2b",
@@ -1364,10 +1389,11 @@
     {
       "upstreamSha": "127efae4401cf2cc0fcd7ec7c5b2e2c037fe4151",
       "subject": "fix(web): expose error disclosure state (#10125)",
-      "reason": "Phase 3e: fix(web): expose error disclosure state. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: upstream settings ExpandableText is absent in f5. f5 error banners do not expose a misleading disclosure control.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ThreadErrorBanner.tsx:5"]
     },
     {
       "upstreamSha": "12b6d026bdfba0cc8438fa5e323a8587d65bd2af",
@@ -1383,8 +1409,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1537"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1501"]
     },
     {
       "upstreamSha": "12e8997e58dbca8f1bd8c63b67d662eb69cf0e0d",
@@ -1422,10 +1451,12 @@
     {
       "upstreamSha": "133db22fae34cfb2e62a806e99d22674b0376f35",
       "subject": "feat(web): copy the full error report from the error page (#9166)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): copy the full error report from the error page. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: error-page copy includes the full error report.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/routes/__root.tsx:214"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "13427ecd8ba5bfa7892fc90d1e3f0ef59514870f",
@@ -1445,10 +1476,12 @@
     {
       "upstreamSha": "134b7194b125dd4881ff6040f66997b23489b72e",
       "subject": "feat(web): add previous/next turn navigation in minimap (#8531)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): add previous/next turn navigation in minimap. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: minimap previous/next turn buttons alongside keyboard navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:1399"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "134d51096ea0d00a53a499e8f0c87e31fafb0006",
@@ -1767,10 +1800,12 @@
     {
       "upstreamSha": "17f00f60248374aafa2efb9b54ff08ce52e60a0a",
       "subject": "feat(web): add expand/collapse all control to the files surface (#8889)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): add expand/collapse all control to the files surface. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: expand/collapse all changed files and folder navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/DiffPanel.tsx:542"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "17f8e2a8acba76d5516e0a52c85bf802b0e17892",
@@ -1904,10 +1939,11 @@
     {
       "upstreamSha": "18f6d034897d9cc5429dcb88c6a9795d183f1687",
       "subject": "fix(web): encode shifted characters correctly in the terminal (#7485)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): encode shifted characters correctly in the terminal. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable (upstream-only-subsystem:ghostty): consumed modifier encoding is implemented inside Ghostty, while f5 uses xterm.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadTerminalDrawer.tsx:6"]
     },
     {
       "upstreamSha": "18f7254e0adbd7d642f4d78f9b9c8e6cb569af56",
@@ -2021,10 +2057,12 @@
     {
       "upstreamSha": "1a5ff424cee104e1e8bbcf9bbf5414bbad843be3",
       "subject": "fix(web): keep multi-select questions open after the first click (#6646)",
-      "reason": "Phase 3c (composer behavior): fix(web): keep multi-select questions open after the first click. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: multi-select toggles an answer without submitting or dismissing the question.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx:68"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "1a6599437b6ad77330923819613cc28be3b33945",
@@ -2051,10 +2089,12 @@
     {
       "upstreamSha": "1aa44a071f66bdfd9430356ab824b5a6985fb459",
       "subject": "feat(web): add a file tree to the diff panel and pull request code tab (#9330)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): add a file tree to the diff panel and pull request code tab. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: shared folder/path navigation for diff and PR views, with bounded persistent collapsed-folder preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChangedFileTree.tsx:52"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "1ab2dfb5a7bd2996f79407b5d02cae6132a7626c",
@@ -2075,10 +2115,12 @@
     {
       "upstreamSha": "1add47b322ab1dfb5010bb363613650176b88088",
       "subject": "fix(web): add copying terminal selection with ctrl+c in the web app (#5638)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): add copying terminal selection with ctrl+c in the web app. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Ctrl+C copies an existing terminal selection; Ctrl+Insert and Shift+Insert use clipboard copy/paste without intercepting ordinary terminal interrupts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/terminalClipboard.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "1afe5545b7d0397bbd6515981372072d146002ad",
@@ -2390,10 +2432,12 @@
     {
       "upstreamSha": "20a70420a85aecab0bde1a58921197f423e401cc",
       "subject": "fix(web): keep timestamp date and time in the same locale (#7081)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): keep timestamp date and time in the same locale. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent from Phase 1d: date and time both use the shared system-locale timestamp formatter.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/timestampFormat.ts:26"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "20a8f1de3668e0ff4da236d75258e2184a68d727",
@@ -2484,10 +2528,11 @@
     {
       "upstreamSha": "21a5ccf881abc3aa8b5ea9de4a65edbb6ceadbda",
       "subject": "fix(web): prevent seams in the topbar scroll fade (#10914)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): prevent seams in the topbar scroll fade. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes the upstream topbar fade implementation. f5 retains its own header and timeline styling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ChatHeader.tsx:33"]
     },
     {
       "upstreamSha": "21b6fb528d6b2d3b3e333b2bd4455d6cdf7d7a41",
@@ -2513,10 +2558,12 @@
     {
       "upstreamSha": "21d53ca2eecbf9f1e481454e8084459b422de714",
       "subject": "fix(files): browse ignored files and load folders on demand (#11527)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(files): browse ignored files and load folders on demand. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: lazy one-directory reads, progressive listing and an ignored-files toggle; indexed search stays available. Reads reject escaping paths and symlink segments.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/server/src/workspaceEntries.ts:858"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "21d744039bf76c072c875886ee497e391a0dd430",
@@ -2531,10 +2578,12 @@
     {
       "upstreamSha": "21e80a06364898b8ecffad8aeddcb5634170260b",
       "subject": "fix(web): copy terminal selection instead of a blank clipboard (#7678)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): copy terminal selection instead of a blank clipboard. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Ctrl+C copies an existing terminal selection; Ctrl+Insert and Shift+Insert use clipboard copy/paste without intercepting ordinary terminal interrupts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/terminalClipboard.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "220e573b14cea84b6662a7d69047129047433b63",
@@ -2591,10 +2640,11 @@
     {
       "upstreamSha": "2274444e92275fda2033de6636e3143ac3599ffb",
       "subject": "fix(chat): stop pushing follow-up messages to the top (#7897)",
-      "reason": "Phase 3e: fix(chat): stop pushing follow-up messages to the top. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: upstream follow-up paragraph spacer and pinned-turn layout are not used by f5; its LegendList timeline renders independently measured rows. Paragraph streaming is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:23"]
     },
     {
       "upstreamSha": "2288d416aa3bcb5f2eeb4004228872593296971e",
@@ -2841,10 +2891,15 @@
     {
       "upstreamSha": "26894dda7b6d78c5863ccec6581caf0ec7f4843b",
       "subject": "fix(server): detect file renames in review diffs (#8086)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(server): detect file renames in review diffs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: patch producers explicitly request rename detection, including when user configuration disables it.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1192"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "26af903b9bec7f8da56bb5f545d9980d08d418e1",
@@ -2864,10 +2919,12 @@
     {
       "upstreamSha": "270489b887420db3319898ab4046516e4c457711",
       "subject": "fix(terminal): right-click paste works in the terminal (#5240)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(terminal): right-click paste works in the terminal. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: right-click paste and Linux primary-selection paste through the validated desktop clipboard bridge.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadTerminalDrawer.tsx:94"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "270e021f2a7ed34e3d81d1cdc9f1ca0c0ac85df4",
@@ -2879,10 +2936,12 @@
     {
       "upstreamSha": "272d6d747ef214f50dbd9d0051120de12ffa3591",
       "subject": "feat(markdown): show the GitHub mark for github.com links (#10324)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(markdown): show the GitHub mark for github.com links. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: GitHub links include the GitHub mark without changing their destination.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:1"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "2759ef05bb1cccc55fb2ac747bf8769de8d745e1",
@@ -3266,10 +3325,12 @@
     {
       "upstreamSha": "2c4158f87a1b6a586d0aa5e0338f122cb7887c4f",
       "subject": "fix(web): handle wide ordered-list marker edge cases (#7856)",
-      "reason": "Phase 3e: fix(web): handle wide ordered-list marker edge cases. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: ordered-list gutters scale with both start index and item count to retain multi-digit markers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:91"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "2c54f2ff17b3ae87bdbe4e072e38bd6f3045eb5b",
@@ -3304,10 +3365,12 @@
     {
       "upstreamSha": "2d156a83b96ebf2e4a9c6017251baad357ae6ab1",
       "subject": "feat(shortcuts): copy active thread reference (#8994)",
-      "reason": "Phase 3b (keybindings and undo): feat(shortcuts): copy active thread reference. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "2d2efff28c4fc47745538570fcb7dd07272e3e4b",
@@ -3523,10 +3586,11 @@
     {
       "upstreamSha": "2fa5ef4c7bf3aafabe98392d25be7eb86847ce8f",
       "subject": "fix(web): load file grammar before enabling edits (#9947)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): load file grammar before enabling edits. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: patches upstream Pierre editable-file grammar readiness. f5 edits with a controlled source textarea; Pierre only renders the read-only view.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:562"]
     },
     {
       "upstreamSha": "2fab18e289bdb2b1b767f05a307729d0a0d1c002",
@@ -3945,10 +4009,12 @@
     {
       "upstreamSha": "35da5813315dc4e0c20602ed1918ceccc916b7eb",
       "subject": "fix(web): show scrollbar for wide markdown tables (#8868)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): show scrollbar for wide markdown tables. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: rendered Markdown tables have a horizontally scrollable container.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/index.css:555"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "361b047f5f559abccacc802cd5ab9992b01473ea",
@@ -4008,16 +4074,21 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1089"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1053"]
     },
     {
       "upstreamSha": "36caf200c2b24c12838570966f5c85786a1fc1f8",
       "subject": "feat(web): choose the default diff file state (#11484)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): choose the default diff file state. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: configurable automatic, expanded or collapsed diff files, preserving existing users through the automatic default.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/appSettings.ts:403"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
@@ -4030,10 +4101,12 @@
     {
       "upstreamSha": "36f4314ab768dca3fc20af6ac25e7011b4b0447f",
       "subject": "fix(web): animate command palette when closing (#5169)",
-      "reason": "Phase 3d (palette and search): fix(web): animate command palette when closing. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: command dialog closing uses ending-style opacity/transition classes rather than immediate unmount.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/ui/command.tsx:33"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "371b52d9dad76876f84609a4cd0f80eaa757b69c",
@@ -4123,10 +4196,12 @@
     {
       "upstreamSha": "384de0858d1f59ca2ad7c660544a5290fd9138cb",
       "subject": "fix(web): adapt provider settings to available content width (#12138)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): adapt provider settings to available content width. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: provider settings separate the instance list from expandable per-instance editors, keyed by stable instance IDs and using shared setting controls. f5 retains this layout instead of replacing it with upstream environment-based settings navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/categories/ProvidersSettings.tsx:131"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "385cc0a4c669aeae786ad47bfe3ecbbc352eff24",
@@ -4145,10 +4220,12 @@
     {
       "upstreamSha": "38827789c4de97955315b459cb3b0b8207f692d8",
       "subject": "fix(web): keep sidebar scroll position when pinning threads (#10757)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): keep sidebar scroll position when pinning threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: disable browser scroll anchoring in the sidebar so pinning a row does not jump the scroll position.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ui/sidebar.tsx:776"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "388b43a27cc37ae067087073825633d4fc5de3b7",
@@ -4218,10 +4295,12 @@
     {
       "upstreamSha": "394af73e02238e551db14f44d57f1469dd2942aa",
       "subject": "fix(web): default diff panel to working tree (#12139)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): default diff panel to working tree. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: opening the general Diff panel defaults to working-tree changes; explicit turn/file-change links retain their checkpoint scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatView.tsx:2432"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "394e8470c89927a06575e08c434006b2320f1781",
@@ -4307,10 +4386,11 @@
     {
       "upstreamSha": "3b3465f2a9dbc541a8806e39d2889abb77b93f5d",
       "subject": "fix(web): changing projects no longer creates a draft (#9097)",
-      "reason": "Phase 3c (composer behavior): fix(web): changing projects no longer creates a draft. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream draft-hero project switching and multi-environment draft transfer are absent. f5 explicitly creates project-backed drafts and preserves each draft in its store.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:184"]
     },
     {
       "upstreamSha": "3b54a2a574b061a1ce80d7130e0776f4f5c95e20",
@@ -4377,10 +4457,12 @@
     {
       "upstreamSha": "3b8e7bbbe0c49b00630f0c89e931056df679a650",
       "subject": "feat(web): add shortcuts to the surface dropdown (#7318)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): add shortcuts to the surface dropdown. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "3bb06ad910389fcfc886bd5156f41dc73f307f80",
@@ -4468,10 +4550,12 @@
     {
       "upstreamSha": "3c4c9a125bf6e3dd7207fff23b4bf3d449e4df36",
       "subject": "fix(web): restore composer focus after closing option menus (#11884)",
-      "reason": "Phase 3c (composer behavior): fix(web): restore composer focus after closing option menus. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: composer option popups restore editor focus when closed, while preserving focus moved to another input.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:352"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "3c50a6488503f3ca73e0abe6e50ebdf5cb1a8167",
@@ -4601,10 +4685,12 @@
     {
       "upstreamSha": "3e1333319aacff96856a3c161b8787ff6b0ddd6b",
       "subject": "fix(web): reset markdown widgets when the previewed file changes (#9910)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): reset markdown widgets when the previewed file changes. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:142"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "3e2c1a66f74f0a45768332c360cd3682f61129e1",
@@ -4637,10 +4723,12 @@
     {
       "upstreamSha": "3efdcc5296f1754e0f3bf7fee5fc2ada510e0438",
       "subject": "Preserve diff tree order and collapsed folders (#11931)",
-      "reason": "Phase 3e (timeline, files and diffs): Preserve diff tree order and collapsed folders. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: shared folder/path navigation for diff and PR views, with bounded persistent collapsed-folder preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChangedFileTree.tsx:52"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "3f62e6fa65c2a2a91a367be4ee95da1b50007bde",
@@ -4749,10 +4837,12 @@
     {
       "upstreamSha": "40ab7bf32a81a66b20571ed280dc238c2276dc61",
       "subject": "feat(web): collapse the question prompt from its header (#6773)",
-      "reason": "Phase 3c (composer behavior): feat(web): collapse the question prompt from its header. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: pending question panels collapse from an accessible header button without discarding answers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx:176"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "40c0ab088308fb010a3db488c545f10aa7179ed2",
@@ -4821,10 +4911,11 @@
     {
       "upstreamSha": "421088c27367da227d922ce999c1637416a6d0f4",
       "subject": "fix(search): oversized thread queries no longer crash clients (#6633)",
-      "reason": "Phase 3d (palette and search): fix(search): oversized thread queries no longer crash clients. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable (upstream-only-subsystem:multi-environment-search): fixes an environment-keyed search atom decoder. f5 uses React Query with structured search inputs and server-side token limits.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/server/src/globalSearch.ts:42"]
     },
     {
       "upstreamSha": "428d9f9f67b73688317e362d9f658d06b2a42dfe",
@@ -4859,10 +4950,12 @@
     {
       "upstreamSha": "42bdea1c9c1d4b7c5c2e77cd23cf53fae68a6fd4",
       "subject": "fix(web): stabilize right panel transitions (#9554)",
-      "reason": "Phase 3e: fix(web): stabilize right panel transitions. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: right-panel controls explicitly opt out of the Electron drag region and remain in a persistent panel host with controlled open/close state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/RightPanelTabs.tsx:374"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "430fbd1ffc98378f6a6a41027ddc6004a79b2e7b",
@@ -4888,8 +4981,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:358"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:360"],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "43700b83e73fca3af7b63769876c409b5c6f5a3f",
@@ -4901,10 +4997,12 @@
     {
       "upstreamSha": "438465d6b7dd2e50dd38862a0db1252d2d72ecfc",
       "subject": "feat: add customizable soft-tint project monograms (#11845)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat: add customizable soft-tint project monograms. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: consistent automatic project initials and user-configured tinted monograms in project settings, sidebar and palette; existing emoji/symbol/favicon choices remain.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ProjectIcon.tsx:79"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "438bf466fd7e97bb80f0d1f936b2c857830249b7",
@@ -5028,10 +5126,11 @@
     {
       "upstreamSha": "45e06f48a03354b600782259010ae6222241aff0",
       "subject": "fix: composer hero reads project name to screen readers (#12397)",
-      "reason": "Phase 3c (composer behavior): fix: composer hero reads project name to screen readers. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "45f5a5ffb3257d510f249b14c36a514beff2868a",
@@ -5043,10 +5142,12 @@
     {
       "upstreamSha": "46140c96afe1d8a8b5b4bde1fccb671f8760017a",
       "subject": "fix(web): unify panel resizing and retain final drag width (#11529)",
-      "reason": "Phase 3e: fix(web): unify panel resizing and retain final drag width. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: shared sidebar resize commits the final pending width even before its animation frame runs.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ui/sidebar.tsx:437"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4631000f5a7666c88402ce11a9ebb8cdef7a7dad",
@@ -5079,10 +5180,12 @@
     {
       "upstreamSha": "46e8b1a23ab14fa2c128c6b315955d8eb976d85f",
       "subject": "fix(web): make right panel tabs easier to scroll (#9461)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): make right panel tabs easier to scroll. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: right-panel tab overflow exposes a horizontal scrollbar instead of hiding all scrollbars.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/RightPanelTabs.tsx:361"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4701041eef6339bbda0d9d9b00a929c4e9e18662",
@@ -5163,10 +5266,12 @@
     {
       "upstreamSha": "47eed9face4186635488fba5f2494eddd13f6491",
       "subject": "fix(server): stop Windows terminal processes when closing (#10771)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(server): stop Windows terminal processes when closing. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Windows terminal close kills descendant processes using the existing shared process-tree implementation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/server/src/terminal/Layers/Manager.ts:1"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "47ef0177dc18d328e91c64a1641cfe1f37298160",
@@ -5222,18 +5327,22 @@
     {
       "upstreamSha": "48cba7d93c8c63508f31cce2544d480ace86f929",
       "subject": "fix(web): restore the Archive action in the default sidebar thread menu (#6526)",
-      "reason": "Phase 3f: fix(web): restore the Archive action in the default sidebar thread menu. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: the default thread context menu exposes archive/unarchive, alongside the new bulk actions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:6"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "48ddb3d469d245363dba723f774ba449e4d950c5",
       "subject": "feat(web): older chat timestamps show the date, not just the time (#6654)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): older chat timestamps show the date, not just the time. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: older message timestamps include a date, using the system locale for both date and time.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/timestampFormat.ts:55"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "48e2c27f2fef10520512fcfc482d022477ed18ab",
@@ -5335,10 +5444,12 @@
     {
       "upstreamSha": "4a2f8b04bbce916be166fec96f33a7e1f0df4a9f",
       "subject": "fix(web): keep thread rename open during IME composition (#6281)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): keep thread rename open during IME composition. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: the shared inline edit handles IME composition before committing on Enter.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/InlineTitleEditor.tsx:52"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4a39cade982926f607b4606d0f8d92a807f4b0bf",
@@ -5462,18 +5573,22 @@
     {
       "upstreamSha": "4c1d99d7f3e722c5e88c0dda6a96f9de8f296115",
       "subject": "fix(web): show filenames when commit dialog paths overflow (#6392)",
-      "reason": "Phase 3e: fix(web): show filenames when commit dialog paths overflow. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: middle truncation preserves identifying suffixes for branches and file paths, including commit-selection rows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/MiddleTruncate.tsx:4"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4c51b4c9b6a85d96a22e0df41d5cfd2d8fc9901d",
       "subject": "feat(web): toggle thread pin from the keyboard",
-      "reason": "Phase 3b (keybindings and undo): feat(web): toggle thread pin from the keyboard. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4c61e3d7ecc4d9957c243677d35dd3313a37c067",
@@ -5519,10 +5634,12 @@
     {
       "upstreamSha": "4cc800c7593db13726171918572afe3502c43ba6",
       "subject": "fix(web): keep command palette above composer menus (#9613)",
-      "reason": "Phase 3d (palette and search): fix(web): keep command palette above composer menus. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: the command dialog portal has a higher stacking level than composer suggestions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/ui/command.tsx:33"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4cc984fedc33184c0a0fb67ea17fb02902ae2224",
@@ -5567,10 +5684,12 @@
     {
       "upstreamSha": "4d16e6bc6f0be52c5d44b8864000c70c7825e4f7",
       "subject": "fix(web): align provider settings with shared settings rows (#10571)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): align provider settings with shared settings rows. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: provider settings separate the instance list from expandable per-instance editors, keyed by stable instance IDs and using shared setting controls. f5 retains this layout instead of replacing it with upstream environment-based settings navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/categories/ProvidersSettings.tsx:131"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4d36142c022e0dc797034933d01e200818b4083d",
@@ -5723,10 +5842,12 @@
     {
       "upstreamSha": "4f782bedaf49b914903eb08501f35c0940845c51",
       "subject": "fix(web): prevent file tree search focus ring clipping (#10175)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): prevent file tree search focus ring clipping. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: the file-browser search field has inset panel padding, outside the scrolling tree viewport.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:503"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "4fb03aff0bcddf3379e9f9277a87e8eae994a2ae",
@@ -5795,10 +5916,12 @@
     {
       "upstreamSha": "502131adff7494d1a1797b4fe518870f7e8431fd",
       "subject": "fix(web): collapse a tool call by clicking its expanded label (#11017)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): collapse a tool call by clicking its expanded label. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: expanded file-change tool labels toggle their details; command transcript headers retain their existing disclosure behavior.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:2668"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "504177797676048bf70f64ce56c21949d0b8a018",
@@ -5834,10 +5957,11 @@
     {
       "upstreamSha": "50a76cee7c56ac22568e549dc855248967bfb9ab",
       "subject": "fix(web): keep scroll-to-end button close to composer (#10543)",
-      "reason": "Phase 3c (composer behavior): fix(web): keep scroll-to-end button close to composer. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream composer banner-stack/glass positioning. f5 has no such stack and positions its scroll-to-bottom control inside its own timeline/composer layout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ChatView.tsx:2416"]
     },
     {
       "upstreamSha": "50bc62a83d2b5f4530b26e59095a74a48047c309",
@@ -5857,10 +5981,12 @@
     {
       "upstreamSha": "50f918c57a2df85bd97612b958386aaca035dcab",
       "subject": "fix(web): allow expanding duplicate tool call commands (#10981)",
-      "reason": "Phase 3e: fix(web): allow expanding duplicate tool call commands. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: expansion is keyed by activity/work-entry identity rather than command text, so repeated identical commands expand independently.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:196"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "50ff4c371eab927a9650c114975241999f4cd7b1",
@@ -5993,10 +6119,12 @@
     {
       "upstreamSha": "535c83dea5025e49df12df4a14b4d1dfb7d373ce",
       "subject": "fix(web): copying a code block no longer copies triple backticks (#8448)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): copying a code block no longer copies triple backticks. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: code copy uses the plain code string and native partial selection; it does not add Markdown fences. This phase also reuses the clipboard fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:151"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "53612cc040ad828566f958a275e3d3bad01c5033",
@@ -6063,10 +6191,15 @@
     {
       "upstreamSha": "549201fcfd3baa6cf92f09e5d868c536c80d2d55",
       "subject": "fix(clients): default GitHub clones to HTTPS (#7760)",
-      "reason": "Phase 3f: fix(clients): default GitHub clones to HTTPS. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: server-owned background cloning with bounded concurrency, idempotent admission, progress, cancellation and restart reporting. Repository shorthand defaults to HTTPS; destination is the selected parent plus repository folder.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "549d182aaadbf0e1e195d1a8cdc1805200e6751e",
@@ -6195,8 +6328,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1842"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1806"]
     },
     {
       "upstreamSha": "57100fba854fb1214ae7a413111efae14443d445",
@@ -6266,10 +6402,12 @@
     {
       "upstreamSha": "5781b5240bd5d2e21c651f6b228975ac40cbd67b",
       "subject": "feat(web): undo settle, snooze and archive, with a mod+z shortcut (#12848)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): undo settle, snooze and archive, with a mod+z shortcut. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: bounded per-window undo for archive, snooze and unpin; eight-second actionable toasts and editable-focus-safe mod+z. Upstream settlement is not used by f5.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/threadUndo.ts:15"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "5781e2be2b7d079faaf677cc1b39679e9850d833",
@@ -6281,10 +6419,12 @@
     {
       "upstreamSha": "57832803eed4c87c462de92892777a0934019721",
       "subject": "fix(desktop): restore panel titlebar interactions (#9591)",
-      "reason": "Phase 3e: fix(desktop): restore panel titlebar interactions. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: right-panel controls explicitly opt out of the Electron drag region and remain in a persistent panel host with controlled open/close state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/RightPanelTabs.tsx:374"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "579266caa89238611ddb974ffebe9968c6a6e5d5",
@@ -6629,10 +6769,12 @@
     {
       "upstreamSha": "5bf43c9f3d09faae49fbc99714456d18e3172ff2",
       "subject": "fix(web): align monogram project icons in menus (#11806)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): align monogram project icons in menus. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: consistent automatic project initials and user-configured tinted monograms in project settings, sidebar and palette; existing emoji/symbol/favicon choices remain.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ProjectIcon.tsx:79"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "5c5fa5ffb6ab45cadb6f0d873af0242f4f6d2c1c",
@@ -6715,18 +6857,20 @@
     {
       "upstreamSha": "5d7665396083d285132d67038813862a93337ca5",
       "subject": "fix(web): thread jump hints no longer stick after a dictation paste (#8189)",
-      "reason": "Phase 3b: fix(web): thread jump hints no longer stick after a dictation paste. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream held-modifier thread-jump hint overlays. f5 uses its own thread cycle picker and has no such hint overlay.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ThreadCyclePicker.tsx:128"]
     },
     {
       "upstreamSha": "5d9e27a596884d30499c7401296916fd729c817f",
       "subject": "fix(web): render citations in queued messages (#12403)",
-      "reason": "Phase 3e: fix(web): render citations in queued messages. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable: upstream server citation tokens are not part of f5 queue messages. Quote reply is separately planned without server-side citations.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/NextTurnQueuePanel.tsx:57"]
     },
     {
       "upstreamSha": "5da45337f7178db711624c3e7c4d69059b2b286a",
@@ -6738,10 +6882,12 @@
     {
       "upstreamSha": "5e147371527154be385f28e57339a71521e528c6",
       "subject": "fix(web): scale command details with code font (#6510)",
-      "reason": "Phase 3e: fix(web): scale command details with code font. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: command transcripts follow the configured chat font size.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/CommandTranscriptCard.tsx:138"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "5e1c23d769b182018f5bd6d3623a7edec13d26bc",
@@ -6753,18 +6899,21 @@
     {
       "upstreamSha": "5e63aea2df03e8ccc5c8a56cee4c067ecbd3d703",
       "subject": "fix(web): clean up provider settings list and editor (#8504)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): clean up provider settings list and editor. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: provider settings separate the instance list from expandable per-instance editors, keyed by stable instance IDs and using shared setting controls. f5 retains this layout instead of replacing it with upstream environment-based settings navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/categories/ProvidersSettings.tsx:131"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "5e6cc2b89534a8e01772bf647b79a1f2da2f9664",
       "subject": "fix(web): restore text-only draft project title (#10821)",
-      "reason": "Phase 3c (composer behavior): fix(web): restore text-only draft project title. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "5e828bf3de1c86d85afdd91a02cc4ca1a38d4aef",
@@ -6850,10 +6999,12 @@
     {
       "upstreamSha": "5f84efa1ec2fb3cd6f6c54545cc34bb77ac1ddb8",
       "subject": "feat(web): add PageUp/PageDown chat navigation (#9315)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): add PageUp/PageDown chat navigation. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: PageUp/PageDown conversation navigation yields to focused composer and nested scrollable panes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/chat/timelineScrollTarget.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "5f878d2a85807618a4c8571cdef5daa3124672d6",
@@ -7051,10 +7202,11 @@
     {
       "upstreamSha": "6270a6f88bea4c2fe07a43e69693a918cf94a353",
       "subject": "fix(web): retain wrapped row heights during edits (#10018)",
-      "reason": "Phase 3e: fix(web): retain wrapped row heights during edits. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: fixes upstream Pierre editable-file virtualization. f5 uses a controlled textarea for edits, with Pierre restricted to read-only rendering.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:562"]
     },
     {
       "upstreamSha": "62bb97428a1bd007f4a83cdb1fcb8bbde2cdeef3",
@@ -7226,10 +7378,11 @@
     {
       "upstreamSha": "643daa51616d0bfcd4c8235ae6966a68f106dcfe",
       "subject": "fix(web): prevent expanded tool calls from hiding thread content (#8052)",
-      "reason": "Phase 3e: fix(web): prevent expanded tool calls from hiding thread content. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: upstream follow-up paragraph spacer and pinned-turn layout are not used by f5; its LegendList timeline renders independently measured rows. Paragraph streaming is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:23"]
     },
     {
       "upstreamSha": "645d58547d282eb2aaf6c48e5907625fc112386a",
@@ -7308,10 +7461,11 @@
     {
       "upstreamSha": "660cddd3bc9801e089afcabba11c62f41aeac5c3",
       "subject": "fix(web): four composer spacing defects (#8090)",
-      "reason": "Phase 3c (composer behavior): fix(web): four composer spacing defects. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "6615d3d70ba399c4b274d17f19487d94afac17ed",
@@ -7330,10 +7484,12 @@
     {
       "upstreamSha": "664499c92e838f36a0ff8187bc2cd95d7b8ef9d5",
       "subject": "Limit physical key fallback to non-Latin layout output (#4469)",
-      "reason": "Phase 3b: Limit physical key fallback to non-Latin layout output. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: shortcut matching uses the logical key and has no broad physical-key fallback that could hijack Latin-layout input.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/keybindings.ts:46"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6676f9c83b6a6dd1e2076eaa68dff48845ad955b",
@@ -7366,10 +7522,12 @@
     {
       "upstreamSha": "67285e4b8719000eecb9de2a424609ca5c6f0274",
       "subject": "fix(web): route keyboard submit through the primary worktree action (#12526)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): route keyboard submit through the primary worktree action. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: keyboard submission invokes the same onSend path as the primary button, retaining worktree/bootstrap validation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ChatView.tsx:4192"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "675869d2b0f9e059d5950b80390c0cad1cb1590e",
@@ -7450,10 +7608,12 @@
     {
       "upstreamSha": "68607c5a99147710b92228e0642f6c0a642e32a6",
       "subject": "fix(web): preserve nested scroll behavior in chat timeline (#13167)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): preserve nested scroll behavior in chat timeline. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: PageUp/PageDown conversation navigation yields to focused composer and nested scrollable panes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/timelineScrollTarget.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6866fd6b5ccff82333ad4386ce68cdec03531b68",
@@ -7473,10 +7633,11 @@
     {
       "upstreamSha": "68966c1e6603d6f5d52a4ee227e2b0ee03b7109f",
       "subject": "fix(web): add space above composer task tabs (#7740)",
-      "reason": "Phase 3c (composer behavior): fix(web): add space above composer task tabs. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "68aa7aa8305e9dfc0d98543f607d88bd37fb66e2",
@@ -7647,10 +7808,12 @@
     {
       "upstreamSha": "6b0a04ade021588dd9f1afbfa0e75cccdb7b2da4",
       "subject": "fix(web): offer undo after unpinning a thread (#10744)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): offer undo after unpinning a thread. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: bounded per-window undo for archive, snooze and unpin; eight-second actionable toasts and editable-focus-safe mod+z. Upstream settlement is not used by f5.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/threadUndo.ts:15"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6b73b3defe1dfb365de3b7bbb97ca56a26b50a43",
@@ -7663,10 +7826,12 @@
     {
       "upstreamSha": "6b87ce3a0bd925edcbb26fbc6870a6ca81dead0b",
       "subject": "fix(web): reveal reselected diff files (#9951)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): reveal reselected diff files. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: selecting a changed-file tree row always invokes reveal, even when the same path was selected previously.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/DiffPanel.tsx:707"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6b9a5987f686d0d904abe6f51b4be3bf873907e9",
@@ -7730,10 +7895,12 @@
     {
       "upstreamSha": "6cdbf76fa4b0509913046abe6105037ded9e52bb",
       "subject": "feat(web): expose each chat message as a heading for screen readers (#11199)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): expose each chat message as a heading for screen readers. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: screen-reader headings identify each timeline message.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:1510"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6cf0c6ea55d281f65c80502ec1871b0adf472025",
@@ -7753,18 +7920,22 @@
     {
       "upstreamSha": "6d1d549441be84f19696ab59ed7e2fbf305280d4",
       "subject": "fix(diff): collapse files by default (#12190)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(diff): collapse files by default. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: configurable automatic, expanded or collapsed diff files, preserving existing users through the automatic default.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/appSettings.ts:403"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6d3bf01b4f021eb3fbd2feaf07fcacaa4f55881d",
       "subject": "fix(web): show the full path in file link tooltips (#7741)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): show the full path in file link tooltips. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: file-link parsing retains original path case, handles Windows paths and exposes full path titles while resolving links against the active workspace.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/markdown-links.ts:74"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6d5c6c4a671c7b6fc9723c63c1003916fb3b8ab0",
@@ -7844,10 +8015,11 @@
     {
       "upstreamSha": "6e324b9bbfc72e694c3c16abeb59716c37fc02d5",
       "subject": "fix(web): reduce title bar scroll fade height (#8799)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): reduce title bar scroll fade height. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes the upstream topbar fade implementation. f5 retains its own header and timeline styling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ChatHeader.tsx:33"]
     },
     {
       "upstreamSha": "6e3b73884bf40eeb2859cb16f1200c8e2f9cf7c3",
@@ -7939,10 +8111,12 @@
     {
       "upstreamSha": "6f00d3881a197dd33c2cb43c6a11a9e759e56089",
       "subject": "fix(web): remember panel width for each thread (#11310)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): remember panel width for each thread. Reimplement in f5; not yet delivered. Per-thread panel widths were explicitly added by the user during this classification review.",
+      "reason": "Phase 3: right-panel widths persist per thread in bounded web-local settings, with the legacy global width as fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/routes/_chat.$threadId.tsx:190"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "6f04a5cffb8fcad95f709af69eb2da2605c4d472",
@@ -8019,10 +8193,12 @@
     {
       "upstreamSha": "6ff537f03c4df500da7283c0566fe6f8feca709b",
       "subject": "fix(web): remove projects with archived threads (#8798)",
-      "reason": "Phase 3f: fix(web): remove projects with archived threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: project removal includes all project threads, including archived threads, and refuses to delete the project after a failed thread deletion.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:1567"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "702a6ade3c69bf1c9ce06ad0451dbd8e0ecc7be9",
@@ -8052,10 +8228,12 @@
     {
       "upstreamSha": "7083bce26aa89fedfc482ad44cf61c5508a58db7",
       "subject": "Keep block code plain when copying from rendered markdown (#4468)",
-      "reason": "Phase 3e (timeline, files and diffs): Keep block code plain when copying from rendered markdown. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: code copy uses the plain code string and native partial selection; it does not add Markdown fences. This phase also reuses the clipboard fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:151"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "70c423a5e48ab34d8b1a033e798ab378b48dde5d",
@@ -8067,10 +8245,12 @@
     {
       "upstreamSha": "70cd258d8aac43ea57494527b00bf36de3efa6c0",
       "subject": "fix(web): prevent two-digit list markers from being clipped (#9101)",
-      "reason": "Phase 3e: fix(web): prevent two-digit list markers from being clipped. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: ordered-list gutters scale with both start index and item count to retain multi-digit markers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:91"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "70de6e17860d7343a73e117e6e9e1ce41b1b633e",
@@ -8119,10 +8299,12 @@
     {
       "upstreamSha": "712f8cad32bf8961c3c4b53497dd65c32672d59d",
       "subject": "feat(web): command palette search matches thread IDs (#11185)",
-      "reason": "Phase 3d (palette and search): feat(web): command palette search matches thread IDs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: palette search matches thread IDs and ranks exact/title matches before context matches, using recent activity within title matches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/CommandPalette.logic.ts:215"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "716069f40f000887cb01685099a16e19d9194307",
@@ -8165,10 +8347,12 @@
     {
       "upstreamSha": "71d12d8c4a05bc50344d6e3fac1b967c6daaff84",
       "subject": "feat(web): make keybindings searchable from settings search (#12175)",
-      "reason": "Phase 3d (palette and search): feat(web): make keybindings searchable from settings search. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: palette actions for Pull Requests, Usage, keybindings, appearance cycling and theme selection with swatches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/CommandPalette.tsx:919"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "720e126b761ba0da112d8c68b589d20ab98a7eb0",
@@ -8439,10 +8623,12 @@
     {
       "upstreamSha": "761d4bac1c238ea7af4dd36b56719ad5e30771c3",
       "subject": "fix(web): preserve original mention text in the composer (#10100)",
-      "reason": "Phase 3c (composer behavior): fix(web): preserve original mention text in the composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: mention nodes retain their exact original source through editor serialization and rich/plain mode changes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ComposerPromptEditor.tsx:143"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "764946502390845919d974490bc85e87b788c996",
@@ -8750,10 +8936,11 @@
     {
       "upstreamSha": "7afa184a99b266d466cc9517c147a75c3d839ad7",
       "subject": "fix(web): keep send reachable while a turn is running on mobile (#4781)",
-      "reason": "Phase 3c: fix(web): keep send reachable while a turn is running on mobile. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable (mobile): mobile-specific shortcut and primary-action layout is excluded from the approved port scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:27"]
     },
     {
       "upstreamSha": "7b2cf4374f5d92cc01eff482ad1af92ab7a87f41",
@@ -8793,10 +8980,11 @@
     {
       "upstreamSha": "7c2702d68ae2e10fa9d3a08c996ed47c393dcffd",
       "subject": "fix(web): read panel animation settings in the composer (#13098)",
-      "reason": "Phase 3c (composer behavior): fix(web): read panel animation settings in the composer. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "7c55e86320aac9c68ae53a7bc15682b7e14f98bf",
@@ -8805,7 +8993,7 @@
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/ChatView.tsx:4283"],
+      "evidence": ["apps/web/src/components/ChatView.tsx:4290"],
       "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
@@ -8864,10 +9052,12 @@
     {
       "upstreamSha": "7d5dc66c151a9ca7bfef45cffc9d3516842c5566",
       "subject": "fix(web): mute composer helper text (#9654)",
-      "reason": "Phase 3c (composer behavior): fix(web): mute composer helper text. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: composer placeholder/helper text uses muted foreground styling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ComposerPromptEditor.tsx:1209"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "7d620506a1fecf07aa2d623e72059d551709ae3a",
@@ -8886,10 +9076,12 @@
     {
       "upstreamSha": "7d9aaf6a7eb22d5e85b0e3b21686cc437fe68576",
       "subject": "feat(web): add pull request merge defaults (#8088)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): add pull request merge defaults. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: merge choice resolves current selection, global default, per-repository last-used method, then squash, constrained to repository-supported methods.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/prHub/mergeMethod.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "7dda0b1c0a95603f1954b81a9fee699be92668f0",
@@ -8990,10 +9182,12 @@
     {
       "upstreamSha": "7f8cf30ca479474f8c6e0a85f6e0a1169bcca365",
       "subject": "fix(web): make sidebar project actions reachable by keyboard and screen reader (#5521)",
-      "reason": "Phase 3f: fix(web): make sidebar project actions reachable by keyboard and screen reader. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: project headers open their context menu with Shift+F10 or the ContextMenu key, without intercepting rename inputs.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:2396"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "7fbc545ae8c7866ac2b39648120cb2a17250d8b4",
@@ -9191,10 +9385,12 @@
     {
       "upstreamSha": "82451eeb7277b0b7fb5a7cb53156c83f948f32c1",
       "subject": "fix(web): show the same project icon in the command palette as everywhere else (#10712)",
-      "reason": "Phase 3d (palette and search): fix(web): show the same project icon in the command palette as everywhere else. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: consistent automatic project initials and user-configured tinted monograms in project settings, sidebar and palette; existing emoji/symbol/favicon choices remain.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/ProjectIcon.tsx:79"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "82689782eee0f0cf27d5601e1d533381587b64f8",
@@ -9221,10 +9417,12 @@
     {
       "upstreamSha": "829af7b73a960d390a0b32becd37ad6483627aa4",
       "subject": "feat(web): navigate back and forward with mod+[ and mod+] (#13212)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): navigate back and forward with mod+[ and mod+]. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "829c3db94830fc70b5754513b8a370f7301ca213",
@@ -9305,10 +9503,12 @@
     {
       "upstreamSha": "837f6b871a88db0986c98a5a5ebc6bd80b4f2546",
       "subject": "feat(web): double-click chat header title to rename thread (#7817)",
-      "reason": "Phase 3f: feat(web): double-click chat header title to rename thread. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: double-clicking the chat header title starts the existing rename flow.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/chat/ChatHeader.tsx:141"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "83a2897ed6c400b3679a37920e964d829094bd43",
@@ -9327,10 +9527,12 @@
     {
       "upstreamSha": "83b865fec704b177804aa6b9b695aefea4ccd04a",
       "subject": "fix(web): copy terminal selection with Ctrl+Insert (#8541)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): copy terminal selection with Ctrl+Insert. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Ctrl+C copies an existing terminal selection; Ctrl+Insert and Shift+Insert use clipboard copy/paste without intercepting ordinary terminal interrupts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/terminalClipboard.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "83bbfa7e87e16a3c21413fe55524c1d05ce88dab",
@@ -9494,9 +9696,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:878"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:842"]
     },
     {
       "upstreamSha": "860caaa6023a3aaf616a5899816c74c195ca8de2",
@@ -9565,9 +9768,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1140"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1104"]
     },
     {
       "upstreamSha": "871192933fe0a501fd92a1ed3a5d317ba1eea9d3",
@@ -9603,10 +9807,12 @@
     {
       "upstreamSha": "883e1a3cd9d70f6906a8eb1458a7a05d1d9e0d55",
       "subject": "fix(web): make terminal links appear clickable only when clickable (#7488)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): make terminal links appear clickable only when clickable. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: terminal link matching recognizes HTTP schemes regardless of case; activation reuses the matched URL kind. f5 uses xterm, so Ghostty decoration handling is not applicable.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/terminal-links.ts:18"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "886195ec1e6335d46d34fb3819ab4f3440b42b6d",
@@ -9618,10 +9824,12 @@
     {
       "upstreamSha": "886c83450797c46ee84ae28fc16c2208cafa965e",
       "subject": "fix(web): folder links from chat open the file tree instead of a broken preview (#10909)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): folder links from chat open the file tree instead of a broken preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: chat folder references open and reveal the file-tree location instead of attempting a file preview, including spaced paths.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/rightPanelStore.ts:37"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "887dd6e455bb969c1a0c9659a6bdf2baceac030d",
@@ -9677,10 +9885,11 @@
     {
       "upstreamSha": "892b86da124b6f672622e3002faaa93e6a5bed00",
       "subject": "fix(web): align composer task rows (#12165)",
-      "reason": "Phase 3c (composer behavior): fix(web): align composer task rows. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "892de47f0625183edd111dd36df45b156185bbf2",
@@ -9699,10 +9908,12 @@
     {
       "upstreamSha": "896fe82f2f191eb8ac0fd620e19c25dd48253592",
       "subject": "fix(web): preserve focus and prioritize picker shortcuts (#9795)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): preserve focus and prioritize picker shortcuts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: provider-navigation shortcuts run inside the open picker and retain search focus. Global navigation respects terminal/dialog/editable focus.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:298"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "8984f8103d0836c0b340fe70cd053428d622a8c3",
@@ -9940,10 +10151,11 @@
     {
       "upstreamSha": "8d3c56b487810455f7b695d1b849b4370b132d03",
       "subject": "fix(web): hide sidebar search shortcut on mobile (#9932)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): hide sidebar search shortcut on mobile. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable (mobile): mobile-specific shortcut and primary-action layout is excluded from the approved port scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:27"]
     },
     {
       "upstreamSha": "8d48a3134f4d789f54128ccbb65919812ffc7921",
@@ -9963,10 +10175,15 @@
     {
       "upstreamSha": "8d7c700c1788c4f42932cd3be541b3c630bd664d",
       "subject": "feat(web): clone repositories in the background instead of holding the palette open (#11762)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): clone repositories in the background instead of holding the palette open. Reimplement in f5; not yet delivered. Background repository cloning was explicitly added by the user during this classification review.",
+      "reason": "Phase 3: server-owned background cloning with bounded concurrency, idempotent admission, progress, cancellation and restart reporting. Repository shorthand defaults to HTTPS; destination is the selected parent plus repository folder.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "8d7f78121660eb8599d4c5ff40cb4394159abfab",
@@ -9978,10 +10195,12 @@
     {
       "upstreamSha": "8d8189e67dc091ffb91df451c9a957bbd68a5364",
       "subject": "feat(web): zoom and pan expanded images (#10869)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): zoom and pan expanded images. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: image zoom, pan and fit controls; transparent images display on white.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ZoomableImage.tsx:6"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "8db3c250f41e8f1d0b36da6b5a5093821e72d4f3",
@@ -10166,10 +10385,12 @@
     {
       "upstreamSha": "8faf031c2dac4f147c43fe32e326b76678c20c94",
       "subject": "fix(web): respect case in POSIX file links (#9309)",
-      "reason": "Phase 3e: fix(web): respect case in POSIX file links. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: file-link parsing retains original path case, handles Windows paths and exposes full path titles while resolving links against the active workspace.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/markdown-links.ts:74"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "8fc253605e6d203c3654dbb1ce22fa1fd6fa0767",
@@ -10213,10 +10434,12 @@
     {
       "upstreamSha": "9051ed9c3923b7b5fb88d99fe9267380d69baa51",
       "subject": "feat(web): open diff files from a right-click context menu (#11842)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): open diff files from a right-click context menu. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: diff headers and tree files share editor/copy context-menu actions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/DiffPanel.tsx:321"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "9072aa1fd711170af425bf6a1a2828d0d54bbfa6",
@@ -10264,10 +10487,12 @@
     {
       "upstreamSha": "9130d932f4ddb8abab595b7d12553b46a11c7b22",
       "subject": "feat(web): add composer and PR number shortcuts (#11615)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): add composer and PR number shortcuts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "9146ed2f49a094aa8afee7d3a66987e2a82aaaf6",
@@ -10449,10 +10674,11 @@
     {
       "upstreamSha": "93c3ab4ffe408a3e06228a33efc8a0745da91178",
       "subject": "fix(web): snooze menu no longer overlaps thread details (#9601)",
-      "reason": "Phase 3f: fix(web): snooze menu no longer overlaps thread details. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable: upstream snooze/detail overlap belongs to its thread details overlay; f5 presents snooze via its context menu. The calendar is explicitly excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:2"]
     },
     {
       "upstreamSha": "93d4dfa2064dc4a598a3e66543c3b90ffb138609",
@@ -10471,10 +10697,12 @@
     {
       "upstreamSha": "9409dd20a9fbce491d49d09c79b289d8fb8bfe3e",
       "subject": "fix(web): make the diff layout toggle a persisted setting (#9326)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): make the diff layout toggle a persisted setting. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: stacked/split diff render mode already persists through the authoritative app settings schema.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/appSettings.ts:411"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "940e8233c227a186044078e99e45e1933eb525e4",
@@ -10536,10 +10764,12 @@
     {
       "upstreamSha": "94cc8152fff5fd06baafd25964f54d7ec1a34f8d",
       "subject": "fix(chat): show hours for long runs (#9894)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(chat): show hours for long runs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: elapsed durations include hours instead of unbounded minutes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/session-logic.ts:190"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "94d1fa7ff268e88476a341eb73f9f032e2af6a21",
@@ -10693,10 +10923,12 @@
     {
       "upstreamSha": "9686cd9afe20d13fcb850199f9b9849a8276737a",
       "subject": "feat(web): choose themes from chat with color previews (#12143)",
-      "reason": "Phase 3d (palette and search): feat(web): choose themes from chat with color previews. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: palette actions for Pull Requests, Usage, keybindings, appearance cycling and theme selection with swatches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/CommandPalette.tsx:919"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "96906805f1677a3b064ebd2c40902cbb48337a23",
@@ -10843,9 +11075,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1218"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1182"]
     },
     {
       "upstreamSha": "994654198d5820b6fab9ee09063646a8b6fd8e22",
@@ -10917,10 +11150,12 @@
     {
       "upstreamSha": "9a609a4e444ba739d6fcd607769d68b679b0bcc5",
       "subject": "fix(web): show thread undo notice in the sidebar (#12972)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): show thread undo notice in the sidebar. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: bounded per-window undo for archive, snooze and unpin; eight-second actionable toasts and editable-focus-safe mod+z. Upstream settlement is not used by f5.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/threadUndo.ts:15"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "9a6b57be2ae601e6969669a8ad276f974b2a5978",
@@ -11232,10 +11467,12 @@
     {
       "upstreamSha": "9ea9c3d5d2c444133e3ddff40eecf38737951589",
       "subject": "fix(web): keep a file-to-symlink type change from crashing the diff view (#11075)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): keep a file-to-symlink type change from crashing the diff view. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: malformed/non-renderable patches fall back to raw content instead of crashing the diff surface, including type changes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/lib/diffPatch.ts:82"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "9eb4d71681dc7d002082db2f8b4bacf7614412f4",
@@ -11284,10 +11521,12 @@
     {
       "upstreamSha": "9f26656cb958853f90f7215387d604c098937db8",
       "subject": "fix(web): open diff files from nested projects (#6174)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): open diff files from nested projects. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent from Phase 1b: checkpoint patches for nested projects are relative to the active project cwd.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/server/src/checkpointing/Layers/CheckpointStore.ts:455"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "9f40b2f563c662b43887b11ff99c466fe871c1af",
@@ -11373,18 +11612,22 @@
     {
       "upstreamSha": "a07715c09e2f2b82555ca4221904fd806c770f8e",
       "subject": "fix(web): preserve multiline composer drafts during timeline scrolling (#10444)",
-      "reason": "Phase 3c (composer behavior): fix(web): preserve multiline composer drafts during timeline scrolling. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: timeline scrolling does not collapse or rewrite composer text; draft text and selection remain in the separate composer store/editor. Scroll-collapse redesign remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerDraft.ts:7"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "a09f92171186677796ccdc28148406c7491601ce",
       "subject": "fix(web): make Windows file links clickable in chat (#8081)",
-      "reason": "Phase 3e: fix(web): make Windows file links clickable in chat. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: file-link parsing retains original path case, handles Windows paths and exposes full path titles while resolving links against the active workspace.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/markdown-links.ts:74"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "a0eb23993a3bacf96d618918f43ea18f2da72390",
@@ -11461,10 +11704,11 @@
     {
       "upstreamSha": "a1a2bb1cd9f000f53fbeae752ed5c38f152eadf2",
       "subject": "fix(web): label keybinding condition removal actions (#8664)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): label keybinding condition removal actions. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream has per-condition removal chips. f5 edits the condition expression in a labeled field and labels whole-binding removal with its command name.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/settings/KeybindingEditor.tsx:477"]
     },
     {
       "upstreamSha": "a20923ce463335e89e92f5983d98a180536e8e7d",
@@ -11612,10 +11856,12 @@
     {
       "upstreamSha": "a4bc7deb992cc3d48dd4a40ee1f84254f190f318",
       "subject": "fix(web): dismiss composer suggestions with Escape (#12836)",
-      "reason": "Phase 3c (composer behavior): fix(web): dismiss composer suggestions with Escape. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Escape dismisses composer suggestions until the trigger text changes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ChatView.tsx:2281"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2",
@@ -11700,10 +11946,15 @@
     {
       "upstreamSha": "a6ac27e7fd965f26ee0c61946e056f0fd889818c",
       "subject": "feat(web): accept file drops across the chat workspace (#6636)",
-      "reason": "Phase 3c (composer behavior): feat(web): accept file drops across the chat workspace. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: workspace-wide file drop handling reuses the composer import path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ChatView.tsx:5786"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "a6c9b41f902fba2a4137806c09e829935e91baac",
@@ -11730,10 +11981,12 @@
     {
       "upstreamSha": "a76b898b3aa4fd4081104b06a3b2c942bd4fecb7",
       "subject": "feat(web): link pull request authors to profiles (#9627)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): link pull request authors to profiles. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: PR authors link to the profile on the pull request host across details, timeline and review threads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/prHub/PrAuthorLink.tsx:14"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "a78f245dffc3123af36fb66cd2c95aac1a48ffd9",
@@ -11770,8 +12023,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1603"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1567"]
     },
     {
       "upstreamSha": "a850895f6833b99d90fc6c50192b5eaa4966d5c7",
@@ -11917,10 +12173,12 @@
     {
       "upstreamSha": "aae361c4ef6478e4dcf970d574f3fd38d908e6b9",
       "subject": "fix(review): show complete counts and load large diffs progressively (#10822)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(review): show complete counts and load large diffs progressively. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: PR file views show complete server totals, loaded counts and provider-cap notices while retaining paginated loading and virtualized patch rendering.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/prHub/PrFilesTab.tsx:83"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "ab0933a41ae3a69632ea68809700a040bde26c22",
@@ -11996,10 +12254,11 @@
     {
       "upstreamSha": "ac3b2adf96e755580fc09e149b7c7eb057d0b282",
       "subject": "fix(web): show the configured stash shortcut (#8437)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): show the configured stash shortcut. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes a hard-coded shortcut in upstream ComposerStashBadge. f5 has no such badge and routes stash through the resolved keybinding configuration.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ChatView.tsx:3710"]
     },
     {
       "upstreamSha": "ac4780f451f98c10d5b518f2bfa3d035b46645df",
@@ -12177,10 +12436,11 @@
     {
       "upstreamSha": "af2baccd100604f9885d6af97a5fa99622dd1c4f",
       "subject": "fix(web): keep subagent rows visible under folded turns (#11474)",
-      "reason": "Phase 3e: fix(web): keep subagent rows visible under folded turns. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: f5 does not fold entire settled turns into the upstream settlement drawer; agent activities remain independent timeline rows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:859"]
     },
     {
       "upstreamSha": "af6c138a0de297f94ddef3133e2f47d017b46e94",
@@ -12239,10 +12499,12 @@
     {
       "upstreamSha": "b01771c2383bbcdf154b8c4e9f1a7d5e3867e2d0",
       "subject": "fix(web): keep file autosaves active after effect replay (#9878)",
-      "reason": "Phase 3e: fix(web): keep file autosaves active after effect replay. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: autosave lifecycle re-enables mounted state on effect setup and cancels debounce on cleanup; stale save responses are additionally guarded by this phase.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:147"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b0a0281269156295e2202d31198829bd3b500bdf",
@@ -12282,10 +12544,12 @@
     {
       "upstreamSha": "b0de3857775b7d1407372cde031326e15a9d4119",
       "subject": "fix(web): support Shift+Insert terminal paste (#5982)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): support Shift+Insert terminal paste. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: Ctrl+C copies an existing terminal selection; Ctrl+Insert and Shift+Insert use clipboard copy/paste without intercepting ordinary terminal interrupts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/terminalClipboard.ts:2"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b123cbb317ca47ff080a15b44c4bc0c99126f729",
@@ -12369,10 +12633,12 @@
     {
       "upstreamSha": "b21c5456548f17190e7f3688f9883b98cbf5221d",
       "subject": "fix(web): sort title matches by recent activity (#13219)",
-      "reason": "Phase 3d (palette and search): fix(web): sort title matches by recent activity. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: palette search matches thread IDs and ranks exact/title matches before context matches, using recent activity within title matches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/CommandPalette.logic.ts:215"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b21d87243ea637fbb6fb50667e9a8547e1b6c4e8",
@@ -12480,10 +12746,11 @@
     {
       "upstreamSha": "b381fdb12cb7cb241e2b8aca84941375f3fb43f4",
       "subject": "fix(web): launcher shortcuts no longer hijack the empty composer (#7794)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): launcher shortcuts no longer hijack the empty composer. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream empty-draft launcher intercepts unmodified letters. f5 exposes explicit commands and does not use those launcher shortcuts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ChatView.tsx:3601"]
     },
     {
       "upstreamSha": "b3b4b57794476c2e130d38f9243f3c5da1a0cbe7",
@@ -12612,10 +12879,12 @@
     {
       "upstreamSha": "b57726ca842624b713572529109ac49b17c93fb3",
       "subject": "feat(web): add copy path button to diff headers (#2403)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): add copy path button to diff headers. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: copy-path buttons in chat diff and PR file headers, isolated from file-toggle/editor clicks.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/CopyPathButton.tsx:5"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b59b7d0af9536a2d61ddfcf8d33420b890b2faca",
@@ -12789,10 +13058,12 @@
     {
       "upstreamSha": "b7b3ef1e6fcb5c22a9790d2578fe8af7ce396835",
       "subject": "fix(ui): use available space for composer model names (#11002)",
-      "reason": "Phase 3c (composer behavior): fix(ui): use available space for composer model names. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: model triggers shrink with available width, truncate labels and expose responsive compact controls. The mobile toolbar portion is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:338"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b7c002f918b94b8ce13c44bddcd29b8443e4af41",
@@ -12859,10 +13130,12 @@
     {
       "upstreamSha": "b900fc94ebe630155783c07324c58af7e6387a03",
       "subject": "feat(web): reveal timestamps on tool rows and turn folds (#8641)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): reveal timestamps on tool rows and turn folds. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: tool rows reveal locale-formatted timestamps on hover/focus without displacing disclosure controls.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:3379"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "b906ce2d73d025e801877f42a35b7a2f5629806f",
@@ -13036,10 +13309,12 @@
     {
       "upstreamSha": "bb5e824c9fcbd76c93ef15b304f89f8b6999f32c",
       "subject": "feat: add blue and orange diff color palette (#10671)",
-      "reason": "Phase 3e (timeline, files and diffs): feat: add blue and orange diff color palette. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: selectable red/green or blue/orange diff colors, shared by rendered patches and counts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/index.css:676"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "bba79cc254b65969bde6b6bfc3032c3b5b9316ae",
@@ -13168,10 +13443,12 @@
     {
       "upstreamSha": "bcfd485869a5eb9e97c6d281ac839c1cd7c1bd99",
       "subject": "fix(web): improve disconnected composer placeholder (#7122)",
-      "reason": "Phase 3c (composer behavior): fix(web): improve disconnected composer placeholder. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: disconnected empty threads retain the new-prompt placeholder; follow-up wording is reserved for started threads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:124"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "bd0b9edac3cf8fe30f8242dd7943a9240810b2c9",
@@ -13281,10 +13558,12 @@
     {
       "upstreamSha": "be218ac768d809087bfcea4d8f15c431f0d70e16",
       "subject": "feat(web): keybinding settings as settings rows (#8532)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): keybinding settings as settings rows. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: keybinding settings already use searchable rows with command labels, shortcut, condition, source and labeled edit/remove controls.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/settings/KeybindingEditor.tsx:163"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "be3da50e96bb6700fbd111e061d8071a04427fb0",
@@ -13305,10 +13584,12 @@
     {
       "upstreamSha": "be7796d867a1e66524f19e6cfee0109c3ab447f0",
       "subject": "fix(web): scale agent spawn rows with interface font (#10092)",
-      "reason": "Phase 3e: fix(web): scale agent spawn rows with interface font. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Phase 3: subagent labels use relative font sizes to follow the user interface scaling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:3041"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "be7d35aaeb49a04483ec5e0d2284e8b5b70a3b6e",
@@ -13410,10 +13691,11 @@
     {
       "upstreamSha": "c0047c252f35875476e2478bb4df6af9dd6fcb6a",
       "subject": "fix(web): stop follow-ups from leaving giant blank space (#8068)",
-      "reason": "Phase 3e: fix(web): stop follow-ups from leaving giant blank space. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: upstream follow-up paragraph spacer and pinned-turn layout are not used by f5; its LegendList timeline renders independently measured rows. Paragraph streaming is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:23"]
     },
     {
       "upstreamSha": "c034f51bb727de3d4888c74497b13e878ee65187",
@@ -13432,9 +13714,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:212"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:213"]
     },
     {
       "upstreamSha": "c0490e9d0eb057218bfa5df3f25a7c26c37145a5",
@@ -13495,10 +13778,12 @@
     {
       "upstreamSha": "c0dded88b1fc8c1c86d65f684fbfa520139e58dc",
       "subject": "feat(web): command palette finds the pull requests and usage pages (#12211)",
-      "reason": "Phase 3d (palette and search): feat(web): command palette finds the pull requests and usage pages. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: palette actions for Pull Requests, Usage, keybindings, appearance cycling and theme selection with swatches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/CommandPalette.tsx:919"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c0ddfb3a81abe553fea1e43c79cb723118959449",
@@ -13664,10 +13949,12 @@
     {
       "upstreamSha": "c1ff6ab3d6531e733fb1bca5d4b94f0ff97f7af4",
       "subject": "fix(web): move viewer controls outside media and restore arrow navigation (#11470)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): move viewer controls outside media and restore arrow navigation. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: gallery navigation remains outside transformed image content and zoom resets on image changes. Video attachments are introduced in Phase 7.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ExpandedImagePreview.tsx:11"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c2283ce14628127ef1758974ddab4f5b1f89d47a",
@@ -13797,10 +14084,12 @@
     {
       "upstreamSha": "c4556ab237515cea8ec6f482351c58da730ad495",
       "subject": "fix(web): stop wrapping partial code block selections in markdown fences (#5069)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): stop wrapping partial code block selections in markdown fences. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: code copy uses the plain code string and native partial selection; it does not add Markdown fences. This phase also reuses the clipboard fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:151"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c471145e96fc2399b4df57ce78c72aa7fb7ccabf",
@@ -13842,10 +14131,12 @@
     {
       "upstreamSha": "c557bb10aa7cbb78a50df230d1e8e24af79cb662",
       "subject": "fix(web): sidebar search matches message content (#11761)",
-      "reason": "Phase 3d (palette and search): fix(web): sidebar search matches message content. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: global search indexes message content and is used by the command palette reached from sidebar search.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/server/src/globalSearch.ts:132"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c5ba51d629b3813182cf3e161cc3f23b1e541dc3",
@@ -13918,10 +14209,12 @@
     {
       "upstreamSha": "c742edd46c5b6792ec8647f934a4703f9103aa82",
       "subject": "fix(web): show scroll-to-end as soon as the last message slips under the composer (#9280)",
-      "reason": "Phase 3c (composer behavior): fix(web): show scroll-to-end as soon as the last message slips under the composer. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: scroll-end state is recalculated from live LegendList scroll/content metrics; returning to the live edge resumes following, and the composer occupies separate layout space.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:570"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c75299ee2085a121bceb6df76796e971fe92b5b6",
@@ -13933,10 +14226,11 @@
     {
       "upstreamSha": "c789cd174ae50f50ecb0a34b96a81e00b0f5c823",
       "subject": "fix(web): skip image inline chip when composer is empty (#12528)",
-      "reason": "Phase 3c (composer behavior): fix(web): skip image inline chip when composer is empty. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: f5 renders explicit attachment tiles and has no upstream collapsed inline-image summary chip.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:447"]
     },
     {
       "upstreamSha": "c78ae50a5a5fdf8f42d0aaa0103b26ee836f0cfc",
@@ -13972,10 +14266,12 @@
     {
       "upstreamSha": "c7bf3115f2223ede5cb2316613dc7369155dbeb1",
       "subject": "feat(web): unpin threads from the sidebar multi-select menu (#9651)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): unpin threads from the sidebar multi-select menu. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: multi-select pin/unpin, snooze and archive with per-thread failure reporting and safe undo.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/bulkThreadActions.ts:8"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "c7c1dfe4df99edf65a49d8a31b39ef1361f37f44",
@@ -14340,10 +14636,11 @@
     {
       "upstreamSha": "cd14b3ec21471ac8525e060ffe278674a7eba19b",
       "subject": "fix(web): unify composer control rounding (#5957)",
-      "reason": "Phase 3c (composer behavior): fix(web): unify composer control rounding. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "cd64ad384e40988f57e4caa5a3f74f25ca5ef450",
@@ -14407,10 +14704,11 @@
     {
       "upstreamSha": "ce8ca5bb3d005d8653d1b09c1e7c9e02d3ef8ae4",
       "subject": "fix(web): hide thread jump hints while the terminal is focused (#7277)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): hide thread jump hints while the terminal is focused. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream held-modifier thread-jump hint overlays. f5 uses its own thread cycle picker and has no such hint overlay.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadCyclePicker.tsx:128"]
     },
     {
       "upstreamSha": "ce91284f832fc71bf46ff2a8ffc290e20db4e83d",
@@ -14481,10 +14779,12 @@
     {
       "upstreamSha": "cf7bfd1c93974428262ab1419d11c972d01d65fa",
       "subject": "fix(web): preserve XML-like tags in user messages (#4133)",
-      "reason": "Phase 3e: fix(web): preserve XML-like tags in user messages. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: user text is rendered as escaped text nodes with f5 context chips, so XML-like tags are visible instead of being interpreted as HTML.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:1763"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "cf9729d5ee9660c08556e823080d3bb19648ed28",
@@ -14620,18 +14920,22 @@
     {
       "upstreamSha": "d1eeb16247a0bd2eca8bbbfa5ab777e096af949c",
       "subject": "fix(web): middle-click pastes in the terminal on Linux (#11018)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): middle-click pastes in the terminal on Linux. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: right-click paste and Linux primary-selection paste through the validated desktop clipboard bridge.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/ThreadTerminalDrawer.tsx:94"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d2042d288eaf7aaf7feda85eb7d1a6f546302c12",
       "subject": "fix(web): avoid stale file writes on close (#8630)",
-      "reason": "Phase 3e: fix(web): avoid stale file writes on close. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:142"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d22709f759ced90b0ae7b7cb73d7ad22c2ce962b",
@@ -14675,10 +14979,12 @@
     {
       "upstreamSha": "d2a90b921a5843654a58448d0bc59828e1e3ccc4",
       "subject": "fix(web): name message copy actions accurately (#12865)",
-      "reason": "Phase 3e: fix(web): name message copy actions accurately. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: the assistant action explicitly says Copy raw markdown and reports raw-Markdown copy success.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/AssistantMessageActions.tsx:50"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d2b6f3b9296f682c6158b894ab33d98d0c4bfb2b",
@@ -14731,10 +15037,12 @@
     {
       "upstreamSha": "d359e94cabca4722029359c77d60cb6d13da1e59",
       "subject": "feat(web): enable rich text composer by default (#12160)",
-      "reason": "Phase 3c (composer behavior): feat(web): enable rich text composer by default. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: rich/plain composer preference using source-preserving Markdown styling in the existing Lexical editor. New users get styling; existing saved settings retain plain text.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ComposerMarkdownStylePlugin.tsx:18"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d35c71d1b975660ec6a71bbceb6aa7dfd0e8c3d5",
@@ -14807,10 +15115,12 @@
     {
       "upstreamSha": "d484735c64ed98a0737b594818996660f72c1616",
       "subject": "fix(web): keep highlighted command menu items clear of the scroll fade (#7132)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): keep highlighted command menu items clear of the scroll fade. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: command lists use bounded scroll containers and scroll highlighted entries into view; f5 does not place the upstream gradient fade over command items.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ui/command.tsx:114"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d487dfbf46be344e818725be70ee04be2436bfb4",
@@ -14823,18 +15133,21 @@
     {
       "upstreamSha": "d4ba2a1f11498eae9683f6dc95a08b1c17c29765",
       "subject": "fix(composer): mute fast icon when collapsed (#9451)",
-      "reason": "Phase 3c (composer behavior): fix(composer): mute fast icon when collapsed. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream collapsed fast-mode trait styling belongs to the redesigned composer; f5 retains its own trait picker.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/CodexTraitsPicker.tsx:128"]
     },
     {
       "upstreamSha": "d4bd8923ad8cab346a854967015b06d9e5cd77f7",
       "subject": "feat(web): mod+w closes the active right panel tab before the window (#9363)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): mod+w closes the active right panel tab before the window. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: f5-native commands and shortcut hints; browser-reserved defaults require the Electron context and remain rebindable on web.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["packages/shared/src/keybindings.ts:21"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d4d5d12e8ba086cfbf79ca3adeb4156b46ead665",
@@ -14876,10 +15189,11 @@
     {
       "upstreamSha": "d550b829bd169fa8973b17df940ef2fbf2e69f37",
       "subject": "fix(web): stop clipping the changed-files expand hover on Windows (#6545)",
-      "reason": "Phase 3e: fix(web): stop clipping the changed-files expand hover on Windows. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream changed-files floating hover surfaces. f5 uses an inline shared file tree and native context-menu dispatch.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChangedFileTree.tsx:56"]
     },
     {
       "upstreamSha": "d57bdf3843ef1871179207c0683d2eced72f9723",
@@ -15014,18 +15328,21 @@
     {
       "upstreamSha": "d79f975d0b39805c443e97accfcd4aa60786f13f",
       "subject": "fix(web): keep the composer glass aligned with the context strip at any interface font size (#5703)",
-      "reason": "Phase 3c (composer behavior): fix(web): keep the composer glass aligned with the context strip at any interface font size. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "d7a59c63c6a227ac295041660228a4aaa427ead0",
       "subject": "fix(web): stop sidebar rows flashing and shifting on click (#10713)",
-      "reason": "Phase 3f: fix(web): stop sidebar rows flashing and shifting on click. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: sidebar ordering is frozen while hovered, and active state changes do not replace the row identity.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:844"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "d7abd7f3bb6f392ecb4ca21a1eeaec5bbc2d9393",
@@ -15199,10 +15516,11 @@
     {
       "upstreamSha": "da6a85b1365993d0ff2a79698cd82498de247d8a",
       "subject": "fix(web): respect panel motion in composer transitions (#11064)",
-      "reason": "Phase 3c (composer behavior): fix(web): respect panel motion in composer transitions. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "da6e1a96782594cab3a6925f441731a65be57c11",
@@ -15321,10 +15639,12 @@
     {
       "upstreamSha": "db8d60f486c5fc1a80d01b591a359f0c87f0868c",
       "subject": "fix(web): render transparent previews on white (#9463)",
-      "reason": "Phase 3e: fix(web): render transparent previews on white. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Phase 3: image zoom, pan and fit controls; transparent images display on white.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ZoomableImage.tsx:6"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "db9a0671bb8921ebf5f9da16cd54f7e87f5ef3b0",
@@ -15437,10 +15757,12 @@
     {
       "upstreamSha": "dd7bc147f799f290eb58578a7f81643ecf9ad52e",
       "subject": "fix(web): simplify changed files into a persistent folder tree (#9821)",
-      "reason": "Phase 3e: fix(web): simplify changed files into a persistent folder tree. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: shared folder/path navigation for diff and PR views, with bounded persistent collapsed-folder preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChangedFileTree.tsx:52"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "dd9528a974ba534faa8d1588f3f137fa2a281860",
@@ -15529,10 +15851,11 @@
     {
       "upstreamSha": "de545c41737aca08359244b7778ab52e55934f17",
       "subject": "fix(web): stop the bar under the composer popping in after threads load (#10727)",
-      "reason": "Phase 3c (composer behavior): fix(web): stop the bar under the composer popping in after threads load. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: upstream moved environment/git actions into a new composer footer. f5 retains its own branch toolbar and bootstrap loading behavior.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/BranchToolbar.tsx:30"]
     },
     {
       "upstreamSha": "de592a00e89776d2e0614f3be6e666012d90cd51",
@@ -15621,10 +15944,12 @@
     {
       "upstreamSha": "df8e0eb46bca3dc01c17cc74a53b19aaacbe252b",
       "subject": "fix(web): discard stale highlights after file edits (#9902)",
-      "reason": "Phase 3e: fix(web): discard stale highlights after file edits. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/FileViewPanel.tsx:142"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "dfa345b3697a9117364cc6730a1598d6c27096f2",
@@ -15718,10 +16043,15 @@
     {
       "upstreamSha": "e0b4f4639037ce539e6feac7eaf11995cf5490f8",
       "subject": "feat(web): cmd+enter to create thread in background (#7821)",
-      "reason": "Phase 3b (keybindings and undo): feat(web): cmd+enter to create thread in background. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: modifier+Enter starts an empty-draft thread in the background, navigating only after admission and preserving navigation made while awaiting the server.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "ported",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ChatView.tsx:3728"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "e0c85a20ef0ec9b49ade5989a13850493036a49b",
@@ -15784,10 +16114,12 @@
     {
       "upstreamSha": "e16b8b059c9f5ff6dfed1addecffb831c6aee043",
       "subject": "feat(web): add provider model bulk toggle (#10947)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): add provider model bulk toggle. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: provider model bulk visibility actions retain hidden model identifiers that are not in the current inventory.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/ProviderModelsSection.tsx:219"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "e17f244e0d411422dacaa0a43669fb4e8436347d",
@@ -15846,10 +16178,12 @@
     {
       "upstreamSha": "e2697d63ec52e719ebd2d4e25baee2cb58243c83",
       "subject": "fix(web): keep following the stream after scrolling back to the live edge (#6519)",
-      "reason": "Phase 3e: fix(web): keep following the stream after scrolling back to the live edge. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: scroll-end state is recalculated from live LegendList scroll/content metrics; returning to the live edge resumes following, and the composer occupies separate layout space.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:570"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "e26af33b228792bb72349ca4e849a96381578a57",
@@ -15876,10 +16210,12 @@
     {
       "upstreamSha": "e2d4d12a81516b55abbecdc64794971f781cacd8",
       "subject": "feat(web): split provider settings into list and editor (#8380)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): feat(web): split provider settings into list and editor. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: provider settings separate the instance list from expandable per-instance editors, keyed by stable instance IDs and using shared setting controls. f5 retains this layout instead of replacing it with upstream environment-based settings navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/categories/ProvidersSettings.tsx:131"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "e2e6ce6a29451e9fac612ab83f7a104b6d6475a3",
@@ -16103,18 +16439,21 @@
     {
       "upstreamSha": "e65bc1c73e5e922216415b8e553bc74682d6810d",
       "subject": "fix(web): allow text selection when renaming threads (#12935)",
-      "reason": "Phase 3f: fix(web): allow text selection when renaming threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: thread rename is not inside an upstream cross-section draggable container, so selecting rename text is not intercepted by drag sensors. Cross-section thread dragging is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:1207"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "e67074f80933a27bd3cdc4e24f486358407690fb",
       "subject": "fix(web): keep grouped project renames (#7831)",
-      "reason": "Phase 3f: fix(web): keep grouped project renames. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream logical projects grouped across environments. Multi-environment grouping is excluded; f5 renames an individual project by its ID.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:1234"]
     },
     {
       "upstreamSha": "e6987965f65914861f0dabd0db03729fe5cd2508",
@@ -16132,9 +16471,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1718"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1682"]
     },
     {
       "upstreamSha": "e6ae764f47d678b96f4a1b2c8c76eedf1a342e26",
@@ -16146,10 +16486,11 @@
     {
       "upstreamSha": "e6d487e4f5d3cd049dbb373c7ca74192302443ae",
       "subject": "fix(web): delay thread shortcut hints by 200 ms (#8172)",
-      "reason": "Phase 3b (keybindings and undo): fix(web): delay thread shortcut hints by 200 ms. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream held-modifier thread-jump hint overlays. f5 uses its own thread cycle picker and has no such hint overlay.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3b",
+      "evidence": ["apps/web/src/components/ThreadCyclePicker.tsx:128"]
     },
     {
       "upstreamSha": "e70cdb478d34342d13ba4f433992394bf7303c1d",
@@ -16276,10 +16617,11 @@
     {
       "upstreamSha": "e9db39ce05c706122bb747fd5e7e70e1aac78935",
       "subject": "fix(web): align composer notices and stash (#8890)",
-      "reason": "Phase 3c (composer behavior): fix(web): align composer notices and stash. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable to the Phase 3 extraction: fixes upstream draft-hero, task-drawer and composer-glass layout that f5 does not render. f5 retains its existing composer layout; the redesigned composer remains Phase 10.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:185"]
     },
     {
       "upstreamSha": "e9e46972fbabdee0eb39cbd86470a5b5f5f26910",
@@ -16357,18 +16699,21 @@
     {
       "upstreamSha": "ea8c9e5ca3ace89cbf6cf0a2aa03047aab1d3ef9",
       "subject": "fix(web): stop tool calls from leaving a blank page in threads (#7971)",
-      "reason": "Phase 3e: fix(web): stop tool calls from leaving a blank page in threads. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Not applicable: upstream follow-up paragraph spacer and pinned-turn layout are not used by f5; its LegendList timeline renders independently measured rows. Paragraph streaming is excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:23"]
     },
     {
       "upstreamSha": "eaa6c4712fe11f0396e549b1873f163dc202d229",
       "subject": "fix(web): widen ordered-list marker gutter for 3+ digit item numbers (#6527)",
-      "reason": "Phase 3e: fix(web): widen ordered-list marker gutter for 3+ digit item numbers. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: ordered-list gutters scale with both start index and item count to retain multi-digit markers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/ChatMarkdown.tsx:91"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "ead1dee22916b414906eafdae5f5a1293f16e637",
@@ -16471,10 +16816,15 @@
     {
       "upstreamSha": "ec141c125726ae70f31f392e780afa8de446fdc4",
       "subject": "fix(clients): default clone destination to folder plus repo name (#5989)",
-      "reason": "Phase 3f: fix(clients): default clone destination to folder plus repo name. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: server-owned background cloning with bounded concurrency, idempotent admission, progress, cancellation and restart reporting. Repository shorthand defaults to HTTPS; destination is the selected parent plus repository folder.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "ec28eefa0d017e2b0cb65ba4269cee1adddb0e98",
@@ -16540,18 +16890,22 @@
     {
       "upstreamSha": "ecf3716fd190005b1552957b3c7880ab849a0a65",
       "subject": "fix(web): composer regains focus when you tab back into T3 Code (#10463)",
-      "reason": "Phase 3c (composer behavior): fix(web): composer regains focus when you tab back into T3 Code. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: window focus restores composer focus without stealing focus from another editable control or a blocking question.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:302"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "ed123897943e9175d4a0e92a5a8a09d200573336",
       "subject": "fix(web): keep tool timestamps before disclosure chevrons (#12152)",
-      "reason": "Phase 3e: fix(web): keep tool timestamps before disclosure chevrons. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: tool rows reveal locale-formatted timestamps on hover/focus without displacing disclosure controls.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:3379"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "ed2bdbb278c4fedf6ce79d4925908b759f7fd992",
@@ -16749,26 +17103,31 @@
     {
       "upstreamSha": "f0347322441f3b8e473a8d13ea7006cbcb4fb761",
       "subject": "feat(web): show which sidebar threads hold an unsent draft (#9658)",
-      "reason": "Phase 3f: feat(web): show which sidebar threads hold an unsent draft. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: sidebar draft state comes from the composer draft store and marks unsent content independently of server thread status.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:549"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f035a0f4cdf4abaa6704673af7b5a4a321149ba2",
       "subject": "fix(web): stop update notices showing through the composer (#8083)",
-      "reason": "Phase 3c (composer behavior): fix(web): stop update notices showing through the composer. Reimplement in f5; not yet delivered.",
+      "reason": "Not applicable: fixes upstream composer banner-stack/glass positioning. f5 has no such stack and positions its scroll-to-bottom control inside its own timeline/composer layout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ChatView.tsx:2416"]
     },
     {
       "upstreamSha": "f0401c629038100edafc496aca79fdc53d1d4db8",
       "subject": "feat(search): find threads by linked pull request (#10870)",
-      "reason": "Phase 3d (palette and search): feat(search): find threads by linked pull request. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: durable PR metadata on thread creation/update feeds an independently replayable PR-link search projection. Search matches PR number, repository, title and URL. Forge actions remain in Phase 12.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "ported",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/server/src/persistence/Migrations/092_ThreadPullRequestSearch.ts:6"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f0719072a1c6435b5a91243afc57bc8bf1f3e2b6",
@@ -16777,8 +17136,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:923"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:887"]
     },
     {
       "upstreamSha": "f075a58119f392137d699cefe5290b2aa6e55935",
@@ -16893,10 +17255,12 @@
     {
       "upstreamSha": "f17165a76b1a782831eb6a05a4383b27283df15d",
       "subject": "fix(web): preserve thread reading positions (#12144)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): preserve thread reading positions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: a 50-thread LRU restores the same timeline row and relative offset; floating scroll controls do not become timeline rows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/timelineScrollAnchors.ts:8"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f193a6863c494fdfa36a1ef3132e42a7d7b42926",
@@ -16969,7 +17333,7 @@
       "subject": "fix(server): generate PR diffs from branch changes (#13170)",
       "reason": "f5 already computes PR patches against the merge base with a three-dot diff range; retain its existing implementation.",
       "reviewStatus": "reviewed",
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1211"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1175"],
       "f5Shas": ["2b3a2a981edc3b0f46d6f986d0ecdf70f78ca654"],
       "disposition": "equivalent"
     },
@@ -17008,10 +17372,12 @@
     {
       "upstreamSha": "f276e632c5a7952655e2455aef3b86c08164b988",
       "subject": "fix(web): stabilize the provider settings editor (#8472)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(web): stabilize the provider settings editor. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: provider settings separate the instance list from expandable per-instance editors, keyed by stable instance IDs and using shared setting controls. f5 retains this layout instead of replacing it with upstream environment-based settings navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/web/src/components/settings/categories/ProvidersSettings.tsx:131"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f2a914b8588bf3038472c14b129fbc5ddb3a2992",
@@ -17021,12 +17387,13 @@
       "disposition": "ported",
       "plannedWorkstream": "1d",
       "evidence": [
-        "apps/web/src/components/FileBrowserPanel.tsx:214",
+        "apps/web/src/components/FileBrowserPanel.tsx:216",
         "apps/web/src/components/FileViewPanel.browser.tsx:1"
       ],
       "f5Shas": [
         "56e880d36d6d31977f2b16a695eb8dac61137e7d",
-        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ]
     },
     {
@@ -17076,10 +17443,12 @@
     {
       "upstreamSha": "f34b9d31b3ddbd53a553141fd769721fca4b8eb5",
       "subject": "fix(web): command-click spaced folder links (#6439)",
-      "reason": "Phase 3e: fix(web): command-click spaced folder links. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: chat folder references open and reveal the file-tree location instead of attempting a file preview, including spaced paths.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/rightPanelStore.ts:37"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f391b88c3754047c3c9434b76328699c083723b0",
@@ -17151,10 +17520,12 @@
     {
       "upstreamSha": "f47e74004af232f0e3df8dc10093601d1c2c3ea3",
       "subject": "fix(web): prevent chat metadata overlap (#8851)",
-      "reason": "Phase 3e: fix(web): prevent chat metadata overlap. Reimplement the applicable behavior in f5; not yet delivered. Fix visibility, focus or layout correctness using f5 presentation; do not adopt the one-line tool redesign.",
+      "reason": "Existing f5 equivalent: header and branch metadata use shrinking/truncated flex children with separately sized controls. f5 has no upstream machine/environment label to overlap them.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/ChatHeader.tsx:122"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f4c394323d458224b25898ef784ca0a0cc2969af",
@@ -17180,10 +17551,12 @@
     {
       "upstreamSha": "f4ef5155fb8aab7776a41fc8ec73d5367f53ba1f",
       "subject": "feat(web): add send shortcut and follow-up controls (#12075)",
-      "reason": "Phase 3c (composer behavior): feat(web): add send shortcut and follow-up controls. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: configurable Enter, modifier+Enter and multiline-only modifier submission. f5 durable queue behavior is retained; steering stays in Phase 8.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/sendShortcut.ts:3"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f530d7b618c12332774c0d79d3747c468369e648",
@@ -17199,16 +17572,21 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1707"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1671"]
     },
     {
       "upstreamSha": "f559fe0ba6fb5950bd14a2404f10b9c94b33f696",
       "subject": "fix(web): show context meter in compact composer (#9430)",
-      "reason": "Phase 3c (composer behavior): fix(web): show context meter in compact composer. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: token/context usage stays in the chat header rather than a composer section that disappears in compact layout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/ChatView.tsx:5800"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f57d3832c0219b4f6fbe2e86f824fedd232492c0",
@@ -17242,10 +17620,15 @@
     {
       "upstreamSha": "f5fb056d248be557e14358d08525361eca047e01",
       "subject": "fix(web): clear stuck panel resize cursor (#10461)",
-      "reason": "Phase 3e: fix(web): clear stuck panel resize cursor. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: sidebar rail teardown clears cursor/user-select, and right-panel resize tests available composer width before accepting a size.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3e",
+      "evidence": [
+        "apps/web/src/routes/_chat.$threadId.tsx:211",
+        "apps/web/src/components/ui/sidebar.tsx:516"
+      ],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f5fbb1bcb0db378c61addd5b49ef2d95bd888168",
@@ -17335,10 +17718,12 @@
     {
       "upstreamSha": "f7efb5354a3e6fb5e6b13a658ba57020e2c554ad",
       "subject": "feat(web): truncate branch names and paths in the middle (#12805)",
-      "reason": "Phase 3e (timeline, files and diffs): feat(web): truncate branch names and paths in the middle. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: middle truncation preserves identifying suffixes for branches and file paths, including commit-selection rows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/MiddleTruncate.tsx:4"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f814983c262b42bd79247bae377a709925c70d63",
@@ -17408,10 +17793,12 @@
     {
       "upstreamSha": "f90e2f2bd26e22b77ccf781cccdf95afd3c3ac1c",
       "subject": "fix(server): subscribe before provider settings watcher (#9271)",
-      "reason": "Phase 3f (sidebar, terminal and settings UX): fix(server): subscribe before provider settings watcher. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: acquire the settings subscription before initial hydration and before forking the registry watcher, preventing lost immediate settings updates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3f"
+      "disposition": "ported",
+      "plannedWorkstream": "3f",
+      "evidence": ["apps/server/src/provider/Layers/ProviderInstanceRegistryHydration.ts:159"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f9137a0c89f6190d27813bb46dbb6d1bb796f080",
@@ -17423,10 +17810,12 @@
     {
       "upstreamSha": "f915320914d1bc446e60cbcfe4cd7d75bad4dc2a",
       "subject": "fix(web): keep the final segment of directory paths with a trailing separator (#5460)",
-      "reason": "Phase 3e: fix(web): keep the final segment of directory paths with a trailing separator. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 3: path labels retain their final segment when a directory has a trailing separator.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/vscode-icons.ts:72"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "f925d639421844f02b3166d29281905dbba6d529",
@@ -17659,10 +18048,12 @@
     {
       "upstreamSha": "fcfd9f911a27ee3b813d64582c53d82dfa2e892b",
       "subject": "fix(web): keep chat from jumping when the scroll-to-end pill mounts (#12317)",
-      "reason": "Phase 3e (timeline, files and diffs): fix(web): keep chat from jumping when the scroll-to-end pill mounts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: a 50-thread LRU restores the same timeline row and relative offset; floating scroll controls do not become timeline rows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3e"
+      "disposition": "ported",
+      "plannedWorkstream": "3e",
+      "evidence": ["apps/web/src/components/chat/timelineScrollAnchors.ts:8"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "fd51561b4e2de1893cb7eb4069937256d702572c",
@@ -17682,10 +18073,12 @@
     {
       "upstreamSha": "fd773172e7f26f2d98de3eb572f3317b0ad8d443",
       "subject": "feat(web): recall sent prompts with the up arrow (#9173)",
-      "reason": "Phase 3c (composer behavior): feat(web): recall sent prompts with the up arrow. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 3: thread-local sent-prompt history with up/down navigation, stripping f5 send-time context and respecting menus and edits.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3c"
+      "disposition": "ported",
+      "plannedWorkstream": "3c",
+      "evidence": ["apps/web/src/components/chat/composer/promptHistory.ts:30"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "fda6486233e0b2f07ecfea166e1a94533cb923c4",
@@ -17816,10 +18209,12 @@
     {
       "upstreamSha": "ff93aba61dc1f7839713580bc8ee08da2a395f9a",
       "subject": "feat(web): search individual settings by detail (#8831)",
-      "reason": "Phase 3d: feat(web): search individual settings by detail. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: settings descriptors index individual controls with detailed search terms and route directly to the matching setting.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "3d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "3d",
+      "evidence": ["apps/web/src/components/settings/categories/GeneralSettings.descriptors.ts:10"],
+      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
       "upstreamSha": "fff33f9e851912363c5b1f3ac65598be35eb5f0d",

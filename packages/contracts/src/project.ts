@@ -52,7 +52,12 @@ const ProjectEmojiIcon = Schema.Struct({
   ),
 });
 
-export const ProjectIcon = Schema.Union([ProjectLucideIcon, ProjectEmojiIcon]);
+const ProjectMonogramIcon = Schema.Struct({
+  type: Schema.Literal("monogram"),
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(6)),
+  color: ProjectIconColor,
+});
+export const ProjectIcon = Schema.Union([ProjectLucideIcon, ProjectEmojiIcon, ProjectMonogramIcon]);
 export type ProjectIcon = typeof ProjectIcon.Type;
 
 export const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
@@ -149,6 +154,16 @@ export const ProjectListEntriesInput = Schema.Struct({
 });
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 
+export const ProjectListDirectoryInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  relativePath: TrimmedString,
+  includeIgnored: Schema.optional(Schema.Boolean),
+  limit: Schema.optional(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_LIST_ENTRIES_MAX_LIMIT)),
+  ),
+});
+export type ProjectListDirectoryInput = typeof ProjectListDirectoryInput.Type;
+
 export const ProjectListEntriesResult = Schema.Struct({
   entries: Schema.Array(ProjectEntry),
   truncated: Schema.Boolean,
@@ -202,3 +217,25 @@ export const ProjectAuthorizeEntryResult = Schema.Struct({
   kind: ProjectEntryKind,
 });
 export type ProjectAuthorizeEntryResult = typeof ProjectAuthorizeEntryResult.Type;
+
+export const ProjectCloneInput = Schema.Struct({
+  operationId: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)),
+  parentPath: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  directoryName: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+});
+export type ProjectCloneInput = typeof ProjectCloneInput.Type;
+export const ProjectCloneCancelInput = Schema.Struct({
+  operationId: ProjectCloneInput.fields.operationId,
+});
+export type ProjectCloneCancelInput = typeof ProjectCloneCancelInput.Type;
+export const ProjectCloneJob = Schema.Struct({
+  ...ProjectCloneInput.fields,
+  destination: Schema.String,
+  projectId: ProjectId,
+  status: Schema.Literals(["queued", "cloning", "complete", "failed", "cancelled"]),
+  progress: Schema.String,
+  error: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+});
+export type ProjectCloneJob = typeof ProjectCloneJob.Type;

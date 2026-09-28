@@ -18,6 +18,60 @@ type WhenToken =
   | { type: "rparen" };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
+  { key: "mod+[", command: "navigation.back", when: "!terminalFocus && !dialogFocus" },
+  { key: "mod+]", command: "navigation.forward", when: "!terminalFocus && !dialogFocus" },
+  {
+    key: "mod+z",
+    command: "thread.undo",
+    when: "threadUndoAvailable && !editableFocus && !dialogFocus",
+  },
+  {
+    key: "pageup",
+    command: "chat.pageUp",
+    when: "!composerFocus && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "pagedown",
+    command: "chat.pageDown",
+    when: "!composerFocus && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+w",
+    command: "rightPanel.closeTab",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+shift+e",
+    command: "composer.effort",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+shift+a",
+    command: "composer.runtimeMode",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+shift+x",
+    command: "composer.envMode",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+shift+g",
+    command: "composer.branch",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  {
+    key: "mod+shift+u",
+    command: "composer.interactionMode",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
+  { key: "mod+shift+arrowup", command: "modelPicker.previousProvider", when: "modelPickerOpen" },
+  { key: "mod+shift+arrowdown", command: "modelPicker.nextProvider", when: "modelPickerOpen" },
+  {
+    key: "mod+shift+k",
+    command: "prHub.copyNumber",
+    when: "isElectron && !terminalFocus && !dialogFocus",
+  },
   {
     key: "mod+b",
     command: "sidebar.toggle",
@@ -49,6 +103,7 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     when: "modelPickerOpen",
   })),
   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
+  { key: "mod+enter", command: "chat.newBackground", when: "newThreadComposer && !dialogFocus" },
 ];
 
 export const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

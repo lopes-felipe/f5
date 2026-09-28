@@ -1,7 +1,8 @@
+import { useRightPanelStore } from "../rightPanelStore";
 import type { ProjectEntry, ProjectId, ThreadId } from "@t3tools/contracts";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { useDebouncedValue } from "@tanstack/react-pacer";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -18,7 +19,7 @@ import type {
 } from "react";
 
 import {
-  projectListEntriesQueryOptions,
+  projectListDirectoryQueryOptions,
   projectQueryKeys,
   projectSearchEntriesQueryOptions,
 } from "../lib/projectReactQuery";
@@ -172,11 +173,47 @@ export default function FileBrowserPanel({
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightedSearchIndex, setHighlightedSearchIndex] = useState(-1);
+  const [visibleLimit, setVisibleLimit] = useState(MAX_RENDERED_TREE_ROWS);
+  const [directoryLimit, setDirectoryLimit] = useState(entryLimit);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
   const treeRowsRef = useRef<HTMLDivElement>(null);
   const pendingRevealPathRef = useRef<string | null>(null);
   const workspaceUnavailable = cwd === null;
-  const entriesQuery = useQuery(projectListEntriesQueryOptions({ cwd, limit: entryLimit }));
+  const [includeIgnored, setIncludeIgnored] = useState(false);
+  const directoryPaths = [
+    "",
+    ...[...expandedPaths].filter((directory) => {
+      const parts = directory.split("/");
+      return parts
+        .slice(0, -1)
+        .every((_, index) => expandedPaths.has(parts.slice(0, index + 1).join("/")));
+    }),
+  ];
+  const directoryQueries = useQueries({
+    queries: directoryPaths.map((relativePath) =>
+      projectListDirectoryQueryOptions({
+        cwd,
+        relativePath,
+        includeIgnored,
+        limit: directoryLimit,
+      }),
+    ),
+  });
+  const entriesQuery = {
+    data: {
+      entries: directoryQueries.flatMap((query) =>
+        query.isError ? [] : (query.data?.entries ?? []),
+      ),
+      totalEntries: directoryQueries.reduce(
+        (sum, query) => sum + (query.data?.totalEntries ?? 0),
+        0,
+      ),
+      truncated: directoryQueries.some((query) => query.data?.truncated),
+    },
+    isFetching: directoryQueries.some((query) => query.isFetching),
+    isError: directoryQueries[0]?.isError ?? false,
+    error: directoryQueries[0]?.error,
+  };
   const trimmedSearchQuery = searchQuery.trim();
   const searchMode = !workspaceUnavailable && trimmedSearchQuery.length > 0;
   const [debouncedSearchQuery, searchDebouncer] = useDebouncedValue(
@@ -199,7 +236,7 @@ export default function FileBrowserPanel({
     () => flattenVisibleRows({ nodes: tree, expandedPaths, normalizedQuery: "" }),
     [expandedPaths, tree],
   );
-  const renderedRows = visibleRows.slice(0, MAX_RENDERED_TREE_ROWS);
+  const renderedRows = visibleRows.slice(0, visibleLimit);
   const hiddenVisibleRowCount = visibleRows.length - renderedRows.length;
   const searchResultsMatchInput = searchMode && activeSearchQuery === trimmedSearchQuery;
   const searchEntries = searchResultsMatchInput ? (searchEntriesQuery.data?.entries ?? []) : [];
@@ -211,22 +248,35 @@ export default function FileBrowserPanel({
     [entries],
   );
 
+  const revealPath = useRightPanelStore((state) => {
+    const surface = state.byThreadId[threadId]?.surfaces.find((entry) => entry.kind === "files");
+    return surface?.kind === "files" ? surface.revealPath : undefined;
+  });
+  useEffect(() => {
+    if (!revealPath) return;
+    setSearchQuery("");
+    const parts = revealPath.split("/").filter(Boolean);
+    setExpandedPaths(
+      (previous) =>
+        new Set([...previous, ...parts.map((_, index) => parts.slice(0, index + 1).join("/"))]),
+    );
+    pendingRevealPathRef.current = revealPath;
+  }, [revealPath]);
+
   const initializedTreeCwdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (entries.length === 0 || initializedTreeCwdRef.current === cwd) {
-      return;
-    }
+    if (!entries.length || initializedTreeCwdRef.current === cwd) return;
     initializedTreeCwdRef.current = cwd;
-    setExpandedPaths(() => {
-      const next = new Set<string>();
-      for (const entry of entries) {
-        if (entry.kind === "directory" && !entry.path.includes("/")) {
-          next.add(entry.path);
-        }
-      }
-      return next;
-    });
-  }, [cwd, entries]);
+    setExpandedPaths(
+      (previous) =>
+        new Set([
+          ...(revealPath ? previous : []),
+          ...entries
+            .filter((entry) => entry.kind === "directory" && !entry.path.includes("/"))
+            .map((entry) => entry.path),
+        ]),
+    );
+  }, [cwd, entries, revealPath]);
 
   useEffect(() => {
     if (!searchMode) {
@@ -251,8 +301,10 @@ export default function FileBrowserPanel({
       const target = Array.from(
         treeRowsRef.current?.querySelectorAll<HTMLElement>("[data-file-browser-path]") ?? [],
       ).find((element) => element.dataset.fileBrowserPath === targetPath);
-      target?.scrollIntoView({ block: "nearest" });
-      pendingRevealPathRef.current = null;
+      if (target) {
+        target.scrollIntoView({ block: "nearest" });
+        pendingRevealPathRef.current = null;
+      }
     });
 
     return () => {
@@ -357,13 +409,13 @@ export default function FileBrowserPanel({
 
   const refreshEntries = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: [...providerQueryKeys.fileContentAll, cwd] });
-    void queryClient.invalidateQueries({ queryKey: projectQueryKeys.listEntries(cwd, entryLimit) });
+    void queryClient.invalidateQueries({ queryKey: projectQueryKeys.listDirectories(cwd) });
     if (activeSearchQuery.length > 0) {
       void queryClient.invalidateQueries({
         queryKey: projectQueryKeys.searchEntries(cwd, activeSearchQuery, SEARCH_ENTRIES_LIMIT),
       });
     }
-  }, [activeSearchQuery, cwd, entryLimit, queryClient]);
+  }, [activeSearchQuery, cwd, queryClient]);
 
   const handleEntryDragStart = useCallback(
     (event: ReactDragEvent<HTMLButtonElement>, entry: ProjectEntry) => {
@@ -411,14 +463,22 @@ export default function FileBrowserPanel({
             {workspaceUnavailable
               ? "Unavailable"
               : entriesQuery.isFetching && entries.length === 0
-                ? "Indexing..."
-                : `${fileCount.toLocaleString()} files`}
+                ? "Loading..."
+                : `${fileCount.toLocaleString()} files loaded`}
             {entriesQuery.data && entriesQuery.data.totalEntries > entries.length
               ? ` · showing ${entries.length.toLocaleString()} of ${entriesQuery.data.totalEntries.toLocaleString()}`
               : ""}
             {entriesQuery.data?.truncated ? " · partial" : ""}
           </p>
         </div>
+        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={includeIgnored}
+            onChange={(event) => setIncludeIgnored(event.target.checked)}
+          />
+          Ignored
+        </label>
         <Button
           size="icon-xs"
           variant="ghost"
@@ -523,6 +583,29 @@ export default function FileBrowserPanel({
       ) : (
         <ScrollArea className="min-h-0 flex-1" scrollFade>
           <div className="py-1" ref={treeRowsRef}>
+            {directoryQueries.flatMap((query, index) =>
+              index > 0 && query.isError
+                ? [
+                    <div
+                      key={directoryPaths[index]}
+                      role="alert"
+                      className="px-3 py-2 text-xs text-destructive"
+                    >
+                      Could not read {directoryPaths[index]}. Other folders remain available.
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => toggleDirectory(directoryPaths[index]!)}
+                      >
+                        Collapse folder
+                      </Button>
+                      <Button size="xs" variant="ghost" onClick={() => void query.refetch()}>
+                        Retry folder
+                      </Button>
+                    </div>,
+                  ]
+                : [],
+            )}
             {renderedRows.map(({ node, depth }) => {
               const isDirectory = node.entry.kind === "directory";
               const expanded = expandedPaths.has(node.entry.path);
@@ -563,10 +646,25 @@ export default function FileBrowserPanel({
                 </button>
               );
             })}
+            {entriesQuery.data.truncated && directoryLimit < 100_000 ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={entriesQuery.isFetching}
+                onClick={() => setDirectoryLimit((limit) => Math.min(100_000, limit * 2))}
+              >
+                Load more directory entries
+              </Button>
+            ) : null}
             {hiddenVisibleRowCount > 0 ? (
               <div className="px-3 py-2 text-xs text-muted-foreground/70">
-                {hiddenVisibleRowCount.toLocaleString()} more entries hidden. Search to narrow
-                results.
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => setVisibleLimit((limit) => limit + MAX_RENDERED_TREE_ROWS)}
+                >
+                  Show more entries ({hiddenVisibleRowCount.toLocaleString()} remaining)
+                </Button>
               </div>
             ) : null}
           </div>

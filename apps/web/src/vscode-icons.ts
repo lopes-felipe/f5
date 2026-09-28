@@ -70,6 +70,7 @@ function toLowercaseLookup(source: Record<string, string>): Record<string, strin
 }
 
 export function basenameOfPath(pathValue: string): string {
+  pathValue = pathValue.replace(/[\\/]+$/, "") || pathValue;
   const slashIndex = pathValue.lastIndexOf("/");
   const backslashIndex = pathValue.lastIndexOf("\\");
   const separatorIndex = Math.max(slashIndex, backslashIndex);

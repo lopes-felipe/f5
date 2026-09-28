@@ -1,3 +1,5 @@
+import { recordThreadUndo } from "./threadUndo";
+import { useStore } from "./store";
 import { MAX_PINNED_THREADS, type ThreadId } from "@t3tools/contracts";
 
 import { newCommandId } from "./lib/utils";
@@ -70,6 +72,21 @@ export async function toggleThreadPin(input: {
     pinnedThreadIds: next,
     expectedRevision: input.expectedRevision,
   });
+  if (isPinned)
+    recordThreadUndo("Thread unpinned", async () => {
+      const state = useStore.getState();
+      const live = orderedPinnedThreadIds(state.threads);
+      if (live.includes(input.threadId)) return;
+      const formerIndex = current.indexOf(input.threadId);
+      live.splice(Math.min(formerIndex, live.length), 0, input.threadId);
+      if (live.length > MAX_PINNED_THREADS)
+        throw new Error("Unpin another thread before restoring this pin.");
+      await replacePinnedThreads({
+        anchorThreadId: input.threadId,
+        pinnedThreadIds: live,
+        expectedRevision: state.pinRevision ?? 0,
+      });
+    });
 }
 
 export async function snoozeThread(threadId: ThreadId, until: string): Promise<void> {
@@ -80,6 +97,7 @@ export async function snoozeThread(threadId: ThreadId, until: string): Promise<v
     until,
     createdAt: new Date().toISOString(),
   });
+  recordThreadUndo("Thread snoozed", () => wakeThread({ id: threadId, snoozedUntil: until }));
 }
 
 export async function wakeThread(thread: Pick<Thread, "id" | "snoozedUntil">): Promise<void> {

@@ -618,6 +618,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           branch: command.branch,
           worktreePath: command.worktreePath,
           threadReferences: command.threadReferences ?? [],
+          ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
@@ -976,6 +977,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
+          ...(command.pullRequest ? { pullRequest: command.pullRequest } : {}),
           ...(command.title !== undefined
             ? {
                 title: command.title,

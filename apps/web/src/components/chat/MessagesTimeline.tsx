@@ -1,3 +1,4 @@
+import { readTimelineScrollAnchor, timelineScrollAnchors } from "./timelineScrollAnchors";
 import {
   type MessageId,
   type OrchestrationFileChangeId,
@@ -283,11 +284,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const { settings } = useAppSettings();
   const ownedEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
   const resolvedEntryRowIndexMapRef = entryRowIndexMapRef ?? ownedEntryRowIndexMapRef;
-  const [initialScrollAtEndEnabled, setInitialScrollAtEndEnabled] = useState(true);
+  const [restoredAnchor] = useState(() =>
+    threadId ? timelineScrollAnchors.get(threadId) : undefined,
+  );
+  const [initialScrollAtEndEnabled, setInitialScrollAtEndEnabled] = useState(
+    restoredAnchor?.atEnd ?? true,
+  );
   const [changedFilesPresentationOverrides, setChangedFilesPresentationOverrides] = useState<
     Readonly<Record<string, ChangedFilesPresentation>>
   >({});
-  const isAtEndRef = useRef(true);
+  const isAtEndRef = useRef(restoredAnchor?.atEnd ?? true);
   const newestTurnDiffId = useMemo(
     () =>
       [...turnDiffSummaryByAssistantMessageId.values()].toSorted((left, right) =>
@@ -658,6 +664,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     };
   }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
+  useLayoutEffect(() => {
+    if (!threadId || !hasMessages) return;
+    const node = listRef.current?.getScrollableNode?.();
+    if (!(node instanceof HTMLElement)) return;
+    let frame = 0;
+    const remember = () => {
+      frame = 0;
+      timelineScrollAnchors.set(threadId, readTimelineScrollAnchor(node));
+    };
+    const onScroll = (event: Event) => {
+      // Code blocks and nested diff panes must not replace the conversation anchor.
+      if (event.target !== node || frame) return;
+      frame = window.requestAnimationFrame(remember);
+    };
+    node.addEventListener("scroll", onScroll);
+    return () => {
+      node.removeEventListener("scroll", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+      remember();
+    };
+  }, [threadId, hasMessages, listRef]);
+
   const handleScroll = useCallback(() => {
     syncIsAtEndFromListState();
   }, [syncIsAtEndFromListState]);
@@ -830,6 +858,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
               <div className="min-w-0 px-1 py-0.5">
                 <WorkEntryRow
                   workEntry={standaloneExpandedMcpEntry}
+                  timestampFormat={timestampFormat}
                   expandMcpToolCalls={settings.expandMcpToolCalls}
                   expandMcpByDefault={settings.expandMcpToolCallCardsByDefault}
                   turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
@@ -869,6 +898,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   <WorkEntryRow
                     key={`work-row:${workEntry.id}`}
                     workEntry={workEntry}
+                    timestampFormat={timestampFormat}
                     expandMcpToolCalls={settings.expandMcpToolCalls}
                     expandMcpByDefault={settings.expandMcpToolCallCardsByDefault}
                     turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
@@ -1270,6 +1300,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         // implementation to re-arm its initial-scroll logic and jump away from
         // historical file-change rows during optimistic sends.
         initialScrollAtEnd={initialScrollAtEndEnabled}
+        {...(restoredAnchor && !restoredAnchor.atEnd
+          ? rows.some((row) => row.id === restoredAnchor.rowId)
+            ? {
+                initialScrollIndex: {
+                  index: rows.findIndex((row) => row.id === restoredAnchor.rowId),
+                  viewPosition: 0,
+                  viewOffset: restoredAnchor.top,
+                },
+              }
+            : { initialScrollOffset: restoredAnchor.scroll }
+          : {})}
         // Do not auto-pin on raw data appends. When the user is looking at a
         // historical file-change diff near the tail of the thread, a new user
         // turn and its first assistant progress messages should preserve that
@@ -1346,72 +1387,103 @@ function TimelineMinimap(props: {
     [props],
   );
 
+  const turnRows = props.rows.flatMap((row, index) =>
+    row.kind === "message" && row.message.role === "user" ? [index] : [],
+  );
+  const previousTurn = turnRows.findLast((index) => index < props.activeRowIndex);
+  const nextTurn = turnRows.find((index) => index > props.activeRowIndex);
   return (
-    <div
-      ref={trackRef}
-      className="absolute top-3 right-1 bottom-3 z-10 w-3 touch-none rounded-full bg-background/70 opacity-45 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
-      role="slider"
-      tabIndex={0}
-      aria-label="Conversation minimap"
-      title={
-        props.hasUnloadedHistory
-          ? "Loaded conversation range; scroll upward to load earlier history"
-          : "Full conversation"
-      }
-      aria-valuemin={0}
-      aria-valuemax={Math.max(0, props.rows.length - 1)}
-      aria-valuenow={props.activeRowIndex}
-      onPointerDown={(event) => {
-        event.currentTarget.setPointerCapture(event.pointerId);
-        navigateFromClientY(event.clientY);
-      }}
-      onPointerMove={(event) => {
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-          navigateFromClientY(event.clientY);
+    <>
+      <button
+        type="button"
+        aria-label="Previous turn"
+        title="Previous turn"
+        disabled={previousTurn === undefined}
+        onClick={() => {
+          if (previousTurn !== undefined) props.onNavigate(previousTurn);
+        }}
+        className="absolute right-0 top-0 z-10 rounded p-0.5 text-muted-foreground hover:bg-muted disabled:opacity-25"
+      >
+        <ChevronDownIcon className="size-3 rotate-180" />
+      </button>
+      <button
+        type="button"
+        aria-label="Next turn"
+        title="Next turn"
+        disabled={nextTurn === undefined}
+        onClick={() => {
+          if (nextTurn !== undefined) props.onNavigate(nextTurn);
+        }}
+        className="absolute right-0 bottom-0 z-10 rounded p-0.5 text-muted-foreground hover:bg-muted disabled:opacity-25"
+      >
+        <ChevronDownIcon className="size-3" />
+      </button>
+      <div
+        ref={trackRef}
+        className="absolute top-5 right-1 bottom-5 z-10 w-3 touch-none rounded-full bg-background/70 opacity-45 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+        role="slider"
+        tabIndex={0}
+        aria-label="Conversation minimap"
+        title={
+          props.hasUnloadedHistory
+            ? "Loaded conversation range; scroll upward to load earlier history"
+            : "Full conversation"
         }
-      }}
-      onPointerCancel={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
-      onKeyDown={(event) => {
-        let markerIndex = activeMarkerIndex;
-        if (event.key === "ArrowDown" || event.key === "PageDown") markerIndex += 1;
-        else if (event.key === "ArrowUp" || event.key === "PageUp") markerIndex -= 1;
-        else if (event.key === "Home") markerIndex = 0;
-        else if (event.key === "End") markerIndex = props.markerRowIndices.length - 1;
-        else return;
-        event.preventDefault();
-        const rowIndex =
-          props.markerRowIndices[
-            Math.min(props.markerRowIndices.length - 1, Math.max(0, markerIndex))
-          ];
-        if (rowIndex !== undefined) props.onNavigate(rowIndex);
-      }}
-    >
-      {props.hasUnloadedHistory ? (
-        <span className="pointer-events-none absolute top-0 left-1/2 h-1 w-2 -translate-x-1/2 rounded-full border border-dashed border-muted-foreground/70" />
-      ) : null}
-      {props.markerRowIndices.map((rowIndex, markerIndex) => {
-        const row = props.rows[rowIndex];
-        if (!row) return null;
-        const isActive = markerIndex === activeMarkerIndex;
-        return (
-          <span
-            key={row.id}
-            className={cn(
-              "pointer-events-none absolute left-1/2 h-px -translate-x-1/2 rounded-full",
-              row.kind === "message"
-                ? row.message.role === "user"
-                  ? "bg-primary/80"
-                  : "bg-foreground/55"
-                : row.kind === "work"
-                  ? "bg-amber-500/70"
-                  : "bg-muted-foreground/50",
-              isActive ? "w-3 h-0.5 opacity-100" : "w-1.5",
-            )}
-            style={{ top: `${(rowIndex / Math.max(1, props.rows.length - 1)) * 100}%` }}
-          />
-        );
-      })}
-    </div>
+        aria-valuemin={0}
+        aria-valuemax={Math.max(0, props.rows.length - 1)}
+        aria-valuenow={props.activeRowIndex}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          navigateFromClientY(event.clientY);
+        }}
+        onPointerMove={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            navigateFromClientY(event.clientY);
+          }
+        }}
+        onPointerCancel={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+        onKeyDown={(event) => {
+          let markerIndex = activeMarkerIndex;
+          if (event.key === "ArrowDown" || event.key === "PageDown") markerIndex += 1;
+          else if (event.key === "ArrowUp" || event.key === "PageUp") markerIndex -= 1;
+          else if (event.key === "Home") markerIndex = 0;
+          else if (event.key === "End") markerIndex = props.markerRowIndices.length - 1;
+          else return;
+          event.preventDefault();
+          const rowIndex =
+            props.markerRowIndices[
+              Math.min(props.markerRowIndices.length - 1, Math.max(0, markerIndex))
+            ];
+          if (rowIndex !== undefined) props.onNavigate(rowIndex);
+        }}
+      >
+        {props.hasUnloadedHistory ? (
+          <span className="pointer-events-none absolute top-0 left-1/2 h-1 w-2 -translate-x-1/2 rounded-full border border-dashed border-muted-foreground/70" />
+        ) : null}
+        {props.markerRowIndices.map((rowIndex, markerIndex) => {
+          const row = props.rows[rowIndex];
+          if (!row) return null;
+          const isActive = markerIndex === activeMarkerIndex;
+          return (
+            <span
+              key={row.id}
+              className={cn(
+                "pointer-events-none absolute left-1/2 h-px -translate-x-1/2 rounded-full",
+                row.kind === "message"
+                  ? row.message.role === "user"
+                    ? "bg-primary/80"
+                    : "bg-foreground/55"
+                  : row.kind === "work"
+                    ? "bg-amber-500/70"
+                    : "bg-muted-foreground/50",
+                isActive ? "w-3 h-0.5 opacity-100" : "w-1.5",
+              )}
+              style={{ top: `${(rowIndex / Math.max(1, props.rows.length - 1)) * 100}%` }}
+            />
+          );
+        })}
+      </div>
+    </>
   );
 }
 
@@ -1434,6 +1506,15 @@ const TimelineRowWrapper = memo(function TimelineRowWrapper({
       data-message-id={row.kind === "message" ? row.message.id : undefined}
       data-message-role={row.kind === "message" ? row.message.role : undefined}
     >
+      {row.kind === "message" ? (
+        <h2 className="sr-only">
+          {row.message.role === "user"
+            ? "You"
+            : row.message.role === "assistant"
+              ? "Assistant"
+              : "Message"}
+        </h2>
+      ) : null}
       {children}
     </div>
   );
@@ -2581,9 +2662,23 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             )}
             title={displayText}
           >
-            <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-              {heading}
-            </span>
+            {canRenderInlineDiff ? (
+              <button
+                type="button"
+                aria-expanded={inlineDiffExpanded}
+                className={cn("text-left text-foreground/80", workToneClass(workEntry.tone))}
+                onClick={() => {
+                  if (!window.getSelection()?.isCollapsed) return;
+                  chatDiffContext.onToggleFileChangeDiff(workEntry.id);
+                }}
+              >
+                {heading}
+              </button>
+            ) : (
+              <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+                {heading}
+              </span>
+            )}
             {(workEntry.warningCount ?? 1) > 1 ? (
               <span className="ml-1 rounded bg-secondary/60 px-1 py-0.5 text-[9px] tabular-nums text-muted-foreground/65">
                 ×{workEntry.warningCount}
@@ -2943,7 +3038,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
         <div className="min-w-0 flex-1 overflow-hidden">
           <p
             className={cn(
-              "truncate text-[11px] leading-5",
+              "truncate text-[.6875rem] leading-5",
               workToneClass(workEntry.tone),
               preview ? "text-muted-foreground/70" : "",
             )}
@@ -2995,7 +3090,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
                   <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
                     Agent
                   </p>
-                  <p className="break-all font-mono text-[11px] text-muted-foreground/75">
+                  <p className="break-all font-mono text-[.6875rem] text-muted-foreground/75">
                     {workEntry.subagentPath}
                   </p>
                 </div>
@@ -3017,7 +3112,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
             {isCodexCollaboration &&
               responseRows.map((state) => (
                 <div key={state.threadId} data-subagent-state={state.status}>
-                  <p className="break-all font-mono text-[11px] text-muted-foreground/75">
+                  <p className="break-all font-mono text-[.6875rem] text-muted-foreground/75">
                     {state.threadId}
                   </p>
                   <p className="text-[12px] text-muted-foreground/80">
@@ -3025,7 +3120,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
                     {state.message ? ` - ${state.message}` : ""}
                   </p>
                   {workEntry.subagentPath && workEntry.subagentThreadId === state.threadId ? (
-                    <p className="break-all font-mono text-[11px] text-muted-foreground/65">
+                    <p className="break-all font-mono text-[.6875rem] text-muted-foreground/65">
                       {workEntry.subagentPath}
                     </p>
                   ) : null}
@@ -3038,7 +3133,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               <p className="text-[12px] text-muted-foreground/75">No agents completed yet.</p>
             ) : null}
             {isCodexCollaboration && workEntry.subagentStatesTruncated ? (
-              <p className="text-[11px] text-muted-foreground/65">
+              <p className="text-[.6875rem] text-muted-foreground/65">
                 Additional agent details omitted
               </p>
             ) : null}
@@ -3140,7 +3235,7 @@ const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
           />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[11px] leading-4 text-muted-foreground/70">
+          <p className="truncate text-[.6875rem] leading-4 text-muted-foreground/70">
             <span className={failed ? "text-rose-300/75" : "text-foreground/70"}>
               {workEntry.label}
             </span>
@@ -3234,6 +3329,7 @@ const NestedDiagnosticList = memo(function NestedDiagnosticList(props: {
 });
 
 const WorkEntryRow = memo(function WorkEntryRow(props: {
+  timestampFormat: TimestampFormat;
   workEntry: TimelineWorkEntry;
   expandMcpToolCalls: boolean;
   expandMcpByDefault: boolean;
@@ -3276,7 +3372,14 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   );
 
   return (
-    <div className="min-w-0">
+    <div className="group/work-entry relative min-w-0 pr-14">
+      <time
+        dateTime={workEntry.createdAt}
+        title={new Date(workEntry.createdAt).toLocaleString()}
+        className="absolute right-1 top-2 text-[9px] tabular-nums text-muted-foreground opacity-0 group-hover/work-entry:opacity-100 group-focus-within/work-entry:opacity-100"
+      >
+        {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
+      </time>
       {row}
       {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
         <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />

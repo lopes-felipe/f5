@@ -1,3 +1,4 @@
+import { networkFailureDetail } from "../networkFailureDetail.ts";
 import {
   withWorktreeLifecycleLock,
   withRepositoryLifecycleLock,
@@ -214,43 +215,6 @@ function createGitCommandError(
     detail,
     ...(cause !== undefined ? { cause } : {}),
   });
-}
-
-// Remote output may contain credentials. Persist only fixed network diagnoses.
-function networkFailureDetail(stderr: string): string {
-  if (
-    /Authentication failed|could not read (?:Username|Password)|Permission denied \(publickey/i.test(
-      stderr,
-    )
-  ) {
-    return "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.";
-  }
-  if (
-    /Could not resolve host|Failed to connect|Connection timed out|Connection refused|Network is unreachable/i.test(
-      stderr,
-    )
-  ) {
-    return "Git could not reach the remote. Check the server's network connection and remote host, then retry.";
-  }
-  if (/couldn't find remote ref/i.test(stderr))
-    return "The requested branch is absent from the remote. Check the selected base branch.";
-  if (/non-fast-forward|fetch first|rejected.*behind/i.test(stderr))
-    return "The remote branch has newer commits. Fetch and reconcile them before retrying.";
-  if (/protected branch|protected branch hook|GH006|GH013/i.test(stderr))
-    return "The remote rejected this write under its branch protection rules.";
-  if (/Host key verification failed/i.test(stderr))
-    return "SSH host verification failed. Configure trusted host keys on the server.";
-  if (
-    /Repository not found|repository .+ not found|does not appear to be a git repository/i.test(
-      stderr,
-    )
-  ) {
-    return "Git could not access the remote repository. Check the remote URL and repository permissions on the server.";
-  }
-  if (/cannot lock ref|Unable to create .+\.lock/i.test(stderr)) {
-    return "Git could not update a local reference. Check for another Git operation or a stale lock, then retry.";
-  }
-  return "The remote operation failed. Check the remote configuration and repository access on the server, then retry.";
 }
 
 function missingCwdErrorDetail(cwd: string): string {
@@ -1225,6 +1189,7 @@ const makeGitCore = Effect.gen(function* () {
         "diff",
         "--cached",
         "--patch",
+        "--find-renames",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "--minimal",
@@ -1481,6 +1446,7 @@ const makeGitCore = Effect.gen(function* () {
           runGitStdout("GitCore.readRangeContext.diffPatch", cwd, [
             "diff",
             "--patch",
+            "--find-renames",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--minimal",
@@ -2080,6 +2046,18 @@ const makeGitCore = Effect.gen(function* () {
     renameBranch,
     createBranch,
     checkoutBranch,
+    cloneRepository: (input) =>
+      git
+        .execute({
+          operation: "GitCore.cloneRepository",
+          cwd: input.cwd,
+          args: ["clone", "--progress", "--", input.url, "."],
+          timeoutMs: 15 * 60_000,
+          maxOutputBytes: 1024 * 1024,
+          env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+          onStderrChunk: input.onProgress,
+        })
+        .pipe(Effect.asVoid),
     initRepo,
     listLocalBranchNames,
     readDefaultBranch: (cwd) => resolveDefaultBranchName(cwd, "origin"),

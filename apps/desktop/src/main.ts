@@ -93,6 +93,7 @@ const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
+const READ_CLIPBOARD_TEXT_CHANNEL = "desktop:read-clipboard-text";
 const COPY_IMAGE_CHANNEL = "desktop:copy-image";
 const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
@@ -2459,6 +2460,19 @@ function registerIpcHandlers(): void {
       });
     },
   );
+
+  ipcMain.removeHandler(READ_CLIPBOARD_TEXT_CHANNEL);
+  ipcMain.handle(READ_CLIPBOARD_TEXT_CHANNEL, (event, source: unknown) => {
+    if (
+      !profileByWebContentsId.has(event.sender.id) ||
+      event.senderFrame !== event.sender.mainFrame
+    )
+      throw new Error("Clipboard reads require an F5 application window.");
+    if (source !== "clipboard" && source !== "selection")
+      throw new Error("Invalid clipboard source.");
+    if (source === "selection" && process.platform !== "linux") return "";
+    return clipboard.readText(source);
+  });
 
   ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
   ipcMain.handle(COPY_IMAGE_CHANNEL, async (_event, rawBytes: unknown) => {

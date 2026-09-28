@@ -33,6 +33,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   return (
     <Menu>
       <MenuTrigger
+        data-composer-control="compact"
         render={
           <Button
             size="sm"

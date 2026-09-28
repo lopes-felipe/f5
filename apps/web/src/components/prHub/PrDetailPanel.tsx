@@ -1,3 +1,4 @@
+import { PrAuthorLink } from "./PrAuthorLink";
 import { prAttentionText } from "@t3tools/shared/prHub";
 import { waitingLabel } from "./prHubPresentation";
 import { forwardRef, useEffect, useImperativeHandle, useState, type ReactNode } from "react";
@@ -329,7 +330,9 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
                     : "Not verified yet"}
                 </Fact>
               ) : null}
-              <Fact label="Author">{pr.author ?? "unknown"}</Fact>
+              <Fact label="Author">
+                <PrAuthorLink prUrl={pr.url} login={pr.author} />
+              </Fact>
               <Fact label="Updated">{formatRelativeTimeLabel(pr.updatedAt)}</Fact>
               <Fact label="Opened">{formatRelativeTimeLabel(pr.createdAt)}</Fact>
             </div>

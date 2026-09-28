@@ -32,6 +32,7 @@ import type { ThreadActionId, ThreadActionMenuItem } from "../../hooks/useThread
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
+  isServerThread: boolean;
   activeThreadTitle: string;
   estimatedContextTokens: number | null;
   estimatedThinkingTokens: number | null;
@@ -75,6 +76,7 @@ interface ChatHeaderProps {
 
 export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
+  isServerThread,
   activeThreadTitle,
   estimatedContextTokens,
   estimatedThinkingTokens,
@@ -138,6 +140,10 @@ export const ChatHeader = memo(function ChatHeader({
           <h2
             className="min-w-0 shrink truncate text-sm font-medium text-foreground"
             title={activeThreadTitle}
+            onDoubleClick={() => {
+              if (threadActionItems.some((item) => item.id === "rename" && !item.disabled))
+                setRenamingThreadId(activeThreadId);
+            }}
           >
             {activeThreadTitle}
           </h2>
@@ -214,7 +220,13 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        {activeProjectName && (
+          <GitActionsControl
+            gitCwd={gitCwd}
+            activeThreadId={activeThreadId}
+            isServerThread={isServerThread}
+          />
+        )}
         <Tooltip>
           <TooltipTrigger
             render={

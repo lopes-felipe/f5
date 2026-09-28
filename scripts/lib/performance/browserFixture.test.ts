@@ -10,3 +10,7 @@ it("uses the tested build's protocol without changing the benchmark workload", (
     legacy.threads.map(({ id, messages }) => [id, messages.length]),
   );
 });
+
+it("answers background clone polling without adding fixture work", () => {
+  expect(createBrowserFixture().rpc({ _tag: "projects.cloneList" })).toEqual([]);
+});

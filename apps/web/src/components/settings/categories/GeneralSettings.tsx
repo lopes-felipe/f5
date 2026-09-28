@@ -1,3 +1,5 @@
+import { useSettings, useUpdateSettings } from "../../../hooks/useSettings";
+import { toastManager } from "../../ui/toast";
 import { buildAppSettingsPatch } from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { Button } from "../../ui/button";
@@ -17,9 +19,85 @@ const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
+  const defaultMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
+  const { updateSettings: updateServerSettings } = useUpdateSettings();
+  const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
+    void updateServerSettings({ prHubDefaultMergeMethod: value }).catch((error: unknown) =>
+      toastManager.add({
+        type: "error",
+        title: "Could not save merge method",
+        description: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  };
 
   return (
     <>
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <h2 className="text-sm font-medium">Pull requests</h2>
+        <p className="my-2 text-xs text-muted-foreground">
+          Used when the repository allows it. Your choice in a merge dialog takes precedence.
+        </p>
+        <Select
+          value={defaultMergeMethod ?? "last-used"}
+          onValueChange={(value) => {
+            if (value === "last-used") setDefaultMergeMethod(null);
+            else if (value === "merge" || value === "squash" || value === "rebase")
+              setDefaultMergeMethod(value);
+          }}
+        >
+          <SelectTrigger aria-label="Default PR merge method">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectItem value="last-used">Last used for the repository</SelectItem>
+            <SelectItem value="squash">Squash</SelectItem>
+            <SelectItem value="merge">Merge commit</SelectItem>
+            <SelectItem value="rebase">Rebase</SelectItem>
+          </SelectPopup>
+        </Select>
+      </section>
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <h2 className="text-sm font-medium">Composer</h2>
+        <label className="my-3 flex items-center justify-between gap-3 text-sm">
+          <span>
+            Rich text editor
+            <span className="block text-xs text-muted-foreground">
+              Style Markdown while keeping its source editable. Turn off for plain text.
+            </span>
+          </span>
+          <Switch
+            aria-label="Rich text editor"
+            checked={settings.composerRichTextEnabled}
+            onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
+          />
+        </label>
+        <p className="my-2 text-xs text-muted-foreground">Shift+Enter always inserts a new line.</p>
+        <Select
+          value={settings.sendShortcut}
+          onValueChange={(value) => {
+            if (value === "enter" || value === "mod-enter" || value === "mod-enter-multiline")
+              updateSettings({ sendShortcut: value });
+          }}
+        >
+          <SelectTrigger aria-label="Send shortcut">
+            <SelectValue>
+              {settings.sendShortcut === "enter"
+                ? "Enter"
+                : settings.sendShortcut === "mod-enter"
+                  ? "Command/Ctrl+Enter"
+                  : "Command/Ctrl+Enter for multiline prompts"}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectItem value="enter">Enter</SelectItem>
+            <SelectItem value="mod-enter">Command/Ctrl+Enter</SelectItem>
+            <SelectItem value="mod-enter-multiline">
+              Command/Ctrl+Enter for multiline prompts
+            </SelectItem>
+          </SelectPopup>
+        </Select>
+      </section>
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Time & locale</h2>

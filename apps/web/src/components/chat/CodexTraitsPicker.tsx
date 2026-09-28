@@ -142,6 +142,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
       }}
     >
       <MenuTrigger
+        data-composer-control="effort"
         render={
           <Button
             size="sm"

@@ -1,3 +1,4 @@
+import Migration0092 from "./Migrations/092_ThreadPullRequestSearch.ts";
 import Migration0091 from "./Migrations/091_PrHubRepositoryProvenance.ts";
 import Migration0090 from "./Migrations/090_PrHubIndependentOperations.ts";
 import Migration0089 from "./Migrations/089_PrHubConnectionFacts.ts";
@@ -207,6 +208,7 @@ export const MIGRATIONS = {
   "89_PrHubConnectionFacts": Migration0089,
   "90_PrHubIndependentOperations": Migration0090,
   "91_PrHubRepositoryProvenance": Migration0091,
+  "92_ThreadPullRequestSearch": Migration0092,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

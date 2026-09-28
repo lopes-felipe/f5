@@ -1,3 +1,6 @@
+import { CopyPathButton } from "../CopyPathButton";
+import { MiddleTruncate } from "../MiddleTruncate";
+import { ChangedFileTree } from "../ChangedFileTree";
 import { useAppSettings } from "../../appSettings";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import type { PrReviewAnchor } from "@t3tools/shared/prReview";
@@ -24,7 +27,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
   const [comparisonMode, setComparisonMode] = useState<"current_pr" | "changes_since_review">(
     "current_pr",
   );
-  const [expandedPath, setExpandedPath] = useState<string | null>(null);
+  const [expandedOverrides, setExpandedOverrides] = useState<Record<string, boolean>>({});
   const query = useInfiniteQuery({
     ...prHubFilesQueryOptions(pr.key, comparisonMode),
     enabled: active,
@@ -36,6 +39,13 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
     getPrHubAccountGeneration(),
     pages[0]?.comparison,
   ]);
+  const isExpanded = (path: string) =>
+    expandedOverrides[`${selectionScope}:${path}`] ?? settings.diffFileDefaultState === "expanded";
+  const toggleExpanded = (path: string) =>
+    setExpandedOverrides((previous) => ({
+      ...previous,
+      [`${selectionScope}:${path}`]: !isExpanded(path),
+    }));
   const warning = pages.find((page) => page.warning)?.warning;
 
   if (query.isPending) {
@@ -67,6 +77,38 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
 
   return (
     <div className="space-y-3" role="tabpanel" aria-label="Files">
+      <p className="text-xs text-muted-foreground" aria-live="polite">
+        {comparisonMode === "current_pr" ? (
+          <>
+            {files.length} of {pr.changedFiles} changed files loaded ·{" "}
+            <span className="text-diff-addition">+{pr.additions}</span> /{" "}
+            <span className="text-diff-deletion">−{pr.deletions}</span>
+          </>
+        ) : (
+          <>
+            {files.length} changed files loaded{query.hasNextPage ? " · more available" : ""}
+          </>
+        )}
+        {pages.some((page) => page.providerCapped) ? " · provider file limit reached" : ""}
+      </p>
+      <ChangedFileTree
+        scope={`pr:${pr.host}/${pr.repository.nameWithOwner}`}
+        files={files}
+        onSelect={(path) => {
+          setExpandedOverrides((previous) => ({
+            ...previous,
+            [`${selectionScope}:${path}`]: true,
+          }));
+          window.requestAnimationFrame(() =>
+            Array.from(document.querySelectorAll<HTMLElement>("[data-pr-file-path]"))
+              .find(
+                (element) =>
+                  element.dataset.prFilePath === path && element.dataset.prKey === pr.key,
+              )
+              ?.scrollIntoView({ block: "start" }),
+          );
+        }}
+      />
       <label className="flex items-center gap-2 text-xs">
         <input
           type="checkbox"
@@ -75,6 +117,32 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         />
         Hide whitespace-only hunks
       </label>
+      <div className="flex gap-2">
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() =>
+            setExpandedOverrides((previous) => ({
+              ...previous,
+              ...Object.fromEntries(files.map((file) => [`${selectionScope}:${file.path}`, true])),
+            }))
+          }
+        >
+          Expand all
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() =>
+            setExpandedOverrides((previous) => ({
+              ...previous,
+              ...Object.fromEntries(files.map((file) => [`${selectionScope}:${file.path}`, false])),
+            }))
+          }
+        >
+          Collapse all
+        </Button>
+      </div>
       {pr.viewerHasReviewed ? (
         <div className="flex gap-2">
           <Button
@@ -119,24 +187,27 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
       ) : (
         <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
           {files.map((file) => (
-            <div key={file.path}>
-              <button
-                type="button"
-                aria-expanded={expandedPath === file.path}
-                onClick={() => setExpandedPath(expandedPath === file.path ? null : file.path)}
-                className="flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-sm"
-              >
-                <FileIcon className="size-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{file.path}</span>
-                <span className="shrink-0 tabular-nums">
-                  <span className="text-success-foreground">+{file.additions}</span>{" "}
-                  <span className="text-destructive-foreground">−{file.deletions}</span>
-                </span>
-                <Badge variant="outline" size="sm">
-                  {file.changeType}
-                </Badge>
-              </button>
-              {expandedPath === file.path ? (
+            <div key={file.path} data-pr-file-path={file.path} data-pr-key={pr.key}>
+              <div className="flex items-center pr-2">
+                <button
+                  type="button"
+                  aria-expanded={isExpanded(file.path)}
+                  onClick={() => toggleExpanded(file.path)}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left text-sm"
+                >
+                  <FileIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <MiddleTruncate className="flex-1 font-mono text-xs" text={file.path} />
+                  <span className="shrink-0 tabular-nums">
+                    <span className="text-diff-addition">+{file.additions}</span>{" "}
+                    <span className="text-diff-deletion">−{file.deletions}</span>
+                  </span>
+                  <Badge variant="outline" size="sm">
+                    {file.changeType}
+                  </Badge>
+                </button>
+                <CopyPathButton path={file.path} />
+              </div>
+              {isExpanded(file.path) ? (
                 <Suspense fallback={<p className="p-3 text-sm">Loading diff?</p>}>
                   <LazyPrFileDiff
                     file={file}

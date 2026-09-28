@@ -24,6 +24,8 @@ const RESPONSE_AUXILIARY_KEYS = [
   "enableAssistantStreaming",
   "openFileLinksInPanel",
   "diffWordWrap",
+  "diffColorPalette",
+  "diffFileDefaultState",
   "workspaceFileTreeEntryLimit",
   "workLogMode",
   "workLogFilter",
@@ -81,6 +83,43 @@ export function DisplaySettings() {
       </div>
 
       <div className="space-y-4">
+        <label className="flex items-center justify-between gap-3 text-sm">
+          Default diff file state
+          <Select
+            value={settings.diffFileDefaultState}
+            onValueChange={(value) => {
+              if (value === "auto" || value === "expanded" || value === "collapsed")
+                updateSettings({ diffFileDefaultState: value });
+            }}
+          >
+            <SelectTrigger aria-label="Default diff file state">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="auto">Automatic</SelectItem>
+              <SelectItem value="expanded">Expanded</SelectItem>
+              <SelectItem value="collapsed">Collapsed</SelectItem>
+            </SelectPopup>
+          </Select>
+        </label>
+        <label className="flex items-center justify-between gap-3 text-sm">
+          Diff colors
+          <Select
+            value={settings.diffColorPalette}
+            onValueChange={(value) => {
+              if (value === "red-green" || value === "blue-orange")
+                updateSettings({ diffColorPalette: value });
+            }}
+          >
+            <SelectTrigger aria-label="Diff colors">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="red-green">Red and green</SelectItem>
+              <SelectItem value="blue-orange">Blue and orange</SelectItem>
+            </SelectPopup>
+          </Select>
+        </label>
         <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
           <div>
             <p className="text-sm font-medium text-foreground">Stream assistant messages</p>

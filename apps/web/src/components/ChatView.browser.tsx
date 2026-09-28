@@ -34,7 +34,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import type { ReactNode } from "react";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -1315,6 +1315,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       lastPolledAt: null,
     };
   }
+  if (tag === WS_METHODS.projectsCloneList) return [];
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
@@ -1347,16 +1348,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       pr: null,
     };
   }
-  if (tag === WS_METHODS.projectsListEntries) {
-    return {
-      entries: [
-        { path: "src", kind: "directory" },
-        { path: "src/index.ts", kind: "file", parentPath: "src" },
-        { path: "README.md", kind: "file" },
-      ],
-      truncated: false,
-      totalEntries: 3,
-    };
+  if (tag === WS_METHODS.projectsListEntries || tag === WS_METHODS.projectsListDirectory) {
+    const entries = [
+      { path: "src", kind: "directory" },
+      { path: "src/index.ts", kind: "file", parentPath: "src" },
+      { path: "README.md", kind: "file" },
+    ].filter(
+      (entry) =>
+        tag === WS_METHODS.projectsListEntries || (entry.parentPath ?? "") === body.relativePath,
+    );
+    return { entries, truncated: false, totalEntries: entries.length };
   }
   if (tag === WS_METHODS.projectsSearchEntries) {
     return {
@@ -2722,7 +2723,8 @@ describe("ChatView timeline (full app)", () => {
           expect(
             wsRequests.some(
               (request) =>
-                request._tag === WS_METHODS.projectsListEntries && request.cwd === "/repo/project",
+                request._tag === WS_METHODS.projectsListDirectory &&
+                request.cwd === "/repo/project",
             ),
           ).toBe(true);
         },
@@ -3928,7 +3930,7 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows a pointer cursor for the running stop button", async () => {
+  it("stops the active turn from the running stop button", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -3945,6 +3947,10 @@ describe("ChatView timeline (full app)", () => {
       );
 
       expect(getComputedStyle(stopButton).cursor).toBe("pointer");
+      stopButton.click();
+      await vi.waitFor(() => {
+        expect(getDispatchCommandRequests("thread.turn.interrupt")).toHaveLength(1);
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -4318,6 +4324,191 @@ describe("ChatView timeline (full app)", () => {
     } finally {
       portaledMenuPopup.remove();
       dialogPopup.remove();
+      await mounted.cleanup();
+    }
+  });
+
+  it("recalls a sent prompt with ArrowUp and restores an empty composer with ArrowDown", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "history-user" as MessageId,
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+        targetText: "recall this prompt",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.focus();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "recall this prompt",
+        ),
+      );
+      await vi.waitFor(() => expect(editor.textContent).toBe("recall this prompt"));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["ime", "menu", "mod-enter", "mod-enter-multiline"])(
+    "respects editor guards and send preference before background send: %s",
+    async (scenario) => {
+      persistAppSettings({ sendShortcut: scenario.startsWith("mod-") ? scenario : "enter" });
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      useComposerDraftStore
+        .getState()
+        .setPrompt(THREAD_ID, scenario === "menu" ? "" : "normal prompt");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [createModKeybinding("chat.newBackground", "enter")],
+          };
+        },
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        if (scenario === "menu")
+          await userEvent.type(page.getByTestId("composer-editor"), "fix @src/ma");
+        const selection = window.getSelection();
+        selection?.selectAllChildren(editor);
+        selection?.collapseToEnd();
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            isComposing: scenario === "ime",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        if (scenario.startsWith("mod-")) {
+          await vi.waitFor(() =>
+            expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+          );
+          expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("starts a new draft in the background only after admission", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+    });
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "background prompt");
+    let admit!: (result: WsRequestResolution) => void;
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [createModKeybinding("chat.newBackground", "enter")],
+        };
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          getSubmittedTurnCommand(body)?.type === "thread.turn.start"
+            ? new Promise((resolve) => {
+                admit = resolve;
+              })
+            : null;
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.focus();
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          metaKey: /Mac/.test(navigator.platform),
+          ctrlKey: !/Mac/.test(navigator.platform),
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+      admit({ type: "result", result: { sequence: 1 } });
+      await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/"));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not submit while the composer is confirming IME input", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Draft still composing");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-ime" as MessageId,
+        targetText: "IME target",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.focus();
+      editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Draft still composing",
+      );
+      editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    } finally {
       await mounted.cleanup();
     }
   });

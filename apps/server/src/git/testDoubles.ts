@@ -49,11 +49,13 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "createBranch",
       "checkoutBranch",
       "initRepo",
+      "cloneRepository",
       "listLocalBranchNames",
     ].map((method) => [method, []]),
   ) as unknown as { [K in keyof GitCoreShape]: Array<ReadonlyArray<unknown>> };
 
   const implementations: GitCoreShape = {
+    cloneRepository: () => Effect.void,
     branchExists: () => Effect.succeed(true),
     ensureWorktree: () => Effect.void,
     status: (_input) =>
@@ -119,6 +121,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
   };
 
   const service: GitCoreShape = {
+    cloneRepository: (input) => {
+      record("cloneRepository", [input]);
+      return implementations.cloneRepository(input);
+    },
     branchExists: (cwd, branch) => {
       record("branchExists", [cwd, branch]);
       return implementations.branchExists(cwd, branch);

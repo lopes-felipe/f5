@@ -200,6 +200,8 @@ export function createBrowserFixture(protocolVersion = 1) {
       switch (body._tag) {
         case "server.probe":
           return { ok: true };
+        case "projects.cloneList":
+          return [];
         case "server.getConfig":
           return serverConfig;
         case "agents.getSnapshot":

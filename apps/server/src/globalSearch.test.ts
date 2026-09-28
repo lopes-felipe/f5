@@ -100,6 +100,28 @@ const seed = Effect.gen(function* () {
 });
 
 layer("GlobalSearch", (it) => {
+  it.effect("finds linked pull requests after a rename and removes deleted links", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const search = yield* makeGlobalSearch;
+      yield* sql`INSERT INTO projection_thread_pull_requests(link_id,thread_id,provider,host,repository,number,title,url,updated_at)
+      VALUES ('search-link','search-thread','github','github.com','owner/widget',381,'Fix zebra navigation','https://github.com/owner/widget/pull/381','2026-09-25T00:00:00Z')`;
+      for (const query of [
+        "widget 381",
+        "zebra navigation",
+        "https://github.com/owner/widget/pull/381",
+      ]) {
+        const result = yield* search.query({ query });
+        assert.equal(result.results[0]?.threadId, "search-thread");
+        assert.equal(result.results[0]?.kind, "thread");
+      }
+      yield* sql`UPDATE projection_threads SET title = 'Renamed work' WHERE thread_id = 'search-thread'`;
+      assert.equal((yield* search.query({ query: "zebra" })).results[0]?.title, "Renamed work");
+      yield* sql`DELETE FROM projection_thread_pull_requests WHERE link_id = 'search-link'`;
+      assert.equal((yield* search.query({ query: "zebra" })).results.length, 0);
+    }),
+  );
   it.effect("indexes visible messages, summaries, file paths, threads, and workflows", () =>
     Effect.gen(function* () {
       yield* seed;

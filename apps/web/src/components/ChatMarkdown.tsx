@@ -1,3 +1,5 @@
+import { GitHubIcon } from "./Icons";
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import React, {
   Children,
@@ -146,11 +148,7 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopy = useCallback(() => {
-    if (typeof navigator === "undefined" || navigator.clipboard == null) {
-      return;
-    }
-    void navigator.clipboard
-      .writeText(code)
+    void writeTextToClipboard(code)
       .then(() => {
         if (copiedTimerRef.current != null) {
           clearTimeout(copiedTimerRef.current);
@@ -356,8 +354,17 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         // disambiguation.
         const meta = href ? resolveMarkdownFileLinkMeta(href, cwd) : null;
         if (!meta || !href) {
+          let isGitHub = false;
+          try {
+            isGitHub = href !== undefined && new URL(href).hostname === "github.com";
+          } catch {
+            /* Relative and incomplete links have no host. */
+          }
           return (
             <a {...props} href={href} target="_blank" rel="noreferrer">
+              {isGitHub ? (
+                <GitHubIcon aria-hidden="true" className="mr-1 inline size-3 align-baseline" />
+              ) : null}
               {children}
             </a>
           );
@@ -447,6 +454,20 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
               </Suspense>
             </CodeHighlightErrorBoundary>
           </MarkdownCodeBlock>
+        );
+      },
+      ol({ node, children, start = 1, ...props }) {
+        const count =
+          node?.children.filter((child) => child.type === "element" && child.tagName === "li")
+            .length ?? Children.count(children);
+        const widest = Math.max(
+          String(start).length,
+          String(start + Math.max(0, count - 1)).length,
+        );
+        return (
+          <ol {...props} start={start} style={{ paddingInlineStart: `calc(${widest}ch + 1.25em)` }}>
+            {children}
+          </ol>
         );
       },
       table({ node: _node, children, ...props }) {

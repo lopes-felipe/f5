@@ -351,3 +351,14 @@ describe("ExpandedImageDialog", () => {
     }
   });
 });
+
+it("resets zoom when switching gallery images", async () => {
+  await render(<ImageDialogHarness />);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect.element(page.getByLabelText("Image zoom")).toHaveTextContent("150%");
+  await page.getByRole("button", { name: "Next image", exact: true }).click();
+  await expect.element(page.getByLabelText("Image zoom")).toHaveTextContent("100%");
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await page.getByRole("button", { name: "Fit image", exact: true }).click();
+  await expect.element(page.getByLabelText("Image zoom")).toHaveTextContent("100%");
+});

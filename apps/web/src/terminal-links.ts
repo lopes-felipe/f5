@@ -15,7 +15,7 @@ export interface TerminalLinkMatch {
   end: number;
 }
 
-const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/g;
+const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/giu;
 const FILE_URL_PATTERN = /file:\/\/[^\s"'`<>]+/gi;
 const FILE_PATH_PATTERN =
   /(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)+(?::\d+){0,2}/g;

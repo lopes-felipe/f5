@@ -73,6 +73,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   projectMemories: "projection.project-memories",
   projectSkills: "projection.project-skills",
   threads: "projection.threads",
+  threadPullRequests: "projection.thread-pull-requests",
   threadMessages: "projection.thread-messages",
   threadProposedPlans: "projection.thread-proposed-plans",
   threadActivities: "projection.thread-activities",
@@ -2163,6 +2164,28 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       }
     });
 
+  const applyThreadPullRequestsProjection = (event: OrchestrationEvent) =>
+    Effect.gen(function* () {
+      if (event.type !== "thread.created" && event.type !== "thread.meta-updated") return;
+      const link = event.payload.pullRequest;
+      if (!link) return;
+      const threadId = event.payload.threadId;
+      // This independent cursor also rebuilds links during startup replay. Search is
+      // the first consumer; forge routing and review actions do not use these links.
+      const linkId = JSON.stringify([
+        threadId,
+        link.provider,
+        link.host,
+        link.repository,
+        link.number,
+      ]);
+      yield* sql`INSERT INTO projection_thread_pull_requests(link_id, thread_id, provider, host, repository, number, title, url, updated_at)
+      VALUES (${linkId}, ${threadId}, ${link.provider}, ${link.host}, ${link.repository}, ${link.number}, ${link.title}, ${link.url}, ${event.occurredAt})
+      ON CONFLICT(link_id) DO UPDATE SET title = excluded.title, url = excluded.url, updated_at = excluded.updated_at`.pipe(
+        Effect.mapError(toPersistenceSqlError("ProjectionPipeline.threadPullRequests:upsert")),
+      );
+    });
+
   const projectors: ReadonlyArray<ProjectorDefinition> = [
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -2231,6 +2254,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.threads,
       apply: applyThreadsProjection,
+    },
+    {
+      name: ORCHESTRATION_PROJECTOR_NAMES.threadPullRequests,
+      apply: applyThreadPullRequestsProjection,
     },
   ];
 

@@ -1,3 +1,4 @@
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import {
   acceptProfileWelcome,
   refreshProfiles,
@@ -200,6 +201,18 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
           <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
             Reload app
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void writeTextToClipboard(details).then(
+                () => toastManager.add({ type: "success", title: "Error report copied" }),
+                () => toastManager.add({ type: "error", title: "Could not copy error report" }),
+              );
+            }}
+          >
+            Copy error report
+          </Button>
         </div>
 
         <details className="group mt-5 overflow-hidden rounded-lg border border-border/70 bg-background/55">
@@ -386,6 +399,9 @@ function EventRouter() {
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const navigate = useNavigate();
   const { settings, updateSettings } = useAppSettings();
+  useEffect(() => {
+    document.documentElement.dataset.diffColorScheme = settings.diffColorPalette;
+  }, [settings.diffColorPalette]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const visibleRouteMatch = useRouterState({
     select: (state) => {

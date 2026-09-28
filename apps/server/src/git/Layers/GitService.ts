@@ -61,6 +61,8 @@ const collectOutput = Effect.fn(function* <E>(
     Effect.gen(function* () {
       if (consume) {
         consume(chunk);
+        // Streaming consumers still need bounded diagnostics on failure.
+        text = (text + decoder.decode(chunk, { stream: true })).slice(-4096);
         return;
       }
       bytes += chunk.byteLength;
@@ -175,7 +177,7 @@ const makeGitService = Effect.gen(function* () {
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
-          collectOutput(commandInput, child.stderr, maxOutputBytes),
+          collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
           child.exitCode.pipe(
             Effect.map((value) => Number(value)),
             Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),

@@ -1,3 +1,5 @@
+import { applyBulkThreadAction } from "../bulkThreadActions";
+import { resolveSnoozePreset } from "../lib/snoozePresets";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 import { registerProjectFromPath } from "../lib/registerProject";
 import {
@@ -1388,6 +1390,10 @@ export default function Sidebar() {
       const clicked = await api.contextMenu.show(
         [
           { id: "mark-unread", label: `Mark unread (${count})` },
+          { id: "pin", label: `Pin (${count})` },
+          { id: "unpin", label: `Unpin (${count})` },
+          { id: "snooze", label: `Snooze for 3 hours (${count})` },
+          { id: "archive", label: `Archive (${count})` },
           { id: "delete", label: `Delete (${count})`, destructive: true },
         ],
         position,
@@ -1401,6 +1407,36 @@ export default function Sidebar() {
         return;
       }
 
+      if (
+        clicked === "pin" ||
+        clicked === "unpin" ||
+        clicked === "archive" ||
+        clicked === "snooze"
+      ) {
+        try {
+          const result = await applyBulkThreadAction(
+            ids,
+            clicked,
+            clicked === "snooze" ? resolveSnoozePreset("three-hours") : undefined,
+          );
+          removeFromSelection(result.succeeded);
+          if (result.failures.length)
+            toastManager.add({
+              type: "error",
+              title: `Updated ${result.succeeded.length} of ${count} threads`,
+              description: result.failures
+                .map(({ error }) => (error instanceof Error ? error.message : String(error)))
+                .join("; "),
+            });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Could not update selected threads",
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
       if (clicked !== "delete") return;
 
       if (appSettings.confirmThreadDelete) {
@@ -2346,12 +2382,30 @@ export default function Sidebar() {
                               {...dragHandleProps.listeners}
                               onPointerDownCapture={handleProjectTitlePointerDownCapture}
                               onClick={(event) => handleProjectTitleClick(event, project.id)}
-                              onKeyDown={(event) => handleProjectTitleKeyDown(event, project.id)}
                               onContextMenu={(event) => {
                                 event.preventDefault();
                                 void handleProjectContextMenu(project.id, {
                                   x: event.clientX,
                                   y: event.clientY,
+                                });
+                              }}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.target !== event.currentTarget ||
+                                  !(
+                                    event.key === "ContextMenu" ||
+                                    (event.shiftKey && event.key === "F10")
+                                  )
+                                ) {
+                                  handleProjectTitleKeyDown(event, project.id);
+                                  return;
+                                }
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                void handleProjectContextMenu(project.id, {
+                                  x: rect.left,
+                                  y: rect.bottom,
                                 });
                               }}
                             >
@@ -2362,6 +2416,7 @@ export default function Sidebar() {
                               />
                               <ProjectIcon
                                 projectId={project.id}
+                                name={project.name}
                                 icon={project.icon}
                                 className="size-3.5 shrink-0 text-muted-foreground/50"
                               />

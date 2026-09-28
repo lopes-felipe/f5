@@ -1,5 +1,9 @@
 "use client";
 
+import { openProjectCloneDialog } from "./ProjectCloneController";
+import { useTheme } from "../hooks/useTheme";
+import { getAvailableThemePalettes } from "../themePalette";
+
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type FilesystemBrowseResult,
@@ -229,7 +233,8 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = searchMode === "all" && deferredQuery.startsWith(">");
   const queryClient = useQueryClient();
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
-  const { settings } = useAppSettings();
+  const { settings, updateSettings } = useAppSettings();
+  const { theme, setTheme } = useTheme();
   const { activeDraftThread, activeThread, handleNewThread, routeThreadId } = useHandleNewThread();
   const projects = useStore((store) => store.projects);
   const threads = useStore((store) => store.threads);
@@ -480,7 +485,12 @@ function OpenCommandPaletteDialog(props: {
 
   const projectIcon = useCallback(
     (project: (typeof projects)[number]) => (
-      <ProjectIcon projectId={project.id} icon={project.icon} className={ITEM_ICON_CLASS} />
+      <ProjectIcon
+        projectId={project.id}
+        name={project.name}
+        icon={project.icon}
+        className={ITEM_ICON_CLASS}
+      />
     ),
     [],
   );
@@ -765,6 +775,17 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
+  actionItems.push({
+    kind: "action",
+    value: "action:clone-project",
+    title: "Clone repository",
+    searchTerms: ["clone", "repository", "github", "download", "project"],
+    icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      openProjectCloneDialog(currentProjectCwd ?? "");
+    },
+  });
+
   if (activeThread && activeQueueSnapshot && activeQueueSnapshot.items.length > 0) {
     actionItems.push(
       {
@@ -843,6 +864,91 @@ function OpenCommandPaletteDialog(props: {
         });
       },
     });
+
+  actionItems.push(
+    {
+      kind: "action",
+      value: "action:pull-requests",
+      title: "Open Pull Requests",
+      searchTerms: ["pull requests", "PR hub", "review"],
+      icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/pull-requests" });
+      },
+    },
+    {
+      kind: "action",
+      value: "action:usage",
+      title: "Open Usage",
+      searchTerms: ["usage", "cost", "tokens", "limits"],
+      icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/usage" });
+      },
+    },
+    {
+      kind: "action",
+      value: "action:keybindings",
+      title: "Edit keybindings",
+      searchTerms: ["keyboard", "shortcuts", "keybindings"],
+      icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/settings",
+          search: {
+            ...resolveSettingsNavigationSearch(location),
+            category: "integrations",
+            item: "integrations.keybindings",
+          },
+        });
+      },
+    },
+    {
+      kind: "action",
+      value: "action:appearance-cycle",
+      title: "Cycle appearance",
+      searchTerms: ["theme", "appearance", "light", "dark", "system"],
+      icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
+      },
+    },
+  );
+  actionItems.push({
+    kind: "submenu",
+    value: "action:theme-picker",
+    title: "Choose theme",
+    searchTerms: ["theme", "colors", "appearance"],
+    icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    addonIcon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    groups: [
+      {
+        value: "themes",
+        label: "Themes",
+        items: getAvailableThemePalettes(settings.customThemes).map((palette) => ({
+          kind: "action" as const,
+          value: `theme:${palette.id}`,
+          title: palette.name,
+          searchTerms: [palette.name],
+          icon: (
+            <span
+              aria-hidden="true"
+              className="flex size-4 overflow-hidden rounded-full border border-border"
+            >
+              {[palette.dark.background, palette.dark.primary, palette.dark.accent].map(
+                (color, index) => (
+                  <span key={index} className="flex-1" style={{ backgroundColor: color }} />
+                ),
+              )}
+            </span>
+          ),
+          run: async () => {
+            updateSettings({ themeId: palette.id });
+          },
+        })),
+      },
+    ],
+  });
 
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const activeGroups = currentView ? currentView.groups : rootGroups;

@@ -3,6 +3,20 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 export const DISPLAY_SETTINGS_DESCRIPTORS = (
   [
     [
+      "diff-default",
+      "Default diff file state",
+      "Expand, collapse, or automatically size diff files.",
+      "Default diff file state",
+      ["diff", "expanded", "collapsed"],
+    ],
+    [
+      "diff-colors",
+      "Diff colors",
+      "Choose red and green or blue and orange diff colors.",
+      "Diff colors",
+      ["diff", "accessibility", "palette"],
+    ],
+    [
       "streaming",
       "Stream assistant messages",
       "Show output while a response is in progress.",
