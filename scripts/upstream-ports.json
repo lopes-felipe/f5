@@ -457,7 +457,8 @@
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -926,10 +927,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:674",
+        "apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:696",
         "apps/server/src/provider/Layers/GrokAdapter.test.ts:321"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "0ba06a122bc73f705bfc18875366b4eeb1160992",
@@ -1689,7 +1693,8 @@
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -9325,11 +9330,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/orchestration/projectSkills.ts:499",
-        "apps/web/src/components/ChatView.logic.ts:251"
+        "apps/web/src/components/ChatView.logic.ts:257"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -10089,7 +10095,8 @@
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -11492,7 +11499,8 @@
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -13408,12 +13416,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Drivers/AntigravityDriver.ts:55",
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:61",
         "apps/server/src/provider/Layers/AntigravityProvider.test.ts:28"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -13449,7 +13458,8 @@
       "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -13532,11 +13542,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/orchestration/projectSkills.ts:499",
-        "apps/web/src/components/ChatView.logic.ts:251"
+        "apps/web/src/components/ChatView.logic.ts:257"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -14911,12 +14922,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1402",
+        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1411",
         "apps/web/src/components/ChatView.logic.ts:80"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -15284,7 +15296,8 @@
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -15399,11 +15412,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/provider/codexErrors.ts:35",
-        "apps/server/src/provider/usageLimitMessages.test.ts:57"
+        "apps/server/src/provider/usageLimitMessages.test.ts:58"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -15617,12 +15631,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/web/src/components/ChatView.logic.ts:898",
+        "apps/web/src/components/ChatView.logic.ts:904",
         "apps/web/src/components/ChatView.logic.test.ts:1184"
       ],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -16683,7 +16698,8 @@
       "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
@@ -16876,7 +16892,8 @@
       "evidence": ["apps/web/src/components/ChatView.logic.ts:183"],
       "f5Shas": [
         "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
-        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
       ]
     },
     {
