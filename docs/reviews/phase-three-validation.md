@@ -98,3 +98,50 @@ The first candidate benchmark completed its soak but was rejected for an unknown
 empty job list. Both baseline and candidate are measured with this same correction;
 no workload size, timing threshold or memory limit was changed. Benchmark results
 are ignored artifacts, not committed reports. Final comparison follows below.
+
+### Measured comparison and outstanding acceptance
+
+Both corrected acquisitions contain five warmups, thirty repetitions and all
+11 samples over ten minutes. The baseline was captured September 25; the candidate
+was captured September 28 after the interrupted implementation session resumed.
+
+| Interactive measurement (p95)  |     Base | Candidate |
+| ------------------------------ | -------: | --------: |
+| Small-thread startup           | 140.3 ms |  164.2 ms |
+| Warm large-thread switch       | 183.5 ms |  194.4 ms |
+| Composer input                 |  17.8 ms |   18.2 ms |
+| Composer input while streaming |  16.1 ms |   16.1 ms |
+
+Startup exceeds both the 10% and 20 ms regression thresholds. This is an unresolved
+acceptance failure, not a passing comparison. Investigation found severe host
+contention after the candidate run (one-minute load approximately 280 on 14 cores).
+That observation is not proof the code has no regression. A contemporaneous
+baseline and candidate must be measured on an otherwise quiet host before closing
+performance acceptance. No thresholds were relaxed.
+
+Browser retained growth in the final five minutes is 6,301,608 bytes (11.99%),
+versus 4,955,464 bytes (9.60%) before. Both violate the existing 5% growth gate;
+both pass the 10 MiB absolute bound. Candidate server growth is 159,192 bytes
+(0.10%) and combined growth is 6,460,800 bytes (2.98%), both passing. The unchanged
+slow-client fixture still buffers 4,148 frames against the Phase 2 target of 2,000.
+The comparison command correctly fails for startup latency, browser growth and
+pending frames. Phase 3 implementation is reviewable, but performance acceptance
+and the remaining Phase 2 bounds are not complete.
+
+Raw artifacts are `.performance/phase3-before-v2-interactive.json` in the isolated
+baseline checkout and `.performance/phase3-after-v2-interactive.json` in the feature
+checkout. Fixture digest is
+`4478762c808f2d2dc3721ff922a46b28086472f1173491833ff0efc026056c19`.
+They include hardware, OS, runtime, browser and dependency versions. Results here
+are from macOS arm64 on an Apple M4 Pro.
+
+### Final rerun under host contention
+
+The September 28 full-suite rerun did not pass: the scripts suite reported 14
+five-second timeouts across ledger/history/migration tests, and the server run
+also timed out the existing real-Git profile credentials test at 15 seconds.
+Turbo stopped after the scripts failure, so that rerun did not reach the exhaustive
+Git matrix. These tests were green in the prior full run reported above. The new
+clone tracker tests passed in the final rerun. No test deadline was increased and
+no failure was waived. CI or a quiet-host rerun must validate the final revision;
+this report does not call the PR merge-ready.
