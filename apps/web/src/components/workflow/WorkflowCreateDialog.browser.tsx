@@ -57,6 +57,7 @@ vi.mock("../../nativeApi", () => {
       ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
     };
     switch (input.templateId) {
+      case "builtin.document.dual":
       case "builtin.planning.dual": {
         const result = await nativeApiMocks.createWorkflow(
           request as OrchestrationCreateWorkflowInput,
@@ -810,6 +811,137 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("follows the merge model until the reader is selected and blocks identical authors", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    const chooseClaude = async (field: string, model: string) => {
+      findProviderFieldButton(field).click();
+      await vi.waitFor(() => expect(findMenuItem("Claude")).not.toBeNull());
+      findMenuItem("Claude")!.click();
+      await vi.waitFor(() => expect(findMenuItemRadio(model)).not.toBeNull());
+      findMenuItemRadio(model)!.click();
+      await vi.waitFor(() =>
+        expect(findProviderFieldButton(field).textContent, field).toContain(
+          model.replace("Claude ", ""),
+        ),
+      );
+      await vi.waitFor(() => expect(findMenuItem("Claude")).toBeNull());
+    };
+    try {
+      await page.getByRole("button", { name: "Document", exact: true }).click();
+      await page
+        .getByPlaceholder(
+          "Describe the proposed change, audience, desired tone, constraints, and supporting inputs.",
+        )
+        .fill("Describe the migration");
+      await chooseClaude("Author B", "Claude Sonnet 4.6");
+      expect(findProviderFieldButton("Reader model").textContent).toContain("Sonnet 4.6");
+      const authorA = findProviderFieldButton("Author A").textContent;
+      await chooseClaude("Merge model", "Claude Sonnet 4.6");
+      expect(findProviderFieldButton("Reader model").textContent).toBe(authorA);
+      await chooseClaude("Reader model", "Claude Sonnet 4.6");
+      expect(document.body.textContent).toContain(
+        "The reader is the model that writes the final document",
+      );
+      await chooseClaude("Merge model", "Claude Opus 4.7");
+      expect(findProviderFieldButton("Reader model").textContent).toContain("Sonnet 4.6");
+      await chooseClaude("Author A", "Claude Sonnet 4.6");
+      expect(document.body.textContent).toContain(
+        "Document workflows need two different author models.",
+      );
+      expect(createWorkflowButton().disabled).toBe(true);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("creates an ADR with reader review and no implementation fields", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    try {
+      await page.getByRole("button", { name: "Document", exact: true }).click();
+      await page.getByRole("combobox", { name: "Document type" }).click();
+      await page.getByRole("option", { name: "ADR", exact: true }).click();
+      await page
+        .getByPlaceholder(
+          "Describe the architectural decision, audience, alternatives, tone, and evidence.",
+        )
+        .fill("Record why we chose queues");
+      expect(document.body.textContent).toContain("/ 24,000");
+      expect(document.body.textContent).not.toContain("Plans directory");
+      expect(document.body.textContent).not.toContain("Compare against branch");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
+      const request = nativeApiMocks.createRun.mock.calls[0]![0];
+      expect(request.templateId).toBe("builtin.document.dual");
+      expect(request.input).toMatchObject({
+        documentType: "adr",
+        selfReviewEnabled: true,
+        readerReviewEnabled: true,
+      });
+      expect(request.input).not.toHaveProperty("plansDirectory");
+      expect(request.input).not.toHaveProperty("readerPersona");
+      if (request.templateId === "builtin.document.dual") {
+        const expected =
+          request.input.branchA.provider !== request.input.merge.provider ||
+          request.input.branchA.model !== request.input.merge.model
+            ? request.input.branchA
+            : request.input.branchB;
+        expect(request.input.reader).toEqual(expected);
+      }
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+  it("preserves a custom reader persona across categories and omits the reader when disabled", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+    try {
+      await page.getByRole("button", { name: "Document", exact: true }).click();
+      await page.getByRole("textbox", { name: "Reader persona (optional)" }).fill("The CFO");
+      await page.getByRole("combobox", { name: "Document type" }).click();
+      await page.getByRole("option", { name: "One-pager", exact: true }).click();
+      expect(
+        (
+          page
+            .getByRole("textbox", { name: "Reader persona (optional)" })
+            .element() as HTMLTextAreaElement
+        ).value,
+      ).toBe("The CFO");
+      await page.getByRole("checkbox", { name: /Reader review of the final document/ }).click();
+      await expect
+        .element(page.getByRole("textbox", { name: "Reader persona (optional)" }))
+        .not.toBeInTheDocument();
+      await page
+        .getByPlaceholder(
+          "Describe the decision, stakeholder audience, tone, and supporting inputs.",
+        )
+        .fill("Fund the migration");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createRun.mock.calls[0]![0].input).toMatchObject({
+        readerReviewEnabled: false,
+      });
+      expect(nativeApiMocks.createRun.mock.calls[0]![0].input).not.toHaveProperty("reader");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
   it("renders keyboard-navigable workflow type toggles with distinct hue classes", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -822,6 +954,7 @@ describe("WorkflowCreateDialog", () => {
       const feature = page.getByRole("button", { name: "Feature" }).element();
       const codeReview = page.getByRole("button", { name: "Code Review" }).element();
       const investigation = page.getByRole("button", { name: "Investigation" }).element();
+      const documentToggle = page.getByRole("button", { name: "Document" }).element();
 
       expect(feature.getAttribute("aria-pressed")).toBe("true");
       expect(feature.className).toContain("data-pressed:bg-sky-500/15");
@@ -861,12 +994,9 @@ describe("WorkflowCreateDialog", () => {
       await userEvent.keyboard("{End}");
       await vi.waitFor(() => {
         expect(
-          page
-            .getByRole("button", { name: "Investigation" })
-            .element()
-            .getAttribute("aria-pressed"),
+          page.getByRole("button", { name: "Document" }).element().getAttribute("aria-pressed"),
         ).toBe("true");
-        expect(document.activeElement).toBe(investigation);
+        expect(document.activeElement).toBe(documentToggle);
       });
 
       await userEvent.keyboard("{ArrowDown}");

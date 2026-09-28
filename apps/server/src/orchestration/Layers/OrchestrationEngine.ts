@@ -39,6 +39,7 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { makeStorageMaintenanceLock } from "../../storage/StorageMaintenanceLock.ts";
 import { withStartupPhaseTiming } from "../../startupTiming.ts";
 
@@ -91,6 +92,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const maintenanceLock = yield* makeStorageMaintenanceLock;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -188,6 +190,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel,
+          ...(envelope.command.type === "thread.turn.start" && providerRegistry._tag === "Some"
+            ? { providerInstances: yield* providerRegistry.value.getProviders }
+            : {}),
         });
         const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
         const committedCommand = yield* sql

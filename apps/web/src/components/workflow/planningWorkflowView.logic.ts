@@ -1,3 +1,4 @@
+import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
 import type { PlanningWorkflow } from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 
@@ -11,6 +12,12 @@ export function collectPlanningWorkflowErrors(
   workflow: PlanningWorkflow,
 ): PlanningWorkflowErrorDetail[] {
   const errors: PlanningWorkflowErrorDetail[] = [];
+  if (workflow.readerPass?.status === "error")
+    errors.push({
+      key: "reader-pass",
+      step: workflow.readerPass.errorStage === "polish" ? "Polish" : "Reader review",
+      message: workflow.readerPass.error ?? "Reader pass failed.",
+    });
 
   for (const [branchLabel, branch] of [
     ["A", workflow.branchA],
@@ -84,6 +91,12 @@ export function planningWorkflowStatusLabel(workflow: PlanningWorkflow): string 
   if (canRetryFailedPlanningWorkflow(workflow)) {
     return "Error";
   }
+  if (isDocumentWorkflow(workflow)) {
+    if (workflow.merge.status === "manual_review") return "Document ready";
+    const phase = documentReaderPassPhase(workflow);
+    if (phase === "reading") return "Reader reviewing";
+    if (phase === "polishing") return "Polishing";
+  }
   if (workflow.implementation) {
     switch (workflow.implementation.status) {
       case "implementing":
@@ -120,7 +133,7 @@ export function planningWorkflowStatusLabel(workflow: PlanningWorkflow): string 
     return "Reviewing";
   }
   if (workflow.branchA.planTurnId && workflow.branchB.planTurnId) {
-    return "Plans drafted";
+    return isDocumentWorkflow(workflow) ? "Drafts ready" : "Plans drafted";
   }
   return "Authoring";
 }

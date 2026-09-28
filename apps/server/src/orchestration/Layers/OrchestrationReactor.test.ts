@@ -129,6 +129,7 @@ describe("OrchestrationReactor", () => {
               started.push("workflow-service");
             }),
             drain: Effect.void,
+            skipDocumentReaderPass: () => Effect.succeed({ status: "completed" as const }),
             createWorkflow: () => Effect.die("unsupported"),
             archiveWorkflow: () => Effect.die("unsupported"),
             unarchiveWorkflow: () => Effect.die("unsupported"),

@@ -64,6 +64,7 @@ import {
   OrchestrationUnarchiveInvestigationWorkflowInput,
   OrchestrationUnarchiveCodeReviewWorkflowInput,
   OrchestrationUnarchiveWorkflowInput,
+  OrchestrationSkipDocumentReaderPassInput,
 } from "./orchestration";
 import {
   McpApplyToLiveSessionsRequest,
@@ -502,6 +503,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow,
     OrchestrationDeleteInvestigationWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.skipDocumentReaderPass,
+    OrchestrationSkipDocumentReaderPassInput,
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.retryWorkflow, OrchestrationRetryWorkflowInput),
   tagRequestBody(

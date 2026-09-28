@@ -30,7 +30,7 @@ export function WorkflowThreadLinkRow(props: {
   fallbackLabel: string;
   threadTitleDisplay?: string | null | undefined;
   className?: string;
-  stepState?: "completed" | "active" | "pending" | "error";
+  stepState?: "completed" | "active" | "pending" | "error" | "skipped";
 }) {
   const stepState = props.stepState ?? "active";
   const row = resolveWorkflowThreadRowState(props);
@@ -39,6 +39,7 @@ export function WorkflowThreadLinkRow(props: {
     "block rounded-md border border-border px-3 py-2 text-sm",
     stepState === "pending" && !props.threadId && "opacity-40 pointer-events-none",
     stepState === "pending" && props.threadId && "opacity-40 hover:bg-accent",
+    stepState === "skipped" && "opacity-40 line-through",
     stepState === "completed" && "opacity-75 hover:bg-accent",
     stepState === "error" && "border-red-500/30 hover:bg-accent",
     stepState === "active" && "hover:bg-accent",

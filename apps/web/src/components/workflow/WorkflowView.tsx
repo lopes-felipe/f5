@@ -1,3 +1,11 @@
+import {
+  planningWorkflowDocumentType,
+  WORKFLOW_DOCUMENT_PROFILES,
+  documentReaderPersona,
+  documentReaderPassPhase,
+  validateDocumentArtifact,
+} from "@t3tools/shared/documentWorkflow";
+import { MarkdownArtifactActions } from "../chat/MarkdownArtifactActions";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -17,7 +25,11 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import { WorkflowImplementDialog } from "./WorkflowImplementDialog";
-import { canStartImplementation, resolveApprovedMergedPlanMarkdown } from "./workflowUtils";
+import {
+  canStartImplementation,
+  resolveDocumentDisplayMarkdown,
+  resolveApprovedMergedPlanMarkdown,
+} from "./workflowUtils";
 import { deriveTimelinePhases } from "./workflowSidebarTimeline";
 import { WorkflowRunInspector } from "./WorkflowRunInspector";
 import {
@@ -34,11 +46,15 @@ export function WorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
   const [implementDialogOpen, setImplementDialogOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [skipOpen, setSkipOpen] = useState(false);
   const [duplicateRiskThreadIds, setDuplicateRiskThreadIds] = useState<readonly string[]>([]);
   const workflow = useStore((store) =>
     store.planningWorkflows.find((entry) => entry.id === props.workflowId),
   );
   const threads = useStore((store) => store.threads);
+  const cwd = useStore(
+    (store) => store.projects.find((project) => project.id === workflow?.projectId)?.cwd,
+  );
 
   if (!workflow) {
     return (
@@ -51,7 +67,20 @@ export function WorkflowView(props: { workflowId: string }) {
   const mergeThread = workflow.merge.threadId
     ? threads.find((thread) => thread.id === workflow.merge.threadId)
     : null;
-  const mergedPlan = resolveApprovedMergedPlanMarkdown(workflow, mergeThread);
+  const documentType = planningWorkflowDocumentType(workflow);
+  const documentProfile = documentType ? WORKFLOW_DOCUMENT_PROFILES[documentType] : null;
+  const readerPhase = documentReaderPassPhase(workflow);
+  const mergedPlan = documentType
+    ? resolveDocumentDisplayMarkdown(workflow, mergeThread)
+    : resolveApprovedMergedPlanMarkdown(workflow, mergeThread);
+  const latestPlan = mergeThread?.proposedPlans.at(-1);
+  const incompleteReply =
+    documentType &&
+    workflow.merge.status === "manual_review" &&
+    latestPlan &&
+    latestPlan.id !== workflow.merge.approvedPlanId &&
+    !validateDocumentArtifact(latestPlan.planMarkdown, documentType, "replacement").valid;
+
   const implementationStartable = canStartImplementation(workflow);
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const timelinePhases = deriveTimelinePhases(workflow);
@@ -95,7 +124,9 @@ export function WorkflowView(props: { workflowId: string }) {
       <div className="border-b border-border px-6 py-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Workflow</p>
+            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+              {documentProfile ? `Document · ${documentProfile.label}` : "Workflow"}
+            </p>
             <h1 className="mt-1 text-2xl font-semibold text-foreground">{workflow.title}</h1>
             <p className="mt-2 text-sm text-muted-foreground">
               {planningWorkflowStatusLabel(workflow)}
@@ -106,6 +137,26 @@ export function WorkflowView(props: { workflowId: string }) {
             {retryable ? (
               <Button variant="outline" onClick={() => void handleRetry()} disabled={retrying}>
                 Retry failed
+              </Button>
+            ) : null}
+            {documentType && workflow.readerPass?.status === "error" ? (
+              <Button variant="outline" onClick={() => setSkipOpen(true)}>
+                Finish without reader review
+              </Button>
+            ) : null}
+            {documentType &&
+            workflow.merge.status === "manual_review" &&
+            workflow.merge.threadId ? (
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void navigate({
+                    to: "/$threadId",
+                    params: { threadId: workflow.merge.threadId! },
+                  })
+                }
+              >
+                Refine in chat
               </Button>
             ) : null}
             {implementationStartable ? (
@@ -145,26 +196,76 @@ export function WorkflowView(props: { workflowId: string }) {
                 </section>
               ) : null}
               <section>
-                <h2 className="text-sm font-semibold text-foreground">Requirement</h2>
+                <h2 className="text-sm font-semibold text-foreground">
+                  {documentType ? "Brief" : "Requirement"}
+                </h2>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
                   {workflow.requirementPrompt}
                 </p>
               </section>
+              {documentType && workflow.readerReviewEnabled ? (
+                <p className="text-sm text-muted-foreground">
+                  Reader: {documentReaderPersona(workflow)} · {workflow.readerSlot?.model}
+                  {workflow.readerPass?.pinnedTurnId ? (
+                    <Button
+                      variant="link"
+                      onClick={() =>
+                        void navigate({
+                          to: "/$threadId",
+                          params: { threadId: workflow.readerPass!.readerThreadId },
+                        })
+                      }
+                    >
+                      View reader report
+                    </Button>
+                  ) : null}
+                </p>
+              ) : null}
               {mergedPlan ? (
                 <section>
                   <div className="mb-3 flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold text-foreground">Merged plan</h2>
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {documentType
+                        ? workflow.merge.status === "merged"
+                          ? "Merged draft"
+                          : "Final document"
+                        : "Merged plan"}
+                    </h2>
+                    {documentType ? (
+                      <MarkdownArtifactActions
+                        markdown={mergedPlan}
+                        workspaceRoot={cwd}
+                        artifactNoun="document"
+                      />
+                    ) : null}
                     {workflow.merge.outputFilePath ? (
                       <span className="text-xs text-muted-foreground">
                         {workflow.merge.outputFilePath}
                       </span>
                     ) : null}
                   </div>
-                  <ChatMarkdown text={mergedPlan} cwd={undefined} />
+                  {documentType && workflow.merge.status === "merged" ? (
+                    <p className="mb-3 text-xs text-muted-foreground">
+                      {readerPhase === "polishing"
+                        ? "Polishing"
+                        : readerPhase === "error"
+                          ? "Reader pass failed"
+                          : "Reader review in progress"}
+                    </p>
+                  ) : null}
+                  <ChatMarkdown text={mergedPlan} cwd={documentType ? cwd : undefined} />
+                  {incompleteReply ? (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      The latest merge-chat reply was not a complete {documentProfile?.label}, so
+                      the final document was not updated.
+                    </p>
+                  ) : null}
                 </section>
               ) : (
                 <section className="text-sm text-muted-foreground">
-                  The merged plan will appear here once the workflow reaches manual review.
+                  {documentType
+                    ? "The document will appear here after the drafts are reviewed and merged."
+                    : "The merged plan will appear here once the workflow reaches manual review."}
                 </section>
               )}
             </div>
@@ -176,6 +277,37 @@ export function WorkflowView(props: { workflowId: string }) {
         workflow={workflow}
         onOpenChange={setImplementDialogOpen}
       />
+      <AlertDialog open={skipOpen} onOpenChange={setSkipOpen}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Finish without reader review?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The merged document becomes final without the reader's changes. You can still refine
+              it in chat.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              disabled={retrying}
+              onClick={() => {
+                const api = readNativeApi();
+                if (!api) return;
+                setRetrying(true);
+                void api.orchestration
+                  .skipDocumentReaderPass({ workflowId: workflow.id })
+                  .then(() => setSkipOpen(false))
+                  .catch((error) =>
+                    toastManager.add({ type: "error", title: retryErrorMessage(error) }),
+                  )
+                  .finally(() => setRetrying(false));
+              }}
+            >
+              Finish without reader review
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog
         open={duplicateRiskThreadIds.length > 0}
         onOpenChange={(open) => {

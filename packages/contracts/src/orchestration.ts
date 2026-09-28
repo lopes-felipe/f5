@@ -2,7 +2,14 @@ import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } fro
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
 import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
 import { ProviderModelOptions, ProviderOptionSelections } from "./model";
-import { PlanningWorkflow, PlanningWorkflowId, WorkflowModelSlot } from "./planningWorkflow";
+import {
+  DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS,
+  DocumentReaderPersona,
+  WorkflowDocumentType,
+  PlanningWorkflow,
+  PlanningWorkflowId,
+  WorkflowModelSlot,
+} from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
@@ -48,6 +55,7 @@ export const ORCHESTRATION_WS_METHODS = {
   unarchiveWorkflow: "orchestration.unarchiveWorkflow",
   deleteWorkflow: "orchestration.deleteWorkflow",
   retryWorkflow: "orchestration.retryWorkflow",
+  skipDocumentReaderPass: "orchestration.skipDocumentReaderPass",
   createCodeReviewWorkflow: "orchestration.createCodeReviewWorkflow",
   archiveCodeReviewWorkflow: "orchestration.archiveCodeReviewWorkflow",
   unarchiveCodeReviewWorkflow: "orchestration.unarchiveCodeReviewWorkflow",
@@ -899,6 +907,10 @@ const ProjectWorkflowCreateCommand = Schema.Struct({
     Schema.withDecodingDefault(() => "builtin.planning.dual"),
   ),
   templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
+  documentType: Schema.optional(WorkflowDocumentType),
+  readerReviewEnabled: Schema.optional(Schema.Boolean),
+  readerPersona: Schema.optional(DocumentReaderPersona),
+  readerSlot: Schema.optional(WorkflowModelSlot),
   authorThreadIdA: ThreadId,
   authorThreadIdB: ThreadId,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -2598,21 +2610,47 @@ export const OrchestrationGetThreadFileChangeResult = Schema.Struct({
 export type OrchestrationGetThreadFileChangeResult =
   typeof OrchestrationGetThreadFileChangeResult.Type;
 
-export const OrchestrationCreateWorkflowInput = Schema.Struct({
+const PlanningWorkflowCreateFields = {
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   requirementPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
-  templateId: Schema.optional(TrimmedNonEmptyString),
-  templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
-  plansDirectory: Schema.optional(TrimmedNonEmptyString),
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowModelSlot,
   branchB: WorkflowModelSlot,
   merge: WorkflowModelSlot,
   maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+};
+export const OrchestrationCreateWorkflowInput = Schema.Struct({
+  ...PlanningWorkflowCreateFields,
+  templateId: Schema.optional(TrimmedNonEmptyString),
+  templateVersion: Schema.optional(Schema.Int),
+  plansDirectory: Schema.optional(TrimmedNonEmptyString),
+  documentType: Schema.optional(WorkflowDocumentType),
 });
 export type OrchestrationCreateWorkflowInput = typeof OrchestrationCreateWorkflowInput.Type;
+export const OrchestrationCreateDocumentWorkflowInput = Schema.Struct({
+  ...PlanningWorkflowCreateFields,
+  requirementPrompt: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS),
+  ),
+  documentType: WorkflowDocumentType,
+  readerReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  readerPersona: Schema.optional(DocumentReaderPersona),
+  reader: Schema.optional(WorkflowModelSlot),
+});
+export type OrchestrationCreateDocumentWorkflowInput =
+  typeof OrchestrationCreateDocumentWorkflowInput.Type;
+export const OrchestrationSkipDocumentReaderPassInput = Schema.Struct({
+  workflowId: PlanningWorkflowId,
+});
+export type OrchestrationSkipDocumentReaderPassInput =
+  typeof OrchestrationSkipDocumentReaderPassInput.Type;
+export const OrchestrationSkipDocumentReaderPassResult = Schema.Struct({
+  status: Schema.Literal("completed"),
+});
+export type OrchestrationSkipDocumentReaderPassResult =
+  typeof OrchestrationSkipDocumentReaderPassResult.Type;
 
 export const OrchestrationCreateWorkflowResult = Schema.Struct({
   workflowId: PlanningWorkflowId,
@@ -2859,6 +2897,10 @@ export const OrchestrationRpcSchemas = {
   deleteInvestigationWorkflow: {
     input: OrchestrationDeleteInvestigationWorkflowInput,
     output: Schema.Void,
+  },
+  skipDocumentReaderPass: {
+    input: OrchestrationSkipDocumentReaderPassInput,
+    output: OrchestrationSkipDocumentReaderPassResult,
   },
   retryWorkflow: {
     input: OrchestrationRetryWorkflowInput,

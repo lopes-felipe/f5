@@ -7,6 +7,7 @@ export type WorkflowRetryContext =
   | {
       readonly kind: "retry";
       readonly reusedThread: boolean;
+      readonly formatRepair?: true;
       readonly priorFailure?: string | undefined;
     };
 

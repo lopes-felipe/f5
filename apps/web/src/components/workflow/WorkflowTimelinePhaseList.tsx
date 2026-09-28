@@ -11,6 +11,7 @@ import {
 const PHASE_ICON = {
   completed: CircleCheckBig,
   active: CircleDot,
+  skipped: Circle,
   pending: Circle,
   error: CircleAlert,
 } as const;
@@ -18,6 +19,7 @@ const PHASE_ICON = {
 const PHASE_ICON_CLASS: Record<WorkflowTimelinePhaseState, string> = {
   completed: "text-emerald-500",
   active: "text-primary animate-pulse",
+  skipped: "text-muted-foreground/30",
   pending: "text-muted-foreground/30",
   error: "text-red-500",
 };
@@ -25,6 +27,7 @@ const PHASE_ICON_CLASS: Record<WorkflowTimelinePhaseState, string> = {
 const PHASE_LABEL_CLASS: Record<WorkflowTimelinePhaseState, string> = {
   completed: "text-foreground",
   active: "text-foreground font-semibold",
+  skipped: "text-muted-foreground/50 line-through",
   pending: "text-muted-foreground/50",
   error: "text-red-500",
 };

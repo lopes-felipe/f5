@@ -1,14 +1,20 @@
 import * as Schema from "effect/Schema";
-import { SCRIPT_RUN_COMMAND_PATTERN } from "@t3tools/contracts";
 import {
   MAX_PINNED_THREADS,
+  SCRIPT_RUN_COMMAND_PATTERN,
   ProjectId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type ThreadId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
+import {
+  documentWorkflowForThread,
+  defaultDocumentReaderSlot,
+  isDocumentWorkflow,
+} from "@t3tools/shared/documentWorkflow";
 
 import { OrchestrationCommandInvariantError, ThreadTurnAlreadyActiveError } from "./Errors.ts";
 import {
@@ -21,7 +27,7 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { validateThreadTasks } from "./threadTasks.ts";
-import { resolveWorkflowBehavior } from "./workflowBehavior.ts";
+import { resolveWorkflowBehavior, documentWorkflowCreateInvariant } from "./workflowBehavior.ts";
 import {
   buildCodeReviewWorkflowRecord,
   buildInvestigationWorkflowRecord,
@@ -102,9 +108,11 @@ function makeThreadUnsnoozedEvent(input: {
 export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand")(function* ({
   command,
   readModel,
+  providerInstances = [],
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
+  readonly providerInstances?: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
   OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError
@@ -396,6 +404,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: unsupportedBehavior,
         });
       }
+      if (
+        isDocumentWorkflow(command) &&
+        command.branchA.provider === command.branchB.provider &&
+        command.branchA.model === command.branchB.model
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Document workflows need two different author models.",
+        });
+      if (
+        isDocumentWorkflow(command) &&
+        [command.branchA, command.branchB, command.merge, command.readerSlot].some(
+          (slot) => slot?.provider === "grok",
+        )
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Grok cannot enforce read-only document turns.",
+        });
+      const documentInvariant = documentWorkflowCreateInvariant(command);
+      if (documentInvariant)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: documentInvariant,
+        });
       return {
         ...withEventBase({
           aggregateKind: "project",
@@ -416,6 +449,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             requirementPrompt: command.requirementPrompt,
             plansDirectory: command.plansDirectory,
             selfReviewEnabled: command.selfReviewEnabled,
+            documentType: command.documentType,
+            readerReviewEnabled: command.readerReviewEnabled,
+            readerPersona: command.readerPersona,
+            readerSlot: command.readerReviewEnabled
+              ? (command.readerSlot ?? defaultDocumentReaderSlot(command))
+              : command.readerSlot,
             authorThreadIdA: command.authorThreadIdA,
             authorThreadIdB: command.authorThreadIdB,
             branchA: command.branchA,
@@ -1310,6 +1349,27 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      const documentWorkflow = documentWorkflowForThread(
+        readModel.planningWorkflows,
+        command.threadId,
+      );
+      const selectedInstanceId =
+        command.modelSelection?.instanceId ?? targetThread.modelSelection?.instanceId;
+      const selectedDriver = providerInstances.find(
+        (instance) => instance.instanceId === selectedInstanceId,
+      )?.driver;
+      if (
+        documentWorkflow &&
+        (command.provider === "grok" ||
+          selectedDriver === "grok" ||
+          (!selectedInstanceId &&
+            !command.provider &&
+            targetThread.session?.providerName === "grok"))
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Grok cannot enforce read-only document turns.",
+        });
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1368,7 +1428,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           interactionMode: effectiveInteractionMode,
           ...(command.workflowExecutionProfile !== undefined
             ? { workflowExecutionProfile: command.workflowExecutionProfile }
-            : {}),
+            : documentWorkflow
+              ? { workflowExecutionProfile: "attended-readonly" as const }
+              : {}),
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },

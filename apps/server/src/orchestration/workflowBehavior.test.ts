@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  documentWorkflowCreateInvariant,
+  latestWorkflowTemplateVersion,
   assertWorkflowStageProviderSupported,
   resolveWorkflowBehavior,
   UnsupportedWorkflowProviderError,
@@ -8,6 +10,32 @@ import {
 } from "./workflowBehavior.ts";
 
 describe("workflowBehavior", () => {
+  it("resolves Document only at v2, independently of Feature", () => {
+    expect(
+      latestWorkflowTemplateVersion({ runKind: "planning", templateId: "builtin.document.dual" }),
+    ).toBe(2);
+    expect(
+      resolveWorkflowBehavior({
+        runKind: "planning",
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+      }).executionProfileForStage("merge"),
+    ).toBe("attended-readonly");
+    expect(() =>
+      resolveWorkflowBehavior({
+        runKind: "planning",
+        templateId: "builtin.document.dual",
+        templateVersion: 1,
+      }),
+    ).toThrow();
+    expect(
+      documentWorkflowCreateInvariant({
+        templateId: "builtin.planning.dual",
+        requirementPrompt: "Brief",
+        readerReviewEnabled: false,
+      }),
+    ).toContain("only available");
+  });
   it("treats missing record metadata as legacy v1", () => {
     const behavior = resolveWorkflowBehavior({ runKind: "planning" });
     expect(behavior.templateVersion).toBe(1);

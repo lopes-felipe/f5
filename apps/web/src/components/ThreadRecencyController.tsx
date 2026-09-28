@@ -1,3 +1,4 @@
+import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import {
   DEFAULT_NEW_THREAD_TITLE,
   ThreadId,
@@ -530,7 +531,7 @@ export default function ThreadRecencyController() {
           id: targetKey,
           title: workflow?.title ?? fallbackTitleForTarget(target),
           subtitle: projectName,
-          badgeLabel: "Feature",
+          badgeLabel: workflow && isDocumentWorkflow(workflow) ? "Document" : "Feature",
           threadStatusPill: null,
           isDraft: false,
           isStale,

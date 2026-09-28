@@ -850,6 +850,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
+          if (
+            resolvedProvider === "grok" &&
+            parsed.workflowExecutionProfile?.endsWith("readonly")
+          ) {
+            return yield* toValidationError(
+              "ProviderService.startSession",
+              "Grok cannot enforce read-only workflow turns.",
+            );
+          }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
             return yield* toValidationError(
               "ProviderService.startSession",
@@ -1054,6 +1063,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             allowRecovery: true,
           });
           metricProvider = routed.adapter.provider;
+          if (
+            routed.adapter.provider === "grok" &&
+            input.workflowExecutionProfile?.endsWith("readonly")
+          ) {
+            return yield* toValidationError(
+              "ProviderService.sendTurn",
+              "Grok cannot enforce read-only workflow turns.",
+            );
+          }
           metricModel = input.model;
           yield* Effect.annotateCurrentSpan({
             "provider.kind": routed.adapter.provider,
