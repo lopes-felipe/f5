@@ -451,11 +451,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Drivers/AntigravityDriver.ts:30",
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:31",
         "apps/server/src/provider/AntigravityInstallation.test.ts:33",
-        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "063ed7120a17de65fcd5bd835b5c7c4e19536037",
@@ -873,10 +876,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/orchestration/projectSkills.ts:447",
-        "apps/server/src/orchestration/projectSkills.test.ts:246"
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/server/src/orchestration/projectSkills.test.ts:275"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "0acf05f4f561b873853587f8629ca691b18a613a",
@@ -1678,10 +1684,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/orchestration/projectSkills.ts:447",
+        "apps/server/src/orchestration/projectSkills.ts:499",
         "apps/web/src/components/ChatView.logic.ts:80"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "160c76c6d1c5ab78441e21503cd10e7942b917f6",
@@ -2523,9 +2532,12 @@
       "disposition": "equivalent",
       "evidence": [
         "apps/web/src/components/settings/ProviderAccountPanel.tsx:110",
-        "apps/server/src/profiles/ProviderAccountService.ts:179"
+        "apps/server/src/profiles/ProviderAccountService.ts:180"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "2152d44de2db30a6bae965b0afd30be080e5c872",
@@ -3174,7 +3186,7 @@
     {
       "upstreamSha": "2a47fc905a7a1054823919980f625b7cd869f1c1",
       "subject": "fix(skills): support unicode currency symbols as skill aliases (#12098)",
-      "reason": "Unicode currency symbols open the skill picker while numeric monetary tokens are excluded.",
+      "reason": "Codex currency-symbol skill completion opens only for matching skills; shell variables and other providers retain ordinary send behavior.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": ["apps/web/src/composer-logic.test.ts:321"],
@@ -4564,7 +4576,10 @@
         "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502",
         "apps/server/src/provider/Layers/ClaudeAdapter.ts:174"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "3c0665543f0e31db1e3425d4fcf9f4aea295a8ce",
@@ -4653,7 +4668,10 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "3d32797f6f4614205debf8a61f09e950f5f9a81c",
@@ -7339,9 +7357,12 @@
       "disposition": "equivalent",
       "evidence": [
         "apps/server/src/profiles/AntigravityAccountProcess.ts:39",
-        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "6365919f2e5bcfb4fa4020b95e19af26ae40979f",
@@ -9174,10 +9195,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/profiles/ProviderAccountService.ts:179",
-        "apps/server/src/profiles/ProviderAccountService.test.ts:180"
+        "apps/server/src/profiles/ProviderAccountService.ts:180",
+        "apps/server/src/profiles/ProviderAccountService.test.ts:182"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "7e7cd32463b528838cb10ef6b89ef6ceac1f7a4c",
@@ -9300,10 +9324,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/orchestration/projectSkills.ts:447",
-        "apps/web/src/components/ChatView.logic.ts:246"
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/web/src/components/ChatView.logic.ts:251"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "80b53730d1e821563e5c348fdf4f5fc7616a49f7",
@@ -10060,7 +10087,10 @@
         "apps/web/src/components/ChatView.logic.ts:80",
         "apps/server/src/provider/supportedSlashCommands.ts:14"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "8b1ea4dd2465f3cf3cfa02d6878beaa1ec22e71a",
@@ -10142,9 +10172,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
-        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:158"
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:168"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "8c3b5bef17a637bf53f297189350359790ef7afb",
@@ -10773,7 +10806,10 @@
         "apps/server/src/provider/usageLimitMessages.ts:15",
         "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "941acb4f919bcef337d4d9e1623101bdc30d3616",
@@ -11452,9 +11488,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/web/src/components/ChatView.logic.ts:80",
-        "apps/web/src/components/ChatView.tsx:2294"
+        "apps/web/src/components/ChatView.tsx:2275"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "9dbdcece5f488c66f6b9ac516b610f45bbbb676a",
@@ -12275,10 +12314,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:113",
-        "apps/server/src/orchestration/projectSkills.ts:447"
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:112",
+        "apps/server/src/orchestration/projectSkills.ts:499"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "ab8182cb4e5338caf93ee90a7bd57351a0c77283",
@@ -12428,8 +12470,11 @@
       "reason": "Include repository and user .agents/skills for Claude discovery.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
-      "evidence": ["apps/server/src/orchestration/projectSkills.ts:447"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "evidence": ["apps/server/src/orchestration/projectSkills.ts:499"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "adcd90858c3bfece59095465d2f49860ba3dcea9",
@@ -13363,10 +13408,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Drivers/AntigravityDriver.ts:54",
-        "apps/server/src/provider/Layers/AntigravityProvider.test.ts:24"
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:55",
+        "apps/server/src/provider/Layers/AntigravityProvider.test.ts:28"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
@@ -13399,7 +13447,10 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "bbd5cc03231b8b831b44bdbd6e62bf736391cb1f",
@@ -13480,10 +13531,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/orchestration/projectSkills.ts:447",
-        "apps/web/src/components/ChatView.logic.ts:246"
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/web/src/components/ChatView.logic.ts:251"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "bc9428a06a60db59cfddb99c6d7044a9db47eb1c",
@@ -14432,9 +14486,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
-        "apps/server/src/profiles/ProviderAccountService.test.ts:180"
+        "apps/server/src/profiles/ProviderAccountService.test.ts:182"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "c89e3e12a41e13e09e0103d08a41d0688a99fb49",
@@ -14854,10 +14911,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1400",
+        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1402",
         "apps/web/src/components/ChatView.logic.ts:80"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "cf5c9948c895e120965165b7b2b643ca275c5315",
@@ -15220,9 +15280,12 @@
       "disposition": "ported",
       "evidence": [
         "apps/server/src/provider/acp/AcpSessionRuntime.ts:686",
-        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "d4ba2a1f11498eae9683f6dc95a08b1c17c29765",
@@ -15338,7 +15401,10 @@
         "apps/server/src/provider/codexErrors.ts:35",
         "apps/server/src/provider/usageLimitMessages.test.ts:57"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "d67157a09c28883d7856d03d2b1d3aecdbf1b890",
@@ -15551,10 +15617,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/web/src/components/ChatView.logic.ts:893",
+        "apps/web/src/components/ChatView.logic.ts:898",
         "apps/web/src/components/ChatView.logic.test.ts:1184"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "d937e30759ceae421bf3cc1b84414de4b67df76c",
@@ -16095,8 +16164,11 @@
       "reason": "The isolated browser helper returns validated Google OAuth URLs to the owning account job rather than opening a server-side browser.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
-      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:137"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:136"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "e022fa430edbf8d448efe0f34303ff290ebb3dc0",
@@ -16609,7 +16681,10 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "e74c668d786ffc14f40a9540cd3aede02ba5d62e",
@@ -16798,8 +16873,11 @@
       "reason": "Composer skill selections retain structured invocation metadata and explicit source paths when the provider has no matching native skill.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
-      "evidence": ["apps/web/src/components/ChatView.logic.ts:182"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:183"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "ea8c9e5ca3ace89cbf6cf0a2aa03047aab1d3ef9",
@@ -16881,8 +16959,11 @@
       "reason": "Recognize validated native OAuth links on stderr as well as helper/stdout notices; redact URLs from termination diagnostics.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
-      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:204"],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:214"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "eb6c170c42eaec20d063ce80ff810e97d4dddb37",
@@ -17476,10 +17557,13 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "evidence": [
-        "apps/server/src/profiles/ProviderAccountService.ts:236",
+        "apps/server/src/profiles/ProviderAccountService.ts:243",
         "apps/server/src/provider/Layers/AntigravityProvider.ts:50"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "f26198d799bb81bf754985d457a60f8a851ea895",
