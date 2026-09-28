@@ -201,7 +201,9 @@ export default function FileBrowserPanel({
   });
   const entriesQuery = {
     data: {
-      entries: directoryQueries.flatMap((query) => query.data?.entries ?? []),
+      entries: directoryQueries.flatMap((query) =>
+        query.isError ? [] : (query.data?.entries ?? []),
+      ),
       totalEntries: directoryQueries.reduce(
         (sum, query) => sum + (query.data?.totalEntries ?? 0),
         0,
@@ -209,8 +211,8 @@ export default function FileBrowserPanel({
       truncated: directoryQueries.some((query) => query.data?.truncated),
     },
     isFetching: directoryQueries.some((query) => query.isFetching),
-    isError: directoryQueries.some((query) => query.isError),
-    error: directoryQueries.find((query) => query.isError)?.error,
+    isError: directoryQueries[0]?.isError ?? false,
+    error: directoryQueries[0]?.error,
   };
   const trimmedSearchQuery = searchQuery.trim();
   const searchMode = !workspaceUnavailable && trimmedSearchQuery.length > 0;
@@ -581,6 +583,29 @@ export default function FileBrowserPanel({
       ) : (
         <ScrollArea className="min-h-0 flex-1" scrollFade>
           <div className="py-1" ref={treeRowsRef}>
+            {directoryQueries.flatMap((query, index) =>
+              index > 0 && query.isError
+                ? [
+                    <div
+                      key={directoryPaths[index]}
+                      role="alert"
+                      className="px-3 py-2 text-xs text-destructive"
+                    >
+                      Could not read {directoryPaths[index]}. Other folders remain available.
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => toggleDirectory(directoryPaths[index]!)}
+                      >
+                        Collapse folder
+                      </Button>
+                      <Button size="xs" variant="ghost" onClick={() => void query.refetch()}>
+                        Retry folder
+                      </Button>
+                    </div>,
+                  ]
+                : [],
+            )}
             {renderedRows.map(({ node, depth }) => {
               const isDirectory = node.entry.kind === "directory";
               const expanded = expandedPaths.has(node.entry.path);

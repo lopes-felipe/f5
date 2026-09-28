@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, realpath, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -203,6 +203,33 @@ it("limits running clones to two and keeps the queue moving after a failure", as
         );
         expect(tracker.list().filter((job) => job.status === "failed")).toHaveLength(1);
         expect(peak).toBe(2);
+      }),
+    ),
+  );
+});
+
+it("quarantines corrupt history without preventing startup", async () => {
+  const input = await fixture();
+  await mkdir(input.stateDir);
+  await writeFile(path.join(input.stateDir, "project-clones.json"), "{broken");
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const tracker = yield* makeProjectCloneTracker({
+          ...input,
+          scope: yield* Effect.scope,
+          git: { cloneRepository: () => Effect.void },
+          onComplete: () => Effect.void,
+        });
+        expect(tracker.list()).toEqual([]);
+        const files = yield* Effect.promise(() => readdir(input.stateDir));
+        const quarantined = files.find((file) => file.startsWith("project-clones.json.corrupt-"));
+        expect(quarantined).toBeDefined();
+        expect(
+          yield* Effect.promise(() => readFile(path.join(input.stateDir, quarantined!), "utf8")),
+        ).toBe("{broken");
+        yield* tracker.start(input);
+        yield* Effect.promise(() => expect.poll(() => tracker.list()[0]?.status).toBe("complete"));
       }),
     ),
   );

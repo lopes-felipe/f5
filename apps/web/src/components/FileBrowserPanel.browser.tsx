@@ -183,6 +183,27 @@ describe("FileBrowserPanel", () => {
     }
   });
 
+  it("keeps other files usable when an expanded folder disappears during refresh", async () => {
+    const mounted = await renderPanel();
+    try {
+      await expect.element(page.getByText("App.tsx")).toBeInTheDocument();
+      listDirectory.mockImplementation(async ({ relativePath }: { relativePath: string }) => {
+        if (relativePath.startsWith("src")) throw new Error("Folder no longer exists");
+        return listResult([{ path: "README.md", kind: "file" }]);
+      });
+      await page.getByRole("button", { name: "Refresh workspace files" }).click();
+      await expect.element(page.getByText("README.md", { exact: true })).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Collapse folder" }).first())
+        .toBeInTheDocument();
+      await page.getByRole("button", { name: "Collapse folder" }).first().click();
+      await page.getByText("README.md", { exact: true }).click();
+      expect(mounted.onOpenFile).toHaveBeenCalledWith("README.md");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows an unavailable state without listing files when cwd is missing", async () => {
     const mounted = await renderPanel({ cwd: null });
     try {

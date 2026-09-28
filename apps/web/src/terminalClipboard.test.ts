@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { terminalClipboardAction } from "./terminalClipboard";
+import { terminalClipboardAction, terminalRightClickPastes } from "./terminalClipboard";
 const key = {
   type: "keydown",
   key: "c",
@@ -10,16 +10,27 @@ const key = {
 };
 describe("terminal clipboard keys", () => {
   it("preserves shell interrupts without a selection", () => {
-    expect(terminalClipboardAction(key, false)).toBeNull();
-    expect(terminalClipboardAction(key, true)).toBe("copy");
-    expect(terminalClipboardAction({ ...key, type: "keyup" }, true)).toBeNull();
+    expect(terminalClipboardAction(key, false, "Linux")).toBeNull();
+    expect(terminalClipboardAction(key, true, "Linux")).toBe("copy");
+    expect(terminalClipboardAction({ ...key, type: "keyup" }, true, "Linux")).toBeNull();
   });
   it("supports Insert shortcuts without intercepting other modifiers", () => {
-    expect(terminalClipboardAction({ ...key, key: "Insert" }, true)).toBe("copy");
+    expect(terminalClipboardAction({ ...key, key: "Insert" }, true, "Linux")).toBe("copy");
     expect(
-      terminalClipboardAction({ ...key, key: "Insert", ctrlKey: false, shiftKey: true }, false),
+      terminalClipboardAction(
+        { ...key, key: "Insert", ctrlKey: false, shiftKey: true },
+        false,
+        "Linux",
+      ),
     ).toBe("paste");
-    expect(terminalClipboardAction({ ...key, altKey: true }, true)).toBeNull();
-    expect(terminalClipboardAction({ ...key, metaKey: true }, true)).toBeNull();
+    expect(terminalClipboardAction({ ...key, altKey: true }, true, "Linux")).toBeNull();
+    expect(terminalClipboardAction({ ...key, metaKey: true }, true, "Linux")).toBeNull();
   });
+});
+
+it("preserves macOS Ctrl+C and disables right-click paste", () => {
+  expect(terminalClipboardAction(key, true, "MacIntel")).toBeNull();
+  expect(terminalRightClickPastes("MacIntel")).toBe(false);
+  expect(terminalRightClickPastes("Linux x86_64")).toBe(true);
+  expect(terminalRightClickPastes("Win32")).toBe(true);
 });

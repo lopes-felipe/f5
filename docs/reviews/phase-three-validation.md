@@ -54,9 +54,9 @@ previously requested background cloning and per-thread panel widths.
   repository choice, then squash, restricted to methods that the repository allows.
 - Background cloning is server-owned: two running jobs, at most ten queued/running
   jobs, idempotent admission IDs and a bounded persisted history. Cancelling or
-  restarting preserves partial files and reports the outcome. Existing folders
+  restarting reports the outcome; Git may remove incomplete clone data. Existing folders
   are refused. Clones become projects only after success. Cloning never starts
-  automatically and never removes a destination.
+  automatically. F5 does not remove the destination, but Git owns clone cleanup.
 - Right-panel widths persist for at most 50 threads, with the old global value as
   fallback. File-tree preferences retain at most 50 scopes and last-used merge
   methods at most 100 repositories.
@@ -145,3 +145,38 @@ Git matrix. These tests were green in the prior full run reported above. The new
 clone tracker tests passed in the final rerun. No test deadline was increased and
 no failure was waived. CI or a quiet-host rerun must validate the final revision;
 this report does not call the PR merge-ready.
+
+## PR #44 review fixes
+
+All eight supplied findings were confirmed and addressed:
+
+1. Markdown styling coalesces adjacent identical styles before splitting nodes,
+   reaching a fixed point under Lexical normalization. Adjacent bold/code spans
+   and heading-plus-bold drafts have browser regressions, including mode toggles.
+2. Selected-output Ctrl+C copy is disabled on macOS. On other platforms it clears
+   the selection after capturing the copied text so the next Ctrl+C interrupts.
+3. Background mod+Enter yields to IME and completion menus. With either modifier
+   send preference, the editor owns mod+Enter and sends normally. Empty/loading
+   completion menus also consume Enter rather than submitting incomplete tokens.
+4. Clone outcome messages no longer promise to preserve partial files. A real-Git
+   cancellation test demonstrates Git cleaning its incomplete repository while
+   leaving the reserved destination. F5 adds no recursive removal.
+5. A child-folder error does not replace the file tree. Failed folders have Retry
+   and Collapse actions and stale child entries are hidden. A regression deletes
+   an expanded folder during refresh and still opens an unaffected file.
+6. Right-click paste is restricted to Windows/Linux. macOS retains selection
+   actions without pasting into a shell on an empty-area right-click.
+7. Invalid clone history is moved to a uniquely named `.corrupt-*` file and logged
+   before starting with an empty list. Original bytes remain available; restart
+   recovery never silently overwrites them.
+8. Git streaming retains a bounded stderr tail. Clone failures log their operation
+   ID and a credential-safe diagnosis and show that diagnosis in the job. Auth,
+   network, repository-access and timeout failures are distinguished without
+   persisting raw remote output or credentials. The classifier is shared with
+   existing Git network commands.
+
+Review validation passed: formatting, lint (nine existing warnings, no errors),
+typecheck, the full workspace suite and 133 exhaustive real-Git tests, 470 browser
+tests in 50 files, desktop smoke and the mandatory online ledger check. This
+supersedes the earlier full-suite timeout result for functional validation.
+The outstanding performance comparison above is not waived by these fixes.

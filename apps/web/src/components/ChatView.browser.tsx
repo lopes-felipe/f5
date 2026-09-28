@@ -34,7 +34,7 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import type { ReactNode } from "react";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
@@ -4360,6 +4360,70 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+
+  it.each(["ime", "menu", "mod-enter", "mod-enter-multiline"])(
+    "respects editor guards and send preference before background send: %s",
+    async (scenario) => {
+      persistAppSettings({ sendShortcut: scenario.startsWith("mod-") ? scenario : "enter" });
+      useComposerDraftStore.setState({
+        draftThreadsByThreadId: {
+          [THREAD_ID]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        },
+        projectDraftThreadIdByProjectId: { [PROJECT_ID]: THREAD_ID },
+      });
+      useComposerDraftStore
+        .getState()
+        .setPrompt(THREAD_ID, scenario === "menu" ? "" : "normal prompt");
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createDraftOnlySnapshot(),
+        configureFixture: (nextFixture) => {
+          nextFixture.serverConfig = {
+            ...nextFixture.serverConfig,
+            keybindings: [createModKeybinding("chat.newBackground", "enter")],
+          };
+        },
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        editor.focus();
+        if (scenario === "menu")
+          await userEvent.type(page.getByTestId("composer-editor"), "fix @src/ma");
+        const selection = window.getSelection();
+        selection?.selectAllChildren(editor);
+        selection?.collapseToEnd();
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: /Mac/.test(navigator.platform),
+            ctrlKey: !/Mac/.test(navigator.platform),
+            isComposing: scenario === "ime",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        if (scenario.startsWith("mod-")) {
+          await vi.waitFor(() =>
+            expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+          );
+          expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("starts a new draft in the background only after admission", async () => {
     useComposerDraftStore.setState({

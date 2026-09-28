@@ -1,4 +1,4 @@
-import { terminalClipboardAction } from "../terminalClipboard";
+import { terminalClipboardAction, terminalRightClickPastes } from "../terminalClipboard";
 import { useProfileState } from "../profileState";
 import { FitAddon } from "@xterm/addon-fit";
 import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
@@ -439,12 +439,18 @@ function TerminalViewport({
       }
     };
     terminal.attachCustomKeyEventHandler((event) => {
-      const clipboardAction = terminalClipboardAction(event, terminal.hasSelection());
+      const clipboardAction = terminalClipboardAction(
+        event,
+        terminal.hasSelection(),
+        navigator.platform,
+      );
       if (clipboardAction) {
         event.preventDefault();
         event.stopPropagation();
-        if (clipboardAction === "copy") copyToClipboard(terminal.getSelection(), undefined);
-        else void pasteClipboard();
+        if (clipboardAction === "copy") {
+          copyToClipboard(terminal.getSelection(), undefined);
+          terminal.clearSelection();
+        } else void pasteClipboard();
         return false;
       }
       const navigationData = terminalNavigationShortcutData(event);
@@ -584,7 +590,7 @@ function TerminalViewport({
     const handleContextMenu = (event: MouseEvent) => {
       event.preventDefault();
       if (terminal.hasSelection()) void showSelectionAction();
-      else void pasteClipboard();
+      else if (terminalRightClickPastes(navigator.platform)) void pasteClipboard();
     };
     mount.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("mouseup", handleMouseUp);

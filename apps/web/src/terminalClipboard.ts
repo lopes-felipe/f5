@@ -2,7 +2,9 @@
 export function terminalClipboardAction(
   event: Pick<KeyboardEvent, "type" | "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">,
   hasSelection: boolean,
+  platform: string,
 ): "copy" | "paste" | null {
+  if (/mac/i.test(platform)) return null;
   if (event.type !== "keydown" || event.altKey || event.metaKey) return null;
   if (
     event.ctrlKey &&
@@ -13,4 +15,8 @@ export function terminalClipboardAction(
     return "copy";
   if (event.shiftKey && !event.ctrlKey && event.key === "Insert") return "paste";
   return null;
+}
+
+export function terminalRightClickPastes(platform: string): boolean {
+  return /win|linux/i.test(platform);
 }

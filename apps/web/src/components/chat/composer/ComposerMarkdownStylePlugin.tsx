@@ -25,17 +25,28 @@ export function ComposerMarkdownStylePlugin({ enabled }: { enabled: boolean }) {
         return;
       }
       const text = node.getTextContent();
-      const boundaries = new Set<number>();
+      // Lexical merges adjacent text nodes with identical styles. Coalesce those
+      // runs before splitting so normalization and this transform reach a fixed point.
+      const runs: { text: string; style: string }[] = [];
+      const append = (part: string) => {
+        if (!part) return;
+        const style = styleFor(part);
+        const previous = runs.at(-1);
+        if (previous?.style === style) previous.text += part;
+        else runs.push({ text: part, style });
+      };
+      let cursor = 0;
       for (const match of text.matchAll(INLINE_MARKDOWN)) {
-        if (match.index > 0) boundaries.add(match.index);
-        if (match.index + match[0].length < text.length)
-          boundaries.add(match.index + match[0].length);
+        append(text.slice(cursor, match.index));
+        append(match[0]);
+        cursor = match.index + match[0].length;
       }
-      const nodes = boundaries.size
-        ? node.splitText(...[...boundaries].sort((a, b) => a - b))
-        : [node];
-      for (const part of nodes) {
-        const style = styleFor(part.getTextContent());
+      append(text.slice(cursor));
+      let offset = 0;
+      const boundaries = runs.slice(0, -1).map((run) => (offset += run.text.length));
+      const nodes = boundaries.length ? node.splitText(...boundaries) : [node];
+      for (const [index, part] of nodes.entries()) {
+        const style = runs[index]?.style ?? "";
         if (part.getStyle() !== style) part.setStyle(style);
       }
     };

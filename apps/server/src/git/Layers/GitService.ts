@@ -61,6 +61,8 @@ const collectOutput = Effect.fn(function* <E>(
     Effect.gen(function* () {
       if (consume) {
         consume(chunk);
+        // Streaming consumers still need bounded diagnostics on failure.
+        text = (text + decoder.decode(chunk, { stream: true })).slice(-4096);
         return;
       }
       bytes += chunk.byteLength;

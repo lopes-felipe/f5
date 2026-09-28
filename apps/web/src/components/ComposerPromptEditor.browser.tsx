@@ -92,3 +92,16 @@ it("returns focus from a composer option menu on Escape", async () => {
   await userEvent.keyboard("{Escape}");
   await expect.element(screen.getByRole("textbox", { name: "Draft" })).toHaveFocus();
 });
+
+it.each(["**a****b**", "# Title **bold**", "**a**__b__", "`a``b`"])(
+  "loads adjacent Markdown styles without a transform loop: %s",
+  async (prompt) => {
+    const screen = await render(<Harness initial={prompt} />);
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(prompt);
+    await screen.getByRole("button", { name: "Toggle styling" }).click();
+    await screen.getByRole("button", { name: "Toggle styling" }).click();
+    await screen.getByRole("button", { name: "Read prompt" }).click();
+    await expect.element(screen.getByLabelText("Serialized prompt")).toHaveTextContent(prompt);
+  },
+);

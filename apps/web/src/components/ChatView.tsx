@@ -1,7 +1,7 @@
 import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isMacPlatform } from "../lib/utils";
-import { composerRequiresSendModifier, shouldSubmitComposer } from "./chat/composer/sendShortcut";
+import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
 import { ChatComposer } from "./chat/composer/ChatComposer";
@@ -3593,7 +3593,7 @@ export default function ChatView({
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!activeThreadId || event.defaultPrevented) return;
+      if (!activeThreadId || event.defaultPrevented || isKeyboardEventComposing(event)) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);
       const composerForm = composerFormRef.current;
@@ -3715,6 +3715,14 @@ export default function ChatView({
       }
       if (wsInteractionBlocked) return;
       if (command === "chat.newBackground" && !isServerThread && composerFocused) {
+        // Let the editor resolve mention/slash menus and the configured send key.
+        // Background send owns mod+Enter only with the ordinary Enter preference.
+        if (
+          settings.sendShortcut !== "enter" ||
+          (dismissedComposerPromptRef.current !== promptRef.current &&
+            (composerMenuOpenRef.current || resolveActiveComposerTrigger().trigger !== null))
+        )
+          return;
         event.preventDefault();
         event.stopPropagation();
         const draftLocation = window.location.pathname;
@@ -3734,8 +3742,7 @@ export default function ChatView({
         return;
       }
       if (command !== "chat.scrollToBottom") return;
-      if (composerFocused && composerRequiresSendModifier(settings.sendShortcut, promptRef.current))
-        return;
+      if (composerFocused && settings.sendShortcut !== "enter") return;
 
       if (showScrollToBottom) {
         event.preventDefault();
@@ -5567,10 +5574,9 @@ export default function ChatView({
       }
       if (key === "Tab" || key === "Enter") {
         const selectedItem = activeComposerMenuItemRef.current ?? currentItems[0];
-        if (selectedItem) {
-          onSelectComposerItem(selectedItem);
-          return true;
-        }
+        if (selectedItem) onSelectComposerItem(selectedItem);
+        // An empty/loading completion menu must not submit a partial token.
+        return true;
       }
     }
 

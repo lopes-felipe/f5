@@ -1,3 +1,4 @@
+import { networkFailureDetail } from "../git/networkFailureDetail.ts";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -58,10 +59,17 @@ export const makeProjectCloneTracker = Effect.fn(function* (input: {
       );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
+      // This optional job history must not prevent the profile server booting.
+      // Preserve the original bytes for inspection; never overwrite a corrupt file.
+      const quarantined = `${file}.corrupt-${randomUUID()}`;
+      await fs.rename(file, quarantined);
+      return { quarantined };
     }
   });
-  for (const job of persisted)
+  const records = "quarantined" in persisted ? [] : persisted;
+  if ("quarantined" in persisted)
+    yield* Effect.logWarning("Invalid clone history moved aside", { path: persisted.quarantined });
+  for (const job of records)
     jobs.set(
       job.operationId,
       job.status === "queued" || job.status === "cloning"
@@ -69,7 +77,7 @@ export const makeProjectCloneTracker = Effect.fn(function* (input: {
             ...job,
             status: "failed",
             error:
-              "Server restarted during cloning. Any files were kept; choose another destination to retry.",
+              "Server restarted during cloning. Git may have removed incomplete data. Inspect the destination before retrying in a new folder.",
           }
         : job,
     );
@@ -89,7 +97,7 @@ export const makeProjectCloneTracker = Effect.fn(function* (input: {
       await fs.unlink(temporary).catch(() => {});
     }
   });
-  if (persisted.some((job) => job.status === "queued" || job.status === "cloning")) yield* persist;
+  if (records.some((job) => job.status === "queued" || job.status === "cloning")) yield* persist;
   const update = (id: string, patch: Partial<ProjectCloneJob>) =>
     writes.withPermits(1)(
       Effect.gen(function* () {
@@ -198,17 +206,25 @@ export const makeProjectCloneTracker = Effect.fn(function* (input: {
             }),
           )
           .pipe(
-            Effect.catch(() =>
-              update(job.operationId, {
-                status: "failed",
-                error:
-                  "Clone or project registration failed. Check repository access and the destination. Any files were kept; add the folder manually or retry in a new folder.",
-              }),
-            ),
+            Effect.catch((error) => {
+              const detail = networkFailureDetail(error.message);
+              return Effect.logWarning("Repository clone failed", {
+                operationId: job.operationId,
+                detail,
+              }).pipe(
+                Effect.andThen(
+                  update(job.operationId, {
+                    status: "failed",
+                    error: `${detail} Git may have removed incomplete data. Inspect the destination before retrying in a new folder.`,
+                  }),
+                ),
+              );
+            }),
             Effect.onInterrupt(() =>
               update(job.operationId, {
                 status: "cancelled",
-                error: "Clone cancelled. Any files were kept.",
+                error:
+                  "Clone cancelled. Git may have removed incomplete data. Inspect the destination before retrying.",
               }).pipe(Effect.orDie),
             ),
             Effect.ensuring(Effect.sync(() => fibers.delete(job.operationId))),

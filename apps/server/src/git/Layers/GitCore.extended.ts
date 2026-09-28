@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
+import { Effect, Fiber, FileSystem, Layer, PlatformError, Scope } from "effect";
 import { describe, expect, vi } from "vitest";
 
 import { GitServiceLive } from "./GitService.ts";
@@ -259,6 +259,47 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(yield* git(destination, ["remote", "get-url", "origin"])).toBe(remote);
         expect(yield* git(destination, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
         expect(chunks.length).toBeGreaterThan(0);
+      }),
+    );
+    it.effect("cancelling real git clone can remove its incomplete repository", () =>
+      Effect.gen(function* () {
+        const destination = yield* makeTmpDir();
+        let requested = false;
+        const server = yield* Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<ReturnType<typeof createServer>>((resolve) => {
+                const server = createServer(() => {
+                  requested = true;
+                });
+                server.listen(0, "127.0.0.1", () => resolve(server));
+              }),
+          ),
+          (server) =>
+            Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  server.closeAllConnections();
+                  server.close(() => resolve());
+                }),
+            ),
+        );
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Missing test server port");
+        const core = yield* GitCore;
+        const fiber = yield* core
+          .cloneRepository({
+            cwd: destination,
+            url: `http://127.0.0.1:${address.port}/repo.git`,
+            onProgress: () => {},
+          })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => expect.poll(() => requested, { timeout: 10_000 }).toBe(true));
+        expect(existsSync(path.join(destination, ".git"))).toBe(true);
+        yield* Fiber.interrupt(fiber);
+        expect(existsSync(destination)).toBe(true);
+        if (process.platform !== "win32")
+          expect(existsSync(path.join(destination, ".git"))).toBe(false);
       }),
     );
     it.effect("does not restore a tracked file when a stale branch name matches it", () =>
