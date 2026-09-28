@@ -6,9 +6,12 @@
  *
  * @module ClaudeAdapterLive
  */
+import * as NodeFs from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import {
   type CanUseTool,
-  getSessionMessages,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -364,44 +367,88 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
-  readonly probeResumableClaudeSession?: (input: {
-    readonly sessionId: string;
-    readonly cwd: string | undefined;
-  }) => Effect.Effect<"present" | "absent" | "unknown">;
+  readonly probeResumableClaudeSession?: (
+    input: ClaudeSessionProbeInput,
+  ) => Effect.Effect<"present" | "absent" | "unknown">;
 }
 
-type ClaudeSessionMessagesReader = typeof getSessionMessages;
+export interface ClaudeSessionProbeInput {
+  readonly sessionId: string;
+  readonly cwd: string | undefined;
+  /**
+   * The Claude config dir the CLI child process writes transcripts to. This
+   * must come from the provider process environment, not from the f5 server's
+   * own `process.env`, because isolated profiles and custom `homePath`
+   * settings point the CLI at a different directory.
+   */
+  readonly claudeConfigDir: string;
+}
 
+/**
+ * Mirrors the Claude CLI's config dir precedence: an explicit
+ * `CLAUDE_CONFIG_DIR` wins, otherwise `$HOME/.claude`.
+ */
+export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv): string {
+  const configured = env.CLAUDE_CONFIG_DIR?.trim();
+  if (configured) {
+    return configured;
+  }
+  const home = env.HOME?.trim();
+  return NodePath.join(home ? home : NodeOS.homedir(), ".claude");
+}
+
+export interface ClaudeSessionStoreFs {
+  readonly readdir: (path: string) => Promise<ReadonlyArray<string>>;
+  readonly stat: (path: string) => Promise<{ readonly size: number; isFile(): boolean }>;
+}
+
+const nodeClaudeSessionStoreFs: ClaudeSessionStoreFs = {
+  readdir: (path) => NodeFs.readdir(path),
+  stat: (path) => NodeFs.stat(path),
+};
+
+function isMissingPathError(cause: unknown): boolean {
+  const code = (cause as { readonly code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/**
+ * Checks whether a Claude transcript exists before resuming it.
+ *
+ * Reads `<claudeConfigDir>/projects/<any project>/<sessionId>.jsonl` directly
+ * instead of the SDK's `getSessionMessages`, which only looks under the f5
+ * server's own `CLAUDE_CONFIG_DIR`/`~/.claude` and therefore reported sessions
+ * written by an isolated CLI as absent. Scanning every project dir avoids
+ * depending on the CLI's cwd-to-dirname encoding.
+ *
+ * Only returns "absent" when the store was fully readable and had no
+ * non-empty transcript. Anything it cannot see yields "unknown" so a valid
+ * resume cursor is never discarded on a guess.
+ */
 export function probeClaudeSessionAvailability(
-  input: {
-    readonly sessionId: string;
-    readonly cwd: string | undefined;
-  },
-  readSessionMessages: ClaudeSessionMessagesReader = getSessionMessages,
+  input: ClaudeSessionProbeInput,
+  fs: ClaudeSessionStoreFs = nodeClaudeSessionStoreFs,
   timeoutMs = 1_500,
 ): Effect.Effect<"present" | "absent" | "unknown"> {
-  return Effect.gen(function* () {
-    const scopedMessages = yield* Effect.tryPromise(() =>
-      readSessionMessages(input.sessionId, {
-        ...(input.cwd ? { dir: input.cwd } : {}),
-        limit: 1,
-        includeSystemMessages: true,
+  return Effect.tryPromise(async () => {
+    const projectsDir = NodePath.join(input.claudeConfigDir, "projects");
+    // A missing or unreadable store rejects here and maps to "unknown".
+    const projectEntries = await fs.readdir(projectsDir);
+    const transcriptName = `${input.sessionId}.jsonl`;
+    const matches = await Promise.all(
+      projectEntries.map(async (entry) => {
+        try {
+          const stats = await fs.stat(NodePath.join(projectsDir, entry, transcriptName));
+          return stats.isFile() && stats.size > 0;
+        } catch (cause) {
+          if (isMissingPathError(cause)) {
+            return false;
+          }
+          throw cause;
+        }
       }),
     );
-    if (scopedMessages.length > 0) {
-      return "present" as const;
-    }
-
-    // Require a second, global lookup to agree before declaring a session
-    // absent. With no cwd this intentionally repeats the lookup: a transient
-    // empty read must not silently discard a valid resume cursor.
-    const globalMessages = yield* Effect.tryPromise(() =>
-      readSessionMessages(input.sessionId, {
-        limit: 1,
-        includeSystemMessages: true,
-      }),
-    );
-    return globalMessages.length > 0 ? ("present" as const) : ("absent" as const);
+    return matches.some(Boolean) ? ("present" as const) : ("absent" as const);
   }).pipe(
     Effect.timeoutOption(timeoutMs),
     Effect.map(Option.getOrElse(() => "unknown" as const)),
@@ -4344,9 +4391,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             resumeCandidateLength: rawResumeCandidate.length,
           });
         } else if (resumeState?.resume !== undefined) {
+          // Probe the same transcript store the CLI child process will use.
+          const claudeConfigDir = resolveClaudeConfigDir(
+            buildClaudeQueryEnv(
+              input.providerOptions?.claudeAgent,
+              options?.processEnvironment ?? process.env,
+            ),
+          );
           const probeResult = yield* probeResumableClaudeSession({
             sessionId: resumeState.resume,
             cwd: input.cwd,
+            claudeConfigDir,
           });
           if (probeResult === "absent") {
             pendingContextResetReason = "resume-session-not-found";
@@ -4354,6 +4409,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               threadId,
               resumeSessionId: resumeState.resume,
               cwd: input.cwd ?? null,
+              claudeConfigDir,
             });
             resumeState = undefined;
           }
