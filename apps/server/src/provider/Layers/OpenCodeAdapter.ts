@@ -1186,8 +1186,10 @@ export function makeOpenCodeAdapter(
 
       // Fibers forked into `context.sessionScope` are interrupted
       // automatically when the scope closes — no bookkeeping required.
-      // Establish SSE before exposing the session to sends. Native commands
-      // can publish their acceptance receipt before the HTTP command completes.
+      // Start consuming before exposing the session to sends. The SDK connects
+      // lazily on the first iterator read, so this is not a connection barrier.
+      // If an early acceptance receipt is missed, session.command completion
+      // remains the authoritative fallback.
       const subscription = yield* runOpenCodeSdk("event.subscribe", () =>
         context.client.event.subscribe(undefined, { signal: eventsAbortController.signal }),
       ).pipe(

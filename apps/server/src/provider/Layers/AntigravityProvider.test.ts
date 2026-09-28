@@ -1,3 +1,7 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { antigravityProfileDirectory } from "../acp/AntigravityAcpSupport.ts";
 import { Effect, Schema } from "effect";
 import { AntigravitySettings } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -39,4 +43,30 @@ describe("Antigravity status", () => {
       "custom-model",
     ]);
   });
+});
+
+it("checks the custom instance's account instead of the default instance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "f5-agy-custom-status-"));
+  const resolve = vi.spyOn(AntigravityInstallation.prototype, "resolve").mockResolvedValue({
+    executablePath: "/synthetic/agent",
+    harnessPath: "/synthetic/harness",
+    version: "1.1.1",
+  });
+  try {
+    const account = join(antigravityProfileDirectory(root, "custom-account"), "antigravity-acp");
+    await mkdir(account, { recursive: true });
+    await writeFile(join(account, "acp_token.json"), '{"token":"synthetic"}');
+    const settings = Schema.decodeSync(AntigravitySettings)({ enabled: true });
+    const custom = await Effect.runPromise(
+      checkAntigravityProviderStatus(settings, root, "custom-account"),
+    );
+    const defaultAccount = await Effect.runPromise(
+      checkAntigravityProviderStatus(settings, root, "antigravity"),
+    );
+    expect(custom.auth.status).toBe("authenticated");
+    expect(defaultAccount.auth.status).toBe("unauthenticated");
+  } finally {
+    resolve.mockRestore();
+    await rm(root, { recursive: true, force: true });
+  }
 });

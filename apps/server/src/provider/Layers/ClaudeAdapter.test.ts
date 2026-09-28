@@ -3498,7 +3498,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  for (const scenario of ["blocked", "recovered", "login"] as const) {
+  for (const scenario of ["blocked", "recovered", "login", "interrupted", "unrelated"] as const) {
     it.effect(`reports Claude ${scenario} evidence at turn completion`, () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -3544,6 +3544,12 @@ describe("ClaudeAdapterLive", () => {
           result: "",
           session_id: "limits-session",
           uuid: "limit-result",
+          ...(scenario === "interrupted" || scenario === "unrelated"
+            ? {
+                subtype: "error_during_execution",
+                errors: [scenario === "interrupted" ? "interrupted by user" : "disk is full"],
+              }
+            : {}),
           usage: {},
           modelUsage: {},
         } as unknown as SDKMessage);
@@ -3555,8 +3561,14 @@ describe("ClaudeAdapterLive", () => {
         if (completed._tag === "Some") {
           assert.equal(
             completed.value.payload.state,
-            scenario === "recovered" ? "completed" : "failed",
+            scenario === "recovered"
+              ? "completed"
+              : scenario === "interrupted"
+                ? "interrupted"
+                : "failed",
           );
+          if (scenario === "unrelated")
+            assert.equal(completed.value.payload.errorMessage, "disk is full");
           if (scenario === "login")
             assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
           if (scenario === "blocked")

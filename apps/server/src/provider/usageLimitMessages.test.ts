@@ -65,3 +65,20 @@ describe("provider usage-limit messages", () => {
     ).toContain("Codex usage limit reached");
   });
 });
+
+it.each(["rate limit reached for tokens per minute (TPM)", "usage limit warning; retrying"])(
+  "preserves an untyped Codex diagnostic: %s",
+  (message) => {
+    expect(formatCodexUsageError(message, undefined, "2026-09-28T00:00:00Z")).toBe(message);
+  },
+);
+it("retains the original diagnostic when adding a typed usage hint", () => {
+  expect(
+    formatCodexUsageError(
+      "Detailed provider message",
+      undefined,
+      "2026-09-28T00:00:00Z",
+      "usageLimitReached",
+    ),
+  ).toMatch(/^Detailed provider message /);
+});

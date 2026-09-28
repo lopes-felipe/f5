@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import * as runner from "../../processRunner.ts";
-import { discoverGrokSkills, parseGrokSkills } from "./GrokSkills.ts";
+import { discoverGrokSkills, discoverGlobalGrokSkills, parseGrokSkills } from "./GrokSkills.ts";
 
 describe("Grok skill inventory", () => {
   it("preserves disabled skills and lets project definitions win", () => {
@@ -48,4 +48,28 @@ describe("Grok skill inventory", () => {
       run.mockRestore();
     }
   });
+});
+
+it("does not run global inventory in the server checkout", async () => {
+  const run = vi.spyOn(runner, "runProcess").mockResolvedValue({
+    code: 0,
+    signal: null,
+    stdout: JSON.stringify({
+      skills: [
+        { name: "local", source: { type: "project", path: "/project/SKILL.md" } },
+        { name: "plugin", source: { type: "plugin", path: "/plugin/SKILL.md" } },
+      ],
+    }),
+    stderr: "",
+    timedOut: false,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+  });
+  try {
+    const skills = await Effect.runPromise(discoverGlobalGrokSkills({ binaryPath: "grok" }, {}));
+    expect(skills.map((skill) => skill.name)).toEqual(["plugin"]);
+    expect(run.mock.calls[0]?.[2]?.cwd).not.toBe(process.cwd());
+  } finally {
+    run.mockRestore();
+  }
 });

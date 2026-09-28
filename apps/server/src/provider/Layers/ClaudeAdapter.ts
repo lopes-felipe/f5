@@ -1519,8 +1519,9 @@ function buildUserMessageEffect(
 }
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
+  if (isInterruptedResult(result)) return "interrupted";
   if (result.subtype === "success") {
-    return "completed";
+    return result.is_error ? "failed" : "completed";
   }
 
   const errors = resultErrorsText(result);
@@ -3640,8 +3641,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const hint =
           context.turnState?.authenticationFailureMessage ??
           [...(context.turnState?.rejectedUsageLimits?.values() ?? [])][0];
-        const status = message.is_error && hint ? "failed" : turnStatusFromResult(message);
-        const errorMessage = status === "failed" && hint ? hint : resultUserFacingError(message);
+        const status = turnStatusFromResult(message);
+        const originalError = resultUserFacingError(message);
+        const errorMessage =
+          status === "failed" &&
+          hint &&
+          (!originalError ||
+            /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
+            ? [originalError, hint].filter(Boolean).join(" ")
+            : originalError;
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;

@@ -1,4 +1,9 @@
-import { type ProjectId, type ProjectSkill, type ProjectSkillScope } from "@t3tools/contracts";
+import {
+  type ProjectId,
+  type ProjectSkill,
+  type ProjectSkillScope,
+  type ProviderKind,
+} from "@t3tools/contracts";
 import { Data, Effect, FileSystem, Path } from "effect";
 import { parseDocument } from "yaml";
 
@@ -224,6 +229,7 @@ const scanSkillScope = Effect.fn(function* (input: {
   readonly claudeDirPath: string;
   readonly skillsDirPath: string;
   readonly allowFlatFiles?: boolean;
+  readonly nativeProviders: ReadonlyArray<ProviderKind>;
 }): Effect.fn.Return<ScopeScanResult, never, FileSystem.FileSystem | Path.Path> {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -237,7 +243,18 @@ const scanSkillScope = Effect.fn(function* (input: {
     .stat(input.claudeDirPath)
     .pipe(Effect.catch(() => Effect.succeed(null)));
   if (!claudeDirInfo || claudeDirInfo.type !== "Directory") {
-    watchPaths.add(input.workspaceParentPath);
+    let ancestor = path.dirname(input.claudeDirPath);
+    while (ancestor !== input.workspaceParentPath && ancestor !== path.dirname(ancestor)) {
+      if (
+        yield* fs.stat(ancestor).pipe(
+          Effect.map((info) => info.type === "Directory"),
+          Effect.orElseSucceed(() => false),
+        )
+      )
+        break;
+      ancestor = path.dirname(ancestor);
+    }
+    watchPaths.add(ancestor);
     return {
       candidates,
       watchPaths: uniqueSortedPaths([...watchPaths]),
@@ -384,7 +401,8 @@ const scanSkillScope = Effect.fn(function* (input: {
     }
 
     candidates.push({
-      sourcePath: path.resolve(skillDocumentPath),
+      sourcePath: `${input.scope === "user" ? "~/" : ""}${path.relative(input.workspaceParentPath, skillDocumentPath).replaceAll("\\", "/")}`,
+      nativeProviders: input.nativeProviders,
       id: skillIdForProject({
         projectId: input.projectId,
         commandName,
@@ -412,26 +430,60 @@ const scanSkillScope = Effect.fn(function* (input: {
 function resolveProjectSkillCollisions(
   candidates: ReadonlyArray<ProjectSkillCandidate>,
 ): ReadonlyArray<ProjectSkill> {
-  const winners = new Map<string, ProjectSkillCandidate>();
-
-  const sortedCandidates = [...candidates].toSorted((left, right) => {
-    const scopePriority = left.scope === right.scope ? 0 : left.scope === "project" ? -1 : 1;
-    return (
-      left.commandName.localeCompare(right.commandName) ||
-      scopePriority ||
-      left.canonicalPath.localeCompare(right.canonicalPath)
+  const providers: ProviderKind[] = [
+    "claudeAgent",
+    "codex",
+    "opencode",
+    "grok",
+    "cursor",
+    "antigravity",
+  ];
+  const rootRank = (candidate: ProjectSkillCandidate) => {
+    const source = candidate.sourcePath?.replace(/^~\//, "") ?? ".claude/";
+    return [
+      ".claude/",
+      ".codex/",
+      ".opencode/",
+      ".gemini/",
+      ".agent/",
+      ".agents/",
+      ".grok/",
+    ].findIndex((root) => source.startsWith(root));
+  };
+  const sorted = (provider?: ProviderKind) =>
+    [...candidates].toSorted(
+      (left, right) =>
+        (left.scope === right.scope ? 0 : left.scope === "project" ? -1 : 1) ||
+        (provider
+          ? Number(right.nativeProviders?.includes(provider) ?? false) -
+            Number(left.nativeProviders?.includes(provider) ?? false)
+          : 0) ||
+        rootRank(left) - rootRank(right) ||
+        left.canonicalPath.localeCompare(right.canonicalPath),
     );
+  const definition = ({ canonicalPath: _canonicalPath, ...skill }: ProjectSkillCandidate) => skill;
+  const winners = (provider?: ProviderKind) => {
+    const result = new Map<string, ProjectSkillCandidate>();
+    for (const candidate of sorted(provider))
+      if (!result.has(candidate.commandName)) result.set(candidate.commandName, candidate);
+    return result;
+  };
+  const defaults = winners();
+  const byProvider = providers.map((provider) => ({ provider, skills: winners(provider) }));
+  return [...defaults.keys()].sort().map((name) => {
+    const base = defaults.get(name)!;
+    return {
+      ...definition(base),
+      providerVariants: Object.fromEntries(
+        byProvider.flatMap(({ provider, skills }) => {
+          const variant = skills.get(name)!;
+          return variant.canonicalPath === base.canonicalPath
+            ? []
+            : [[provider, definition(variant)]];
+        }),
+      ),
+    };
   });
-
-  for (const candidate of sortedCandidates) {
-    if (!winners.has(candidate.commandName)) {
-      winners.set(candidate.commandName, candidate);
-    }
-  }
-
-  return [...winners.values()]
-    .toSorted((left, right) => left.commandName.localeCompare(right.commandName))
-    .map(({ canonicalPath: _canonicalPath, ...skill }) => skill);
 }
 
 export const scanProjectSkills = Effect.fn(function* (input: {
@@ -449,6 +501,7 @@ export const scanProjectSkills = Effect.fn(function* (input: {
         ".agents",
         ".opencode",
         ".codex",
+        ".grok",
         ...(scope === "project"
           ? [".gemini", ".agent"]
           : [path.join(".gemini", "config"), path.join(".gemini", "antigravity-cli")]),
@@ -460,6 +513,18 @@ export const scanProjectSkills = Effect.fn(function* (input: {
           workspaceParentPath: root,
           claudeDirPath: path.join(root, directory),
           skillsDirPath: path.join(root, directory, "skills"),
+          nativeProviders:
+            directory === ".claude"
+              ? ["claudeAgent"]
+              : directory === ".codex" || directory === ".agents"
+                ? ["codex"]
+                : directory === ".grok"
+                  ? ["grok"]
+                  : directory === ".opencode"
+                    ? ["opencode"]
+                    : directory.startsWith(".gemini") || directory === ".agent"
+                      ? ["antigravity"]
+                      : [],
           allowFlatFiles: directory.startsWith(".gemini") || directory === ".agent",
         }),
       );

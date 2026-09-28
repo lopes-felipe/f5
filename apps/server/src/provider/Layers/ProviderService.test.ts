@@ -1,3 +1,4 @@
+import { beginAccountChange } from "../../profiles/ProviderAccountGuard.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1957,5 +1958,46 @@ validation.layer("ProviderServiceLive validation", (it) => {
         assert.equal(runtime.value.threadId, session.threadId);
       }
     }),
+  );
+});
+
+it.effect("blocks session creation and turn dispatch during an account change", () => {
+  const fake = makeFakeCodexAdapter("antigravity");
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const threadId = asThreadId("account-guard");
+    const instanceId = ProviderInstanceId.make("antigravity");
+    yield* service.startSession(threadId, {
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+    const release = beginAccountChange(
+      path.join(os.tmpdir(), `f5-provider-service-tests-${process.pid}`),
+      instanceId,
+    );
+    try {
+      const sendFailure = yield* service
+        .sendTurn({ threadId, input: "hello", attachments: [] })
+        .pipe(Effect.flip);
+      assert.equal(sendFailure._tag, "ProviderValidationError");
+      assert.match(sendFailure.message, /Account change in progress/);
+      const startFailure = yield* service
+        .startSession(asThreadId("blocked"), {
+          threadId: asThreadId("blocked"),
+          providerInstanceId: instanceId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(startFailure.message, /Account change in progress/);
+      assert.equal(fake.sendTurn.mock.calls.length, 0);
+      assert.equal(fake.startSession.mock.calls.length, 1);
+    } finally {
+      release();
+    }
+    yield* service.sendTurn({ threadId, input: "hello", attachments: [] });
+    assert.equal(fake.sendTurn.mock.calls.length, 1);
+  }).pipe(
+    Effect.provide(makeProviderServiceLayerForAdapters(new Map([["antigravity", fake.adapter]]))),
   );
 });

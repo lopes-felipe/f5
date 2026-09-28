@@ -117,6 +117,10 @@ export function buildPendingUserInputAnswers(
   for (const question of questions) {
     const answer = resolvePendingUserInputAnswer(draftAnswers[question.id]);
     if (answer === null) {
+      if (question.optional) {
+        answers[question.id] = "";
+        continue;
+      }
       return null;
     }
     answers[question.id] = answer;
@@ -139,7 +143,8 @@ export function findFirstUnansweredPendingUserInputQuestionIndex(
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
   const unansweredIndex = questions.findIndex(
-    (question) => resolvePendingUserInputAnswer(draftAnswers[question.id]) === null,
+    (question) =>
+      !question.optional && resolvePendingUserInputAnswer(draftAnswers[question.id]) === null,
   );
 
   return unansweredIndex === -1 ? Math.max(questions.length - 1, 0) : unansweredIndex;
@@ -172,7 +177,7 @@ export function derivePendingUserInputProgress(
     answeredQuestionCount,
     isLastQuestion,
     isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
-    canAdvance: resolvedAnswer !== null,
+    canAdvance: resolvedAnswer !== null || activeQuestion?.optional === true,
   };
 }
 

@@ -39,7 +39,7 @@ export function antigravityProfileDirectory(stateDir: string, instanceId: string
 }
 
 const credentialVariables =
-  /^(GEMINI_API_KEY|GOOGLE_.*|GCLOUD_.*|CLOUDSDK_.*|AGY_ACP_.*|GEMINI_HOME|ANTIGRAVITY_HARNESS_PATH|BROWSER|PYTHON.*)$/i;
+  /^(GEMINI_API_KEY|GOOGLE_API_KEY|GOOGLE_GENAI_USE_VERTEXAI|GOOGLE_OAUTH_ACCESS_TOKEN|AGY_ACP_.*|GEMINI_HOME|ANTIGRAVITY_HARNESS_PATH|BROWSER|ELECTRON_RUN_AS_NODE)$/i;
 export function antigravityEnvironment(
   base: NodeJS.ProcessEnv,
   home: string,
@@ -53,7 +53,6 @@ export function antigravityEnvironment(
     ANTIGRAVITY_HARNESS_PATH: harness,
     BROWSER: browserCommand,
     PYTHONUNBUFFERED: "1",
-    ELECTRON_RUN_AS_NODE: "1",
   };
 }
 
@@ -137,7 +136,18 @@ export const makeAntigravityAcpRuntime = (input: {
           'process.stderr.on("error",()=>process.exit(0));process.stderr.write("F5_AUTH_URL="+JSON.stringify(process.argv[2])+"\\n");',
         );
         const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-        const browser = `${quote(process.execPath)} ${quote(helper)} %s`;
+        const wrapper = path.join(
+          home,
+          process.platform === "win32" ? "browser.cmd" : "browser.sh",
+        );
+        const script =
+          process.platform === "win32"
+            ? `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${process.execPath.replaceAll("%", "%%")}" "${helper.replaceAll("%", "%%")}" %1\r\n`
+            : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(process.execPath)} ${quote(helper)} "$1"\n`;
+        await publishProfileFile(wrapper, script);
+        await fs.chmod(wrapper, 0o700);
+        // Python webbrowser shlex-splits commands containing %s, including quoted paths.
+        const browser = `${quote(wrapper)} %s`;
         return { executable, home, browser };
       },
       catch: (cause) =>

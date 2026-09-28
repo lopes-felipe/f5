@@ -111,6 +111,7 @@ export function buildSlashComposerMenuItems(input: {
   const projectSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
     input.provider ? (input.projectSkills ?? []) : []
   )
+    .map((skill) => (input.provider ? (skill.providerVariants?.[input.provider] ?? skill) : skill))
     .filter(
       (skill) => skill.paths.length === 0 && (input.provider === "claudeAgent" || skill.sourcePath),
     )
@@ -229,21 +230,25 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     return { text: input.text, skillCall: undefined };
   }
 
-  // Codex runtime skills use dollar-form invocation; other providers keep
-  // their native slash-form text and only attach structured metadata.
+  const projectSkill = input.projectSkills
+    ?.map((skill) => (input.provider ? (skill.providerVariants?.[input.provider] ?? skill) : skill))
+    .find((skill) => skill.commandName === leadingCommandName && skill.paths.length === 0);
+  const nativeKnown =
+    input.runtimeSlashCommands?.some((command) => command.name === leadingCommandName) ||
+    input.providerSkills?.some((skill) => skill.enabled && skill.name === leadingCommandName) ||
+    (input.provider && projectSkill?.nativeProviders?.includes(input.provider)) ||
+    (input.provider === "claudeAgent" &&
+      (!projectSkill?.sourcePath || /(?:^|\/)\.claude\/skills\//.test(projectSkill.sourcePath)));
   const text =
-    input.provider === "codex"
+    input.provider === "codex" && nativeKnown
       ? `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`
       : input.text;
-  const projectSkill = input.projectSkills?.find(
-    (skill) => skill.commandName === leadingCommandName && skill.paths.length === 0,
-  );
-  const nativeKnown = input.runtimeSlashCommands?.some(
-    (command) => command.name === leadingCommandName,
-  );
+  // Old snapshots may still carry an absolute path. Never put it into a transcript.
+  const source = projectSkill?.sourcePath;
+  const portableSource = source && !/^(?:[A-Za-z]:[\\/]|\/)/.test(source) ? source : undefined;
   const textWithPath =
-    projectSkill?.sourcePath && !nativeKnown
-      ? `${text}\n\nUse the skill instructions at ${JSON.stringify(projectSkill.sourcePath)}.`
+    projectSkill && !nativeKnown
+      ? `${text}\n\nUse the skill instructions ${portableSource ? `at ${JSON.stringify(portableSource)}` : `for ${JSON.stringify(leadingCommandName)}`}.`
       : text;
   return { text: textWithPath, skillCall: { name: leadingCommandName } };
 }

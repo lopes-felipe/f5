@@ -81,6 +81,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     makeRuntime: typeof makeGrokAcpRuntime;
     normalizeModel: (model: string) => string;
     defaultModelSelection: ModelSelection;
+    useAccountDefaultModel?: boolean;
   },
 ) {
   const resolveSelection = (selection: ModelSelection | undefined, model?: string) =>
@@ -139,7 +140,10 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         yield* applyGrokAcpModelSelection({
           runtime,
           currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
-          requestedModelId: resolvedModel === "antigravity-default" ? undefined : resolvedModel,
+          requestedModelId:
+            options?.useAccountDefaultModel && resolvedModel === "antigravity-default"
+              ? undefined
+              : resolvedModel,
           mapError: (cause) =>
             mapGrokAcpError(
               operation,

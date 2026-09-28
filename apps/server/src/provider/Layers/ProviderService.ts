@@ -1,3 +1,4 @@
+import { withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
@@ -706,6 +707,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         return { adapter, session: resumed, orphanedTurnId } as const;
       }).pipe(
+        withAccountAdmission(
+          serverConfig.stateDir,
+          resolveBindingInstanceId(input.binding),
+          input.operation,
+        ),
         withMetrics({
           counter: providerSessionsTotal,
           attributes: providerMetricAttributes(input.binding.provider, {
@@ -1013,6 +1019,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
           return sessionWithInstance;
         }).pipe(
+          withAccountAdmission(
+            serverConfig.stateDir,
+            requestedInstanceId,
+            "ProviderService.startSession",
+          ),
           withMetrics({
             counter: providerSessionsTotal,
             attributes: () =>
@@ -1054,6 +1065,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.interaction_mode": input.interactionMode,
           "provider.attachment_count": input.attachments.length,
         });
+        const binding = yield* directory.getBinding(input.threadId);
+        const instanceId = Option.isSome(binding) ? resolveBindingInstanceId(binding.value) : "";
         let metricProvider = "unknown";
         let metricModel = input.model;
         return yield* Effect.gen(function* () {
@@ -1152,6 +1165,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           return turn;
         }).pipe(
+          withAccountAdmission(serverConfig.stateDir, instanceId, "ProviderService.sendTurn"),
           withMetrics({
             counter: providerTurnsTotal,
             timer: providerTurnDuration,
@@ -1540,11 +1554,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               : {}),
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
         };
-        const result = yield* adapter.runOneOffPrompt
-          ? adapter.runOneOffPrompt(providerInput)
-          : adapter.compactConversation!(providerInput).pipe(
-              Effect.map((response) => ({ text: response.summary })),
-            );
+        const result = yield* (
+          adapter.runOneOffPrompt
+            ? adapter.runOneOffPrompt(providerInput)
+            : adapter.compactConversation!(providerInput).pipe(
+                Effect.map((response) => ({ text: response.summary })),
+              )
+        ).pipe(
+          withAccountAdmission(
+            serverConfig.stateDir,
+            input.modelSelection?.instanceId ??
+              defaultInstanceIdForDriver(ProviderDriverKind.make(provider)),
+            "ProviderService.runOneOffPrompt",
+          ),
+        );
         yield* analytics.record("provider.one_off_prompt.ran", {
           provider,
           model: input.modelSelection?.model ?? input.model,

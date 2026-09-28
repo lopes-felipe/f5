@@ -49,11 +49,6 @@ export function formatCodexUsageError(
   at: string,
   errorInfo?: unknown,
 ): string {
-  if (
-    errorInfo !== "usageLimitReached" &&
-    !/usage[_ ]?limit|out of credits|credits depleted|rate limit reached/i.test(message)
-  )
-    return message;
   const windows = [snapshot?.primary, snapshot?.secondary].filter(
     (window) =>
       window &&
@@ -64,6 +59,7 @@ export function formatCodexUsageError(
   const exhausted = windows.sort(
     (left, right) => (right?.resetsAt ?? 0) - (left?.resetsAt ?? 0),
   )[0];
+  if (errorInfo !== "usageLimitReached" && !exhausted) return message;
   const minutes = exhausted?.windowDurationMins;
   const label = minutes
     ? minutes >= 10080
@@ -78,5 +74,5 @@ export function formatCodexUsageError(
     result += " Ask your workspace owner to add credits to continue sooner.";
   if (snapshot?.rateLimitReachedType?.includes("usage_limit_reached"))
     result += " Ask your workspace owner to review the workspace spend limit.";
-  return result;
+  return `${message} ${result}`;
 }

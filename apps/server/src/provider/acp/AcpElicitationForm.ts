@@ -38,6 +38,7 @@ export function acpElicitationForm(request: ElicitationRequest) {
         required.has(key) ? "Required" : "Optional",
       ].join("\n\n"),
       multiSelect: false,
+      optional: !required.has(key),
       options: choices.map((choice) => ({ label: choice, description: choice })),
     };
   });

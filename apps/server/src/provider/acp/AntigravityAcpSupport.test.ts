@@ -23,6 +23,10 @@ describe("Antigravity isolation and native requests", () => {
     const env = antigravityEnvironment(
       {
         PATH: "/bin",
+        PYTHONPATH: "/python",
+        GOOGLE_APPLICATION_CREDENTIALS: "/tools/credentials.json",
+        CLOUDSDK_CONFIG: "/cloud",
+        ELECTRON_RUN_AS_NODE: "1",
         HOME: "/home",
         GOOGLE_API_KEY: "secret",
         GOOGLE_GENAI_USE_VERTEXAI: "true",
@@ -44,6 +48,10 @@ describe("Antigravity isolation and native requests", () => {
     });
     expect(JSON.stringify(env)).not.toContain("secret");
     expect(env.GOOGLE_GENAI_USE_VERTEXAI).toBeUndefined();
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.PYTHONPATH).toBe("/python");
+    expect(env.GOOGLE_APPLICATION_CREDENTIALS).toBe("/tools/credentials.json");
+    expect(env.CLOUDSDK_CONFIG).toBe("/cloud");
   });
   it("only exposes Google's OAuth URL with a loopback callback", () => {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -90,6 +98,10 @@ describe("Antigravity isolation and native requests", () => {
     expect(form?.questions.map((question) => question.id)).toEqual(["name", "remember"]);
     expect(form?.respond({ remember: "No" })).toEqual({
       action: { action: "accept", content: { remember: false } },
+    });
+    expect(form?.questions.every((question) => question.optional)).toBe(true);
+    expect(form?.respond({ name: "", remember: "" })).toEqual({
+      action: { action: "accept", content: {} },
     });
     expect(form?.respond({})).toEqual({ action: { action: "cancel" } });
   });

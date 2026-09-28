@@ -15,13 +15,16 @@ Google personal OAuth credentials belong to one F5 profile and provider instance
 They survive server restarts and are not imported from another profile or the ambient
 Google environment. Account setup uses F5's existing owner-bound jobs and installation-wide
 OAuth lease. Changing accounts requires stopping active turns; idle runtimes are stopped
-before account changes so they do not retain the previous credentials.
+before account changes so they do not retain the previous credentials. New sessions, turns,
+compaction and metadata generation are rejected until the account job exits. Installation
+uses a separate profile lock, so downloading the release does not block other sign-ins.
 
 The composer uses the model choices advertised by the running agent. Until the first
 session supplies that inventory, **Antigravity Default** uses the agent's account default.
 Explicit custom model names remain available. Native slash commands, reasoning text,
 questions, file/tool approvals and form elicitation use the existing F5 thread UI.
-Unsupported forms are cancelled rather than approving fields the user cannot see.
+Optional form fields may be skipped, including on entirely optional forms. Unsupported
+forms are cancelled rather than approving fields the user cannot see.
 Permission buttons show only native choices, including native persistence warnings.
 
 Native `/compact` is off by default and must be enabled in the instance settings.
@@ -40,3 +43,7 @@ Provider status checks only inspect local installation/account files. Each live 
 gets a scoped temporary directory, removed after shutdown. Only user skill directories
 are linked from `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills`; credentials,
 hooks and MCP configuration are not shared this way.
+
+The browser helper alone sets `ELECTRON_RUN_AS_NODE`. Agent tool commands retain Python
+and Google Cloud tool configuration; Antigravity-specific authentication overrides are
+removed, and the runtime explicitly uses the profile's personal OAuth account.

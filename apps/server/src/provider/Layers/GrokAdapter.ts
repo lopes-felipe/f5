@@ -90,6 +90,9 @@ const GROK_RESUME_VERSION = 1 as const;
 export interface GrokAdapterLiveOptions {
   readonly provider?: ProviderKind;
   readonly nativeCompaction?: boolean;
+  readonly discoverSkillCommands?: (
+    cwd: string,
+  ) => Effect.Effect<ReadonlyArray<{ name: string; description: string }>>;
   readonly onRuntimeReady?: (runtime: AcpSessionRuntimeShape) => Effect.Effect<void>;
   readonly makeRuntime?: typeof makeGrokAcpRuntime;
   readonly normalizeModel?: (model: string | null | undefined) => string;
@@ -448,6 +451,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 ),
           );
 
+          const discoveredSkillCommands = yield* (
+            options?.discoverSkillCommands?.(cwd) ?? Effect.succeed([])
+          );
           const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
@@ -731,7 +737,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             runtime: acp,
             currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
             requestedModelId:
-              requestedStartModelId === "antigravity-default" ? undefined : requestedStartModelId,
+              PROVIDER === "antigravity" && requestedStartModelId === "antigravity-default"
+                ? undefined
+                : requestedStartModelId,
             mapError: (cause) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
           });
@@ -772,6 +780,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityTasks: new AntigravityTasks(),
           };
 
+          let nativeSkillCommands: typeof discoveredSkillCommands = [];
           const nf = yield* Stream.runDrain(
             Stream.mapEffect(acp.getEvents(), (event) =>
               Effect.gen(function* () {
@@ -849,6 +858,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     );
                     return;
                   case "SlashCommandsUpdated":
+                    nativeSkillCommands = event.commands;
                     yield* offerRuntimeEvent({
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
@@ -857,7 +867,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       payload: {
                         config: {
                           slashCommands: normalizeSupportedSlashCommands(
-                            event.commands.filter(
+                            [...event.commands, ...discoveredSkillCommands].filter(
                               (command) =>
                                 PROVIDER !== "antigravity" ||
                                 options?.nativeCompaction ||
@@ -900,6 +910,21 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             payload: { resume: started.initializeResult },
           });
+          if (discoveredSkillCommands.length)
+            yield* offerRuntimeEvent({
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              type: "session.configured",
+              payload: {
+                config: {
+                  slashCommands: normalizeSupportedSlashCommands([
+                    ...nativeSkillCommands,
+                    ...discoveredSkillCommands,
+                  ]),
+                },
+              },
+            });
           yield* offerRuntimeEvent({
             type: "session.state.changed",
             ...(yield* makeEventStamp()),
@@ -952,7 +977,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 runtime: ctx.acp,
                 currentModelId: ctx.currentModelId,
                 requestedModelId:
-                  requestedTurnModelId === "antigravity-default" ? undefined : requestedTurnModelId,
+                  PROVIDER === "antigravity" && requestedTurnModelId === "antigravity-default"
+                    ? undefined
+                    : requestedTurnModelId,
                 mapError: (cause) =>
                   mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
               });

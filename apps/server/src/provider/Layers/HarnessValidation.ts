@@ -1,4 +1,3 @@
-import { checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
 /**
  * HarnessValidationLive - On-demand harness validation checks.
  *
@@ -417,19 +416,11 @@ export const HarnessValidationLive = Layer.effect(
     const inFlight = yield* Ref.make(false);
 
     const runProviderPreflight = (params: {
-      readonly provider: ProviderKind;
+      readonly provider: (typeof HARNESS_VALIDATION_ORDER)[number];
       readonly settings: ServerSettings;
       readonly providerOptions?: ProviderStartOptions;
     }) => {
       switch (params.provider) {
-        case "antigravity":
-          return checkAntigravityProviderStatus(
-            params.settings.providers.antigravity,
-            serverConfig.stateDir,
-            "antigravity",
-          ).pipe(
-            Effect.map((snapshot) => providerSnapshotToPreflightStatus("antigravity", snapshot)),
-          );
         case "codex": {
           if (!params.settings.providers.codex.enabled) {
             return Effect.succeed(providerDisabledPreflight("codex"));
@@ -489,7 +480,7 @@ export const HarnessValidationLive = Layer.effect(
     };
 
     const validateProvider = (params: {
-      readonly provider: ProviderKind;
+      readonly provider: (typeof HARNESS_VALIDATION_ORDER)[number];
       readonly settings: ServerSettings;
       readonly providerOptions?: ProviderStartOptions;
     }) =>

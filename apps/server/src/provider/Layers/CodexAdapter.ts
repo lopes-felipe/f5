@@ -2057,12 +2057,14 @@ function mapToRuntimeEvents(
         type: willRetry ? "runtime.warning" : "runtime.error",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          message: formatCodexUsageError(
-            message,
-            limits,
-            event.createdAt,
-            asObject(payload?.error)?.codexErrorInfo,
-          ),
+          message: willRetry
+            ? message
+            : formatCodexUsageError(
+                message,
+                limits,
+                event.createdAt,
+                asObject(payload?.error)?.codexErrorInfo,
+              ),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },

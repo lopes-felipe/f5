@@ -1,3 +1,4 @@
+import { beginAccountChange } from "./ProviderAccountGuard.ts";
 import { createAntigravityAccountProcess } from "./AntigravityAccountProcess.ts";
 import { hasAntigravityAccount } from "../provider/Layers/AntigravityProvider.ts";
 import { parseClaudeAuthStatusFromOutput } from "../provider/Layers/ProviderHealth";
@@ -177,14 +178,20 @@ export class ProviderAccountService {
     const root = this.config.profilesRoot;
     if (!root) throw new Error("Account setup requires the installation profilesRoot.");
     const lease = await acquireInstanceLock(
-      Path.join(root, "locks", "provider-oauth.lock.sqlite"),
+      method === "install"
+        ? Path.join(this.config.stateDir, "providers", "antigravity", "install.lock.sqlite")
+        : Path.join(root, "locks", "provider-oauth.lock.sqlite"),
     ).catch((error) => {
       throw new Error(
-        `Another profile is signing in right now, or the OAuth lease cannot be acquired. ${String(error)}`,
+        method === "install"
+          ? `Antigravity installation is already running, or its lock cannot be acquired. ${String(error)}`
+          : `Another profile is signing in right now, or the OAuth lease cannot be acquired. ${String(error)}`,
       );
     });
+    let releaseAccountChange = () => {};
     try {
       if (antigravity && method !== "install") {
+        releaseAccountChange = beginAccountChange(this.config.stateDir, instanceId);
         if (await this.isBusy(instanceId))
           throw new Error("Stop this instance's active turn before changing its account.");
         await this.stopIdleSessions(instanceId);
@@ -243,6 +250,7 @@ export class ProviderAccountService {
         clearTimeout(timeout);
         unsubscribe();
         this.jobs.delete(handle);
+        releaseAccountChange();
         lease.release();
         finish();
         this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
@@ -268,6 +276,7 @@ export class ProviderAccountService {
       }
       return { handle };
     } catch (error) {
+      releaseAccountChange();
       lease.release();
       throw error;
     }

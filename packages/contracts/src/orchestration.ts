@@ -276,7 +276,8 @@ export type ProjectMemory = typeof ProjectMemory.Type;
 export const ProjectSkillScope = Schema.Literals(["project", "user"]);
 export type ProjectSkillScope = typeof ProjectSkillScope.Type;
 
-export const ProjectSkill = Schema.Struct({
+const ProjectSkillDefinition = Schema.Struct({
+  nativeProviders: Schema.optional(Schema.Array(ProviderKind)),
   sourcePath: Schema.optional(TrimmedNonEmptyString),
   id: TrimmedNonEmptyString,
   projectId: ProjectId,
@@ -289,6 +290,10 @@ export const ProjectSkill = Schema.Struct({
   paths: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
   updatedAt: IsoDateTime,
 });
+export const ProjectSkill = ProjectSkillDefinition.mapFields((fields) => ({
+  ...fields,
+  providerVariants: Schema.optional(Schema.Record(Schema.String, ProjectSkillDefinition)),
+}));
 export type ProjectSkill = typeof ProjectSkill.Type;
 
 export const OrchestrationProject = Schema.Struct({

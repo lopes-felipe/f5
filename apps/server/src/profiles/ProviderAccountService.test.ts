@@ -1,3 +1,5 @@
+import * as antigravityAccountProcess from "./AntigravityAccountProcess.ts";
+import { withAccountAdmission } from "./ProviderAccountGuard.ts";
 import * as processRunner from "../processRunner";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
@@ -207,7 +209,7 @@ describe("Antigravity account ownership", () => {
     }
   });
 
-  it("holds the OAuth lease during install and only lets its owner cancel", async () => {
+  it("uses a separate install lease and only lets its owner cancel", async () => {
     const { AntigravityInstallation } = await import("../provider/AntigravityInstallation.ts");
     const install = vi
       .spyOn(AntigravityInstallation.prototype, "install")
@@ -236,8 +238,12 @@ describe("Antigravity account ownership", () => {
     try {
       const { handle } = await service.start(instanceId, false, owner, "install");
       await expect(service.cancel(handle, stranger)).rejects.toThrow("another connection");
+      const oauth = await acquireInstanceLock(
+        Path.join(root, "locks", "provider-oauth.lock.sqlite"),
+      );
+      oauth.release();
       await expect(
-        acquireInstanceLock(Path.join(root, "locks", "provider-oauth.lock.sqlite")),
+        acquireInstanceLock(Path.join(root, "providers", "antigravity", "install.lock.sqlite")),
       ).rejects.toThrow();
       await service.disconnect(owner);
       expect(emit.mock.calls.every(([, recipient]) => recipient === owner)).toBe(true);
@@ -251,4 +257,51 @@ describe("Antigravity account ownership", () => {
       await FS.rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("holds account admission through pending auth and releases it after cancellation exits", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-agy-auth-guard-"));
+  let exit!: (event: { exitCode: number; signal: number | null }) => void;
+  const spawn = vi
+    .spyOn(antigravityAccountProcess, "createAntigravityAccountProcess")
+    .mockReturnValue({
+      pid: 1,
+      write() {},
+      resize() {},
+      kill() {
+        exit({ exitCode: 1, signal: null });
+      },
+      onData() {
+        return () => {};
+      },
+      onExit(callback) {
+        exit = callback;
+        return () => {};
+      },
+    });
+  const instanceId = ProviderInstanceId.make("custom-antigravity");
+  const settings = Schema.decodeUnknownSync(ServerSettings)({
+    providerInstances: { [instanceId]: { driver: "antigravity" } },
+  });
+  const service = new ProviderAccountService(
+    { stateDir: root, profilesRoot: root } as ServerConfigShape,
+    { getSettings: Effect.succeed(settings) } as unknown as ServerSettingsShape,
+    {} as TerminalManagerShape,
+    () => {},
+    async () => {},
+    async () => false,
+  );
+  try {
+    const { handle } = await service.start(instanceId);
+    const failure = await Effect.runPromise(
+      Effect.void.pipe(withAccountAdmission(root, instanceId, "sendTurn"), Effect.flip),
+    );
+    expect(failure.message).toContain("Account change in progress");
+    await service.cancel(handle);
+    await Effect.runPromise(Effect.void.pipe(withAccountAdmission(root, instanceId, "sendTurn")));
+  } finally {
+    await service.dispose();
+    spawn.mockRestore();
+    await FS.rm(root, { recursive: true, force: true });
+  }
 });

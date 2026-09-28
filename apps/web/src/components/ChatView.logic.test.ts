@@ -1220,3 +1220,41 @@ describe("provider skill inventories", () => {
     ).toEqual({ name: "plugin-review" });
   });
 });
+
+it("keeps a first Claude native skill invocation unchanged before runtime inventory arrives", () => {
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/review",
+    provider: "claudeAgent",
+    projectSkills: [
+      createProjectSkill({
+        sourcePath: ".claude/skills/review/SKILL.md",
+        nativeProviders: ["claudeAgent"],
+      }),
+    ],
+  });
+  expect(result.text).toBe("/review");
+});
+it("does not invent a native Codex invocation for another provider's skill or export absolute paths", () => {
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/review",
+    provider: "codex",
+    projectSkills: [
+      createProjectSkill({ sourcePath: "/Users/private/.claude/skills/review/SKILL.md" }),
+    ],
+  });
+  expect(result.text).toBe('/review\n\nUse the skill instructions for "review".');
+});
+it("shows the selected provider's skill definition when names collide", () => {
+  const native = createProjectSkill({ description: "Native review" });
+  const items = buildSlashComposerMenuItems({
+    query: "review",
+    provider: "claudeAgent",
+    projectSkills: [
+      createProjectSkill({
+        description: "Generic review",
+        providerVariants: { claudeAgent: native },
+      }),
+    ],
+  });
+  expect(items.find((item) => item.type === "skill")?.description).toBe("Native review");
+});

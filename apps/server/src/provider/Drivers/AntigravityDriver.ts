@@ -1,3 +1,4 @@
+import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
@@ -95,6 +96,18 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         {
           makeRuntime: (input) =>
             Effect.gen(function* () {
+              yield* Effect.acquireRelease(
+                Effect.try({
+                  try: () => acquireAccountAdmission(server.stateDir, instanceId),
+                  catch: (cause) =>
+                    new AcpErrors.AcpTransportError({
+                      detail:
+                        "Account change in progress. Retry metadata generation after setup finishes.",
+                      cause,
+                    }),
+                }),
+                (release) => Effect.sync(release),
+              );
               const cwd = yield* fileSystem
                 .makeTempDirectoryScoped({ prefix: "f5-antigravity-metadata-" })
                 .pipe(
@@ -109,6 +122,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
               return yield* makeRuntime({ ...input, cwd });
             }),
           normalizeModel,
+          useAccountDefaultModel: true,
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make(instanceId),
             model: "antigravity-default",

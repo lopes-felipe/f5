@@ -2272,7 +2272,8 @@ export default function ChatView({
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
-    if (!composerTrigger) return [];
+    if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
+      return [];
     if (composerTrigger.kind === "path") {
       return workspaceEntries.map((entry) => ({
         id: `path:${entry.kind}:${entry.path}`,
@@ -2302,7 +2303,10 @@ export default function ChatView({
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
-    Boolean(composerTrigger) && dismissedComposerPromptRef.current !== prompt;
+    Boolean(composerTrigger) &&
+    (composerTrigger?.kind !== "skill" ||
+      (selectedProvider === "codex" && composerMenuItems.length > 0)) &&
+    dismissedComposerPromptRef.current !== prompt;
   const activeComposerMenuItem = useMemo(
     () =>
       composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??
@@ -5404,11 +5408,27 @@ export default function ChatView({
     trigger: ComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
-    return {
-      snapshot,
-      trigger: detectComposerTrigger(snapshot.value, snapshot.expandedCursor),
-    };
-  }, [readComposerSnapshot]);
+    const candidate = detectComposerTrigger(snapshot.value, snapshot.expandedCursor);
+    const trigger =
+      candidate?.kind === "skill" &&
+      (selectedProvider !== "codex" ||
+        !buildSlashComposerMenuItems({
+          query: candidate.query,
+          provider: selectedProvider,
+          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          projectSkills: activeProject?.skills,
+          providerSkills: selectedProviderSnapshot?.skills,
+        }).some((item) => item.type === "skill"))
+        ? null
+        : candidate;
+    return { snapshot, trigger };
+  }, [
+    readComposerSnapshot,
+    selectedProvider,
+    latestConfiguredRuntimeActivity?.slashCommands,
+    activeProject?.skills,
+    selectedProviderSnapshot?.skills,
+  ]);
 
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
@@ -5461,7 +5481,7 @@ export default function ChatView({
         return;
       }
       if (item.type === "skill") {
-        const replacement = buildComposerSkillReplacement(item.name, selectedProvider);
+        const replacement = buildComposerSkillReplacement(item.name);
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,

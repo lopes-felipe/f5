@@ -434,21 +434,21 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
+      if (question.options.length > 0 && options.length === 0) return null;
       const parsedQuestion: {
         id: string;
         header: string;
         question: string;
         options: UserInputQuestion["options"];
         multiSelect?: boolean;
+        optional?: boolean;
       } = {
         id: question.id,
         header: question.header,
         question: question.question,
         options,
       };
+      if (typeof question.optional === "boolean") parsedQuestion.optional = question.optional;
       if (typeof question.multiSelect === "boolean") {
         parsedQuestion.multiSelect = question.multiSelect;
       }

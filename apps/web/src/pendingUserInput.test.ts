@@ -282,3 +282,18 @@ describe("carryDisplacedCustomAnswerIntoPrompt", () => {
     );
   });
 });
+
+it("allows empty optional questions without treating required questions as answered", () => {
+  const questions = [
+    { id: "required", header: "Name", question: "Name", options: [] },
+    { id: "optional", header: "Note", question: "Note", options: [], optional: true },
+  ];
+  expect(buildPendingUserInputAnswers(questions, {})).toBeNull();
+  expect(buildPendingUserInputAnswers(questions, { required: { customAnswer: "Ada" } })).toEqual({
+    required: "Ada",
+    optional: "",
+  });
+  expect(
+    derivePendingUserInputProgress(questions, { required: { customAnswer: "Ada" } }, 1),
+  ).toMatchObject({ isComplete: true, canAdvance: true });
+});

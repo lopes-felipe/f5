@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { GrokSettings, ServerProviderSkill } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { runProcess } from "../../processRunner.ts";
@@ -60,3 +63,17 @@ export const discoverGrokSkills = (
     Effect.map((result) => parseGrokSkills(result.stdout)),
     Effect.orElseSucceed(() => []),
   );
+
+/** Inventory for the global provider picker must not inherit the server's project. */
+export const discoverGlobalGrokSkills = (
+  settings: Pick<GrokSettings, "binaryPath">,
+  env: NodeJS.ProcessEnv,
+) =>
+  Effect.acquireUseRelease(
+    Effect.tryPromise(() => mkdtemp(join(tmpdir(), "f5-grok-skills-"))),
+    (cwd) =>
+      discoverGrokSkills(settings, env, cwd).pipe(
+        Effect.map((skills) => skills.filter((skill) => skill.scope !== "project")),
+      ),
+    (cwd) => Effect.promise(() => rm(cwd, { recursive: true, force: true })),
+  ).pipe(Effect.orElseSucceed(() => []));
