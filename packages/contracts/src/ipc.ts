@@ -33,6 +33,10 @@ import type {
   ProjectAuthorizeEntryInput,
   ProjectAuthorizeEntryResult,
   ProjectListEntriesInput,
+  ProjectCloneInput,
+  ProjectCloneCancelInput,
+  ProjectCloneJob,
+  ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
   ProjectReadFileResult,
@@ -405,6 +409,7 @@ export interface DesktopBridge {
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
   ) => Promise<T | null>;
+  readClipboardText?: (source: "clipboard" | "selection") => Promise<string>;
   copyImage?: (pngBytes: Uint8Array) => Promise<void>;
   downloadImage?: (bytes: Uint8Array, filename: string) => Promise<DesktopImageDownloadResult>;
   openExternal: (url: string) => Promise<boolean>;
@@ -519,6 +524,10 @@ export interface NativeApi {
   projects: {
     getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
+    clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;
+    cloneList: () => Promise<ReadonlyArray<ProjectCloneJob>>;
+    cloneCancel: (input: ProjectCloneCancelInput) => Promise<void>;
+    listDirectory: (input: ProjectListDirectoryInput) => Promise<ProjectListEntriesResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     searchContents: (input: ProjectSearchContentsInput) => Promise<ProjectSearchContentsResult>;

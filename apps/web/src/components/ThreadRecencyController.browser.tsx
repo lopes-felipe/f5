@@ -462,6 +462,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       lastPolledAt: null,
     };
   }
+  if (tag === WS_METHODS.projectsCloneList) return [];
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }

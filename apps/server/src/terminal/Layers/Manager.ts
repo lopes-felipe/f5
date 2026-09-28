@@ -1,3 +1,4 @@
+import { killProcessTree } from "@t3tools/shared/processTree";
 import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
 import { readTerminalHistory } from "../historyPersistence";
 import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
@@ -751,6 +752,31 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     terminalId: string,
   ): void {
     this.clearKillEscalationTimer(process);
+    if (globalThis.process.platform === "win32") {
+      // Discover descendants before closing ConPTY, while their parent still exists.
+      const result = killProcessTree(
+        {
+          pid: process.pid,
+          kill: (signal) => {
+            process.kill(signal);
+            return true;
+          },
+        },
+        { isGroupLeader: false, graceful: false },
+      );
+      if (result.usedFallback)
+        this.logger.warn("failed to stop terminal descendants; closed terminal process", {
+          threadId,
+          terminalId,
+          taskkillStatus: result.taskkillStatus,
+        });
+      try {
+        process.kill();
+      } catch {
+        /* ConPTY may already have exited with its tree. */
+      }
+      return;
+    }
     try {
       process.kill("SIGTERM");
     } catch (error) {

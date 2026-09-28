@@ -128,6 +128,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       createBranch: (input) => core.createBranch(input),
       checkoutBranch: (input) => core.checkoutBranch(input),
       initRepo: (input) => core.initRepo(input),
+      cloneRepository: (input) => core.cloneRepository(input),
       listLocalBranchNames: (cwd) => core.listLocalBranchNames(cwd),
     } satisfies GitCoreShape;
   });
@@ -243,6 +244,23 @@ function commitWithDate(
 
 it.layer(TestLayer)("git integration", (it) => {
   describe("upstream Git safety", () => {
+    it.effect("clones into its reserved empty directory using a local bare remote", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const destination = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        const core = yield* GitCore;
+        const chunks: Uint8Array[] = [];
+        yield* core.cloneRepository({
+          cwd: destination,
+          url: remote,
+          onProgress: (chunk) => chunks.push(chunk),
+        });
+        expect(yield* git(destination, ["remote", "get-url", "origin"])).toBe(remote);
+        expect(yield* git(destination, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+        expect(chunks.length).toBeGreaterThan(0);
+      }),
+    );
     it.effect("does not restore a tracked file when a stale branch name matches it", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

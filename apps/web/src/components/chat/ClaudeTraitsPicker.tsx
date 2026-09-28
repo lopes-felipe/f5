@@ -111,6 +111,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
       }}
     >
       <MenuTrigger
+        data-composer-control="effort"
         render={
           <Button
             size="sm"

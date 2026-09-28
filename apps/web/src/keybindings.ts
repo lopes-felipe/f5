@@ -1,3 +1,4 @@
+import { isElectron } from "./env";
 import {
   type KeybindingCommand,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
@@ -7,7 +8,7 @@ import {
   type KeybindingWhenNode,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { evaluateWhenNode, formatShortcutLabel } from "@t3tools/shared/keybindings";
+import { encodeWhenAst, evaluateWhenNode, formatShortcutLabel } from "@t3tools/shared/keybindings";
 import { useQuery } from "@tanstack/react-query";
 import { serverConfigQueryOptions } from "./lib/serverReactQuery";
 import { isMacPlatform } from "./lib/utils";
@@ -73,6 +74,7 @@ function resolvePlatform(options: ShortcutMatchOptions | undefined): string {
 
 function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatchContext {
   return {
+    isElectron,
     terminalFocus: false,
     terminalOpen: false,
     dialogFocus: false,
@@ -138,6 +140,8 @@ export function shortcutLabelForCommand(
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding || binding.command !== command) continue;
+    if (!isElectron && binding.whenAst && /^isElectron\b/.test(encodeWhenAst(binding.whenAst)))
+      continue;
     return formatShortcutLabel(binding.shortcut, platform);
   }
   return null;

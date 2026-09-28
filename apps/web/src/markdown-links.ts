@@ -49,6 +49,7 @@ function looksLikePosixFilesystemPath(path: string): boolean {
 function isLikelyPathCandidate(path: string): boolean {
   if (isWindowsAbsolutePath(path)) return true;
   if (RELATIVE_PATH_PREFIX_PATTERN.test(path)) return true;
+  if (/^[A-Za-z0-9._ -]+(?:\/[A-Za-z0-9._ -]+)*\/$/.test(path)) return true;
   if (path.startsWith("/")) return looksLikePosixFilesystemPath(path);
   return RELATIVE_FILE_PATH_PATTERN.test(path) || RELATIVE_FILE_NAME_PATTERN.test(path);
 }

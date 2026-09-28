@@ -2,6 +2,30 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GENERAL_SETTINGS_DESCRIPTORS = [
   {
+    id: "general.composer-editor",
+    category: "general",
+    label: "Rich text editor",
+    description: "Choose styled Markdown or plain text in the composer.",
+    keywords: ["composer", "markdown", "plain text"],
+    targetSelector: '[aria-label="Rich text editor"]',
+  },
+  {
+    id: "general.pr-merge-method",
+    category: "general",
+    label: "Default PR merge method",
+    description: "Choose the default merge method for pull requests.",
+    keywords: ["github", "squash", "rebase", "pull request"],
+    targetSelector: '[aria-label="Default PR merge method"]',
+  },
+  {
+    id: "general.send-shortcut",
+    category: "general",
+    label: "Send shortcut",
+    description: "Send with Enter or Command/Ctrl+Enter, including multiline prompts.",
+    keywords: ["composer", "keyboard", "multiline"],
+    targetSelector: '[aria-label="Send shortcut"]',
+  },
+  {
     id: "general.timestamp-format",
     category: "general",
     label: "Timestamp format",

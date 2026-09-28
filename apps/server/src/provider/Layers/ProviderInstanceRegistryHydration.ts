@@ -112,28 +112,26 @@ export const deriveProviderInstanceConfigMap = (
  * configs, so the only way the watcher could fail is a settings stream
  * tear-down, which logs and exits cleanly.
  */
-const SettingsWatcherLive: Layer.Layer<
-  never,
-  never,
-  ProviderInstanceRegistryMutator | ServerSettingsService
-> = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const mutator = yield* ProviderInstanceRegistryMutator;
-    const serverSettings = yield* ServerSettingsService;
-    yield* serverSettings.streamChanges.pipe(
-      Stream.runForEach((next) =>
-        mutator
-          .reconcile(deriveProviderInstanceConfigMap(next))
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
+const settingsWatcherLive = (
+  settingsChanges: Stream.Stream<ServerSettings>,
+): Layer.Layer<never, never, ProviderInstanceRegistryMutator | ServerSettingsService> =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const mutator = yield* ProviderInstanceRegistryMutator;
+      yield* settingsChanges.pipe(
+        Stream.runForEach((next) =>
+          mutator
+            .reconcile(deriveProviderInstanceConfigMap(next))
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
+              ),
             ),
-          ),
-      ),
-      Effect.forkScoped,
-    );
-  }),
-);
+        ),
+        Effect.forkScoped,
+      );
+    }),
+  );
 
 /**
  * Hydrate `ProviderInstanceRegistry` from `ServerSettings` and keep it in
@@ -158,6 +156,7 @@ export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
 > = Layer.unwrap(
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const settingsChanges = yield* serverSettings.subscribeChanges;
     const initialSettings: ServerSettings | undefined = yield* serverSettings.getSettings.pipe(
       Effect.orElseSucceed(() => undefined),
     );
@@ -171,6 +170,6 @@ export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
       configMap: initialConfigMap,
     });
 
-    return SettingsWatcherLive.pipe(Layer.provideMerge(mutableLayer));
+    return settingsWatcherLive(settingsChanges).pipe(Layer.provideMerge(mutableLayer));
   }),
 ) as Layer.Layer<ProviderInstanceRegistry, never, BuiltInDriversEnv | ServerSettingsService>;

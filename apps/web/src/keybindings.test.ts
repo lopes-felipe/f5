@@ -808,3 +808,81 @@ describe("plus key parsing", () => {
     );
   });
 });
+
+import {
+  DEFAULT_RESOLVED_KEYBINDINGS,
+  compileResolvedKeybindingsConfig,
+} from "@t3tools/shared/keybindings";
+describe("Phase 3 shortcut contexts", () => {
+  it.each([
+    ["w", false, "rightPanel.closeTab"],
+    ["e", true, "composer.effort"],
+    ["a", true, "composer.runtimeMode"],
+    ["x", true, "composer.envMode"],
+    ["g", true, "composer.branch"],
+    ["u", true, "composer.interactionMode"],
+    ["k", true, "prHub.copyNumber"],
+  ])("keeps %s defaults desktop-only", (key, shiftKey, command) => {
+    const pressed = event({ key, shiftKey, ctrlKey: true });
+    assert.equal(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { isElectron: true },
+      }),
+      command,
+    );
+    assert.notEqual(
+      resolveShortcutCommand(pressed, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { isElectron: false },
+      }),
+      command,
+    );
+    const rebound = compileResolvedKeybindingsConfig([
+      { key: "ctrl+alt+r", command: command as KeybindingCommand },
+    ]);
+    assert.equal(
+      resolveShortcutCommand(event({ key: "r", ctrlKey: true, altKey: true }), rebound, {
+        platform: "Linux",
+        context: { isElectron: false },
+      }),
+      command,
+    );
+  });
+  it("only maps undo with a visible toast outside editable elements", () => {
+    const undo = event({ key: "z", ctrlKey: true });
+    assert.equal(
+      resolveShortcutCommand(undo, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { threadUndoAvailable: true, editableFocus: false },
+      }),
+      "thread.undo",
+    );
+    for (const context of [
+      { threadUndoAvailable: false, editableFocus: false },
+      { threadUndoAvailable: true, editableFocus: true },
+    ]) {
+      assert.notEqual(
+        resolveShortcutCommand(undo, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "Linux", context }),
+        "thread.undo",
+      );
+    }
+  });
+  it("gives background send priority only in the new-thread composer", () => {
+    const send = event({ key: "Enter", ctrlKey: true });
+    assert.equal(
+      resolveShortcutCommand(send, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { newThreadComposer: true },
+      }),
+      "chat.newBackground",
+    );
+    assert.notEqual(
+      resolveShortcutCommand(send, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { newThreadComposer: false },
+      }),
+      "chat.newBackground",
+    );
+  });
+});

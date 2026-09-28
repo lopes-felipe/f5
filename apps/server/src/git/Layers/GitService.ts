@@ -175,7 +175,7 @@ const makeGitService = Effect.gen(function* () {
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
-          collectOutput(commandInput, child.stderr, maxOutputBytes),
+          collectOutput(commandInput, child.stderr, maxOutputBytes, input.onStderrChunk),
           child.exitCode.pipe(
             Effect.map((value) => Number(value)),
             Effect.mapError(toGitCommandError(commandInput, "failed to report exit code.")),

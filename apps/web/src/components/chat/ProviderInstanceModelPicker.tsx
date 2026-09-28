@@ -1,3 +1,4 @@
+import { resolveShortcutCommand } from "~/keybindings";
 import {
   type ModelSlug,
   type ProviderDriverKind,
@@ -286,6 +287,36 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       : [...existing, { provider: item.instance.instanceId, model: item.slug }];
     void updateSettings({ favorites: next });
   };
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handle = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const command = resolveShortcutCommand(event, props.keybindings ?? [], {
+        context: { modelPickerOpen: true },
+      });
+      if (command !== "modelPicker.previousProvider" && command !== "modelPicker.nextProvider")
+        return;
+      const available = visibleEntries.filter(isSelectable);
+      if (!available.length) return;
+      const current =
+        selectedSource.kind === "instance"
+          ? available.findIndex((item) => item.instanceId === selectedSource.instanceId)
+          : -1;
+      const direction = command === "modelPicker.nextProvider" ? 1 : -1;
+      const index =
+        current < 0
+          ? direction === 1
+            ? 0
+            : available.length - 1
+          : (current + direction + available.length) % available.length;
+      event.preventDefault();
+      setSearch("");
+      setSelectedSource({ kind: "instance", instanceId: available[index]!.instanceId });
+    };
+    window.addEventListener("keydown", handle, true);
+    return () => window.removeEventListener("keydown", handle, true);
+  }, [isOpen, props.keybindings, selectedSource, visibleEntries]);
 
   const triggerTitle = getTriggerDisplayModelName(selectedModel);
   const triggerLabel = selectedInstance

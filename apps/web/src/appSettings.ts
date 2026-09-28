@@ -293,6 +293,14 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
 }
 
 export const AppSettingsSchema = Schema.Struct({
+  composerRichTextEnabled: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
+  sendShortcut: Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("enter")),
+    Schema.withDecodingDefault(() => "enter" as const),
+  ),
   codexBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
@@ -338,6 +346,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
   gitStatusAutoRefreshIntervalSeconds: GitStatusAutoRefreshIntervalSecondsSchema,
+  prHubLastMergeMethods: Schema.Record(
+    Schema.String,
+    Schema.Literals(["squash", "merge", "rebase"]),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+    Schema.withDecodingDefault(() => ({})),
+  ),
   prHubStalledAfterHours: Schema.Number.check(
     Schema.isInt(),
     Schema.isBetween({ minimum: 0, maximum: 720 }),
@@ -372,6 +387,26 @@ export const AppSettingsSchema = Schema.Struct({
   diffWordWrap: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
     Schema.withDecodingDefault(() => false),
+  ),
+  diffFileTreeOrder: Schema.Literals(["folders", "path"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("folders")),
+    Schema.withDecodingDefault(() => "folders" as const),
+  ),
+  rightPanelWidths: Schema.Record(Schema.String, Schema.Finite).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+    Schema.withDecodingDefault(() => ({})),
+  ),
+  diffCollapsedFolders: Schema.Record(Schema.String, Schema.Array(Schema.String)).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+    Schema.withDecodingDefault(() => ({})),
+  ),
+  diffFileDefaultState: Schema.Literals(["auto", "expanded", "collapsed"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("auto")),
+    Schema.withDecodingDefault(() => "auto" as const),
+  ),
+  diffColorPalette: Schema.Literals(["red-green", "blue-orange"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("red-green")),
+    Schema.withDecodingDefault(() => "red-green" as const),
   ),
   diffRenderMode: Schema.Literals(["stacked", "split"]).pipe(
     Schema.withConstructorDefault(() => Option.some("stacked")),
@@ -637,6 +672,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
         : parsed;
     const migrated: PersistedAppSettingsValue = {
       ...runtimeMetadataMigrated,
+      composerRichTextEnabled: runtimeMetadataMigrated.composerRichTextEnabled ?? false,
       // The first palette release used `f5-default` for the blue palette.
       // Move that implicit default to the restored black palette exactly once;
       // after v2 is persisted, explicitly selecting F5 Blue remains stable.

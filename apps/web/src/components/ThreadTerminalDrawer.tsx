@@ -1,3 +1,4 @@
+import { terminalClipboardAction } from "../terminalClipboard";
 import { useProfileState } from "../profileState";
 import { FitAddon } from "@xterm/addon-fit";
 import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
@@ -421,7 +422,31 @@ function TerminalViewport({
       }
     };
 
+    const pasteClipboard = async (source: "clipboard" | "selection" = "clipboard") => {
+      try {
+        const text = window.desktopBridge?.readClipboardText
+          ? await window.desktopBridge.readClipboardText(source)
+          : source === "clipboard"
+            ? await navigator.clipboard.readText()
+            : "";
+        if (!disposed && terminalRef.current === terminal) terminal.paste(text);
+      } catch (error) {
+        if (!disposed)
+          writeSystemMessage(
+            terminal,
+            error instanceof Error ? error.message : "Unable to read clipboard",
+          );
+      }
+    };
     terminal.attachCustomKeyEventHandler((event) => {
+      const clipboardAction = terminalClipboardAction(event, terminal.hasSelection());
+      if (clipboardAction) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (clipboardAction === "copy") copyToClipboard(terminal.getSelection(), undefined);
+        else void pasteClipboard();
+        return false;
+      }
       const navigationData = terminalNavigationShortcutData(event);
       if (navigationData !== null) {
         event.preventDefault();
@@ -545,9 +570,23 @@ function TerminalViewport({
       }, delay);
     };
     const handlePointerDown = (event: PointerEvent) => {
+      if (
+        event.button === 1 &&
+        /linux/i.test(navigator.platform) &&
+        window.desktopBridge?.readClipboardText
+      ) {
+        event.preventDefault();
+        void pasteClipboard("selection");
+      }
       clearSelectionAction();
       selectionGestureActiveRef.current = event.button === 0;
     };
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      if (terminal.hasSelection()) void showSelectionAction();
+      else void pasteClipboard();
+    };
+    mount.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
 
@@ -674,6 +713,7 @@ function TerminalViewport({
       }
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
+      mount.removeEventListener("contextmenu", handleContextMenu);
       terminalRef.current = null;
       fitAddonRef.current = null;
       terminal.dispose();

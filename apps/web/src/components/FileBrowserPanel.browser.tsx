@@ -39,7 +39,7 @@ vi.mock("~/nativeApi", () => ({
   readNativeApi: () => nativeApiRef.current,
 }));
 
-const listEntries = vi.fn();
+const listDirectory = vi.fn();
 const searchEntries = vi.fn();
 const showContextMenu = vi.fn();
 
@@ -124,11 +124,13 @@ async function searchFor(query: string) {
 
 describe("FileBrowserPanel", () => {
   beforeEach(() => {
-    listEntries.mockResolvedValue(listResult());
+    listDirectory.mockImplementation(async ({ relativePath }: { relativePath: string }) =>
+      listResult(TREE_ENTRIES.filter((entry) => (entry.parentPath ?? "") === relativePath)),
+    );
     searchEntries.mockResolvedValue({ entries: [], truncated: false });
     nativeApiRef.current = {
       projects: {
-        listEntries,
+        listDirectory,
         searchEntries,
       },
       contextMenu: { show: showContextMenu },
@@ -137,19 +139,24 @@ describe("FileBrowserPanel", () => {
 
   afterEach(() => {
     nativeApiRef.current = undefined;
-    listEntries.mockReset();
+    listDirectory.mockReset();
     searchEntries.mockReset();
     showContextMenu.mockReset();
     document.body.innerHTML = "";
   });
 
-  it("renders tree entries from projects.listEntries while the query is empty", async () => {
+  it("renders tree entries from projects.listDirectory while the query is empty", async () => {
     const mounted = await renderPanel();
     try {
       await expect.element(page.getByText("src")).toBeInTheDocument();
       await expect.element(page.getByText("App.tsx")).toBeInTheDocument();
 
-      expect(listEntries).toHaveBeenCalledWith({ cwd: "/repo/project", limit: 5_000 });
+      expect(listDirectory).toHaveBeenCalledWith({
+        cwd: "/repo/project",
+        relativePath: "",
+        includeIgnored: false,
+        limit: 5_000,
+      });
       expect(searchEntries).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
@@ -164,7 +171,7 @@ describe("FileBrowserPanel", () => {
       await expect.element(page.getByText("App.tsx")).toBeInTheDocument();
       await page.getByText("src", { exact: true }).click();
       await expect.element(page.getByText("App.tsx")).not.toBeInTheDocument();
-      listEntries.mockResolvedValue(
+      listDirectory.mockResolvedValue(
         listResult([...TREE_ENTRIES, { path: "new.ts", kind: "file" }]),
       );
       await page.getByRole("button", { name: "Refresh workspace files" }).click();
@@ -188,19 +195,24 @@ describe("FileBrowserPanel", () => {
         ),
       ).toBe(true);
 
-      expect(listEntries).not.toHaveBeenCalled();
+      expect(listDirectory).not.toHaveBeenCalled();
       expect(searchEntries).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("passes the configured tree entry limit to projects.listEntries", async () => {
+  it("passes the configured tree entry limit to projects.listDirectory", async () => {
     const mounted = await renderPanel({ entryLimit: 100_000 });
     try {
       await expect.element(page.getByText("src")).toBeInTheDocument();
 
-      expect(listEntries).toHaveBeenCalledWith({ cwd: "/repo/project", limit: 100_000 });
+      expect(listDirectory).toHaveBeenCalledWith({
+        cwd: "/repo/project",
+        relativePath: "",
+        includeIgnored: false,
+        limit: 100_000,
+      });
     } finally {
       await mounted.cleanup();
     }

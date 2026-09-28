@@ -1,3 +1,4 @@
+import { ComposerMarkdownStylePlugin } from "./chat/composer/ComposerMarkdownStylePlugin";
 import { LexicalComposer, type InitialConfigType } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
 import { ContentEditable } from "@lexical/react/LexicalContentEditable";
@@ -22,6 +23,7 @@ import {
   KEY_ARROW_RIGHT_COMMAND,
   KEY_ARROW_UP_COMMAND,
   KEY_ENTER_COMMAND,
+  KEY_ESCAPE_COMMAND,
   KEY_TAB_COMMAND,
   COMMAND_PRIORITY_HIGH,
   KEY_BACKSPACE_COMMAND,
@@ -81,6 +83,7 @@ const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).sl
 type SerializedComposerMentionNode = Spread<
   {
     path: string;
+    source?: string;
     type: "composer-mention";
     version: 1;
   },
@@ -137,31 +140,34 @@ function ComposerMentionDecorator(props: { path: string }) {
 
 class ComposerMentionNode extends DecoratorNode<ReactElement> {
   __path: string;
+  __source: string;
 
   static override getType(): string {
     return "composer-mention";
   }
 
   static override clone(node: ComposerMentionNode): ComposerMentionNode {
-    return new ComposerMentionNode(node.__path, node.__key);
+    return new ComposerMentionNode(node.__path, node.__source, node.__key);
   }
 
   static override importJSON(serializedNode: SerializedComposerMentionNode): ComposerMentionNode {
     // Older drafts serialized this as a TextNode-shaped payload; `path` is the
     // only semantic field we need to preserve the mention round trip.
-    return $createComposerMentionNode(serializedNode.path);
+    return $createComposerMentionNode(serializedNode.path, serializedNode.source);
   }
 
-  constructor(path: string, key?: NodeKey) {
+  constructor(path: string, source?: string, key?: NodeKey) {
     super(key);
     const normalizedPath = path.startsWith("@") ? path.slice(1) : path;
     this.__path = normalizedPath;
+    this.__source = source ?? `@${serializeComposerMentionPath(normalizedPath)}`;
   }
 
   override exportJSON(): SerializedComposerMentionNode {
     return {
       ...super.exportJSON(),
       path: this.__path,
+      source: this.__source,
       type: "composer-mention",
       version: 1,
     };
@@ -178,7 +184,7 @@ class ComposerMentionNode extends DecoratorNode<ReactElement> {
   }
 
   override getTextContent(): string {
-    return `@${serializeComposerMentionPath(this.__path)}`;
+    return this.__source;
   }
 
   override isInline(): true {
@@ -190,8 +196,8 @@ class ComposerMentionNode extends DecoratorNode<ReactElement> {
   }
 }
 
-function $createComposerMentionNode(path: string): ComposerMentionNode {
-  return $applyNodeReplacement(new ComposerMentionNode(path));
+function $createComposerMentionNode(path: string, source?: string): ComposerMentionNode {
+  return $applyNodeReplacement(new ComposerMentionNode(path, source));
 }
 
 function ComposerTerminalContextDecorator(props: { context: TerminalContextDraft }) {
@@ -595,7 +601,7 @@ function $setComposerEditorPrompt(
   const segments = splitPromptIntoComposerSegments(prompt, terminalContexts);
   for (const segment of segments) {
     if (segment.type === "mention") {
-      paragraph.append($createComposerMentionNode(segment.path));
+      paragraph.append($createComposerMentionNode(segment.path, segment.raw));
       continue;
     }
     if (segment.type === "terminal-context") {
@@ -631,6 +637,7 @@ export interface ComposerPromptEditorHandle {
 }
 
 interface ComposerPromptEditorProps {
+  richTextEnabled?: boolean;
   value: string;
   cursor: number;
   terminalContexts: ReadonlyArray<TerminalContextDraft>;
@@ -646,7 +653,7 @@ interface ComposerPromptEditorProps {
     terminalContextIds: string[],
   ) => void;
   onCommandKeyDown?: (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
     event: KeyboardEvent,
   ) => boolean;
   onPaste: ClipboardEventHandler<HTMLElement>;
@@ -658,7 +665,7 @@ interface ComposerPromptEditorInnerProps extends ComposerPromptEditorProps {
 
 function ComposerCommandKeyPlugin(props: {
   onCommandKeyDown?: (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
     event: KeyboardEvent,
   ) => boolean;
 }) {
@@ -667,14 +674,14 @@ function ComposerCommandKeyPlugin(props: {
 
   useEffect(() => {
     const handleCommand = (
-      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+      key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
       event: KeyboardEvent | null,
     ): boolean => {
       if (!props.onCommandKeyDown || !event) {
         return false;
       }
 
-      if (key === "Enter" && isKeyboardEventComposing(event, isComposingRef.current)) {
+      if (isKeyboardEventComposing(event, isComposingRef.current)) {
         event.stopPropagation();
         return true;
       }
@@ -719,6 +726,11 @@ function ComposerCommandKeyPlugin(props: {
       (event) => handleCommand("Enter", event),
       COMMAND_PRIORITY_HIGH,
     );
+    const unregisterEscape = editor.registerCommand(
+      KEY_ESCAPE_COMMAND,
+      (event) => handleCommand("Escape", event),
+      COMMAND_PRIORITY_HIGH,
+    );
     const unregisterTab = editor.registerCommand(
       KEY_TAB_COMMAND,
       (event) => handleCommand("Tab", event),
@@ -730,6 +742,7 @@ function ComposerCommandKeyPlugin(props: {
       unregisterArrowUp();
       unregisterEnter();
       unregisterTab();
+      unregisterEscape();
       unregisterCompositionListeners();
     };
   }, [editor, props]);
@@ -967,6 +980,7 @@ function ComposerSurroundSelectionPlugin() {
 }
 
 function ComposerPromptEditorInner({
+  richTextEnabled = false,
   value,
   cursor,
   terminalContexts,
@@ -1205,6 +1219,7 @@ function ComposerPromptEditorInner({
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />
         <ComposerSurroundSelectionPlugin />
+        <ComposerMarkdownStylePlugin enabled={richTextEnabled} />
         <HistoryPlugin />
       </div>
     </ComposerTerminalContextActionsContext.Provider>
@@ -1216,6 +1231,7 @@ export const ComposerPromptEditor = forwardRef<
   ComposerPromptEditorProps
 >(function ComposerPromptEditor(
   {
+    richTextEnabled = false,
     value,
     cursor,
     terminalContexts,
@@ -1249,6 +1265,7 @@ export const ComposerPromptEditor = forwardRef<
   return (
     <LexicalComposer key={COMPOSER_EDITOR_HMR_KEY} initialConfig={initialConfig}>
       <ComposerPromptEditorInner
+        richTextEnabled={richTextEnabled}
         value={value}
         cursor={cursor}
         terminalContexts={terminalContexts}

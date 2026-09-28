@@ -198,6 +198,9 @@ export const ServerSettings = Schema.Struct({
       options: [{ id: "reasoningEffort", value: "low" }],
     })),
   ),
+  prHubDefaultMergeMethod: Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -321,6 +324,9 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  prHubDefaultMergeMethod: Schema.optionalKey(
+    Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
+  ),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   observability: Schema.optionalKey(
     Schema.Struct({

@@ -135,7 +135,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
     <div>
       <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Output</p>
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
-        <pre className="whitespace-pre-wrap break-words font-mono text-[12px] text-foreground">
+        <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
           {props.isLoadingOutput
             ? "Loading output..."
             : props.outputError
@@ -313,7 +313,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
               )}
               <span className="text-[10px] text-muted-foreground">{meta}</span>
             </div>
-            <code className="mt-2 block overflow-x-auto whitespace-pre-wrap break-all font-mono text-[12px] text-foreground">
+            <code className="mt-2 block overflow-x-auto whitespace-pre-wrap break-all font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
               {summaryText === displayCommand ? (
                 <HighlightedCommandText command={displayCommand} />
               ) : (
@@ -351,7 +351,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
                 <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                   Command
                 </p>
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[12px] text-foreground">
+                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
                   <HighlightedCommandText command={displayCommand} />
                 </pre>
               </div>

@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
 
+import { ZoomableImage } from "./ZoomableImage";
 import { Button } from "../ui/button";
 import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
 import type { ImageAttachmentAction } from "./useImageAttachmentActions";
@@ -250,11 +251,10 @@ export function ExpandedImageDialog({
             <XIcon />
           </Button>
         </div>
-        <img
+        <ZoomableImage
+          key={item.previewSrc}
           src={item.previewSrc}
-          alt={item.name}
-          className="max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl"
-          draggable={false}
+          name={item.name}
           onContextMenu={handleContextMenu}
         />
         <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">

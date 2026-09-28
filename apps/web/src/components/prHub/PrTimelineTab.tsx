@@ -1,3 +1,4 @@
+import { PrAuthorLink } from "./PrAuthorLink";
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import {
@@ -48,7 +49,7 @@ function TimelineComment({
         <div className="flex min-w-0 items-center gap-2">
           <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0 text-sm">
-            <span className="font-medium">{comment.author?.login ?? "unknown"}</span>{" "}
+            <PrAuthorLink prUrl={pr.url} login={comment.author?.login} />{" "}
             <span className="text-muted-foreground">
               {comment.kind === "review-comment"
                 ? "review comment"

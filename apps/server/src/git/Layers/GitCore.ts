@@ -1225,6 +1225,7 @@ const makeGitCore = Effect.gen(function* () {
         "diff",
         "--cached",
         "--patch",
+        "--find-renames",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "--minimal",
@@ -1481,6 +1482,7 @@ const makeGitCore = Effect.gen(function* () {
           runGitStdout("GitCore.readRangeContext.diffPatch", cwd, [
             "diff",
             "--patch",
+            "--find-renames",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "--minimal",
@@ -2080,6 +2082,18 @@ const makeGitCore = Effect.gen(function* () {
     renameBranch,
     createBranch,
     checkoutBranch,
+    cloneRepository: (input) =>
+      git
+        .execute({
+          operation: "GitCore.cloneRepository",
+          cwd: input.cwd,
+          args: ["clone", "--progress", "--", input.url, "."],
+          timeoutMs: 15 * 60_000,
+          maxOutputBytes: 1024 * 1024,
+          env: { GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+          onStderrChunk: input.onProgress,
+        })
+        .pipe(Effect.asVoid),
     initRepo,
     listLocalBranchNames,
     readDefaultBranch: (cwd) => resolveDefaultBranchName(cwd, "origin"),

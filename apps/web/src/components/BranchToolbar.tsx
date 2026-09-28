@@ -130,7 +130,12 @@ export default function BranchToolbar({
           onValueChange={(value) => onEnvModeChange(value as EnvMode)}
           items={envModeItems}
         >
-          <SelectTrigger variant="ghost" size="xs" className="font-medium">
+          <SelectTrigger
+            data-composer-control="envMode"
+            variant="ghost"
+            size="xs"
+            className="font-medium"
+          >
             {effectiveEnvMode === "worktree" ? (
               <GitForkIcon className="size-3" />
             ) : (

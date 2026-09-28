@@ -17,6 +17,7 @@ import {
   useRef,
 } from "react";
 
+import { shortcutLabelForCommand, useServerKeybindings } from "../keybindings";
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
@@ -51,6 +52,7 @@ function SurfaceMenuItem(props: {
   disabledReason: string;
   onClick: () => void;
   children: ReactNode;
+  shortcut?: string | null;
 }) {
   const item = (
     <MenuItem
@@ -59,6 +61,9 @@ function SurfaceMenuItem(props: {
       onClick={props.available ? props.onClick : undefined}
     >
       {props.children}
+      {props.shortcut ? (
+        <span className="ml-auto pl-3 text-xs text-muted-foreground">{props.shortcut}</span>
+      ) : null}
     </MenuItem>
   );
 
@@ -266,6 +271,7 @@ export function RightPanelTabs(props: {
   previewPresentation?: PreviewPresentation | undefined;
   children: ReactNode;
 }) {
+  const keybindings = useServerKeybindings();
   const tabListRef = useRef<HTMLDivElement>(null);
   const ownsDesktopTitleBar = isElectron && props.mode === "sidebar";
 
@@ -352,7 +358,7 @@ export function RightPanelTabs(props: {
         )}
       >
         <div ref={tabListRef} className="min-w-0 flex-1">
-          <ScrollArea hideScrollbars scrollFade className="min-w-0 rounded-none">
+          <ScrollArea scrollFade className="min-w-0 rounded-none">
             <div className="flex h-full w-max min-w-full items-center gap-1">
               {props.surfaces.map((surface) => {
                 const active = surface.id === props.activeSurfaceId;
@@ -424,6 +430,7 @@ export function RightPanelTabs(props: {
                     Agents
                   </SurfaceMenuItem>
                   <SurfaceMenuItem
+                    shortcut={shortcutLabelForCommand(keybindings, "diff.toggle")}
                     available={props.diffAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.diff}
                     onClick={props.onAddDiff}

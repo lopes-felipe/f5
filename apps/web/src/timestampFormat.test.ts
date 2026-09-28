@@ -37,3 +37,11 @@ describe("resolveTimestampLocale", () => {
     expect(resolveTimestampLocale("")).toBeUndefined();
   });
 });
+
+import { isOlderCalendarDay } from "./timestampFormat";
+it("includes a date across calendar boundaries, even less than 24 hours apart", () => {
+  const now = new Date(2026, 8, 25, 0, 10);
+  expect(isOlderCalendarDay(new Date(2026, 8, 24, 23, 59), now)).toBe(true);
+  expect(isOlderCalendarDay(new Date(2026, 8, 25, 0, 1), now)).toBe(false);
+  expect(isOlderCalendarDay(new Date(2025, 8, 25, 0, 10), now)).toBe(true);
+});

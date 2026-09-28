@@ -1,3 +1,5 @@
+import { ProjectCloneController } from "../components/ProjectCloneController";
+import { ThreadNavigationController } from "../components/ThreadNavigationController";
 import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
@@ -114,6 +116,8 @@ function ChatRouteLayout() {
           <SidebarRail />
         </Sidebar>
         <ThreadRecencyController />
+        <ThreadNavigationController />
+        <ProjectCloneController />
         <ModelRecencyController />
         <ThreadStatusNotificationController />
         <NextTurnQueueController />

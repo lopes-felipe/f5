@@ -434,6 +434,20 @@ function SidebarRail({
       if (resizeState.rafId !== null) {
         window.cancelAnimationFrame(resizeState.rafId);
       }
+      // Pointer-up may precede the scheduled paint. Commit that final width too.
+      const accepted =
+        resolvedResizable?.shouldAcceptWidth?.({
+          currentWidth: resizeState.width,
+          nextWidth: resizeState.pendingWidth,
+          rail: resizeState.rail,
+          side: resizeState.side,
+          sidebarRoot: resizeState.sidebarRoot,
+          wrapper: resizeState.wrapper,
+        }) ?? true;
+      if (accepted) {
+        resizeState.width = resizeState.pendingWidth;
+        resizeState.wrapper.style.setProperty("--sidebar-width", `${resizeState.width}px`);
+      }
       resizeState.transitionTargets.forEach((element) => {
         element.style.removeProperty("transition-duration");
       });
@@ -759,7 +773,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
     <ScrollArea hideScrollbars scrollFade className="h-auto min-h-0 flex-1">
       <div
         className={cn(
-          "flex w-full min-w-0 flex-col gap-2 group-data-[collapsible=icon]:overflow-hidden",
+          "flex w-full min-w-0 flex-col gap-2 [overflow-anchor:none] group-data-[collapsible=icon]:overflow-hidden",
           className,
         )}
         data-sidebar="content"

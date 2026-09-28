@@ -1,3 +1,5 @@
+import { useSettings } from "../../hooks/useSettings";
+import { resolveMergeMethod } from "./mergeMethod";
 import { useAppSettings } from "../../appSettings";
 import { registerProjectFromPath, waitForRegisteredProject } from "../../lib/registerProject";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
@@ -68,7 +70,8 @@ export interface PrActionDialogProps {
   dialogTitle: string;
   reviewers: string;
   setReviewers: (value: string) => void;
-  mergeMethod: PrMergeMethod;
+  mergeMethod: PrMergeMethod | null;
+  allowedMergeMethods: readonly PrMergeMethod[];
   mergeComparison: PrHubComparisonIdentity | null;
   mergeComparisonError: string | null;
   reloadMergeComparison: () => void;
@@ -105,11 +108,23 @@ export function usePrActions(
     onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
   } = {},
 ): UsePrActionsResult {
-  const { settings } = useAppSettings();
+  const { settings, updateSettings } = useAppSettings();
+  const configuredMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [reviewers, setReviewers] = useState("");
-  const [mergeMethod, setMergeMethod] = useState<PrMergeMethod>("squash");
+  const [mergeChoice, setMergeChoice] = useState<{ key: string; method: PrMergeMethod } | null>(
+    null,
+  );
+  const repositoryKey = `${pr.host}/${pr.repository.nameWithOwner}`;
+  const allowedMergeMethods = pr.allowedMergeMethods ?? [];
+  const mergeMethod = resolveMergeMethod({
+    current: mergeChoice?.key === pr.key ? mergeChoice.method : null,
+    configured: configuredMergeMethod,
+    lastUsed: settings.prHubLastMergeMethods[repositoryKey],
+    allowed: allowedMergeMethods,
+  });
+  const setMergeMethod = (method: PrMergeMethod) => setMergeChoice({ key: pr.key, method });
   const [mergeComparison, setMergeComparison] = useState<PrHubComparisonIdentity | null>(null);
   const [mergeComparisonError, setMergeComparisonError] = useState<string | null>(null);
   const [mergeReadAttempt, setMergeReadAttempt] = useState(0);
@@ -184,10 +199,18 @@ export function usePrActions(
         return;
       if (pendingAction === "merge") {
         if (!mergeComparison) throw new Error("Load the merge comparison before confirming.");
+        if (!mergeMethod || !allowedMergeMethods.includes(mergeMethod))
+          throw new Error("Refresh the PR hub to load the repository's allowed merge methods.");
         await api.merge({
           url: pr.url,
           method: mergeMethod,
           expectedComparison: mergeComparison,
+        });
+        const recent = Object.entries(settings.prHubLastMergeMethods)
+          .filter(([key]) => key !== repositoryKey)
+          .slice(-99);
+        updateSettings({
+          prHubLastMergeMethods: Object.fromEntries([...recent, [repositoryKey, mergeMethod]]),
         });
       } else if (pendingAction === "markReady") {
         await api.markReady({ url: pr.url });
@@ -369,6 +392,7 @@ export function usePrActions(
       reviewers,
       setReviewers,
       mergeMethod,
+      allowedMergeMethods,
       mergeComparison,
       mergeComparisonError,
       reloadMergeComparison: () => setMergeReadAttempt((value) => value + 1),

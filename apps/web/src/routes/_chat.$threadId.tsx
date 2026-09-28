@@ -16,6 +16,8 @@ import {
   useRef,
 } from "react";
 
+import { Schema } from "effect";
+import { getLocalStorageItem } from "../hooks/useLocalStorage";
 import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
@@ -176,12 +178,26 @@ function getFallbackSurfaceAfterClose(
 }
 
 const RightPanelInlineSidebar = (props: {
+  threadId: ThreadId;
   open: boolean;
   onClose: () => void;
   onOpenDefaultSurface: () => void;
   children: ReactNode;
 }) => {
-  const { open, onClose, onOpenDefaultSurface } = props;
+  const { open, onClose, onOpenDefaultSurface, threadId } = props;
+  const { settings, updateSettings } = useAppSettings();
+  const width =
+    settings.rightPanelWidths[threadId] ??
+    getLocalStorageItem(RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY, Schema.Finite);
+  const saveWidth = useCallback(
+    (nextWidth: number) => {
+      const entries = Object.entries(settings.rightPanelWidths).filter(([id]) => id !== threadId);
+      updateSettings({
+        rightPanelWidths: Object.fromEntries([...entries.slice(-49), [threadId, nextWidth]]),
+      });
+    },
+    [settings.rightPanelWidths, threadId, updateSettings],
+  );
   const onOpenChange = useCallback(
     (open: boolean) => {
       if (open) {
@@ -244,7 +260,14 @@ const RightPanelInlineSidebar = (props: {
       open={open}
       onOpenChange={onOpenChange}
       className="w-auto min-h-0 flex-none bg-transparent"
-      style={{ "--sidebar-width": RIGHT_PANEL_INLINE_DEFAULT_WIDTH } as CSSProperties}
+      style={
+        {
+          "--sidebar-width":
+            width == null
+              ? RIGHT_PANEL_INLINE_DEFAULT_WIDTH
+              : `${Math.max(RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH, width)}px`,
+        } as CSSProperties
+      }
     >
       <Sidebar
         side="right"
@@ -253,7 +276,7 @@ const RightPanelInlineSidebar = (props: {
         resizable={{
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
-          storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+          onResize: saveWidth,
         }}
       >
         {props.children}
@@ -508,6 +531,7 @@ function ChatThreadRouteView() {
       search: (previous) => ({
         ...clearFileViewSearchParams(clearTurnDiffSearchParams(previous)),
         diff: "1",
+        diffScope: "working-tree",
       }),
     });
   }, [navigate, threadId]);
@@ -798,6 +822,8 @@ function ChatThreadRouteView() {
           {detailView}
         </SidebarInset>
         <RightPanelInlineSidebar
+          key={threadId}
+          threadId={threadId}
           open={rightPanelState.isOpen}
           onClose={closeActivePanel}
           onOpenDefaultSurface={openDiff}
@@ -821,6 +847,8 @@ function ChatThreadRouteView() {
           />
         </SidebarInset>
         <RightPanelInlineSidebar
+          key={threadId}
+          threadId={threadId}
           open={rightPanelState.isOpen}
           onClose={closeActivePanel}
           onOpenDefaultSurface={openDiff}

@@ -148,7 +148,7 @@ export function buildThreadActionItems(input: {
     return {
       kind: "action",
       value: `thread:${thread.id}`,
-      searchTerms: [thread.title, projectTitle ?? "", thread.branch ?? ""],
+      searchTerms: [thread.title, thread.id, projectTitle ?? "", thread.branch ?? ""],
       title: thread.title,
       description: descriptionParts.join(" · "),
       timestamp: formatRelativeTimeLabel(thread.lastInteractionAt ?? thread.createdAt),
@@ -216,6 +216,12 @@ function rankCommandPaletteItemMatch(
   item: CommandPaletteActionItem | CommandPaletteSubmenuItem,
   normalizedQuery: string,
 ): number {
+  if (item.value.startsWith("thread:")) {
+    const title = normalizeSearchText(item.searchTerms[0] ?? "");
+    if (title === normalizedQuery) return 2000;
+    // All other title matches retain the existing most-recent-first order.
+    if (title.includes(normalizedQuery)) return 1000;
+  }
   const terms = item.searchTerms.filter((term) => term.length > 0);
   if (terms.length === 0) {
     return 0;

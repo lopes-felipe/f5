@@ -1,3 +1,6 @@
+import { MiddleTruncate } from "./MiddleTruncate";
+import { githubThreadLink } from "../linkedPullRequest";
+import { newCommandId } from "../lib/utils";
 import type {
   GitActionProgressEvent,
   GitStackedAction,
@@ -508,6 +511,27 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
         const existingOpenPrUrl =
           actionStatus?.pr?.state === "open" ? actionStatus.pr.url : undefined;
         const prUrl = result.pr.url ?? existingOpenPrUrl;
+        const pullRequest = prUrl
+          ? githubThreadLink(prUrl, result.pr.title ?? actionStatus?.pr?.title ?? "")
+          : null;
+        const api = readNativeApi();
+        if (pullRequest && activeThreadId && api) {
+          void api.orchestration
+            .dispatchCommand({
+              type: "thread.meta.update",
+              commandId: newCommandId(),
+              threadId: activeThreadId,
+              pullRequest,
+            })
+            .catch((error) =>
+              toastManager.add({
+                type: "warning",
+                title: "Git action finished; PR search link could not be saved",
+                description: String(error),
+                data: threadToastData,
+              }),
+            );
+        }
         const shouldOfferPushCta = action === "commit" && result.commit.status === "created";
         const shouldOfferOpenPrCta =
           (action === "commit_push" || action === "commit_push_pr") &&
@@ -589,6 +613,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
     },
 
     [
+      activeThreadId,
       isDefaultBranch,
       runImmediateGitActionMutation,
       setPendingDefaultBranchAction,
@@ -1006,11 +1031,10 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
                                 className="flex flex-1 items-center justify-between gap-3 text-left truncate"
                                 onClick={() => openChangedFileInEditor(file.path)}
                               >
-                                <span
-                                  className={`truncate${isExcluded ? " text-muted-foreground" : ""}`}
-                                >
-                                  {file.path}
-                                </span>
+                                <MiddleTruncate
+                                  text={file.path}
+                                  className={isExcluded ? "text-muted-foreground" : ""}
+                                />
                                 <span className="shrink-0">
                                   {isExcluded ? (
                                     <span className="text-muted-foreground">Excluded</span>

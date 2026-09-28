@@ -138,6 +138,10 @@ export const ChatHeader = memo(function ChatHeader({
           <h2
             className="min-w-0 shrink truncate text-sm font-medium text-foreground"
             title={activeThreadTitle}
+            onDoubleClick={() => {
+              if (threadActionItems.some((item) => item.id === "rename" && !item.disabled))
+                setRenamingThreadId(activeThreadId);
+            }}
           >
             {activeThreadTitle}
           </h2>

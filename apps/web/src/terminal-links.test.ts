@@ -342,3 +342,10 @@ describe("extractWrappedTerminalLinks", () => {
     expect(row1[0]?.physical.endY).toBe(1);
   });
 });
+
+it("recognizes uppercase HTTP schemes as URLs rather than paths", () => {
+  expect(extractTerminalLinks("HTTPS://example.com/path")[0]).toMatchObject({
+    kind: "url",
+    text: "HTTPS://example.com/path",
+  });
+});

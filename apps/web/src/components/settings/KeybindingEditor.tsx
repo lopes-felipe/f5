@@ -21,6 +21,7 @@ import { Edit2Icon, PlusIcon, RotateCcwIcon, SearchIcon, Trash2Icon } from "luci
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { isElectron } from "../../env";
 import { ensureNativeApi } from "../../nativeApi";
 import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
@@ -216,7 +217,10 @@ export function KeybindingEditor() {
     setDraftRule({
       command: row.command,
       key: row.key,
-      when: row.when,
+      when:
+        !isElectron && row.source === "default"
+          ? row.when.replace(/^isElectron\s*&&\s*/, "")
+          : row.when,
     });
     setSubmitError(null);
   };
@@ -440,7 +444,9 @@ export function KeybindingEditor() {
                 </div>
                 <div className="flex items-center">
                   <code className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground">
-                    {formatShortcutLabel(row.binding.shortcut)}
+                    {!isElectron && row.source === "default" && /^isElectron\b/.test(row.when)
+                      ? "Unbound on web"
+                      : formatShortcutLabel(row.binding.shortcut)}
                   </code>
                 </div>
                 <p

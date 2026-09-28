@@ -664,3 +664,18 @@ label:has(> select#reasoning-effort) select {
   overflow: clip;
   background: color-mix(in srgb, var(--card) 92%, var(--background));
 }
+
+@theme inline {
+  --color-diff-addition: var(--diff-addition);
+  --color-diff-deletion: var(--diff-deletion);
+}
+:root {
+  --diff-addition: var(--success);
+  --diff-deletion: var(--destructive);
+}
+:root[data-diff-color-scheme="blue-orange"] {
+  --diff-addition: light-dark(var(--color-blue-600), var(--color-blue-400));
+  --diff-deletion: light-dark(var(--color-orange-600), var(--color-orange-400));
+  --diffs-addition-color-override: var(--diff-addition);
+  --diffs-deletion-color-override: var(--diff-deletion);
+}

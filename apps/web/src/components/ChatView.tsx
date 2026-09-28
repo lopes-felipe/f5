@@ -1,3 +1,7 @@
+import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
+import { isMacPlatform } from "../lib/utils";
+import { composerRequiresSendModifier, shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
 import { ChatComposer } from "./chat/composer/ChatComposer";
@@ -802,7 +806,12 @@ export default function ChatView({
   const isAtEndRef = useRef(true);
 
   const onSendRef = useRef<
-    ((event?: { preventDefault: () => void }, intent?: SendIntent) => Promise<void>) | null
+    | ((
+        event?: { preventDefault: () => void },
+        intent?: SendIntent,
+        onAdmitted?: () => void,
+      ) => Promise<void>)
+    | null
   >(null);
 
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
@@ -2269,7 +2278,9 @@ export default function ChatView({
     selectedProvider,
     workspaceEntries,
   ]);
-  const composerMenuOpen = Boolean(composerTrigger);
+  const dismissedComposerPromptRef = useRef<string | null>(null);
+  const composerMenuOpen =
+    Boolean(composerTrigger) && dismissedComposerPromptRef.current !== prompt;
   const activeComposerMenuItem = useMemo(
     () =>
       composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??
@@ -2418,7 +2429,7 @@ export default function ChatView({
       replace: true,
       search: (previous) => {
         const rest = clearTurnDiffSearchParams(previous);
-        return diffOpen ? rest : { ...rest, diff: "1" };
+        return diffOpen ? rest : { ...rest, diff: "1", diffScope: "working-tree" };
       },
     });
   }, [diffOpen, navigate, threadId]);
@@ -2613,35 +2624,38 @@ export default function ChatView({
     },
     [activeThreadId, storeSetActiveTerminal],
   );
+  const closingTerminalIdsRef = useRef(new Set<string>());
   const closeTerminal = useCallback(
     (terminalId: string) => {
       const api = readNativeApi();
       if (!activeThreadId || !api) return;
-      const isFinalTerminal = terminalState.terminalIds.length <= 1;
-      const fallbackExitWrite = () =>
-        api.terminal
-          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
-          .catch(() => undefined);
-      if ("close" in api.terminal && typeof api.terminal.close === "function") {
-        void (async () => {
-          if (isFinalTerminal) {
-            await api.terminal
-              .clear({ threadId: activeThreadId, terminalId })
-              .catch(() => undefined);
-          }
-          await api.terminal.close({
-            threadId: activeThreadId,
-            terminalId,
-            deleteHistory: true,
+      const closeKey = `${activeThreadId}:${terminalId}`;
+      if (closingTerminalIdsRef.current.has(closeKey)) return;
+      closingTerminalIdsRef.current.add(closeKey);
+      void (async () => {
+        if (
+          terminalState.runningTerminalIds.includes(terminalId) &&
+          !(await api.dialogs.confirm("Close this terminal and stop its running process?"))
+        )
+          return;
+        if (typeof api.terminal.close === "function") {
+          await api.terminal.close({ threadId: activeThreadId, terminalId, deleteHistory: true });
+        } else {
+          await api.terminal.write({ threadId: activeThreadId, terminalId, data: "exit\n" });
+        }
+        storeCloseTerminal(activeThreadId, terminalId);
+        setTerminalFocusRequestId((value) => value + 1);
+      })()
+        .catch((error: unknown) => {
+          toastManager.add({
+            type: "error",
+            title: "Could not close terminal",
+            description: error instanceof Error ? error.message : String(error),
           });
-        })().catch(() => fallbackExitWrite());
-      } else {
-        void fallbackExitWrite();
-      }
-      storeCloseTerminal(activeThreadId, terminalId);
-      setTerminalFocusRequestId((value) => value + 1);
+        })
+        .finally(() => closingTerminalIdsRef.current.delete(closeKey));
     },
-    [activeThreadId, storeCloseTerminal, terminalState.terminalIds.length],
+    [activeThreadId, storeCloseTerminal, terminalState.runningTerminalIds],
   );
   const runProjectScript = useCallback(
     async (
@@ -3596,8 +3610,103 @@ export default function ChatView({
           terminalOpen: Boolean(terminalState.terminalOpen),
           dialogFocus,
           composerFocus: composerFocused,
+          newThreadComposer: composerFocused && !isServerThread,
         },
       });
+      if (command === "chat.pageUp" || command === "chat.pageDown") {
+        if (composerFocused || dialogFocus || isTerminalFocused()) return;
+        const scroller = document.querySelector<HTMLElement>(
+          '[data-slot="messages-scroll-container"]',
+        );
+        if (
+          scroller &&
+          shouldScrollTimeline(event.target, scroller, command === "chat.pageUp" ? -1 : 1)
+        ) {
+          event.preventDefault();
+          scroller.scrollBy({
+            top: (command === "chat.pageUp" ? -1 : 1) * scroller.clientHeight * 0.9,
+          });
+        }
+        return;
+      }
+      if (command === "thread.togglePin" || command === "thread.copyReference") {
+        if (dialogFocus || isTerminalFocused()) return;
+        event.preventDefault();
+        if (command === "thread.copyReference") {
+          const api = readNativeApi();
+          void (async () => {
+            const status =
+              gitCwd && api ? await api.git.status({ cwd: gitCwd }).catch(() => null) : null;
+            await writeTextToClipboard(status?.pr?.url ?? activeThreadId);
+            toastManager.add({
+              type: "success",
+              title: status?.pr?.url ? "Pull request link copied" : "Thread ID copied",
+            });
+          })().catch((error) =>
+            toastManager.add({
+              type: "error",
+              title: "Could not copy thread reference",
+              description: String(error),
+            }),
+          );
+        } else {
+          void threadActionController.executeAction(
+            activeThreadId,
+            activeThread?.pinnedAt ? "unpin" : "pin",
+          );
+        }
+        return;
+      }
+      if (command === "thread.stop" && phase === "running") {
+        event.preventDefault();
+        void readNativeApi()
+          ?.orchestration.dispatchCommand({
+            type: "thread.turn.interrupt",
+            commandId: newCommandId(),
+            threadId: activeThreadId,
+            createdAt: new Date().toISOString(),
+          })
+          .catch((error) =>
+            toastManager.add({
+              type: "error",
+              title: "Could not stop turn",
+              description: String(error),
+            }),
+          );
+        return;
+      }
+      if (command === "rightPanel.closeTab") {
+        const state = useRightPanelStore.getState();
+        const panel = state.byThreadId[activeThreadId];
+        if (panel?.activeSurfaceId && panel.isOpen) {
+          event.preventDefault();
+          state.closeSurface(activeThreadId, panel.activeSurfaceId);
+        }
+        return;
+      }
+      if (command === "composer.interactionMode") {
+        event.preventDefault();
+        toggleInteractionMode();
+        return;
+      }
+      if (
+        command === "composer.effort" ||
+        command === "composer.runtimeMode" ||
+        command === "composer.envMode" ||
+        command === "composer.branch"
+      ) {
+        const name = command.slice("composer.".length);
+        const trigger =
+          document.querySelector<HTMLButtonElement>(`[data-composer-control="${name}"]`) ??
+          (name === "effort" || name === "runtimeMode"
+            ? document.querySelector<HTMLButtonElement>('[data-composer-control="compact"]')
+            : null);
+        if (trigger && !trigger.disabled) {
+          event.preventDefault();
+          trigger.click();
+        }
+        return;
+      }
       if (command === "composer.stash" && composerFocused) {
         event.preventDefault();
         event.stopPropagation();
@@ -3605,6 +3714,16 @@ export default function ChatView({
         return;
       }
       if (wsInteractionBlocked) return;
+      if (command === "chat.newBackground" && !isServerThread && composerFocused) {
+        event.preventDefault();
+        event.stopPropagation();
+        const draftLocation = window.location.pathname;
+        void onSendRef.current?.(undefined, "auto", () => {
+          if (window.location.pathname === draftLocation) void navigate({ to: "/" });
+          toastManager.add({ type: "success", title: "Thread started in background" });
+        });
+        return;
+      }
       if (command === "chat.queueTurn" || command === "chat.queueTurnNext") {
         event.preventDefault();
         event.stopPropagation();
@@ -3615,6 +3734,8 @@ export default function ChatView({
         return;
       }
       if (command !== "chat.scrollToBottom") return;
+      if (composerFocused && composerRequiresSendModifier(settings.sendShortcut, promptRef.current))
+        return;
 
       if (showScrollToBottom) {
         event.preventDefault();
@@ -3634,8 +3755,16 @@ export default function ChatView({
     activeThreadId,
     keybindings,
     onStashPrompt,
+    threadActionController,
+    gitCwd,
+    activeThread?.pinnedAt,
+    isServerThread,
+    navigate,
+    phase,
+    toggleInteractionMode,
     scrollToEnd,
     showScrollToBottom,
+    settings.sendShortcut,
     terminalState.terminalOpen,
     wsInteractionBlocked,
   ]);
@@ -4053,7 +4182,11 @@ export default function ChatView({
     setThreadError,
   ]);
 
-  const onSend = async (e?: { preventDefault: () => void }, intent: SendIntent = "auto") => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    intent: SendIntent = "auto",
+    onAdmitted?: () => void,
+  ) => {
     e?.preventDefault();
     const api = readNativeApi();
     if (
@@ -4421,8 +4554,10 @@ export default function ChatView({
           // Add the timeline bubble only after durable admission reports that
           // this turn actually started. Queued turns belong in the queue panel.
           if (!bootstrap) addOptimisticTimelineMessage();
+          onAdmitted?.();
         },
         onQueued: () => {
+          onAdmitted?.();
           toastManager.add({ type: "success", title: "Turn added to the queue." });
         },
       });
@@ -5398,7 +5533,7 @@ export default function ChatView({
   );
 
   const onComposerCommandKey = (
-    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab",
+    key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
     event: KeyboardEvent,
   ) => {
     if (key === "Tab" && event.shiftKey) {
@@ -5411,7 +5546,14 @@ export default function ChatView({
     }
 
     const { trigger } = resolveActiveComposerTrigger();
-    const menuIsActive = composerMenuOpenRef.current || trigger !== null;
+    const menuIsActive =
+      dismissedComposerPromptRef.current !== promptRef.current &&
+      (composerMenuOpenRef.current || trigger !== null);
+    if (key === "Escape" && menuIsActive) {
+      dismissedComposerPromptRef.current = promptRef.current;
+      setComposerTrigger(null);
+      return true;
+    }
 
     if (menuIsActive) {
       const currentItems = composerMenuItemsRef.current;
@@ -5432,7 +5574,16 @@ export default function ChatView({
       }
     }
 
-    if (key === "Enter" && !event.shiftKey) {
+    if (
+      key === "Enter" &&
+      shouldSubmitComposer({
+        shortcut: settings.sendShortcut,
+        prompt: promptRef.current,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        modifierKey: isMacPlatform(navigator.platform) ? event.metaKey : event.ctrlKey,
+      })
+    ) {
       void onSend();
       return true;
     }
@@ -5489,6 +5640,11 @@ export default function ChatView({
       const parsed = normalizeFilePathForDiffLookup(filePath, workspaceRoot);
       if (!parsed || !parsed.workspaceRelative) {
         return false;
+      }
+
+      if (/[\\/]$/.test(filePath)) {
+        useRightPanelStore.getState().openDirectory(threadId, parsed.path.replace(/[\\/]+$/, ""));
+        return true;
       }
 
       if (
@@ -5618,7 +5774,13 @@ export default function ChatView({
 
   return (
     <FileNavigationProvider value={handleFileNavigation}>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
+        onDragEnter={onComposerDragEnter}
+        onDragOver={onComposerDragOver}
+        onDragLeave={onComposerDragLeave}
+        onDrop={onComposerDrop}
+      >
         {/* Top bar */}
         <header
           className={cn(
@@ -5819,10 +5981,6 @@ export default function ChatView({
                   onSend={onSend}
                   isDragOverComposer={isDragOverComposer}
                   interactionMode={interactionMode}
-                  onComposerDragEnter={onComposerDragEnter}
-                  onComposerDragOver={onComposerDragOver}
-                  onComposerDragLeave={onComposerDragLeave}
-                  onComposerDrop={onComposerDrop}
                   onComposerFileMentionDragEnterCapture={onComposerFileMentionDragEnterCapture}
                   onComposerFileMentionDragOverCapture={onComposerFileMentionDragOverCapture}
                   onComposerFileMentionDragLeaveCapture={onComposerFileMentionDragLeaveCapture}

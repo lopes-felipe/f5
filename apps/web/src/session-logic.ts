@@ -192,6 +192,10 @@ export function formatDuration(durationMs: number): string {
   if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`;
   if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(1)}s`;
   if (durationMs < 60_000) return `${Math.round(durationMs / 1_000)}s`;
+  if (durationMs >= 3_599_500) {
+    const minutes = Math.round(durationMs / 60_000);
+    return minutes % 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes / 60}h`;
+  }
   const minutes = Math.floor(durationMs / 60_000);
   const seconds = Math.round((durationMs % 60_000) / 1_000);
   if (seconds === 0) return `${minutes}m`;

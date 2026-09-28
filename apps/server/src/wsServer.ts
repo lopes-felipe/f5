@@ -1,3 +1,4 @@
+import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
 import {
@@ -108,6 +109,7 @@ import {
   browseWorkspaceEntries,
   clearWorkspaceIndexCache,
   listWorkspaceEntries,
+  listWorkspaceDirectory,
   registerWorkspaceContentIndexInvalidator,
   searchWorkspaceEntries,
 } from "./workspaceEntries";
@@ -1910,6 +1912,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }),
   );
 
+  const projectClones = yield* makeProjectCloneTracker({
+    stateDir: serverConfig.stateDir,
+    git,
+    scope: subscriptionsScope,
+    onComplete: (job) =>
+      Effect.gen(function* () {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForBootstrap;
+        yield* orchestrationEngine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe(`clone:${job.operationId}`),
+          projectId: job.projectId,
+          title: job.directoryName,
+          workspaceRoot: job.destination,
+          defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+          createdAt: job.createdAt,
+        });
+      }),
+  }).pipe(
+    Effect.mapError((cause) => new ServerLifecycleError({ operation: "loadProjectClones", cause })),
+  );
+
   let welcomeBootstrapProjectId: ProjectId | undefined;
   let welcomeBootstrapThreadId: ThreadId | undefined;
 
@@ -2697,6 +2720,33 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             ),
           );
         return undefined;
+      }
+
+      case WS_METHODS.projectsClone: {
+        return yield* projectClones.start(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error instanceof Error ? error.message : "Could not start clone.",
+              }),
+          ),
+        );
+      }
+      case WS_METHODS.projectsCloneList:
+        return projectClones.list();
+      case WS_METHODS.projectsCloneCancel: {
+        yield* projectClones.cancel(request.body.operationId);
+        return undefined;
+      }
+      case WS_METHODS.projectsListDirectory: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: () => listWorkspaceDirectory(body),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to list workspace directory: ${String(cause)}`,
+            }),
+        });
       }
 
       case WS_METHODS.projectsListEntries: {

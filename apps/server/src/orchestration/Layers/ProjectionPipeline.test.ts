@@ -59,6 +59,78 @@ const runWithProjectionPipelineLayer = <A, E>(
 const projectionLayer = it.layer(makeProjectionPipelineTestLayer(process.cwd()));
 
 projectionLayer("OrchestrationProjectionPipeline", (it) => {
+  it.effect("replays PR links with its own cursor without duplicating search documents", () =>
+    runWithProjectionPipelineLayer(
+      process.cwd(),
+      Effect.gen(function* () {
+        const pipeline = yield* OrchestrationProjectionPipeline;
+        const store = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-09-25T00:00:00.000Z";
+        const projectId = ProjectId.makeUnsafe("linked-pr-project");
+        const threadId = ThreadId.makeUnsafe("linked-pr-thread");
+        const common = {
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+        };
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("linked-pr-project"),
+          type: "project.created",
+          aggregateKind: "project",
+          aggregateId: projectId,
+          payload: {
+            projectId,
+            title: "PR search",
+            workspaceRoot: "/tmp/pr-search",
+            defaultModel: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("linked-pr-thread"),
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            projectId,
+            title: "PR search",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+            pullRequest: {
+              provider: "github",
+              host: "github.com",
+              repository: "owner/widget",
+              number: 381,
+              title: "Fix search",
+              url: "https://github.com/owner/widget/pull/381",
+            },
+          },
+        });
+        yield* pipeline.bootstrap;
+        yield* sql`DELETE FROM projection_state WHERE projector = 'projection.thread-pull-requests'`;
+        yield* pipeline.bootstrap;
+        const links =
+          yield* sql`SELECT * FROM projection_thread_pull_requests WHERE thread_id = ${threadId}`;
+        assert.equal(links.length, 1);
+        const documents =
+          yield* sql`SELECT * FROM search_documents WHERE thread_id = ${threadId} AND document_key LIKE 'pull-request:%'`;
+        assert.equal(documents.length, 1);
+      }),
+    ),
+  );
+
   it.effect("bootstraps more than 1,000 pending events and preserves a captured checkpoint", () =>
     Effect.gen(function* () {
       const pipeline = yield* OrchestrationProjectionPipeline;

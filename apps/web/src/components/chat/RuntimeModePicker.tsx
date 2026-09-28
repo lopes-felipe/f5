@@ -58,6 +58,7 @@ export function RuntimeModePicker(props: {
   return (
     <Menu>
       <MenuTrigger
+        data-composer-control="runtimeMode"
         render={
           <Button
             variant="ghost"

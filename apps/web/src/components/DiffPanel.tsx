@@ -1,3 +1,7 @@
+import { CopyPathButton } from "./CopyPathButton";
+import { ChangedFileTree } from "./ChangedFileTree";
+import { showFileEntryContextMenu } from "./fileEntryActions";
+import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
 import { FileDiff, Virtualizer } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -13,6 +17,7 @@ import {
 } from "lucide-react";
 import {
   type WheelEvent as ReactWheelEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -312,6 +317,21 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     },
     [activeCwd],
   );
+
+  const openFileContextMenu = (event: ReactMouseEvent, path: string) => {
+    event.preventDefault();
+    const api = readNativeApi();
+    if (!api || !activeCwd || !activeProjectId || !activeThreadId) return;
+    void showFileEntryContextMenu({
+      api,
+      cwd: activeCwd,
+      projectId: activeProjectId,
+      threadId: activeThreadId,
+      entry: { kind: "file", path },
+      position: { x: event.clientX, y: event.clientY },
+      onAddToChat: (relativePath) => insertFileMentionIntoComposer(activeThreadId, relativePath),
+    });
+  };
 
   const toggleCollapsedFileKey = useCallback((fileKey: string, isCollapsed: boolean) => {
     setCollapsedFileOverrides((previous) => ({ ...previous, [fileKey]: !isCollapsed }));
@@ -680,6 +700,29 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
 
   return (
     <DiffPanelShell mode={mode} header={headerRow}>
+      {renderableFiles.length > 0 ? (
+        <ChangedFileTree
+          scope={`workspace:${activeCwd ?? activeThreadId}`}
+          files={renderableFiles.map((file) => ({ path: resolveFileDiffPath(file) }))}
+          onSelect={(path) => {
+            const file = renderableFiles.find((entry) => resolveFileDiffPath(entry) === path);
+            if (!file) return;
+            setCollapsedFileOverrides((previous) => ({
+              ...previous,
+              [logicalFileKey(buildFileDiffLogicalIdentity(file))]: false,
+            }));
+            window.requestAnimationFrame(() =>
+              Array.from(
+                patchViewportRef.current?.querySelectorAll<HTMLElement>("[data-diff-file-path]") ??
+                  [],
+              )
+                .find((node) => node.dataset.diffFilePath === path)
+                ?.scrollIntoView({ block: "start" }),
+            );
+          }}
+          onContextMenu={openFileContextMenu}
+        />
+      ) : null}
       {!activeThread ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           {isExactFileChangeMode
@@ -745,18 +788,37 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   const fileKey = logicalFileKey(buildFileDiffLogicalIdentity(fileDiff));
                   const isCollapsed =
                     collapsedFileOverrides[fileKey] ??
-                    !isChangedFileExpandedByDefault({
-                      presentation: defaultPresentation,
-                      fileIndex,
-                    });
+                    (settings.diffFileDefaultState === "auto"
+                      ? !isChangedFileExpandedByDefault({
+                          presentation: defaultPresentation,
+                          fileIndex,
+                        })
+                      : settings.diffFileDefaultState === "collapsed");
                   return (
                     <div
                       key={fileKey}
                       data-diff-file-path={filePath}
                       className="diff-render-file relative mb-2 rounded-md first:mt-2 last:mb-0"
+                      onContextMenu={(event) => {
+                        if (
+                          event.nativeEvent
+                            .composedPath()
+                            .some(
+                              (node) =>
+                                node instanceof Element && node.hasAttribute("data-diffs-header"),
+                            )
+                        )
+                          openFileContextMenu(event, filePath);
+                      }}
                       onClickCapture={(event) => {
                         const nativeEvent = event.nativeEvent as MouseEvent;
                         const composedPath = nativeEvent.composedPath?.() ?? [];
+                        if (
+                          composedPath.some(
+                            (node) => node instanceof Element && node.tagName === "BUTTON",
+                          )
+                        )
+                          return;
                         const clickedHeader = composedPath.some((node) => {
                           if (!(node instanceof Element)) return false;
                           return node.hasAttribute("data-title");
@@ -790,6 +852,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                         )}
                       </button>
                       <FileDiff
+                        renderHeaderPrefix={() => <CopyPathButton path={filePath} />}
                         fileDiff={fileDiff}
                         options={{
                           diffStyle: diffRenderMode === "split" ? "split" : "unified",

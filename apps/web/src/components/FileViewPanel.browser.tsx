@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import FileViewPanel from "./FileViewPanel";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 
+const route = vi.hoisted(() => ({ fileViewPath: "app.ts" }));
 const api = vi.hoisted(() => ({ readFile: vi.fn(), writeFile: vi.fn() }));
 vi.mock("../nativeApi", () => ({
   ensureNativeApi: () => ({ projects: api }),
@@ -14,8 +15,7 @@ vi.mock("../nativeApi", () => ({
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
   useParams: ({ select }: { select: (v: unknown) => unknown }) => select({ threadId: "thread-1" }),
-  useSearch: ({ select }: { select: (v: unknown) => unknown }) =>
-    select({ fileViewPath: "app.ts" }),
+  useSearch: ({ select }: { select: (v: unknown) => unknown }) => select(route),
 }));
 vi.mock("../store", () => ({
   useStore: (select: (v: unknown) => unknown) =>
@@ -40,7 +40,10 @@ vi.mock("./DiffPanelShell", () => ({
   DiffPanelLoadingState: () => <div>Loading</div>,
 }));
 vi.mock("@pierre/diffs/react", () => ({ File: () => <div>Rendered file</div> }));
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  route.fileViewPath = "app.ts";
+});
 
 it("preserves the draft base and blocks saves when a refetch arrives during editing", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -91,6 +94,60 @@ it("preserves the draft base and blocks saves when a refetch arrives during edit
     expect(api.writeFile).toHaveBeenCalledWith(
       expect.objectContaining({ contents: "merged edit", expectedContentSha256: "agent-hash" }),
     );
+  } finally {
+    await screen.unmount();
+    client.clear();
+  }
+});
+
+it("ignores a save response from an earlier visit to the same file", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const file = (relativePath: string, contents: string) => ({
+    relativePath,
+    contents,
+    byteLength: contents.length,
+    truncated: false,
+    contentSha256: `${relativePath}-${contents}`,
+  });
+  api.readFile.mockImplementation(({ relativePath }: { relativePath: string }) =>
+    Promise.resolve(file(relativePath, "fresh")),
+  );
+  let finish!: (result: unknown) => void;
+  api.writeFile.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = () => (
+    <QueryClientProvider client={client}>
+      <FileViewPanel mode="sheet" />
+    </QueryClientProvider>
+  );
+  const screen = await render(view());
+  try {
+    await screen.getByRole("button", { name: "Edit file", exact: true }).click();
+    await screen.getByRole("textbox").fill("first visit");
+    await screen.getByRole("button", { name: "Save file", exact: true }).click();
+    await expect.poll(() => api.writeFile.mock.calls.length).toBe(1);
+    route.fileViewPath = "other.ts";
+    await screen.rerender(view());
+    await screen.getByRole("button", { name: "Edit file", exact: true }).click();
+    await expect.element(screen.getByRole("textbox")).toHaveValue("fresh");
+    route.fileViewPath = "app.ts";
+    await screen.rerender(view());
+    await screen.getByRole("button", { name: "Edit file", exact: true }).click();
+    await screen.getByRole("textbox").fill("new visit draft");
+    finish({ relativePath: "app.ts", contentSha256: "obsolete-response", byteLength: 11 });
+    await expect.element(screen.getByRole("textbox")).toHaveValue("new visit draft");
+    await expect
+      .poll(
+        () =>
+          client.getQueryData<{ contentSha256: string }>(
+            providerQueryKeys.fileContent({ cwd: "/repo", relativePath: "app.ts" }),
+          )?.contentSha256,
+      )
+      .not.toBe("obsolete-response");
   } finally {
     await screen.unmount();
     client.clear();

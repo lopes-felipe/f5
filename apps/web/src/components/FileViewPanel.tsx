@@ -139,8 +139,16 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     Boolean(fileQuery.data?.contentSha256) &&
     fileQuery.data?.truncated === false;
   const fileKey = JSON.stringify([workspaceRoot, filePath]);
-  const currentFileKeyRef = useRef(fileKey);
-  currentFileKeyRef.current = fileKey;
+  const fileScopeRef = useRef({ key: fileKey });
+  if (fileScopeRef.current.key !== fileKey) fileScopeRef.current = { key: fileKey };
+  const fileScope = fileScopeRef.current;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const draftBaseRef = useRef<{ key: string; contents: string; hash: string | undefined } | null>(
     null,
   );
@@ -184,6 +192,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
 
   const saveDraft = useCallback(async () => {
     if (
+      !mountedRef.current ||
+      fileScopeRef.current !== fileScope ||
       !workspaceRoot ||
       !filePath ||
       !fileQuery.data ||
@@ -224,7 +234,18 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         contents: savedContents,
         expectedContentSha256,
       });
-      if (currentFileKeyRef.current === fileKey) {
+      if (!mountedRef.current || fileScopeRef.current !== fileScope) {
+        // The RPC may already have reached disk. Refresh its cache without installing
+        // an obsolete response into a new visit to the same file.
+        void queryClient.invalidateQueries({
+          queryKey: providerQueryKeys.fileContent({
+            cwd: workspaceRoot,
+            relativePath: requestedFilePath,
+          }),
+        });
+        return;
+      }
+      {
         draftBaseRef.current = {
           key: fileKey,
           contents: savedContents,
@@ -250,19 +271,20 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         );
       }
     } catch (error) {
-      if (currentFileKeyRef.current !== fileKey) return;
+      if (!mountedRef.current || fileScopeRef.current !== fileScope) return;
       const message = error instanceof Error ? error.message : "Failed to save file.";
       setSaveError(message);
       if (message.toLowerCase().includes("changed before save")) {
         setSaveConflict(true);
       }
     } finally {
-      if (currentFileKeyRef.current === fileKey) setSaving(false);
+      if (mountedRef.current && fileScopeRef.current === fileScope) setSaving(false);
     }
   }, [
     dirty,
     draftContents,
     fileKey,
+    fileScope,
     filePath,
     fileQuery.data,
     queryClient,
@@ -542,6 +564,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             ) : (
               <div ref={viewerRef} className="min-h-0 flex-1 overflow-auto">
                 <FileViewer
+                  key={`${fileKey}:${fileQuery.data.contentSha256 ?? ""}`}
                   file={{ name: fileQuery.data.relativePath, contents: fileQuery.data.contents }}
                   selectedLines={selectedLines}
                   options={{

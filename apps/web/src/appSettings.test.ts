@@ -870,3 +870,18 @@ describe("timestamp format defaults", () => {
     expect(DEFAULT_TIMESTAMP_FORMAT).toBe("locale");
   });
 });
+
+it("keeps the existing editor mode and enables rich text only for new settings", () => {
+  expect(parsePersistedAppSettings(null).composerRichTextEnabled).toBe(true);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ themeId: "f5-black" })).composerRichTextEnabled,
+  ).toBe(false);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ composerRichTextEnabled: true }))
+      .composerRichTextEnabled,
+  ).toBe(true);
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ composerRichTextEnabled: false }))
+      .composerRichTextEnabled,
+  ).toBe(false);
+});
