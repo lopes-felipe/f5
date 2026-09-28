@@ -6,9 +6,11 @@
  *
  * @module ClaudeAdapterLive
  */
+import * as NodeFsSync from "node:fs";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeReadline from "node:readline";
 
 import {
   type CanUseTool,
@@ -374,7 +376,6 @@ export interface ClaudeAdapterLiveOptions {
 
 export interface ClaudeSessionProbeInput {
   readonly sessionId: string;
-  readonly cwd: string | undefined;
   /**
    * The Claude config dir the CLI child process writes transcripts to. This
    * must come from the provider process environment, not from the f5 server's
@@ -385,31 +386,53 @@ export interface ClaudeSessionProbeInput {
 }
 
 /**
- * Mirrors the Claude CLI's config dir precedence: an explicit
- * `CLAUDE_CONFIG_DIR` wins, otherwise `$HOME/.claude`.
+ * Mirrors the Claude CLI's config dir resolution:
+ * `(CLAUDE_CONFIG_DIR ?? join(os.homedir(), ".claude")).normalize("NFC")`,
+ * evaluated as the CLI child would see it.
  *
- * Relative values are resolved against `cwd`, the CLI child's working
- * directory, because that is where the CLI resolves them. When `cwd` is
- * undefined the child inherits the server's cwd, so `process.cwd()` is right.
+ * `os.homedir()` in the child reads `USERPROFILE` on Windows and `HOME`
+ * elsewhere, so the matching variable is read from the child env for
+ * `platform`. Relative values are resolved against `cwd`, the child's working
+ * directory. When `cwd` is undefined the child inherits the server's cwd, so
+ * `process.cwd()` is the right base.
  */
-export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv, cwd?: string): string {
-  const base = cwd ?? process.cwd();
-  const configured = env.CLAUDE_CONFIG_DIR?.trim();
-  if (configured) {
-    return NodePath.resolve(base, configured);
-  }
-  const home = env.HOME?.trim();
-  return NodePath.resolve(base, home ? home : NodeOS.homedir(), ".claude");
+export function resolveClaudeConfigDir(
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const configDir =
+    env.CLAUDE_CONFIG_DIR ?? NodePath.join(resolveChildHomeDir(env, platform), ".claude");
+  return NodePath.resolve(cwd ?? process.cwd(), configDir.normalize("NFC"));
+}
+
+function resolveChildHomeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  const home = platform === "win32" ? env.USERPROFILE : env.HOME;
+  return home ? home : NodeOS.homedir();
 }
 
 export interface ClaudeSessionStoreFs {
   readonly readdir: (path: string) => Promise<ReadonlyArray<string>>;
   readonly stat: (path: string) => Promise<{ readonly size: number; isFile(): boolean }>;
+  /** Yields the file's lines in order and stops reading when `signal` aborts. */
+  readonly readLines: (path: string, signal: AbortSignal) => AsyncIterable<string>;
+}
+
+async function* readFileLines(path: string, signal: AbortSignal): AsyncGenerator<string> {
+  const stream = NodeFsSync.createReadStream(path, { encoding: "utf8", signal });
+  const lines = NodeReadline.createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    yield* lines;
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
 }
 
 const nodeClaudeSessionStoreFs: ClaudeSessionStoreFs = {
   readdir: (path) => NodeFs.readdir(path),
   stat: (path) => NodeFs.stat(path),
+  readLines: readFileLines,
 };
 
 function isMissingPathError(cause: unknown): boolean {
@@ -417,43 +440,95 @@ function isMissingPathError(cause: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+// Entry types the SDK's getSessionMessages returns with includeSystemMessages.
+// Metadata lines (summary, queue-operation, file-history-snapshot) don't count.
+const CLAUDE_CONVERSATION_ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "user",
+  "assistant",
+  "system",
+]);
+
 /**
- * Checks whether a Claude transcript exists before resuming it.
+ * Scans a transcript until it finds a conversation entry. An unparseable line
+ * (for example a partly written tail) makes a no-match result "unknown"
+ * instead of "absent".
+ */
+async function classifyClaudeTranscript(
+  lines: AsyncIterable<string>,
+): Promise<"present" | "absent" | "unknown"> {
+  let sawUnparseableLine = false;
+  for await (const line of lines) {
+    if (line.trim() === "") {
+      continue;
+    }
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      sawUnparseableLine = true;
+      continue;
+    }
+    const type = (entry as { readonly type?: unknown } | null)?.type;
+    if (typeof type === "string" && CLAUDE_CONVERSATION_ENTRY_TYPES.has(type)) {
+      return "present";
+    }
+  }
+  return sawUnparseableLine ? "unknown" : "absent";
+}
+
+/**
+ * Checks whether a resumable Claude transcript exists before resuming it.
  *
  * Reads `<claudeConfigDir>/projects/<any project>/<sessionId>.jsonl` directly
  * instead of the SDK's `getSessionMessages`, which only looks under the f5
  * server's own `CLAUDE_CONFIG_DIR`/`~/.claude` and therefore reported sessions
  * written by an isolated CLI as absent. Scanning every project dir avoids
- * depending on the CLI's cwd-to-dirname encoding.
+ * depending on the CLI's cwd-to-dirname encoding, which truncates and hashes
+ * long paths and can be overridden by `CLAUDE_CODE_PROJECT_DIR_NAME`.
  *
- * Only returns "absent" when the store was fully readable and had no
- * non-empty transcript. Anything it cannot see yields "unknown" so a valid
- * resume cursor is never discarded on a guess.
+ * A transcript counts as present only if it holds a conversation entry, which
+ * matches the SDK check this replaces. Only returns "absent" when the store
+ * was fully readable and no transcript had one. Anything it cannot see yields
+ * "unknown" so a valid resume cursor is never discarded on a guess.
  */
 export function probeClaudeSessionAvailability(
   input: ClaudeSessionProbeInput,
   fs: ClaudeSessionStoreFs = nodeClaudeSessionStoreFs,
   timeoutMs = 1_500,
 ): Effect.Effect<"present" | "absent" | "unknown"> {
-  return Effect.tryPromise(async () => {
+  return Effect.tryPromise(async (signal) => {
     const projectsDir = NodePath.join(input.claudeConfigDir, "projects");
     // A missing or unreadable store rejects here and maps to "unknown".
     const projectEntries = await fs.readdir(projectsDir);
     const transcriptName = `${input.sessionId}.jsonl`;
-    const matches = await Promise.all(
+    const candidates = await Promise.all(
       projectEntries.map(async (entry) => {
+        const transcriptPath = NodePath.join(projectsDir, entry, transcriptName);
         try {
-          const stats = await fs.stat(NodePath.join(projectsDir, entry, transcriptName));
-          return stats.isFile() && stats.size > 0;
+          const stats = await fs.stat(transcriptPath);
+          return stats.isFile() && stats.size > 0 ? transcriptPath : undefined;
         } catch (cause) {
           if (isMissingPathError(cause)) {
-            return false;
+            return undefined;
           }
           throw cause;
         }
       }),
     );
-    return matches.some(Boolean) ? ("present" as const) : ("absent" as const);
+    let result: "absent" | "unknown" = "absent";
+    for (const transcriptPath of candidates) {
+      if (transcriptPath === undefined) {
+        continue;
+      }
+      const verdict = await classifyClaudeTranscript(fs.readLines(transcriptPath, signal));
+      if (verdict === "present") {
+        return "present" as const;
+      }
+      if (verdict === "unknown") {
+        result = "unknown";
+      }
+    }
+    return result;
   }).pipe(
     Effect.timeoutOption(timeoutMs),
     Effect.map(Option.getOrElse(() => "unknown" as const)),
@@ -4387,6 +4462,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         let resumeState = readClaudeResumeState(input.resumeCursor);
         const threadId = input.threadId;
         const rawResumeCandidate = readClaudeResumeCandidate(input.resumeCursor);
+        // Built once so the resume preflight and the CLI launch see the same env.
+        const queryEnvironment = buildClaudeQueryEnv(
+          input.providerOptions?.claudeAgent,
+          options?.processEnvironment ?? process.env,
+        );
         let pendingContextResetReason: string | undefined;
         if (rawResumeCandidate !== undefined && !isUuid(rawResumeCandidate)) {
           pendingContextResetReason = "invalid-resume-cursor";
@@ -4397,16 +4477,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         } else if (resumeState?.resume !== undefined) {
           // Probe the same transcript store the CLI child process will use.
-          const claudeConfigDir = resolveClaudeConfigDir(
-            buildClaudeQueryEnv(
-              input.providerOptions?.claudeAgent,
-              options?.processEnvironment ?? process.env,
-            ),
-            input.cwd,
-          );
+          const claudeConfigDir = resolveClaudeConfigDir(queryEnvironment, input.cwd);
           const probeResult = yield* probeResumableClaudeSession({
             sessionId: resumeState.resume,
-            cwd: input.cwd,
             claudeConfigDir,
           });
           if (probeResult === "absent") {
@@ -4990,10 +5063,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // exception: the conversation is resumed and receives only the small
         // replacement contract for the new profile.
 
-        const queryEnvironment = buildClaudeQueryEnv(
-          providerOptions,
-          options?.processEnvironment ?? process.env,
-        );
         const sdkExecutableOptions = yield* Effect.try({
           try: () =>
             resolveClaudeSdkExecutableOptions(
