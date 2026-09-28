@@ -66,7 +66,6 @@ import type {
 } from "./server";
 import type { ServerSettings, ServerSettingsPatch } from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
-import type { ProviderStartOptions } from "./orchestration";
 import type {
   UsageGetAccountsInput,
   UsageAccounts,
@@ -292,6 +291,9 @@ import type {
   OrchestrationUnarchiveInvestigationWorkflowInput,
   OrchestrationUnarchiveCodeReviewWorkflowInput,
   OrchestrationUnarchiveWorkflowInput,
+  ProviderStartOptions,
+  OrchestrationSkipDocumentReaderPassInput,
+  OrchestrationSkipDocumentReaderPassResult,
 } from "./orchestration";
 import { EditorId, type RevealInFileManagerInput } from "./editor";
 
@@ -773,6 +775,9 @@ export interface NativeApi {
     deleteInvestigationWorkflow: (
       input: OrchestrationDeleteInvestigationWorkflowInput,
     ) => Promise<void>;
+    skipDocumentReaderPass: (
+      input: OrchestrationSkipDocumentReaderPassInput,
+    ) => Promise<OrchestrationSkipDocumentReaderPassResult>;
     retryWorkflow: (
       input: OrchestrationRetryWorkflowInput,
     ) => Promise<OrchestrationRetryWorkflowResult>;

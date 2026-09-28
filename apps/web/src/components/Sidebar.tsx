@@ -1,3 +1,5 @@
+import { FileTextIcon } from "lucide-react";
+import { workflowDisplayType } from "../lib/workflowType";
 import { applyBulkThreadAction } from "../bulkThreadActions";
 import { resolveSnoozePreset } from "../lib/snoozePresets";
 import { ProfileSwitcher } from "./ProfileSwitcher";
@@ -465,7 +467,11 @@ function workflowRouteForType(type: SidebarWorkflowEntry["type"]) {
   }
 }
 
-function workflowTypeLabel(type: SidebarWorkflowEntry["type"]): string {
+function workflowTypeLabel(
+  type: SidebarWorkflowEntry["type"],
+  workflow: SidebarWorkflowEntry["workflow"],
+): string {
+  if (workflowDisplayType(type, workflow) === "document") return "Document";
   switch (type) {
     case "planning":
       return "Feature";
@@ -2564,7 +2570,11 @@ export default function Sidebar() {
                                   {projectWorkflows.map(({ workflow, type }) => {
                                     const workflowRoute = workflowRouteForType(type);
                                     const WorkflowIcon =
-                                      type === "investigation" ? SearchIcon : RocketIcon;
+                                      workflowDisplayType(type, workflow) === "document"
+                                        ? FileTextIcon
+                                        : type === "investigation"
+                                          ? SearchIcon
+                                          : RocketIcon;
                                     const isWorkflowActive = isWorkflowRouteActive(
                                       pathname,
                                       workflow.id,
@@ -2632,10 +2642,12 @@ export default function Sidebar() {
                                           <span
                                             className={cn(
                                               "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
-                                              WORKFLOW_TYPE_BADGE_CLASS[type],
+                                              WORKFLOW_TYPE_BADGE_CLASS[
+                                                workflowDisplayType(type, workflow)
+                                              ],
                                             )}
                                           >
-                                            {workflowTypeLabel(type)}
+                                            {workflowTypeLabel(type, workflow)}
                                           </span>
                                           <span className="truncate text-xs font-medium">
                                             {workflow.title}
@@ -3131,7 +3143,12 @@ export default function Sidebar() {
                                       if (item.kind === "workflow") {
                                         const workflowRoute = workflowRouteForType(item.type);
                                         const WorkflowIcon =
-                                          item.type === "investigation" ? SearchIcon : RocketIcon;
+                                          workflowDisplayType(item.type, item.workflow) ===
+                                          "document"
+                                            ? FileTextIcon
+                                            : item.type === "investigation"
+                                              ? SearchIcon
+                                              : RocketIcon;
                                         const isActive = isWorkflowRouteActive(
                                           pathname,
                                           item.workflow.id,
@@ -3174,10 +3191,12 @@ export default function Sidebar() {
                                                 <span
                                                   className={cn(
                                                     "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
-                                                    WORKFLOW_TYPE_BADGE_CLASS[item.type],
+                                                    WORKFLOW_TYPE_BADGE_CLASS[
+                                                      workflowDisplayType(item.type, item.workflow)
+                                                    ],
                                                   )}
                                                 >
-                                                  {workflowTypeLabel(item.type)}
+                                                  {workflowTypeLabel(item.type, item.workflow)}
                                                 </span>
                                                 <span className="min-w-0 flex-1 truncate text-xs">
                                                   {item.workflow.title}

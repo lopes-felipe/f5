@@ -1,7 +1,9 @@
-import type {
-  ProviderInteractionMode,
-  ProviderKind,
-  WorkflowTurnExecutionProfile,
+import {
+  DOCUMENT_WORKFLOW_TEMPLATE_ID,
+  DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS,
+  type ProviderInteractionMode,
+  type ProviderKind,
+  type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
 
 export type WorkflowRunKind = "planning" | "codeReview" | "investigation";
@@ -95,8 +97,11 @@ function readonlyProfileForStage(
   }
 }
 
-function behavior(runKind: WorkflowRunKind, templateVersion: 1 | 2): WorkflowBehavior {
-  const templateId = BUILTIN_WORKFLOW_TEMPLATE_IDS[runKind];
+function behavior(
+  runKind: WorkflowRunKind,
+  templateVersion: 1 | 2,
+  templateId: string = BUILTIN_WORKFLOW_TEMPLATE_IDS[runKind],
+): WorkflowBehavior {
   if (templateVersion === 1) {
     return {
       runKind,
@@ -130,7 +135,9 @@ function behavior(runKind: WorkflowRunKind, templateVersion: 1 | 2): WorkflowBeh
 
 export const WORKFLOW_BEHAVIORS: ReadonlyArray<WorkflowBehavior> = (
   ["planning", "codeReview", "investigation"] as const
-).flatMap((runKind) => [behavior(runKind, 1), behavior(runKind, 2)]);
+)
+  .flatMap((runKind) => [behavior(runKind, 1), behavior(runKind, 2)])
+  .concat(behavior("planning", 2, DOCUMENT_WORKFLOW_TEMPLATE_ID));
 
 const WORKFLOW_BEHAVIOR_BY_KEY = new Map<string, WorkflowBehavior>(
   WORKFLOW_BEHAVIORS.map(
@@ -191,4 +198,39 @@ export function assertWorkflowStageProviderSupported(input: {
   ) {
     throw new UnsupportedWorkflowProviderError(input.provider, input.stage);
   }
+}
+
+export function latestWorkflowTemplateVersion(input: {
+  runKind: WorkflowRunKind;
+  templateId?: string | undefined;
+}): number {
+  const templateId = input.templateId ?? BUILTIN_WORKFLOW_TEMPLATE_IDS[input.runKind];
+  const versions = WORKFLOW_BEHAVIORS.filter(
+    (entry) => entry.runKind === input.runKind && entry.templateId === templateId,
+  ).map((entry) => entry.templateVersion);
+  if (!versions.length) throw new UnsupportedWorkflowTemplateError(input.runKind, templateId, 0);
+  return Math.max(...versions);
+}
+export function documentWorkflowCreateInvariant(input: {
+  templateId?: string | undefined;
+  documentType?: string | null | undefined;
+  requirementPrompt: string;
+  readerReviewEnabled?: boolean | undefined;
+  readerPersona?: string | null | undefined;
+  readerSlot?: unknown;
+}): string | null {
+  if (input.templateId !== DOCUMENT_WORKFLOW_TEMPLATE_ID) {
+    if (input.documentType != null) return "Only document workflows accept a document type.";
+    if (
+      input.readerReviewEnabled !== undefined ||
+      input.readerPersona != null ||
+      input.readerSlot != null
+    )
+      return "Reader review is only available for document workflows.";
+    return null;
+  }
+  if (!input.documentType) return "Document workflows require a document type.";
+  if (input.requirementPrompt.length > DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS)
+    return `Document briefs must be at most ${DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS.toLocaleString("en-US")} characters.`;
+  return null;
 }

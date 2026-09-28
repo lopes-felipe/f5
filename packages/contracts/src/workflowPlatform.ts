@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import {
+  OrchestrationCreateDocumentWorkflowInput,
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationCreateInvestigationWorkflowInput,
   OrchestrationCreateWorkflowInput,
@@ -10,7 +11,7 @@ import {
   ThreadCompaction,
   ThreadSessionNotes,
 } from "./orchestration";
-import { WorkflowModelSlot } from "./planningWorkflow";
+import { DOCUMENT_WORKFLOW_TEMPLATE_ID, WorkflowModelSlot } from "./planningWorkflow";
 
 export const WorkflowTemplateId = TrimmedNonEmptyString;
 export type WorkflowTemplateId = typeof WorkflowTemplateId.Type;
@@ -73,6 +74,12 @@ export const WorkflowPlatformListTemplatesResult = Schema.Struct({
 export type WorkflowPlatformListTemplatesResult = typeof WorkflowPlatformListTemplatesResult.Type;
 
 export const WorkflowPlatformCreateRunInput = Schema.Union([
+  Schema.Struct({
+    templateId: Schema.Literal(DOCUMENT_WORKFLOW_TEMPLATE_ID),
+    templateVersion: Schema.optional(Schema.Literal(2)),
+    maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
+    input: OrchestrationCreateDocumentWorkflowInput,
+  }),
   Schema.Struct({
     templateId: Schema.Literal("builtin.planning.dual"),
     templateVersion: Schema.optional(Schema.Literals([1, 2])),

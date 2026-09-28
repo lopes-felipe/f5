@@ -1,3 +1,15 @@
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../ui/select";
+import {
+  DOCUMENT_WORKFLOW_TEMPLATE_ID,
+  DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS,
+  type WorkflowDocumentType,
+} from "@t3tools/contracts";
+import {
+  WORKFLOW_DOCUMENT_PROFILES,
+  DEFAULT_WORKFLOW_DOCUMENT_TYPE,
+  WORKFLOW_DOCUMENT_TYPE_ORDER,
+  defaultDocumentReaderSlot,
+} from "@t3tools/shared/documentWorkflow";
 import {
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
@@ -477,6 +489,14 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
   const [workflowType, setWorkflowType] = useState<WorkflowTypeValue>("planning");
   const [requirementPrompt, setRequirementPrompt] = useState("");
+  const [documentType, setDocumentType] = useState<WorkflowDocumentType>(
+    DEFAULT_WORKFLOW_DOCUMENT_TYPE,
+  );
+  const [readerReviewEnabled, setReaderReviewEnabled] = useState(true);
+  const [readerPersona, setReaderPersona] = useState("");
+  const [readerSlot, setReaderSlot] = useState<WorkflowModelSlot | null>(null);
+  const documentProfile = WORKFLOW_DOCUMENT_PROFILES[documentType];
+
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
   const [reviewBranch, setReviewBranch] = useState("");
   const [plansDirectory, setPlansDirectory] = useState("plans");
@@ -551,6 +571,25 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     mergeSelection,
     serverConfigQuery.data,
   ]);
+  const effectiveReaderSlot =
+    readerSlot ??
+    defaultDocumentReaderSlot({
+      branchA: {
+        provider: branchAProvider,
+        model: branchASelection,
+        ...(branchAModelOptions ? { modelOptions: branchAModelOptions } : {}),
+      },
+      branchB: {
+        provider: branchBProvider,
+        model: branchBSelection,
+        ...(branchBModelOptions ? { modelOptions: branchBModelOptions } : {}),
+      },
+      merge: { provider: mergeProvider, model: mergeSelection },
+    });
+  const sameDocumentAuthors =
+    workflowType === "document" &&
+    branchAProvider === branchBProvider &&
+    branchASelection === branchBSelection;
   const titleGenerationModel = resolveThreadTitleModel(settings);
   const workspaceRoots = [project?.cwd];
   const sameInvestigationInvestigatorModel =
@@ -560,10 +599,16 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
+  const submittedBriefLength = appendAttachedFilesToPrompt(
+    requirementPrompt,
+    attachedFilePaths,
+  ).length;
   const canSubmit =
     serverConfigQuery.data !== undefined &&
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
     !sameInvestigationInvestigatorModel &&
+    !sameDocumentAuthors &&
+    (workflowType !== "document" || submittedBriefLength <= DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS) &&
     validMaxCostUsd;
   const primaryActionShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "dialog.primaryAction"),
@@ -632,6 +677,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     );
 
     setWorkflowType("planning");
+    setDocumentType(DEFAULT_WORKFLOW_DOCUMENT_TYPE);
+    setReaderReviewEnabled(true);
+    setReaderPersona("");
+    setReaderSlot(null);
     setRequirementPrompt("");
     setAttachedFilePaths([]);
     setReviewBranch("");
@@ -908,6 +957,39 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
+      } else if (workflowType === "document") {
+        const result = await api.workflowPlatform.createRun({
+          templateId: DOCUMENT_WORKFLOW_TEMPLATE_ID,
+          ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
+          input: {
+            projectId: props.projectId,
+            requirementPrompt: promptForSubmission,
+            titleGenerationModel,
+            documentType,
+            selfReviewEnabled,
+            readerReviewEnabled,
+            ...(readerPersona.trim() && readerReviewEnabled
+              ? { readerPersona: readerPersona.trim() }
+              : {}),
+            ...(readerReviewEnabled
+              ? {
+                  reader: buildSlot(
+                    effectiveReaderSlot.provider,
+                    resolveWorkflowModelSelection(
+                      effectiveReaderSlot.provider,
+                      effectiveReaderSlot.model,
+                    ),
+                    effectiveReaderSlot.modelOptions,
+                  ),
+                }
+              : {}),
+            branchA: branchASlot,
+            branchB: branchBSlot,
+            merge: mergeSlot,
+          },
+        });
+        props.onWorkflowCreated?.(result.workflowId);
+        await navigate({ to: "/workflow/$workflowId", params: { workflowId: result.workflowId } });
       } else if (workflowType === "codeReview") {
         const result = await api.workflowPlatform.createRun({
           templateId: "builtin.code-review.dual",
@@ -923,7 +1005,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
-      } else {
+      } else if (workflowType === "investigation") {
         if (sameInvestigationInvestigatorModel) {
           setError("Choose two different investigator models for Investigation workflows.");
           submittingRef.current = false;
@@ -982,21 +1064,21 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
-            Create a feature workflow, code review, or root-cause investigation. The title will be
-            generated from your prompt.
+            Create a feature workflow, code review, root-cause investigation, or document. The title
+            will be generated from your prompt.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
           <ToggleGroup
             variant="outline"
-            className="grid w-full grid-cols-3"
+            className="grid w-full grid-cols-4"
             aria-label="Workflow type"
             value={[workflowType]}
             onKeyDown={onWorkflowTypeKeyDown}
             onValueChange={(value) => {
               const next = value[0];
-              if (next === "planning" || next === "codeReview" || next === "investigation") {
-                setWorkflowType(next);
+              if (WORKFLOW_TYPE_ORDER.includes(next as WorkflowTypeValue)) {
+                setWorkflowType(next as WorkflowTypeValue);
               }
             }}
           >
@@ -1012,11 +1094,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           </ToggleGroup>
           <div className="space-y-2">
             <label className="block text-sm font-medium text-foreground">
-              {workflowType === "planning"
-                ? "Requirement"
-                : workflowType === "investigation"
-                  ? "Problem to investigate"
-                  : "Review instructions"}
+              {workflowType === "document"
+                ? "Brief"
+                : workflowType === "planning"
+                  ? "Requirement"
+                  : workflowType === "investigation"
+                    ? "Problem to investigate"
+                    : "Review instructions"}
             </label>
             <div
               className={`space-y-3 rounded-md border bg-background px-3 py-2 ${
@@ -1072,18 +1156,58 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                 value={requirementPrompt}
                 onChange={(event) => setRequirementPrompt(event.target.value)}
                 placeholder={
-                  workflowType === "planning"
-                    ? "Describe the feature or requirement to plan."
-                    : workflowType === "investigation"
-                      ? "Describe the problem, symptoms, suspected regression, or evidence to investigate."
-                      : "Describe what the reviewers should inspect and how they should review it."
+                  workflowType === "document"
+                    ? documentProfile.placeholder
+                    : workflowType === "planning"
+                      ? "Describe the feature or requirement to plan."
+                      : workflowType === "investigation"
+                        ? "Describe the problem, symptoms, suspected regression, or evidence to investigate."
+                        : "Describe what the reviewers should inspect and how they should review it."
                 }
               />
             </div>
           </div>
+          {workflowType === "document" ? (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                {submittedBriefLength.toLocaleString()} / 24,000
+              </p>
+              <label className="block text-sm font-medium">
+                Document type
+                <Select
+                  value={documentType}
+                  onValueChange={(value) => {
+                    if (value) setDocumentType(value as WorkflowDocumentType);
+                  }}
+                >
+                  <SelectTrigger aria-label="Document type">
+                    <SelectValue>{documentProfile.label}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="start">
+                    {WORKFLOW_DOCUMENT_TYPE_ORDER.map((type) => (
+                      <SelectItem key={type} value={type}>
+                        {WORKFLOW_DOCUMENT_PROFILES[type].label}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              </label>
+              <p className="text-sm text-muted-foreground">{documentProfile.description}</p>
+              <p className="text-xs text-muted-foreground">
+                Sections:{" "}
+                {documentProfile.sections.map((section) => section.heading).join(" · ") ||
+                  "As specified in the brief"}
+              </p>
+              {sameDocumentAuthors ? (
+                <p role="alert" className="text-sm text-destructive">
+                  Document workflows need two different author models.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <ProviderFields
             label={
-              workflowType === "planning"
+              workflowType === "planning" || workflowType === "document"
                 ? "Author A"
                 : workflowType === "investigation"
                   ? "Investigator A"
@@ -1111,7 +1235,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           />
           <ProviderFields
             label={
-              workflowType === "planning"
+              workflowType === "planning" || workflowType === "document"
                 ? "Author B"
                 : workflowType === "investigation"
                   ? "Investigator B"
@@ -1139,11 +1263,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           />
           <ProviderFields
             label={
-              workflowType === "planning"
-                ? "Merge"
-                : workflowType === "investigation"
-                  ? "Synthesis"
-                  : "Consolidation"
+              workflowType === "document"
+                ? "Merge model"
+                : workflowType === "planning"
+                  ? "Merge"
+                  : workflowType === "investigation"
+                    ? "Synthesis"
+                    : "Consolidation"
             }
             provider={mergeProvider}
             model={mergeSelection}
@@ -1165,7 +1291,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               );
             }}
           />
-          {workflowType === "planning" ? (
+          {workflowType === "planning" || workflowType === "document" ? (
             <>
               <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
                 <label className="flex items-start gap-3">
@@ -1178,20 +1304,24 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       Own-model review
                     </span>
                     <span className="block text-sm text-muted-foreground">
-                      After cross-review, each author also reviews its own plan in a separate clean
-                      chat.
+                      Alongside cross-review, each author reviews its own{" "}
+                      {workflowType === "document" ? "draft" : "plan"} in a separate clean chat.
                     </span>
                   </span>
                 </label>
               </div>
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-foreground">Plans directory</label>
-                <input
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  value={plansDirectory}
-                  onChange={(event) => setPlansDirectory(event.target.value)}
-                />
-              </div>
+              {workflowType === "planning" ? (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-foreground">
+                    Plans directory
+                  </label>
+                  <input
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={plansDirectory}
+                    onChange={(event) => setPlansDirectory(event.target.value)}
+                  />
+                </div>
+              ) : null}
             </>
           ) : (
             <>
@@ -1230,6 +1360,63 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ) : null}
             </>
           )}
+          {workflowType === "document" ? (
+            <div className="space-y-3 rounded-md border border-input p-3">
+              <label className="flex items-start gap-3">
+                <Checkbox
+                  checked={readerReviewEnabled}
+                  onCheckedChange={(checked) => setReaderReviewEnabled(checked === true)}
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Reader review of the final document
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    After merging, a simulated reader from the target audience reads the document
+                    and reports where they got lost. The merge model then polishes the document to
+                    address it.
+                  </span>
+                </span>
+              </label>
+              {readerReviewEnabled ? (
+                <>
+                  <label className="block text-sm font-medium">
+                    Reader persona (optional)
+                    <textarea
+                      aria-label="Reader persona (optional)"
+                      maxLength={500}
+                      value={readerPersona}
+                      onChange={(event) => setReaderPersona(event.target.value)}
+                      placeholder={documentProfile.readerPersona}
+                      className="mt-2 min-h-20 w-full rounded-md border border-input bg-background p-2 text-sm"
+                    />
+                  </label>
+                  <p className="text-xs text-muted-foreground">{readerPersona.length} / 500</p>
+                  <ProviderFields
+                    label="Reader model"
+                    provider={effectiveReaderSlot.provider}
+                    model={effectiveReaderSlot.model as ModelSlug}
+                    modelOptions={effectiveReaderSlot.modelOptions}
+                    modelOptionsByProvider={modelOptionsByProvider}
+                    onProviderModelChange={(provider, model) => setReaderSlot({ provider, model })}
+                    onModelOptionsChange={(modelOptions) =>
+                      setReaderSlot({
+                        ...effectiveReaderSlot,
+                        ...(modelOptions ? { modelOptions } : { modelOptions: undefined }),
+                      })
+                    }
+                  />
+                  {effectiveReaderSlot.provider === mergeProvider &&
+                  effectiveReaderSlot.model === mergeSelection ? (
+                    <p className="text-xs text-muted-foreground">
+                      The reader is the model that writes the final document; a different model
+                      usually catches more gaps.
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
           <div className="space-y-2">
             <label className="block text-sm font-medium text-foreground">
               Run cost limit in USD (optional)

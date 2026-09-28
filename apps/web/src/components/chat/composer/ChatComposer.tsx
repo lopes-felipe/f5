@@ -176,7 +176,7 @@ export interface ChatComposerProps {
   onInterrupt: () => Promise<void>;
   isComposerImageImportPending: boolean;
   isSendBusy: boolean;
-  planningMergeWorkflow: unknown | null;
+  planImplementationManagedByWorkflow: boolean;
   canImplementMergeFromChat: boolean;
   setWorkflowImplementDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   onImplementPlanInNewThread: () => Promise<void>;
@@ -279,7 +279,7 @@ export function ChatComposer({
   onInterrupt,
   isComposerImageImportPending,
   isSendBusy,
-  planningMergeWorkflow,
+  planImplementationManagedByWorkflow,
   canImplementMergeFromChat,
   setWorkflowImplementDialogOpen,
   onImplementPlanInNewThread,
@@ -837,7 +837,7 @@ export function ChatComposer({
                       </Button>
                     ) : (
                       <>
-                        {planningMergeWorkflow != null ? (
+                        {planImplementationManagedByWorkflow ? (
                           canImplementMergeFromChat ? (
                             <Button
                               type="button"

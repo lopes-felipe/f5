@@ -1,5 +1,6 @@
 import {
   CommandId,
+  DOCUMENT_WORKFLOW_TEMPLATE_ID,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   MessageId,
@@ -17,6 +18,14 @@ import { readFile, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { Cause, Duration, Effect, Layer, Stream } from "effect";
+import {
+  defaultDocumentReaderSlot,
+  documentWorkflowForThread,
+  isDocumentWorkflow,
+  planningWorkflowDocumentType,
+  validateDocumentArtifact,
+  type DocumentValidationResult,
+} from "@t3tools/shared/documentWorkflow";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
@@ -45,6 +54,23 @@ import {
   type WorkflowServiceShape,
 } from "../Services/WorkflowService.ts";
 import {
+  buildDocumentAuthorPrompt,
+  buildDocumentReviewPrompt,
+  buildDocumentRevisionPrompt,
+  buildDocumentMergePrompt,
+  buildDocumentReaderReviewPrompt,
+  buildDocumentPolishPrompt,
+} from "../documentWorkflowPrompts.ts";
+import {
+  markDocumentMergeDrafted,
+  markReaderRunning,
+  markReaderSaved,
+  markPolishRequested,
+  markPolishCompleted,
+  markReaderPassError,
+  markReaderPassSkipped,
+} from "../documentReaderPass.ts";
+import {
   buildAuthorPrompt,
   buildCodeReviewPrompt,
   buildImplementationPrompt,
@@ -56,6 +82,7 @@ import {
 import {
   getFinishedConsumableLatestTurn,
   latestAssistantFeedback,
+  formatAssistantFeedback,
   nextWorkflowSlug,
   slotLabel,
   workflowArtifactFit,
@@ -72,7 +99,8 @@ import { OrchestrationCommandInvariantError, type OrchestrationDispatchError } f
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
 import {
   assertWorkflowStageProviderSupported,
-  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  latestWorkflowTemplateVersion,
+  documentWorkflowCreateInvariant,
   resolveWorkflowBehavior,
   type UnsupportedWorkflowProviderError,
   UnsupportedWorkflowTemplateError,
@@ -280,6 +308,11 @@ function labelForThread(
   workflow: PlanningWorkflow,
   threadId: ThreadId,
 ): { workflow: PlanningWorkflow; label: string } | null {
+  if (
+    workflow.readerPass?.readerThreadId === threadId ||
+    workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
+  )
+    return { workflow, label: "Reader review" };
   if (workflow.branchA.authorThreadId === threadId) {
     return { workflow, label: "Branch A authoring" };
   }
@@ -1103,6 +1136,40 @@ function hasProposedPlanForTurn(
   return thread.proposedPlans.some((plan) => plan.turnId === turnId);
 }
 
+export function reviewFeedbackForPinnedTurn(
+  thread: Omit<Parameters<typeof latestAssistantFeedback>[0], "messages"> & {
+    readonly messages: ReadonlyArray<
+      Parameters<typeof latestAssistantFeedback>[0]["messages"][number] & {
+        readonly turnId?: string | null;
+      }
+    >;
+    readonly proposedPlans?: ReadonlyArray<{
+      readonly turnId: string | null;
+      readonly planMarkdown: string;
+    }>;
+  },
+  turnId: string | null,
+  messageId: string | null,
+) {
+  const pinnedMessageId =
+    messageId ??
+    (turnId
+      ? thread.messages.findLast(
+          (message) => message.turnId === turnId && message.role === "assistant",
+        )?.id
+      : null);
+  const feedback =
+    turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
+  const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
+  return plan && plan.planMarkdown.length > (feedback?.text.length ?? 0)
+    ? formatAssistantFeedback({
+        text: plan.planMarkdown,
+        reasoningText: thread.messages.find((message) => message.id === pinnedMessageId)
+          ?.reasoningText,
+      })
+    : feedback;
+}
+
 function validateCapturedPlanForTurn(input: {
   readonly workflow: PlanningWorkflow;
   readonly provider: PlanningWorkflow["branchA"]["authorSlot"]["provider"];
@@ -1118,6 +1185,16 @@ function validateCapturedPlanForTurn(input: {
     templateId: input.workflow.templateId,
     templateVersion: input.workflow.templateVersion,
   });
+  const documentType = planningWorkflowDocumentType(input.workflow);
+  if (documentType) {
+    const finished = getFinishedConsumableLatestTurn(input.thread);
+    const candidate =
+      plan?.planMarkdown ?? (finished?.turnId === input.turnId ? finished.assistantText : "") ?? "";
+    const result = validateDocumentArtifact(candidate, documentType, "capture");
+    return result.valid && plan
+      ? { valid: true }
+      : { valid: false, error: result.valid ? "No document was captured." : result.reason };
+  }
   if (!behavior.strictPlanCapture) {
     return plan ? { valid: true } : { valid: false, error: "No proposed plan was captured." };
   }
@@ -1288,7 +1365,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   };
 
   const forkAutoRetry = (input: {
-    readonly kind: "authoring" | "implementation" | "code_review";
+    readonly kind: "authoring" | "implementation" | "code_review" | "document_reader";
     readonly workflowId: PlanningWorkflowId;
     readonly threadId: ThreadId;
     readonly buildDispatch: (input: {
@@ -1500,6 +1577,10 @@ export const makeWorkflowService = Effect.gen(function* () {
     snapshot: {
       readonly threads: ReadonlyArray<{
         readonly id: ThreadId;
+        readonly proposedPlans?: ReadonlyArray<{
+          readonly turnId: string | null;
+          readonly planMarkdown: string;
+        }>;
         readonly latestTurn: { readonly assistantMessageId: string | null } | null;
         readonly messages: ReadonlyArray<{
           readonly id: string;
@@ -1522,8 +1603,14 @@ export const makeWorkflowService = Effect.gen(function* () {
             review.pinnedAssistantMessageId != null &&
             !thread?.messages.some((message) => message.id === review.pinnedAssistantMessageId);
           const feedback =
-            thread && !pinnedMessageMissing
-              ? latestAssistantFeedback(thread, review.pinnedAssistantMessageId ?? null)
+            thread &&
+            (!pinnedMessageMissing ||
+              thread.proposedPlans?.some((plan) => plan.turnId === review.pinnedTurnId))
+              ? reviewFeedbackForPinnedTurn(
+                  thread,
+                  review.pinnedTurnId ?? null,
+                  review.pinnedAssistantMessageId ?? null,
+                )
               : null;
           if (!feedback) {
             yield* Effect.logWarning("review yielded empty feedback text", {
@@ -1575,6 +1662,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     >;
     readonly turnId: TurnId;
     readonly createdAt: string;
+    readonly validate?: (markdown: string) => DocumentValidationResult;
   }) =>
     Effect.gen(function* () {
       const behavior = resolveWorkflowBehavior({
@@ -1646,7 +1734,9 @@ export const makeWorkflowService = Effect.gen(function* () {
       const strippedAssistantText = assistantText
         ? stripProposedPlanBlockTags(assistantText)
         : null;
-      const markdownFilePath = latestMarkdownFileChangePath(input.thread, input.turnId);
+      const markdownFilePath = isDocumentWorkflow(input.workflow)
+        ? null
+        : latestMarkdownFileChangePath(input.thread, input.turnId);
       const filePlanMarkdown = markdownFilePath
         ? yield* Effect.gen(function* () {
             const snapshot = yield* orchestrationEngine.getReadModel();
@@ -1695,13 +1785,19 @@ export const makeWorkflowService = Effect.gen(function* () {
             );
           })
         : null;
-      const planMarkdown =
+      let planMarkdown =
         extractedPlanMarkdown ??
         (filePlanMarkdown && filePlanMarkdown.length > (assistantText?.length ?? 0)
           ? filePlanMarkdown
           : strippedAssistantText || filePlanMarkdown);
-      if (!planMarkdown) {
-        return false;
+      if (!planMarkdown) return false;
+      const documentType = planningWorkflowDocumentType(input.workflow);
+      if (documentType) {
+        const validation =
+          input.validate?.(planMarkdown) ??
+          validateDocumentArtifact(planMarkdown, documentType, "capture");
+        if (!validation.valid) return false;
+        planMarkdown = validation.markdown;
       }
 
       yield* orchestrationEngine.dispatch({
@@ -1731,28 +1827,60 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly createdAt: string;
   }) =>
     Effect.gen(function* () {
+      let workflow = input.workflow;
       const behavior = resolveWorkflowBehavior({
         runKind: "planning",
-        templateId: input.workflow.templateId,
-        templateVersion: input.workflow.templateVersion,
+        templateId: workflow.templateId,
+        templateVersion: workflow.templateVersion,
       });
-      if (!behavior.strictPlanCapture) return;
+      if (!behavior.strictPlanCapture && !isDocumentWorkflow(workflow)) return;
 
-      const branch = input.branchId
+      let branch = input.branchId
         ? input.branchId === "a"
-          ? input.workflow.branchA
-          : input.workflow.branchB
+          ? workflow.branchA
+          : workflow.branchB
         : null;
-      const provider = branch?.authorSlot.provider ?? input.workflow.merge.mergeSlot.provider;
+      const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
       const validation = validateCapturedPlanForTurn({
-        workflow: input.workflow,
+        workflow: workflow,
         provider,
         thread: input.thread,
         turnId: input.turnId,
       });
       if (validation.valid) return;
+      if (isDocumentWorkflow(workflow)) {
+        if (branch && input.branchId) {
+          branch = { ...branch, rejectedDocumentTurnId: input.turnId };
+          workflow = { ...workflow, [input.branchId === "a" ? "branchA" : "branchB"]: branch };
+        } else {
+          workflow = {
+            ...workflow,
+            merge: { ...workflow.merge, rejectedDocumentTurnId: input.turnId },
+          };
+        }
+      }
 
-      const error = `Invalid proposed-plan capture: ${validation.error}`;
+      const error = `${isDocumentWorkflow(workflow) ? "Invalid document" : "Invalid proposed-plan capture"}: ${validation.error}`;
+      const budgetError = workflowBudgetError(workflow);
+      if (
+        budgetError &&
+        (branch
+          ? branch.status === "revising"
+            ? (branch.revisionFormatRepairAttempts ?? 0)
+            : (branch.authorFormatRepairAttempts ?? 0)
+          : (workflow.merge.formatRepairAttempts ?? 0)) < 1
+      ) {
+        yield* upsertWorkflow(
+          branch && input.branchId
+            ? markBranchError(workflow, input.branchId, {
+                error: budgetError.message,
+                stage: branch.status === "revising" ? "revision" : "authoring",
+                updatedAt: input.createdAt,
+              })
+            : markMergeError(workflow, budgetError.message, input.createdAt),
+        );
+        return;
+      }
       if (branch && input.branchId) {
         const stage = branch.status === "revising" ? ("revision" as const) : ("authoring" as const);
         const formatRepairAttempts =
@@ -1761,7 +1889,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             : (branch.authorFormatRepairAttempts ?? 0);
         if (formatRepairAttempts >= 1) {
           yield* upsertWorkflow(
-            markBranchError(input.workflow, input.branchId, {
+            markBranchError(workflow, input.branchId, {
               error,
               stage,
               updatedAt: input.createdAt,
@@ -1778,15 +1906,16 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt: input.createdAt,
         };
         const retryWorkflow: PlanningWorkflow = {
-          ...input.workflow,
-          branchA: input.branchId === "a" ? repairedBranch : input.workflow.branchA,
-          branchB: input.branchId === "b" ? repairedBranch : input.workflow.branchB,
+          ...workflow,
+          branchA: input.branchId === "a" ? repairedBranch : workflow.branchA,
+          branchB: input.branchId === "b" ? repairedBranch : workflow.branchB,
           updatedAt: input.createdAt,
         };
         const retryBranch = input.branchId === "a" ? retryWorkflow.branchA : retryWorkflow.branchB;
         yield* upsertWorkflow(retryWorkflow);
         const retry: WorkflowRetryContext = {
           kind: "retry",
+          formatRepair: true,
           reusedThread: true,
           priorFailure: error,
         };
@@ -1807,7 +1936,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           branch.planTurnId,
           branch.updatedAt,
         )?.planMarkdown;
-        const reviews = yield* reviewFeedbackForBranch(input.workflow.id, branch, input.snapshot);
+        const reviews = yield* reviewFeedbackForBranch(workflow.id, branch, input.snapshot);
         if (!originalPlan || reviews.length === 0) {
           yield* upsertWorkflow(
             markBranchError(retryWorkflow, input.branchId, {
@@ -1831,26 +1960,26 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      if ((input.workflow.merge.formatRepairAttempts ?? 0) >= 1 || !input.workflow.merge.threadId) {
-        yield* upsertWorkflow(markMergeError(input.workflow, error, input.createdAt));
+      if ((workflow.merge.formatRepairAttempts ?? 0) >= 1 || !workflow.merge.threadId) {
+        yield* upsertWorkflow(markMergeError(workflow, error, input.createdAt));
         return;
       }
       const planA = completedProposedPlanForTurn(
         input.snapshot,
-        input.workflow.branchA.authorThreadId,
-        input.workflow.branchA.revisionTurnId,
-        input.workflow.branchA.updatedAt,
+        workflow.branchA.authorThreadId,
+        workflow.branchA.revisionTurnId,
+        workflow.branchA.updatedAt,
       )?.planMarkdown;
       const planB = completedProposedPlanForTurn(
         input.snapshot,
-        input.workflow.branchB.authorThreadId,
-        input.workflow.branchB.revisionTurnId,
-        input.workflow.branchB.updatedAt,
+        workflow.branchB.authorThreadId,
+        workflow.branchB.revisionTurnId,
+        workflow.branchB.updatedAt,
       )?.planMarkdown;
       if (!planA || !planB) {
         yield* upsertWorkflow(
           markMergeError(
-            input.workflow,
+            workflow,
             `${error} Merge inputs could not be reconstructed.`,
             input.createdAt,
           ),
@@ -1858,12 +1987,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
       const retryWorkflow: PlanningWorkflow = {
-        ...input.workflow,
+        ...workflow,
         merge: {
-          ...input.workflow.merge,
+          ...workflow.merge,
           status: "in_progress",
           error: null,
-          formatRepairAttempts: (input.workflow.merge.formatRepairAttempts ?? 0) + 1,
+          formatRepairAttempts: (workflow.merge.formatRepairAttempts ?? 0) + 1,
           updatedAt: input.createdAt,
         },
         updatedAt: input.createdAt,
@@ -1872,23 +2001,15 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* startMergeTurn({
         orchestrationEngine,
         workflow: retryWorkflow,
-        threadId: input.workflow.merge.threadId,
+        threadId: workflow.merge.threadId,
         planA,
         planB,
         reviews: [
-          ...(yield* reviewFeedbackForBranch(
-            input.workflow.id,
-            input.workflow.branchA,
-            input.snapshot,
-          )),
-          ...(yield* reviewFeedbackForBranch(
-            input.workflow.id,
-            input.workflow.branchB,
-            input.snapshot,
-          )),
+          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, input.snapshot)),
+          ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, input.snapshot)),
         ],
         createdAt: input.createdAt,
-        retry: { kind: "retry", reusedThread: true, priorFailure: error },
+        retry: { kind: "retry", formatRepair: true, reusedThread: true, priorFailure: error },
       });
     });
 
@@ -2371,6 +2492,320 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
     });
 
+  const dispatchDocumentReaderStage = (
+    workflow: PlanningWorkflow,
+    snapshot: OrchestrationReadModel,
+    stage: "reader" | "polish",
+    createdAt: string,
+    retry?: WorkflowRetryContext,
+  ) =>
+    Effect.gen(function* () {
+      const pass = workflow.readerPass!;
+      const slot = stage === "reader" ? workflow.readerSlot! : workflow.merge.mergeSlot;
+      const threadId = stage === "reader" ? pass.readerThreadId : workflow.merge.threadId!;
+      const thread = snapshot.threads.find((entry) => entry.id === threadId);
+      const draft = snapshot.threads
+        .find((entry) => entry.id === workflow.merge.threadId)
+        ?.proposedPlans.find((plan) => plan.id === pass.draftPlanId);
+      if (!draft) return yield* Effect.fail(new Error("Merged document not found."));
+      const reportThread = snapshot.threads.find((entry) => entry.id === pass.readerThreadId);
+      const report = reportThread
+        ? reviewFeedbackForPinnedTurn(
+            reportThread,
+            pass.pinnedTurnId,
+            pass.pinnedAssistantMessageId,
+          )?.text
+        : null;
+      if (stage === "polish" && !report?.trim())
+        return yield* Effect.fail(new Error("Reader review produced no report."));
+      const budgetError = workflowBudgetError(workflow);
+      if (budgetError) return yield* Effect.fail(budgetError);
+      const source = {
+        workflowId: workflow.id,
+        stage: stage === "reader" ? "merge" : "reader-review",
+        turnId: stage === "reader" ? pass.draftTurnId : (pass.pinnedTurnId ?? undefined),
+      };
+      const prompt =
+        stage === "reader"
+          ? buildDocumentReaderReviewPrompt({ workflow, markdown: draft.planMarkdown, source })
+          : buildDocumentPolishPrompt({
+              workflow,
+              report: report!,
+              source,
+              ...(retry ? { retry } : {}),
+            });
+      const promptError = workflowPromptInvariant({
+        workflow,
+        prompt,
+        artifacts: [stage === "reader" ? draft.planMarkdown : report!],
+        targetSlot: slot,
+        artifactLabel: stage === "reader" ? "Merged document" : "Reader report",
+        ...(thread ? { thread } : {}),
+      });
+      if (promptError) return yield* Effect.fail(promptError);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.turn.start",
+        commandId: stableWorkflowCommandId(`document-${stage}`, workflow.id, threadId, createdAt),
+        threadId,
+        message: {
+          messageId: MessageId.makeUnsafe(
+            stableWorkflowUuid(`document-${stage}-message`, workflow.id, threadId, createdAt),
+          ),
+          role: "user",
+          text: prompt,
+          attachments: [],
+        },
+        ...workflowTurnProviderFields(slot),
+        titleSourceText: workflow.title,
+        runtimeMode: DEFAULT_RUNTIME_MODE,
+        ...workflowTurnBehaviorFields({
+          runKind: "planning",
+          templateId: workflow.templateId,
+          templateVersion: workflow.templateVersion,
+          stage: stage === "reader" ? "plan-review" : "merge",
+        }),
+        createdAt,
+      });
+    });
+
+  const maybeContinueDocumentReaderPass = (
+    workflow: PlanningWorkflow,
+  ): Effect.Effect<void, OrchestrationDispatchError | Error> =>
+    Effect.gen(function* () {
+      if (
+        !isDocumentWorkflow(workflow) ||
+        workflow.merge.status !== "merged" ||
+        !workflow.readerPass
+      )
+        return;
+      let current = workflow;
+      const snapshot = yield* orchestrationEngine.getReadModel();
+      const persisted = snapshot.planningWorkflows.find((entry) => entry.id === workflow.id);
+      if (persisted) current = persisted;
+      const pass = current.readerPass;
+      if (!pass || current.merge.status !== "merged") return;
+      const stage =
+        pass.status === "reader_requested"
+          ? "reader"
+          : pass.status === "reader_saved" || pass.status === "polishing"
+            ? "polish"
+            : null;
+      if (!stage) return;
+      yield* Effect.gen(function* () {
+        const budgetError = pass.status === "polishing" ? null : workflowBudgetError(current);
+        if (budgetError) return yield* Effect.fail(budgetError);
+        if (
+          stage === "reader" &&
+          !snapshot.threads.some((thread) => thread.id === pass.readerThreadId)
+        ) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.create",
+            commandId: stableWorkflowCommandId(
+              "create-document-reader",
+              current.id,
+              pass.readerThreadId,
+            ),
+            threadId: pass.readerThreadId,
+            projectId: current.projectId,
+            title: "Reader review",
+            model: current.readerSlot!.model,
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: "plan",
+            branch: null,
+            worktreePath: null,
+            createdAt: pass.updatedAt,
+          });
+        }
+        if (pass.status === "reader_saved") {
+          current = markPolishRequested(current, new Date().toISOString());
+          yield* upsertWorkflow(current);
+        }
+        const intentAt =
+          stage === "reader" ? pass.updatedAt : current.readerPass!.polishRequestedAt!;
+        const threadId = stage === "reader" ? pass.readerThreadId : current.merge.threadId!;
+        const thread = snapshot.threads.find((entry) => entry.id === threadId);
+        const alreadyStarted = !!thread?.latestTurn && thread.latestTurn.requestedAt >= intentAt;
+        if (
+          alreadyStarted &&
+          (hasActiveRunningTurn(thread) || thread?.latestTurn?.state === "running")
+        ) {
+          if (stage === "reader") yield* upsertWorkflow(markReaderRunning(current, intentAt));
+          return;
+        }
+        const delivery = yield* deliveryForStage(threadId, intentAt);
+        const deliveryError = ensureDeliveryCanResume(
+          delivery,
+          stage === "reader" ? "Reader review" : "Polish",
+        );
+        if (deliveryError) return yield* Effect.fail(deliveryError);
+        if (!delivery && !alreadyStarted)
+          yield* dispatchDocumentReaderStage(current, snapshot, stage, intentAt);
+        if (stage === "reader") {
+          current = markReaderRunning(current, intentAt);
+          yield* upsertWorkflow(current);
+          // Dispatch may have completed before the running state was persisted (including
+          // across a restart). Consume that completion without sending another turn.
+          const latest = yield* orchestrationEngine.getReadModel();
+          const advanced = yield* maybeAdvanceDocumentReaderPass(
+            current,
+            latest,
+            threadId,
+            new Date().toISOString(),
+          );
+          if (advanced !== current) yield* maybeContinueDocumentReaderPass(advanced);
+        }
+      }).pipe(
+        Effect.catch((error) =>
+          upsertWorkflow(
+            markReaderPassError(current, stage, String(error), new Date().toISOString()),
+          ).pipe(Effect.asVoid),
+        ),
+      );
+    });
+
+  const maybeAdvanceDocumentReaderPass = (
+    workflow: PlanningWorkflow,
+    snapshot: OrchestrationReadModel,
+    threadId: ThreadId,
+    updatedAt: string,
+    expectedTurnId?: TurnId | null,
+  ): Effect.Effect<PlanningWorkflow, OrchestrationDispatchError | Error | null> =>
+    Effect.gen(function* () {
+      const pass = workflow.readerPass;
+      const thread = snapshot.threads.find((entry) => entry.id === threadId);
+      if (!thread) return workflow;
+      if (!pass) {
+        const plan = thread.proposedPlans.find((entry) => entry.turnId === workflow.merge.turnId);
+        if (threadId !== workflow.merge.threadId || !plan) return workflow;
+        const healed = markMergeReadyForManualReview(
+          { ...workflow, merge: { ...workflow.merge, approvedPlanId: null } },
+          {
+            turnId: plan.turnId!,
+            approvedPlanId: plan.id,
+            updatedAt,
+          },
+        );
+        yield* upsertWorkflow(healed);
+        return healed;
+      }
+      const completedTurnId = getFinishedLatestTurnId(thread);
+      const finished =
+        getFinishedConsumableLatestTurn(thread) ??
+        (completedTurnId
+          ? {
+              turnId: completedTurnId,
+              assistantMessageId: thread.latestTurn?.assistantMessageId ?? null,
+              assistantText: "",
+            }
+          : null);
+      if (!finished || (expectedTurnId && finished.turnId !== expectedTurnId)) return workflow;
+      if (pass.status === "error" && (thread.latestTurn?.completedAt ?? "") < pass.updatedAt)
+        return workflow;
+      let next = workflow;
+      if (
+        threadId === pass.readerThreadId &&
+        (pass.status === "reader_running" ||
+          (pass.status === "error" && pass.errorStage === "reader")) &&
+        pass.readerStartedAt &&
+        thread.latestTurn!.requestedAt >= pass.readerStartedAt
+      ) {
+        next = markReaderSaved(workflow, {
+          turnId: finished.turnId,
+          messageId: finished.assistantMessageId,
+          updatedAt,
+        });
+        if (
+          !reviewFeedbackForPinnedTurn(
+            thread,
+            finished.turnId,
+            finished.assistantMessageId,
+          )?.text.trim()
+        )
+          next = markReaderPassError(
+            next,
+            "reader",
+            "Reader review produced no report.",
+            updatedAt,
+          );
+      } else if (
+        threadId === workflow.merge.threadId &&
+        (pass.status === "polishing" ||
+          (pass.status === "error" && pass.errorStage === "polish")) &&
+        finished.turnId !== pass.draftTurnId &&
+        pass.polishRequestedAt &&
+        thread.latestTurn!.requestedAt >= pass.polishRequestedAt
+      ) {
+        const validate = (markdown: string) =>
+          validateDocumentArtifact(
+            markdown,
+            planningWorkflowDocumentType(workflow)!,
+            "replacement",
+          );
+        let plan = thread.proposedPlans.find((entry) => entry.turnId === finished.turnId);
+        if (!plan) {
+          yield* maybeSynthesizeProposedPlan({
+            workflow,
+            provider: workflow.merge.mergeSlot.provider,
+            thread,
+            turnId: finished.turnId,
+            createdAt: updatedAt,
+            validate,
+          });
+          const refreshed = yield* orchestrationEngine.getReadModel();
+          plan = refreshed.threads
+            .find((entry) => entry.id === threadId)
+            ?.proposedPlans.find((entry) => entry.turnId === finished.turnId);
+        }
+        const validation = validate(plan?.planMarkdown ?? finished.assistantText ?? "");
+        if (plan && validation.valid)
+          next = markPolishCompleted(workflow, {
+            turnId: finished.turnId,
+            planId: plan.id,
+            updatedAt,
+          });
+        else {
+          const reason = validation.valid
+            ? "No complete document was captured."
+            : validation.reason;
+          if (pass.polishFormatRepairAttempts >= 1)
+            next = markReaderPassError(
+              workflow,
+              "polish",
+              `Invalid document: ${reason}`,
+              updatedAt,
+            );
+          else {
+            next = markPolishRequested(
+              {
+                ...workflow,
+                readerPass: {
+                  ...pass,
+                  polishFormatRepairAttempts: pass.polishFormatRepairAttempts + 1,
+                },
+              },
+              updatedAt,
+            );
+            yield* upsertWorkflow(next);
+            yield* dispatchDocumentReaderStage(next, snapshot, "polish", updatedAt, {
+              kind: "retry",
+              reusedThread: true,
+              formatRepair: true,
+              priorFailure: reason,
+            }).pipe(
+              Effect.catch((error) =>
+                upsertWorkflow(markReaderPassError(next, "polish", String(error), updatedAt)).pipe(
+                  Effect.asVoid,
+                ),
+              ),
+            );
+            return next;
+          }
+        }
+      }
+      if (next !== workflow) yield* upsertWorkflow(next);
+      return next;
+    });
+
   const maybeContinuePlanningWorkflowLifecycle = (
     workflow: PlanningWorkflow,
     snapshot: OrchestrationReadModel,
@@ -2380,6 +2815,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* maybeStartReviews(workflow, snapshot, updatedAt);
       yield* maybeStartRevisions(workflow, snapshot, updatedAt);
       yield* maybeStartMerge(workflow, snapshot, updatedAt);
+      yield* maybeContinueDocumentReaderPass(workflow);
     });
 
   const maybeAdvancePlanningWorkflowFromCompletedThread = (
@@ -2396,6 +2832,15 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!thread) {
         return workflow;
       }
+
+      if (isDocumentWorkflow(workflow) && workflow.merge.status === "merged")
+        return yield* maybeAdvanceDocumentReaderPass(
+          workflow,
+          snapshot,
+          threadId,
+          updatedAt,
+          options?.expectedTurnId,
+        );
 
       const authorBranchId =
         workflow.branchA.authorThreadId === threadId
@@ -2461,6 +2906,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           return workflow;
         }
         if (isRevisionCompletion && turnId === branch.planTurnId) {
+          return workflow;
+        }
+        if (isDocumentWorkflow(workflow) && turnId === branch.rejectedDocumentTurnId) {
           return workflow;
         }
         const completionEvidenceAt =
@@ -2553,6 +3001,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       const mergeCompletionEvidenceAt =
         thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
+      if (isDocumentWorkflow(workflow) && turnId === workflow.merge.rejectedDocumentTurnId)
+        return workflow;
       if (
         workflow.merge.status === "error" &&
         (!mergeCompletionEvidenceAt || mergeCompletionEvidenceAt < workflow.merge.updatedAt)
@@ -2592,12 +3042,22 @@ export const makeWorkflowService = Effect.gen(function* () {
       const mergedPlanId =
         latestMergeThread.proposedPlans.find((plan) => plan.turnId === turnId)?.id ?? null;
       const outputFilePath = latestMarkdownFileChangePath(latestMergeThread, turnId);
-      const nextWorkflow = markMergeReadyForManualReview(workflow, {
-        turnId,
-        updatedAt,
-        approvedPlanId: mergedPlanId,
-        ...(outputFilePath ? { outputFilePath } : {}),
-      });
+      const nextWorkflow =
+        isDocumentWorkflow(workflow) && workflow.readerReviewEnabled && mergedPlanId
+          ? markDocumentMergeDrafted(workflow, {
+              turnId,
+              draftPlanId: mergedPlanId,
+              readerThreadId: ThreadId.makeUnsafe(
+                stableWorkflowUuid("document-reader-thread", workflow.id, turnId, updatedAt),
+              ),
+              updatedAt,
+            })
+          : markMergeReadyForManualReview(workflow, {
+              turnId,
+              updatedAt,
+              approvedPlanId: mergedPlanId,
+              ...(outputFilePath ? { outputFilePath } : {}),
+            });
       if (nextWorkflow !== workflow) {
         yield* upsertWorkflow(nextWorkflow);
       }
@@ -3459,6 +3919,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         ...reconciledWorkflow.branchA.reviews.map((review) => review.threadId),
         ...reconciledWorkflow.branchB.reviews.map((review) => review.threadId),
         ...(reconciledWorkflow.merge.threadId ? [reconciledWorkflow.merge.threadId] : []),
+        ...(reconciledWorkflow.readerPass ? [reconciledWorkflow.readerPass.readerThreadId] : []),
       ];
       for (const threadId of lifecycleThreadIds) {
         const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
@@ -3529,6 +3990,32 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       yield* maybeContinuePlanningWorkflowLifecycle(reconciledWorkflow, latestSnapshot, updatedAt);
       yield* refreshWorkflowFromSnapshot;
+
+      const readerPass = reconciledWorkflow.readerPass;
+      if (
+        readerPass &&
+        (readerPass.status === "reader_running" || readerPass.status === "polishing")
+      ) {
+        const stage = readerPass.status === "reader_running" ? "reader" : "polish";
+        const thread = latestSnapshot.threads.find(
+          (entry) =>
+            entry.id ===
+            (stage === "reader" ? readerPass.readerThreadId : reconciledWorkflow.merge.threadId),
+        );
+        // Only audit a stage that was already running when reconciliation began.
+        if (
+          workflow.readerPass?.status === readerPass.status &&
+          isSessionUnavailableForReconciliation(thread)
+        ) {
+          reconciledWorkflow = markReaderPassError(
+            reconciledWorkflow,
+            stage,
+            `${stage === "reader" ? "Reader review" : "Polish"} session is unavailable; retry the failed stage.`,
+            updatedAt,
+          );
+          yield* upsertWorkflow(reconciledWorkflow);
+        }
+      }
 
       for (const branchId of ["a", "b"] as const) {
         const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
@@ -3680,6 +4167,169 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const handleDomainEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
+      // Partial messages cannot complete a stage. Avoid snapshot and delivery reads
+      // for token deltas across all threads, including unrelated workflows.
+      if (
+        event.type === "thread.message-sent" &&
+        (event.payload.streaming || event.payload.role !== "assistant")
+      )
+        return;
+      // Reader and polish share the normal event stream, but own their completion pins.
+      if (
+        [
+          "thread.proposed-plan-upserted",
+          "thread.turn-diff-completed",
+          "thread.turn-processing-quiesced",
+          "thread.message-sent",
+          "thread.session-set",
+        ].includes(event.type) &&
+        "threadId" in event.payload
+      ) {
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const threadId = event.payload.threadId as ThreadId;
+        const document = documentWorkflowForThread(snapshot.planningWorkflows, threadId);
+        if (
+          document &&
+          (document.readerPass?.readerThreadId === threadId || document.merge.threadId === threadId)
+        ) {
+          let current = document;
+          if (event.type === "thread.session-set") {
+            if (
+              current.merge.status === "merged" ||
+              current.readerPass?.readerThreadId === threadId ||
+              (current.merge.status === "manual_review" && event.payload.session.status === "error")
+            ) {
+              current = applyWorkflowTurnCost(
+                current,
+                event.payload.session.turnCostUsd,
+                event.occurredAt,
+              );
+              if (current !== document) yield* upsertWorkflow(current);
+            }
+            if (
+              event.payload.session.status === "error" &&
+              current.merge.status === "merged" &&
+              current.readerPass
+            ) {
+              const stage = threadId === current.readerPass.readerThreadId ? "reader" : "polish";
+              if (stage === "polish" && current.readerPass.status !== "polishing") return;
+              if (
+                stage === "reader" &&
+                !["reader_requested", "reader_running", "error"].includes(current.readerPass.status)
+              )
+                return;
+              const failed = markReaderPassError(
+                current,
+                stage,
+                formatSessionError(event.payload.session, `${stage} failed.`),
+                event.occurredAt,
+              );
+              yield* upsertWorkflow(failed);
+              if (
+                stage === "reader" &&
+                current.readerPass.status === "reader_running" &&
+                current.readerPass.readerStartedAt !== null &&
+                snapshot.threads.find((thread) => thread.id === threadId)?.latestTurn?.state ===
+                  "error" &&
+                (snapshot.threads.find((thread) => thread.id === threadId)?.latestTurn
+                  ?.requestedAt ?? "") >= current.readerPass.readerStartedAt &&
+                isRetryableSessionError(event.payload.session) &&
+                current.readerPass.retryCount < MAX_AUTO_RETRY_ATTEMPTS
+              ) {
+                const count = current.readerPass.retryCount + 1;
+                const retrying = {
+                  ...failed,
+                  readerPass: {
+                    ...failed.readerPass!,
+                    retryCount: count,
+                    lastRetryAt: event.occurredAt,
+                  },
+                };
+                yield* upsertWorkflow(retrying);
+                yield* forkAutoRetry({
+                  kind: "document_reader",
+                  workflowId: current.id,
+                  threadId,
+                  buildDispatch: ({ workflow, snapshot: retrySnapshot }) => {
+                    if (
+                      workflow.readerPass?.status !== "error" ||
+                      workflow.readerPass.errorStage !== "reader" ||
+                      workflow.readerPass.retryCount !== count ||
+                      hasActiveRunningTurn(
+                        retrySnapshot.threads.find((entry) => entry.id === threadId),
+                      )
+                    )
+                      return null;
+                    return Effect.gen(function* () {
+                      const now = new Date().toISOString();
+                      const running = markReaderRunning(workflow, now);
+                      yield* upsertWorkflow(running);
+                      yield* dispatchDocumentReaderStage(
+                        running,
+                        retrySnapshot,
+                        "reader",
+                        now,
+                      ).pipe(
+                        Effect.catch((error) =>
+                          upsertWorkflow(
+                            markReaderPassError(running, "reader", String(error), now),
+                          ).pipe(Effect.asVoid),
+                        ),
+                      );
+                    });
+                  },
+                });
+              }
+              return;
+            }
+            if (
+              event.payload.session.status === "error" &&
+              current.merge.status === "manual_review"
+            )
+              return;
+          }
+          if (current.merge.status === "merged") {
+            const expectedTurnId =
+              event.type === "thread.proposed-plan-upserted"
+                ? event.payload.proposedPlan.turnId
+                : "turnId" in event.payload
+                  ? (event.payload.turnId as TurnId | null)
+                  : undefined;
+            current = yield* maybeAdvanceDocumentReaderPass(
+              current,
+              snapshot,
+              threadId,
+              event.occurredAt,
+              expectedTurnId,
+            );
+            yield* maybeContinueDocumentReaderPass(current);
+            return;
+          }
+          if (
+            event.type === "thread.turn-processing-quiesced" &&
+            current.merge.status === "manual_review" &&
+            current.merge.threadId === threadId &&
+            current.implementation === null &&
+            event.payload.turnId !== current.merge.turnId
+          ) {
+            const thread = snapshot.threads.find((entry) => entry.id === threadId);
+            if (thread && !hasProposedPlanForTurn(thread, event.payload.turnId))
+              yield* maybeSynthesizeProposedPlan({
+                workflow: current,
+                provider: current.merge.mergeSlot.provider,
+                thread,
+                turnId: event.payload.turnId,
+                createdAt: event.occurredAt,
+                validate: (markdown) =>
+                  validateDocumentArtifact(
+                    markdown,
+                    planningWorkflowDocumentType(current)!,
+                    "replacement",
+                  ),
+              });
+          }
+        }
+      }
       switch (event.type) {
         case "thread.proposed-plan-upserted": {
           const readModel = yield* orchestrationEngine.getReadModel();
@@ -3712,7 +4362,13 @@ export const makeWorkflowService = Effect.gen(function* () {
             nextWorkflow.merge.threadId === event.payload.threadId &&
             nextWorkflow.merge.status === "manual_review" &&
             nextWorkflow.implementation === null &&
-            event.payload.proposedPlan.implementedAt === null
+            event.payload.proposedPlan.implementedAt === null &&
+            (!isDocumentWorkflow(nextWorkflow) ||
+              validateDocumentArtifact(
+                event.payload.proposedPlan.planMarkdown,
+                planningWorkflowDocumentType(nextWorkflow)!,
+                "replacement",
+              ).valid)
           ) {
             yield* upsertWorkflow(
               repinManualReviewApprovedPlan(nextWorkflow, {
@@ -4453,6 +5109,9 @@ export const makeWorkflowService = Effect.gen(function* () {
       const providers = yield* getWorkflowProviders;
       const input: CreateWorkflowInput = {
         ...rawInput,
+        ...(rawInput.templateId === DOCUMENT_WORKFLOW_TEMPLATE_ID
+          ? { readerReviewEnabled: rawInput.readerReviewEnabled ?? true }
+          : {}),
         branchA: resolveAvailableWorkflowModelSlot(rawInput.branchA, providers),
         branchB: resolveAvailableWorkflowModelSlot(rawInput.branchB, providers),
         merge: resolveAvailableWorkflowModelSlot(rawInput.merge, providers),
@@ -4462,7 +5121,9 @@ export const makeWorkflowService = Effect.gen(function* () {
           resolveWorkflowBehavior({
             runKind: "planning",
             templateId: input.templateId,
-            templateVersion: input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+            templateVersion:
+              input.templateVersion ??
+              latestWorkflowTemplateVersion({ runKind: "planning", templateId: input.templateId }),
           }),
         catch: () =>
           new UnsupportedWorkflowTemplateError(
@@ -4491,6 +5152,37 @@ export const makeWorkflowService = Effect.gen(function* () {
         },
         catch: (error) => error as UnsupportedWorkflowProviderError,
       });
+      const document = input.templateId === DOCUMENT_WORKFLOW_TEMPLATE_ID;
+      const documentInvariant = documentWorkflowCreateInvariant({
+        ...input,
+        readerSlot: input.reader,
+      });
+      if (documentInvariant) return yield* Effect.fail(new Error(documentInvariant));
+      if (
+        document &&
+        input.branchA.provider === input.branchB.provider &&
+        input.branchA.model === input.branchB.model
+      )
+        return yield* Effect.fail(
+          new Error("Document workflows need two different author models."),
+        );
+      const readerSlot =
+        document && input.readerReviewEnabled
+          ? resolveAvailableWorkflowModelSlot(
+              input.reader ?? defaultDocumentReaderSlot(input),
+              providers,
+            )
+          : undefined;
+      if (readerSlot)
+        yield* Effect.try({
+          try: () =>
+            assertWorkflowStageProviderSupported({
+              behavior,
+              stage: "plan-review",
+              provider: readerSlot.provider,
+            }),
+          catch: (error) => error as UnsupportedWorkflowProviderError,
+        });
       const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.planningWorkflows
@@ -4523,6 +5215,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         requirementPrompt: input.requirementPrompt,
         plansDirectory,
         selfReviewEnabled: input.selfReviewEnabled,
+        documentType: input.documentType,
+        readerReviewEnabled: input.readerReviewEnabled,
+        readerPersona: input.readerPersona,
+        readerSlot,
         authorThreadIdA,
         authorThreadIdB,
         branchA: input.branchA,
@@ -4546,6 +5242,10 @@ export const makeWorkflowService = Effect.gen(function* () {
         authorThreadIdA,
         authorThreadIdB,
         selfReviewEnabled: input.selfReviewEnabled,
+        documentType: input.documentType,
+        readerReviewEnabled: input.readerReviewEnabled,
+        readerPersona: input.readerPersona,
+        readerSlot,
         branchA: input.branchA,
         branchB: input.branchB,
         merge: input.merge,
@@ -4558,7 +5258,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           orchestrationEngine,
           input,
           threadId: authorThreadIdA,
-          suffix: "Branch A",
+          suffix: document ? "Draft A" : "Branch A",
           branch: "a",
           now,
         }),
@@ -4566,7 +5266,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           orchestrationEngine,
           input,
           threadId: authorThreadIdB,
-          suffix: "Branch B",
+          suffix: document ? "Draft B" : "Branch B",
           branch: "b",
           now,
         }),
@@ -4653,6 +5353,12 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!workflow) {
         return yield* Effect.fail(new Error(`Workflow '${input.workflowId}' does not exist.`));
       }
+      if (isDocumentWorkflow(workflow))
+        return yield* Effect.fail(
+          new Error(
+            "Document workflows end at the final document and have no implementation phase.",
+          ),
+        );
       if (workflow.merge.status !== "manual_review") {
         return yield* Effect.fail(new Error("Workflow merge is not ready for implementation."));
       }
@@ -4852,6 +5558,14 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       const updatedAt = new Date().toISOString();
       const failedThreadIds = new Set<ThreadId>();
+      if (workflow.readerPass?.status === "error") {
+        const threadId =
+          workflow.readerPass.errorStage === "reader"
+            ? workflow.readerPass.readerThreadId
+            : workflow.merge.threadId;
+        if (threadId) failedThreadIds.add(threadId);
+      }
+
       for (const branch of [workflow.branchA, workflow.branchB]) {
         const stage = planningWorkflowBranchFailureStage(branch);
         if (stage === "authoring" || stage === "revision") {
@@ -4888,6 +5602,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         ThreadId,
         "pending" | "sending" | "accepted" | "rejected" | "ambiguous"
       >();
+      const deliveryCreatedAtByThread = new Map<ThreadId, string>();
       let ambiguousThreadIds: ThreadId[] = [];
       if (providerTurnDeliveryWorker._tag === "Some") {
         const deliveries = yield* Effect.forEach([...failedThreadIds], (threadId) =>
@@ -4915,6 +5630,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             delivery?.state === "ambiguous"
           ) {
             deliveryStateByThread.set(threadId, delivery.state);
+            deliveryCreatedAtByThread.set(threadId, delivery.createdAt);
           }
         }
       }
@@ -4924,6 +5640,23 @@ export const makeWorkflowService = Effect.gen(function* () {
         threadId: ThreadId | null,
       ): "fresh" | "accepted" | "queued" | "retry" => {
         if (!threadId) return "fresh";
+        // Accepted delivery says nothing about artifact validity. A completed invalid
+        // capture needs a new turn, rather than waiting on the old accepted delivery.
+        if (
+          isDocumentWorkflow(workflow) &&
+          !hasActiveRunningTurn(snapshot.threads.find((thread) => thread.id === threadId))
+        ) {
+          const branch = [workflow.branchA, workflow.branchB].find(
+            (entry) => entry.authorThreadId === threadId,
+          );
+          const error =
+            branch?.status === "error"
+              ? branch.error
+              : workflow.merge.threadId === threadId && workflow.merge.status === "error"
+                ? workflow.merge.error
+                : null;
+          if (error?.startsWith("Invalid document:")) return "fresh";
+        }
         switch (deliveryStateByThread.get(threadId)) {
           case "accepted":
             return "accepted";
@@ -4937,6 +5670,20 @@ export const makeWorkflowService = Effect.gen(function* () {
             return "fresh";
         }
       };
+      const acceptedStageRequestedAt = (threadId: ThreadId, fallback: string) =>
+        isDocumentWorkflow(workflow)
+          ? (deliveryCreatedAtByThread.get(threadId) ??
+            snapshot.threads.find((thread) => thread.id === threadId)?.latestTurn?.requestedAt ??
+            fallback)
+          : updatedAt;
+      const markAcceptedMergeStarted = (current: PlanningWorkflow, threadId: ThreadId) => ({
+        ...markMergeStarted(
+          current,
+          threadId,
+          acceptedStageRequestedAt(threadId, current.merge.updatedAt),
+        ),
+        updatedAt,
+      });
       let retriedWorkflow = workflow;
       const handledAcceptedThreadIds = new Set<ThreadId>();
       const setReviewRunning = (
@@ -5047,7 +5794,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               errorStage: null,
               retryCount: 0,
               lastRetryAt: null,
-              updatedAt,
+              updatedAt: acceptedStageRequestedAt(branch.authorThreadId, currentBranch.updatedAt),
             };
             retriedWorkflow = {
               ...retriedWorkflow,
@@ -5075,7 +5822,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           updatedAt,
         );
         if (completedWorkflow === retriedWorkflow) {
-          retriedWorkflow = markMergeStarted(retriedWorkflow, workflow.merge.threadId, updatedAt);
+          retriedWorkflow = markAcceptedMergeStarted(retriedWorkflow, workflow.merge.threadId);
           yield* upsertWorkflow(retriedWorkflow);
         } else {
           retriedWorkflow = completedWorkflow;
@@ -5172,6 +5919,90 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
+      if (isDocumentWorkflow(workflow) && workflow.readerPass?.status === "error") {
+        const pass = workflow.readerPass;
+        const stage = pass.errorStage ?? "reader";
+        const threadId = stage === "reader" ? pass.readerThreadId : workflow.merge.threadId!;
+        const mode = deliveryMode(threadId);
+        if (mode === "accepted") {
+          const advanced = yield* maybeAdvanceDocumentReaderPass(
+            workflow,
+            snapshot,
+            threadId,
+            updatedAt,
+          );
+          if (advanced !== workflow) {
+            yield* maybeContinueDocumentReaderPass(advanced);
+            return { status: "started" as const };
+          }
+          if (hasActiveRunningTurn(snapshot.threads.find((entry) => entry.id === threadId)))
+            return { status: "started" as const };
+        }
+        if ((mode === "retry" || mode === "queued") && providerTurnDeliveryWorker._tag === "Some") {
+          const resumed: PlanningWorkflow = {
+            ...workflow,
+            readerPass: {
+              ...pass,
+              status: stage === "reader" ? "reader_running" : "polishing",
+              readerStartedAt:
+                stage === "reader"
+                  ? (pass.readerStartedAt ??
+                    deliveryCreatedAtByThread.get(threadId) ??
+                    pass.updatedAt)
+                  : pass.readerStartedAt,
+              error: null,
+              errorStage: null,
+              retryCount: 0,
+              updatedAt,
+            },
+            updatedAt,
+          };
+          yield* upsertWorkflow(resumed);
+          yield* providerTurnDeliveryWorker.value
+            .retry({ threadId, allowPossibleDuplicate: input.allowPossibleDuplicate ?? false })
+            .pipe(
+              Effect.catch((error) =>
+                Effect.gen(function* () {
+                  yield* upsertWorkflow(
+                    markReaderPassError(resumed, stage, String(error), new Date().toISOString()),
+                  );
+                  return yield* Effect.fail(new Error(String(error)));
+                }),
+              ),
+            );
+        } else {
+          const next: PlanningWorkflow = {
+            ...workflow,
+            readerPass: {
+              ...pass,
+              status: stage === "reader" ? "reader_requested" : "reader_saved",
+              ...(stage === "reader"
+                ? {
+                    previousReaderThreadIds: [
+                      ...(pass.previousReaderThreadIds ?? []),
+                      pass.readerThreadId,
+                    ],
+                    readerThreadId: ThreadId.makeUnsafe(crypto.randomUUID()),
+                    readerStartedAt: null,
+                    pinnedTurnId: null,
+                    pinnedAssistantMessageId: null,
+                    polishRequestedAt: null,
+                    polishTurnId: null,
+                  }
+                : {}),
+              error: null,
+              errorStage: null,
+              retryCount: 0,
+              polishFormatRepairAttempts: 0,
+              updatedAt,
+            },
+            updatedAt,
+          };
+          yield* upsertWorkflow(next);
+          yield* maybeContinueDocumentReaderPass(next);
+        }
+        return { status: "started" as const };
+      }
       const planForBranch = (branch: PlanningWorkflow["branchA"]) =>
         completedProposedPlanForTurn(
           snapshot,
@@ -5452,6 +6283,23 @@ export const makeWorkflowService = Effect.gen(function* () {
         const nextBranch: PlanningWorkflow["branchA"] = {
           ...(branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB),
           status: originalStage === "revision" ? "revising" : "authoring",
+          ...(isDocumentWorkflow(workflow)
+            ? {
+                ...(originalStage === "revision"
+                  ? { revisionFormatRepairAttempts: 0 }
+                  : { authorFormatRepairAttempts: 0 }),
+                ...(originalBranch.error?.startsWith("Invalid document:")
+                  ? {
+                      rejectedDocumentTurnId:
+                        snapshot.threads.find(
+                          (thread) => thread.id === originalBranch.authorThreadId,
+                        )?.latestTurn?.turnId ??
+                        originalBranch.rejectedDocumentTurnId ??
+                        null,
+                    }
+                  : {}),
+              }
+            : {}),
           error: null,
           errorStage: null,
           retryCount: 0,
@@ -5477,6 +6325,10 @@ export const makeWorkflowService = Effect.gen(function* () {
             retry: {
               kind: "retry",
               reusedThread: true,
+              ...(isDocumentWorkflow(workflow) &&
+              originalBranch.error?.startsWith("Invalid document:")
+                ? { formatRepair: true as const }
+                : {}),
               priorFailure: originalBranch.error ?? undefined,
             },
           });
@@ -5501,6 +6353,10 @@ export const makeWorkflowService = Effect.gen(function* () {
             retry: {
               kind: "retry",
               reusedThread: true,
+              ...(isDocumentWorkflow(workflow) &&
+              originalBranch.error?.startsWith("Invalid document:")
+                ? { formatRepair: true as const }
+                : {}),
               priorFailure: originalBranch.error ?? undefined,
             },
           });
@@ -5534,13 +6390,70 @@ export const makeWorkflowService = Effect.gen(function* () {
           if (completedWorkflow !== retriedWorkflow) {
             retriedWorkflow = completedWorkflow;
           } else {
-            retriedWorkflow = markMergeStarted(
+            retriedWorkflow = markAcceptedMergeStarted(
               retriedWorkflow,
               retriedWorkflow.merge.threadId,
-              updatedAt,
             );
             yield* upsertWorkflow(retriedWorkflow);
           }
+        } else if (
+          mode === "fresh" &&
+          isDocumentWorkflow(retriedWorkflow) &&
+          retriedWorkflow.merge.threadId
+        ) {
+          const next = markMergeStarted(
+            {
+              ...retriedWorkflow,
+              merge: {
+                ...retriedWorkflow.merge,
+                formatRepairAttempts: 0,
+                ...(retriedWorkflow.merge.error?.startsWith("Invalid document:")
+                  ? {
+                      rejectedDocumentTurnId:
+                        snapshot.threads.find(
+                          (thread) => thread.id === retriedWorkflow.merge.threadId,
+                        )?.latestTurn?.turnId ??
+                        retriedWorkflow.merge.rejectedDocumentTurnId ??
+                        null,
+                    }
+                  : {}),
+              },
+            },
+            retriedWorkflow.merge.threadId,
+            updatedAt,
+          );
+          yield* upsertWorkflow(next);
+          yield* startMergeTurn({
+            orchestrationEngine,
+            workflow: next,
+            threadId: next.merge.threadId!,
+            planA: completedProposedPlanForTurn(
+              snapshot,
+              next.branchA.authorThreadId,
+              next.branchA.revisionTurnId,
+              next.branchA.updatedAt,
+            )!.planMarkdown,
+            planB: completedProposedPlanForTurn(
+              snapshot,
+              next.branchB.authorThreadId,
+              next.branchB.revisionTurnId,
+              next.branchB.updatedAt,
+            )!.planMarkdown,
+            reviews: [
+              ...(yield* reviewFeedbackForBranch(next.id, next.branchA, snapshot)),
+              ...(yield* reviewFeedbackForBranch(next.id, next.branchB, snapshot)),
+            ],
+            createdAt: updatedAt,
+            retry: {
+              kind: "retry",
+              reusedThread: true,
+              ...(retriedWorkflow.merge.error?.startsWith("Invalid document:")
+                ? { formatRepair: true as const }
+                : {}),
+              priorFailure: retriedWorkflow.merge.error ?? undefined,
+            },
+          });
+          return { status: "started" as const };
         } else if (mode === "fresh") {
           const mergeRetryWorkflow: PlanningWorkflow = {
             ...retriedWorkflow,
@@ -5735,6 +6648,47 @@ export const makeWorkflowService = Effect.gen(function* () {
       ),
     );
 
+  const skipDocumentReaderPass: WorkflowServiceShape["skipDocumentReaderPass"] = (input) =>
+    Effect.gen(function* () {
+      const snapshot = yield* orchestrationEngine.getReadModel();
+      const workflow = snapshot.planningWorkflows.find(
+        (entry) => entry.id === input.workflowId && !entry.deletedAt,
+      );
+      if (!workflow || !isDocumentWorkflow(workflow) || workflow.readerPass?.status !== "error")
+        return yield* Effect.fail(new Error("Only a failed document reader pass can be skipped."));
+      for (const threadId of [workflow.readerPass.readerThreadId, workflow.merge.threadId]) {
+        if (!threadId) continue;
+        const thread = snapshot.threads.find((entry) => entry.id === threadId);
+        if (hasActiveRunningTurn(thread))
+          return yield* Effect.fail(
+            new Error("Wait for the active turn to finish before skipping reader review."),
+          );
+        const delivery = yield* deliveryForStage(
+          threadId,
+          workflow.readerPass.readerStartedAt ?? workflow.readerPass.updatedAt,
+        );
+        if (delivery && ["pending", "sending", "ambiguous"].includes(delivery.state))
+          return yield* Effect.fail(
+            new Error("Resolve the pending provider delivery before skipping reader review."),
+          );
+        if (
+          delivery?.state === "accepted" &&
+          !isSessionUnavailableForReconciliation(thread) &&
+          (!thread?.latestTurn ||
+            thread.latestTurn.requestedAt < delivery.createdAt ||
+            thread.latestTurn.state === "running")
+        ) {
+          return yield* Effect.fail(
+            new Error(
+              "Wait for the accepted provider turn to finish before skipping reader review.",
+            ),
+          );
+        }
+      }
+      yield* upsertWorkflow(markReaderPassSkipped(workflow, new Date().toISOString()));
+      return { status: "completed" as const };
+    });
+
   const workflowForThread: WorkflowServiceShape["workflowForThread"] = (threadId) =>
     orchestrationEngine.getReadModel().pipe(
       Effect.map((snapshot) => {
@@ -5766,6 +6720,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     unarchiveWorkflow,
     deleteWorkflow,
     retryWorkflow,
+    skipDocumentReaderPass,
     startImplementation,
     workflowForThread,
   } satisfies WorkflowServiceShape;
@@ -5817,7 +6772,7 @@ function startAuthoringTurn({
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildAuthorPrompt({
+  const prompt = (isDocumentWorkflow(workflow) ? buildDocumentAuthorPrompt : buildAuthorPrompt)({
     workflow,
     branch,
     authorSlot: branch.authorSlot,
@@ -5913,7 +6868,9 @@ function startReviewTurn({
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildReviewPrompt({
+  const documentType = planningWorkflowDocumentType(workflow);
+  const prompt = (documentType ? buildDocumentReviewPrompt : buildReviewPrompt)({
+    documentType: documentType ?? "custom",
     requirementPrompt: workflow.requirementPrompt,
     planMarkdown,
     planSource: {
@@ -5990,7 +6947,9 @@ function startRevisionTurn({
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildRevisionPrompt({
+  const documentType = planningWorkflowDocumentType(workflow);
+  const prompt = (documentType ? buildDocumentRevisionPrompt : buildRevisionPrompt)({
+    documentType: documentType ?? "custom",
     requirementPrompt: workflow.requirementPrompt,
     originalPlan: {
       markdown: originalPlanMarkdown,
@@ -6075,7 +7034,7 @@ function startMergeTurn({
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildMergePrompt({
+  const prompt = (isDocumentWorkflow(workflow) ? buildDocumentMergePrompt : buildMergePrompt)({
     workflow,
     planA: {
       markdown: planA,

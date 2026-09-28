@@ -257,7 +257,7 @@ export interface AssistantFeedback {
  * feedback alongside a `source` tag so callers can observe whether reasoning was the sole
  * source of the feedback (useful for logging / telemetry).
  */
-function formatAssistantFeedback(
+export function formatAssistantFeedback(
   message: {
     readonly text: string;
     readonly reasoningText?: string | undefined;

@@ -61,13 +61,13 @@ export function buildCollapsedProposedPlanPreviewMarkdown(
   return previewLines.join("\n");
 }
 
-function sanitizePlanFileSegment(input: string): string {
+function sanitizePlanFileSegment(input: string, fallback = "plan"): string {
   const sanitized = input
     .toLowerCase()
     .replace(/[`'".,!?()[\]{}]+/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return sanitized.length > 0 ? sanitized : "plan";
+  return sanitized.length > 0 ? sanitized : fallback;
 }
 
 export function buildPlanImplementationPrompt(planMarkdown: string): string {
@@ -100,9 +100,12 @@ export function buildPlanImplementationThreadTitle(planMarkdown: string): string
   return `Implement ${title}`;
 }
 
-export function buildProposedPlanMarkdownFilename(planMarkdown: string): string {
+export function buildProposedPlanMarkdownFilename(
+  planMarkdown: string,
+  fallbackSegment = "plan",
+): string {
   const title = proposedPlanTitle(planMarkdown);
-  return `${sanitizePlanFileSegment(title ?? "plan")}.md`;
+  return `${sanitizePlanFileSegment(title ?? fallbackSegment, fallbackSegment)}.md`;
 }
 
 export function normalizePlanMarkdownForExport(planMarkdown: string): string {

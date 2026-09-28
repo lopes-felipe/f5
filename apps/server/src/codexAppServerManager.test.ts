@@ -547,21 +547,24 @@ describe("Codex runtime-mode thread configuration", () => {
     },
   );
 
-  it("forces read-only, never-approve configuration for workflow profiles", () => {
-    const params = buildCodexThreadOpenRequestParams({
-      runtimeMode: "full-access",
-      workflowExecutionProfile: "unattended-readonly",
-      resumeThreadId: "provider-thread-1",
-    });
-    const expected = {
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      approvalsReviewer: "auto_review",
-    };
-    expect(params.start).toMatchObject(expected);
-    expect(params.resume).toMatchObject(expected);
-    expect(params.resume).toMatchObject({ excludeTurns: true });
-  });
+  it.each(["unattended-readonly", "attended-readonly"] as const)(
+    "forces read-only, never-approve configuration for %s",
+    (workflowExecutionProfile) => {
+      const params = buildCodexThreadOpenRequestParams({
+        runtimeMode: "full-access",
+        workflowExecutionProfile,
+        resumeThreadId: "provider-thread-1",
+      });
+      const expected = {
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        approvalsReviewer: "auto_review",
+      };
+      expect(params.start).toMatchObject(expected);
+      expect(params.resume).toMatchObject(expected);
+      expect(params.resume).toMatchObject({ excludeTurns: true });
+    },
+  );
 });
 
 describe("readCodexAccountSnapshot", () => {

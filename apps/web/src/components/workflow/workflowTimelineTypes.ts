@@ -1,7 +1,7 @@
 import type { ThreadId } from "@t3tools/contracts";
 
-export type WorkflowTimelinePhaseState = "completed" | "active" | "pending" | "error";
-export type WorkflowTimelineStepState = "completed" | "active" | "pending" | "error";
+export type WorkflowTimelinePhaseState = "completed" | "active" | "pending" | "error" | "skipped";
+export type WorkflowTimelineStepState = "completed" | "active" | "pending" | "error" | "skipped";
 
 export interface WorkflowTimelineStep {
   key: string;

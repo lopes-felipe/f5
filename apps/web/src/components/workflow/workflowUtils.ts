@@ -1,3 +1,4 @@
+import { isDocumentWorkflow, normalizeDocumentMarkdown } from "@t3tools/shared/documentWorkflow";
 import type { PlanningWorkflow, ThreadId } from "@t3tools/contracts";
 import { threadIdsForPlanningWorkflow } from "@t3tools/shared/workflowThreads";
 
@@ -10,7 +11,11 @@ export function workflowContainsThread(workflow: PlanningWorkflow, threadId: Thr
 }
 
 export function canStartImplementation(workflow: PlanningWorkflow): boolean {
-  return workflow.merge.status === "manual_review" && workflow.implementation == null;
+  return (
+    !isDocumentWorkflow(workflow) &&
+    workflow.merge.status === "manual_review" &&
+    workflow.implementation == null
+  );
 }
 
 export function workflowThreadDisplayTitle(
@@ -50,4 +55,16 @@ export function resolveApprovedMergedPlanMarkdown(
     }
   }
   return mergeThread.proposedPlans.at(-1)?.planMarkdown ?? null;
+}
+
+export function resolveDocumentDisplayMarkdown(
+  workflow: PlanningWorkflow,
+  mergeThread: Parameters<typeof resolveApprovedMergedPlanMarkdown>[1],
+): string | null {
+  const id =
+    workflow.merge.status === "merged"
+      ? workflow.readerPass?.draftPlanId
+      : workflow.merge.approvedPlanId;
+  const markdown = mergeThread?.proposedPlans.find((plan) => plan.id === id)?.planMarkdown;
+  return markdown ? normalizeDocumentMarkdown(markdown) : null;
 }

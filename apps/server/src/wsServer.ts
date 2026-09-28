@@ -2656,6 +2656,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case ORCHESTRATION_WS_METHODS.skipDocumentReaderPass: {
+        const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* workflowService.skipDocumentReaderPass(body).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to finish without reader review: ${String(cause)}`,
+              }),
+          ),
+        );
+      }
+
       case ORCHESTRATION_WS_METHODS.retryWorkflow: {
         const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);

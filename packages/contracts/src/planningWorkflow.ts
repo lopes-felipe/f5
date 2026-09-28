@@ -129,6 +129,9 @@ export const WorkflowBranch = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   authorFormatRepairAttempts: Schema.optional(Schema.Number).pipe(
     Schema.withDecodingDefault(() => 0),
   ),
@@ -148,6 +151,9 @@ export const WorkflowMerge = Schema.Struct({
   approvedPlanId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   status: WorkflowMergeStatus,
   error: Schema.NullOr(Schema.String),
+  rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   formatRepairAttempts: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
@@ -183,6 +189,61 @@ export const WorkflowImplementation = Schema.Struct({
 });
 export type WorkflowImplementation = typeof WorkflowImplementation.Type;
 
+export const DOCUMENT_WORKFLOW_TEMPLATE_ID = "builtin.document.dual" as const;
+export const DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS = 24_000;
+export const DOCUMENT_READER_PERSONA_MAX_CHARS = 500;
+export const WorkflowDocumentType = Schema.Literals([
+  "rfc",
+  "one-pager",
+  "adr",
+  "prd",
+  "runbook",
+  "postmortem",
+  "explainer",
+  "custom",
+]);
+export type WorkflowDocumentType = typeof WorkflowDocumentType.Type;
+export const DocumentReaderPassStatus = Schema.Literals([
+  "reader_requested",
+  "reader_running",
+  "reader_saved",
+  "polishing",
+  "completed",
+  "skipped",
+  "error",
+]);
+export type DocumentReaderPassStatus = typeof DocumentReaderPassStatus.Type;
+export const DocumentReaderPassErrorStage = Schema.Literals(["reader", "polish"]);
+export type DocumentReaderPassErrorStage = typeof DocumentReaderPassErrorStage.Type;
+export const DocumentReaderPersona = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(DOCUMENT_READER_PERSONA_MAX_CHARS),
+);
+export const DocumentReaderPass = Schema.Struct({
+  status: DocumentReaderPassStatus,
+  errorStage: Schema.NullOr(DocumentReaderPassErrorStage).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  error: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+  draftTurnId: TrimmedNonEmptyString,
+  draftPlanId: TrimmedNonEmptyString,
+  readerThreadId: ThreadId,
+  previousReaderThreadIds: Schema.optional(Schema.Array(ThreadId)).pipe(
+    Schema.withDecodingDefault(() => []),
+  ),
+  readerStartedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  pinnedTurnId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
+  pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  polishRequestedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  polishTurnId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
+  polishFormatRepairAttempts: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  updatedAt: IsoDateTime,
+});
+export type DocumentReaderPass = typeof DocumentReaderPass.Type;
+
 export const PlanningWorkflow = Schema.Struct({
   id: PlanningWorkflowId,
   projectId: ProjectId,
@@ -192,6 +253,21 @@ export const PlanningWorkflow = Schema.Struct({
     Schema.withDecodingDefault(() => "builtin.planning.dual"),
   ),
   templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
+  documentType: Schema.optional(Schema.NullOr(WorkflowDocumentType)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  readerReviewEnabled: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
+  readerPersona: Schema.optional(Schema.NullOr(DocumentReaderPersona)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  readerSlot: Schema.optional(Schema.NullOr(WorkflowModelSlot)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  readerPass: Schema.optional(Schema.NullOr(DocumentReaderPass)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   requirementPrompt: TrimmedNonEmptyString,
   plansDirectory: TrimmedNonEmptyString,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),

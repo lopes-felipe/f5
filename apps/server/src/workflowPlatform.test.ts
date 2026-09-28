@@ -47,6 +47,7 @@ describe("workflow platform", () => {
       ["builtin.planning.dual", 2],
       ["builtin.code-review.dual", 2],
       ["builtin.investigation.dual", 2],
+      ["builtin.document.dual", 2],
     ]);
     const kinds = new Set(
       BUILTIN_WORKFLOW_TEMPLATES.flatMap((template) => template.nodes.map((node) => node.kind)),
@@ -60,6 +61,47 @@ describe("workflow platform", () => {
         "manual-approval",
         "project-script",
       ]),
+    );
+  });
+
+  it("publishes a document-only graph and routes versionless documents to planning v2", async () => {
+    const template = BUILTIN_WORKFLOW_TEMPLATES.find(
+      (entry) => entry.id === "builtin.document.dual",
+    )!;
+    expect(template.nodes.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(["reader-review", "polish"]),
+    );
+    expect(
+      template.nodes.some(
+        (entry) => entry.kind === "manual-approval" || entry.id.includes("implementation"),
+      ),
+    ).toBe(false);
+    const configured = services();
+    await Effect.runPromise(
+      createWorkflowPlatformRun(
+        {
+          templateId: "builtin.document.dual",
+          input: {
+            projectId,
+            requirementPrompt: "Write ADR",
+            documentType: "adr",
+            selfReviewEnabled: true,
+            readerReviewEnabled: true,
+            branchA: slot,
+            branchB: slot,
+            merge: slot,
+          },
+        },
+        configured.value,
+      ),
+    );
+    expect(configured.calls.planning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+        documentType: "adr",
+        readerReviewEnabled: true,
+      }),
     );
   });
 

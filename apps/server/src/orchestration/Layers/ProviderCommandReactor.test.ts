@@ -14,6 +14,7 @@ import {
   MessageId,
   ProviderInstanceId,
   ProjectId,
+  PlanningWorkflowId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
   TurnId,
@@ -693,6 +694,77 @@ describe("ProviderCommandReactor", () => {
       drain,
     };
   }
+
+  it("reuses a read-only document merge session for a profile-less refinement", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "project.workflow.create",
+        commandId: CommandId.makeUnsafe("document-create"),
+        projectId: asProjectId("project-1"),
+        workflowId: PlanningWorkflowId.makeUnsafe("document"),
+        title: "Document",
+        slug: "document",
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+        documentType: "rfc",
+        requirementPrompt: "Describe the system",
+        plansDirectory: "plans",
+        selfReviewEnabled: true,
+        authorThreadIdA: ThreadId.makeUnsafe("author-a"),
+        authorThreadIdB: ThreadId.makeUnsafe("author-b"),
+        branchA: { provider: "codex", model: "gpt-5-codex" },
+        branchB: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+        merge: { provider: "codex", model: "gpt-5-codex" },
+        createdAt: now,
+      }),
+    );
+    const workflow = (await Effect.runPromise(harness.engine.getReadModel())).planningWorkflows[0]!;
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "project.workflow.upsert",
+        commandId: CommandId.makeUnsafe("document-merge"),
+        projectId: workflow.projectId,
+        workflow: { ...workflow, merge: { ...workflow.merge, threadId, status: "manual_review" } },
+        createdAt: now,
+      }),
+    );
+    for (const [index, mode] of ["plan", "default"].entries()) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(`document-turn-${index}`),
+          threadId,
+          message: {
+            messageId: asMessageId(`document-message-${index}`),
+            role: "user",
+            text: index === 0 ? "Merge document" : "Shorten the introduction",
+            attachments: [],
+          },
+          provider: "codex",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: mode as "plan" | "default",
+          ...(index === 0 ? { workflowExecutionProfile: "attended-readonly" as const } : {}),
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === index + 1);
+    }
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.stopSession).not.toHaveBeenCalled();
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      workflowExecutionProfile: "attended-readonly",
+    });
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      workflowExecutionProfile: "attended-readonly",
+    });
+    expect(harness.getBinding(threadId)?.runtimePayload).toMatchObject({
+      instructionContext: { workflowExecutionProfile: "attended-readonly" },
+    });
+  });
 
   it("reacts to thread.turn.start by ensuring session and sending provider turn", async () => {
     const harness = await createHarness();

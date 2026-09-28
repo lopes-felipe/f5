@@ -16,6 +16,8 @@ export function threadIdsForPlanningWorkflow(workflow: PlanningWorkflow): Thread
     workflow.branchA.authorThreadId,
     workflow.branchB.authorThreadId,
     workflow.merge.threadId,
+    workflow.readerPass?.readerThreadId ?? null,
+    ...(workflow.readerPass?.previousReaderThreadIds ?? []),
     ...workflow.branchA.reviews.map((review) => review.threadId),
     ...workflow.branchB.reviews.map((review) => review.threadId),
     workflow.implementation?.threadId ?? null,

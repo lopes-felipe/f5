@@ -1,3 +1,4 @@
+import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import {
   type CodeReviewWorkflow,
   type CodeReviewWorkflowId,
@@ -80,7 +81,7 @@ function workflowEntries(input: {
       key: `workflow:planning:${workflow.id}`,
       projectId: workflow.projectId,
       title: workflow.title,
-      subtitle: "Planning workflow",
+      subtitle: isDocumentWorkflow(workflow) ? "Document workflow" : "Planning workflow",
       sortAt: workflow.updatedAt,
       archivedAt: workflow.archivedAt ?? workflow.updatedAt,
       workflowType: "planning" as const,

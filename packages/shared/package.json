@@ -144,6 +144,10 @@
       "types": "./src/workflowThreads.ts",
       "import": "./src/workflowThreads.ts"
     },
+    "./documentWorkflow": {
+      "types": "./src/documentWorkflow.ts",
+      "import": "./src/documentWorkflow.ts"
+    },
     "./planningWorkflow": {
       "types": "./src/planningWorkflow.ts",
       "import": "./src/planningWorkflow.ts"

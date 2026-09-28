@@ -732,6 +732,11 @@ function OpenCommandPaletteDialog(props: {
         kind: "action",
         value: "action:new-workflow",
         searchTerms: [
+          "document",
+          "rfc",
+          "one-pager",
+          "adr",
+          "prd",
           "new workflow",
           "workflow",
           "planning",

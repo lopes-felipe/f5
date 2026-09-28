@@ -1,3 +1,4 @@
+import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isMacPlatform } from "../lib/utils";
@@ -329,6 +330,11 @@ function resolvePlanningWorkflowThreadSlot(
   workflow: PlanningWorkflow,
   threadId: ThreadId,
 ): WorkflowModelSlot | null {
+  if (
+    workflow.readerPass?.readerThreadId === threadId ||
+    workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
+  )
+    return workflow.readerSlot ?? null;
   if (workflow.branchA.authorThreadId === threadId) {
     return workflow.branchA.authorSlot;
   }
@@ -1026,12 +1032,18 @@ export default function ChatView({
         return resolveInvestigationWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
     }
   }, [activeThread, activeWorkflow]);
+  const documentWorkflow =
+    activeWorkflow?.type === "planning" && isDocumentWorkflow(activeWorkflow.workflow)
+      ? activeWorkflow.workflow
+      : null;
   const planningMergeWorkflow =
     activeWorkflow?.type === "planning" &&
     activeThread != null &&
     activeWorkflow.workflow.merge.threadId === activeThread.id
       ? activeWorkflow.workflow
       : null;
+  const planImplementationManagedByWorkflow =
+    planningMergeWorkflow != null || documentWorkflow != null;
 
   useEffect(() => {
     if (!workflowThreadSlot) {
@@ -4237,7 +4249,7 @@ export default function ChatView({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
-      if (planningMergeWorkflow != null && followUp.interactionMode === "default") {
+      if (planImplementationManagedByWorkflow && followUp.interactionMode === "default") {
         if (canImplementMergeFromChat) {
           setWorkflowImplementDialogOpen(true);
         }
@@ -4980,7 +4992,7 @@ export default function ChatView({
   );
 
   const onImplementPlanInNewThread = useCallback(async () => {
-    if (planningMergeWorkflow != null) {
+    if (planImplementationManagedByWorkflow) {
       if (canImplementMergeFromChat) {
         setWorkflowImplementDialogOpen(true);
       }
@@ -5115,6 +5127,7 @@ export default function ChatView({
     isServerThread,
     navigate,
     planningMergeWorkflow,
+    planImplementationManagedByWorkflow,
     runtimeMode,
     selectedModel,
     selectedModelSelectionForDispatch,
@@ -6084,7 +6097,7 @@ export default function ChatView({
                   onInterrupt={onInterrupt}
                   isComposerImageImportPending={isComposerImageImportPending}
                   isSendBusy={isSendBusy}
-                  planningMergeWorkflow={planningMergeWorkflow}
+                  planImplementationManagedByWorkflow={planImplementationManagedByWorkflow}
                   canImplementMergeFromChat={canImplementMergeFromChat}
                   setWorkflowImplementDialogOpen={setWorkflowImplementDialogOpen}
                   onImplementPlanInNewThread={onImplementPlanInNewThread}

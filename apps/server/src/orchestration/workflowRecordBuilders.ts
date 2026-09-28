@@ -3,6 +3,7 @@ import type {
   CodeReviewWorkflowId,
   InvestigationWorkflow,
   InvestigationWorkflowId,
+  WorkflowDocumentType,
   PlanningWorkflow,
   PlanningWorkflowId,
   ProjectId,
@@ -28,6 +29,10 @@ export function buildPlanningWorkflowRecord(
     readonly requirementPrompt: string;
     readonly plansDirectory: string;
     readonly selfReviewEnabled: boolean;
+    readonly documentType?: WorkflowDocumentType | undefined;
+    readonly readerReviewEnabled?: boolean | undefined;
+    readonly readerPersona?: string | undefined;
+    readonly readerSlot?: WorkflowModelSlot | undefined;
     readonly authorThreadIdA: ThreadId;
     readonly authorThreadIdB: ThreadId;
     readonly branchA: WorkflowModelSlot;
@@ -66,6 +71,11 @@ export function buildPlanningWorkflowRecord(
     requirementPrompt: input.requirementPrompt,
     plansDirectory: input.plansDirectory,
     selfReviewEnabled: input.selfReviewEnabled,
+    documentType: input.documentType ?? null,
+    readerReviewEnabled: input.readerReviewEnabled ?? false,
+    readerPersona: input.readerPersona ?? null,
+    readerSlot: input.readerSlot ?? null,
+    readerPass: null,
     branchA: branch("a", input.branchA, input.authorThreadIdA),
     branchB: branch("b", input.branchB, input.authorThreadIdB),
     merge: {

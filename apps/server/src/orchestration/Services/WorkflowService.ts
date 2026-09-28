@@ -1,5 +1,8 @@
 import {
+  type OrchestrationSkipDocumentReaderPassInput,
+  type OrchestrationSkipDocumentReaderPassResult,
   type OrchestrationCreateWorkflowInput,
+  type OrchestrationCreateDocumentWorkflowInput,
   type OrchestrationRetryWorkflowInput,
   type OrchestrationRetryWorkflowResult,
   type PlanningWorkflow,
@@ -13,7 +16,13 @@ import {
 import { ServiceMap } from "effect";
 import type { Effect, Scope } from "effect";
 
-export type CreateWorkflowInput = OrchestrationCreateWorkflowInput;
+export type CreateWorkflowInput = OrchestrationCreateWorkflowInput &
+  Partial<
+    Pick<
+      OrchestrationCreateDocumentWorkflowInput,
+      "readerReviewEnabled" | "readerPersona" | "reader"
+    >
+  >;
 
 export interface WorkflowServiceShape {
   readonly start: Effect.Effect<void, never, Scope.Scope>;
@@ -25,6 +34,9 @@ export interface WorkflowServiceShape {
   readonly retryWorkflow: (
     input: OrchestrationRetryWorkflowInput,
   ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;
+  readonly skipDocumentReaderPass: (
+    input: OrchestrationSkipDocumentReaderPassInput,
+  ) => Effect.Effect<OrchestrationSkipDocumentReaderPassResult, Error>;
   readonly startImplementation: (input: {
     workflowId: PlanningWorkflowId;
     provider: ProviderKind;

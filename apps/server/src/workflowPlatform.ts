@@ -1,3 +1,5 @@
+import { DOCUMENT_WORKFLOW_TEMPLATE_ID } from "@t3tools/contracts";
+import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import {
   deriveCodeReviewWorkflowStatus,
   deriveInvestigationWorkflowStatus,
@@ -28,7 +30,7 @@ import type { WorkflowServiceShape } from "./orchestration/Services/WorkflowServ
 import type { CodeReviewWorkflowServiceShape } from "./orchestration/Services/CodeReviewWorkflowService.ts";
 import type { InvestigationWorkflowServiceShape } from "./orchestration/Services/InvestigationWorkflowService.ts";
 import {
-  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  latestWorkflowTemplateVersion,
   resolveWorkflowBehavior,
   UnsupportedWorkflowTemplateError,
 } from "./orchestration/workflowBehavior.ts";
@@ -383,9 +385,109 @@ function v2Template(template: WorkflowTemplate): WorkflowTemplate {
   };
 }
 
+export const DOCUMENT_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
+  {
+    id: DOCUMENT_WORKFLOW_TEMPLATE_ID,
+    version: 2,
+    runKind: "planning",
+    title: "Document",
+    description: "Dual-model drafting, cross/self review, merge, audience review and polish.",
+    nodes: [
+      ...V1_WORKFLOW_TEMPLATES[0]!.nodes
+        .filter((entry) =>
+          [
+            "author-a",
+            "author-b",
+            "cross-review-a",
+            "cross-review-b",
+            "self-review-a",
+            "self-review-b",
+            "revision-a",
+            "revision-b",
+            "merge",
+          ].includes(entry.id),
+        )
+        .map((entry) => ({
+          ...entry,
+          label: entry.id.startsWith("author-")
+            ? `Draft ${entry.id.endsWith("a") ? "A" : "B"}`
+            : entry.id.startsWith("revision-")
+              ? `Revise draft ${entry.id.endsWith("a") ? "A" : "B"}`
+              : entry.id === "merge"
+                ? "Merge document"
+                : entry.label,
+          artifactType: entry.kind === "review" ? "review" : "document-draft",
+        })),
+      node(
+        "reader-review",
+        "Reader review",
+        "review",
+        ["merge"],
+        ["reader"],
+        "reader-report",
+        true,
+      ),
+      node("polish", "Polish", "agent", ["reader-review"], ["merge"], "document", true),
+    ],
+    form: [
+      {
+        id: "requirementPrompt",
+        label: "Brief",
+        type: "prompt",
+        required: true,
+        description: null,
+      },
+      {
+        id: "documentType",
+        label: "Document type",
+        type: "text",
+        required: true,
+        description: "rfc, one-pager, adr, prd, runbook, postmortem, explainer, custom",
+      },
+      ...(
+        [
+          ["branchA", "Author A"],
+          ["branchB", "Author B"],
+          ["merge", "Merge model"],
+          ["reader", "Reader model"],
+        ] as const
+      ).map(([id, label]) => ({
+        id,
+        label,
+        type: "model-slot" as const,
+        required: id !== "reader",
+        description: null,
+      })),
+      {
+        id: "selfReviewEnabled",
+        label: "Own-model review",
+        type: "boolean",
+        required: false,
+        description: null,
+      },
+      {
+        id: "readerReviewEnabled",
+        label: "Reader review",
+        type: "boolean",
+        required: false,
+        description: null,
+      },
+      {
+        id: "readerPersona",
+        label: "Reader persona",
+        type: "text",
+        required: false,
+        description: null,
+      },
+      { id: "maxCostUsd", label: "Cost limit", type: "number", required: false, description: null },
+    ],
+  },
+];
+
 export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
   ...V1_WORKFLOW_TEMPLATES,
   ...V1_WORKFLOW_TEMPLATES.map(v2Template),
+  ...DOCUMENT_WORKFLOW_TEMPLATES,
 ];
 
 export class WorkflowTemplateRegistryError extends Error {
@@ -468,19 +570,26 @@ export function createWorkflowPlatformRun(
     readonly investigation: InvestigationWorkflowServiceShape;
   },
 ): Effect.Effect<WorkflowPlatformCreateRunResult, Error> {
-  const runKind =
-    input.templateId === "builtin.planning.dual"
-      ? "planning"
-      : input.templateId === "builtin.code-review.dual"
-        ? "codeReview"
-        : "investigation";
+  const runKind = (() => {
+    switch (input.templateId) {
+      case DOCUMENT_WORKFLOW_TEMPLATE_ID:
+      case "builtin.planning.dual":
+        return "planning";
+      case "builtin.code-review.dual":
+        return "codeReview";
+      case "builtin.investigation.dual":
+        return "investigation";
+    }
+  })();
   return Effect.gen(function* () {
     const resolvedBehavior = yield* Effect.try({
       try: () =>
         resolveWorkflowBehavior({
           runKind,
           templateId: input.templateId,
-          templateVersion: input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+          templateVersion:
+            input.templateVersion ??
+            latestWorkflowTemplateVersion({ runKind, templateId: input.templateId }),
         }),
       catch: (cause): UnsupportedWorkflowTemplateError =>
         cause instanceof UnsupportedWorkflowTemplateError
@@ -488,11 +597,13 @@ export function createWorkflowPlatformRun(
           : new UnsupportedWorkflowTemplateError(
               runKind,
               input.templateId,
-              input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+              input.templateVersion ??
+                latestWorkflowTemplateVersion({ runKind, templateId: input.templateId }),
             ),
     });
 
     switch (input.templateId) {
+      case DOCUMENT_WORKFLOW_TEMPLATE_ID:
       case "builtin.planning.dual": {
         const workflowId = yield* services.planning.createWorkflow({
           ...input.input,
@@ -615,6 +726,50 @@ function definition(template: WorkflowTemplate, id: string): WorkflowNodeDefinit
   return value;
 }
 
+function documentReaderNodes(
+  workflow: PlanningWorkflow,
+  snapshot: OrchestrationReadModel,
+  template: WorkflowTemplate,
+): WorkflowRunNodeInspection[] {
+  const pass = workflow.readerPass;
+  const skipped = !workflow.readerReviewEnabled || pass?.status === "skipped";
+  const readerStatus =
+    pass?.status === "error" && pass.errorStage === "reader"
+      ? "error"
+      : pass?.pinnedTurnId
+        ? "completed"
+        : skipped
+          ? "skipped"
+          : pass?.status === "reader_requested" || pass?.status === "reader_running"
+            ? "running"
+            : "not_started";
+  const polishStatus = skipped
+    ? "skipped"
+    : pass?.status === "completed"
+      ? "completed"
+      : pass?.errorStage === "polish"
+        ? "error"
+        : pass?.status === "polishing"
+          ? "running"
+          : "not_started";
+  return [
+    inspectionNode({
+      definition: definition(template, "reader-review"),
+      status: readerStatus,
+      threadId: pass?.readerThreadId ?? null,
+      slot: workflow.readerSlot ?? null,
+      snapshot,
+    }),
+    inspectionNode({
+      definition: definition(template, "polish"),
+      status: polishStatus,
+      threadId: workflow.merge.threadId,
+      slot: workflow.merge.mergeSlot,
+      snapshot,
+    }),
+  ];
+}
+
 function planningNodes(
   workflow: PlanningWorkflow,
   snapshot: OrchestrationReadModel,
@@ -686,85 +841,95 @@ function planningNodes(
     }),
     inspectionNode({
       definition: definition(template, "merge"),
-      status: workflow.merge.status,
+      status:
+        isDocumentWorkflow(workflow) && ["merged", "manual_review"].includes(workflow.merge.status)
+          ? "completed"
+          : workflow.merge.status,
       threadId: workflow.merge.threadId,
       slot: workflow.merge.mergeSlot,
       snapshot,
     }),
-    inspectionNode({
-      definition: definition(template, "approval"),
-      status:
-        workflow.merge.status === "manual_review"
-          ? "waiting"
-          : implementation
-            ? "completed"
-            : "not_started",
-      threadId: workflow.merge.threadId,
-      slot: null,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "implementation"),
-      status: implementation?.status ?? "not_started",
-      threadId: implementation?.threadId ?? null,
-      slot: implementation?.implementationSlot ?? null,
-      snapshot,
-    }),
-    ...(template.version === 1
-      ? [
+    ...(isDocumentWorkflow(workflow)
+      ? documentReaderNodes(workflow, snapshot, template)
+      : [
           inspectionNode({
-            definition: definition(template, "quality-gates"),
-            status: implementation?.status === "completed" ? "available" : "not_started",
-            threadId: implementation?.threadId ?? null,
+            definition: definition(template, "approval"),
+            status:
+              workflow.merge.status === "manual_review"
+                ? "waiting"
+                : implementation
+                  ? "completed"
+                  : "not_started",
+            threadId: workflow.merge.threadId,
             slot: null,
             snapshot,
           }),
           inspectionNode({
-            definition: definition(template, "code-review"),
-            status: implementation?.codeReviews.some((entry) => entry.status === "error")
-              ? "error"
-              : implementation?.codeReviews.length
-                ? "running"
-                : "not_started",
-            threadId: implementation?.codeReviews[0]?.threadId ?? null,
-            slot: implementation?.codeReviews[0]?.reviewerSlot ?? null,
-            snapshot,
-          }),
-        ]
-      : [
-          ...([0, 1] as const).map((index) => {
-            const review = implementation?.codeReviews[index] ?? null;
-            return inspectionNode({
-              definition: definition(template, `implementation-review-${index === 0 ? "a" : "b"}`),
-              status:
-                review?.status ??
-                (implementation?.errorStage === "review-setup"
-                  ? "error"
-                  : implementation?.codeReviewEnabled
-                    ? "not_started"
-                    : "skipped"),
-              threadId: review?.threadId ?? null,
-              slot: review?.reviewerSlot ?? null,
-              snapshot,
-            });
-          }),
-          inspectionNode({
-            definition: definition(template, "apply-feedback"),
-            status:
-              implementation?.status === "applying_reviews"
-                ? "running"
-                : implementation?.status === "error" &&
-                    implementation.errorStage === "apply-feedback"
-                  ? "error"
-                  : implementation?.status === "completed"
-                    ? "completed"
-                    : implementation?.codeReviewEnabled
-                      ? "not_started"
-                      : "skipped",
+            definition: definition(template, "implementation"),
+            status: implementation?.status ?? "not_started",
             threadId: implementation?.threadId ?? null,
             slot: implementation?.implementationSlot ?? null,
             snapshot,
           }),
+          ...(template.version === 1
+            ? [
+                inspectionNode({
+                  definition: definition(template, "quality-gates"),
+                  status: implementation?.status === "completed" ? "available" : "not_started",
+                  threadId: implementation?.threadId ?? null,
+                  slot: null,
+                  snapshot,
+                }),
+                inspectionNode({
+                  definition: definition(template, "code-review"),
+                  status: implementation?.codeReviews.some((entry) => entry.status === "error")
+                    ? "error"
+                    : implementation?.codeReviews.length
+                      ? "running"
+                      : "not_started",
+                  threadId: implementation?.codeReviews[0]?.threadId ?? null,
+                  slot: implementation?.codeReviews[0]?.reviewerSlot ?? null,
+                  snapshot,
+                }),
+              ]
+            : [
+                ...([0, 1] as const).map((index) => {
+                  const review = implementation?.codeReviews[index] ?? null;
+                  return inspectionNode({
+                    definition: definition(
+                      template,
+                      `implementation-review-${index === 0 ? "a" : "b"}`,
+                    ),
+                    status:
+                      review?.status ??
+                      (implementation?.errorStage === "review-setup"
+                        ? "error"
+                        : implementation?.codeReviewEnabled
+                          ? "not_started"
+                          : "skipped"),
+                    threadId: review?.threadId ?? null,
+                    slot: review?.reviewerSlot ?? null,
+                    snapshot,
+                  });
+                }),
+                inspectionNode({
+                  definition: definition(template, "apply-feedback"),
+                  status:
+                    implementation?.status === "applying_reviews"
+                      ? "running"
+                      : implementation?.status === "error" &&
+                          implementation.errorStage === "apply-feedback"
+                        ? "error"
+                        : implementation?.status === "completed"
+                          ? "completed"
+                          : implementation?.codeReviewEnabled
+                            ? "not_started"
+                            : "skipped",
+                  threadId: implementation?.threadId ?? null,
+                  slot: implementation?.implementationSlot ?? null,
+                  snapshot,
+                }),
+              ]),
         ]),
   ];
 }
@@ -847,6 +1012,11 @@ function investigationNodes(
 }
 
 function planningStatus(workflow: PlanningWorkflow): string {
+  if (isDocumentWorkflow(workflow)) {
+    if (workflow.readerPass?.status === "error") return "error";
+    if (workflow.merge.status === "merged") return "running";
+    if (workflow.merge.status === "manual_review") return "completed";
+  }
   if (workflow.implementation) return workflow.implementation.status;
   if (workflow.merge.status !== "not_started") return workflow.merge.status;
   if (workflow.branchA.status === "error" || workflow.branchB.status === "error") return "error";

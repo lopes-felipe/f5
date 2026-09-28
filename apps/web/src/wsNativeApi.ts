@@ -761,6 +761,10 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow, input),
       deleteInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow, input),
+      skipDocumentReaderPass: async (input) => {
+        await transport.request(ORCHESTRATION_WS_METHODS.skipDocumentReaderPass, input);
+        return { status: "completed" };
+      },
       retryWorkflow: async (input) =>
         decodeRetryWorkflowResult(
           await transport.request(ORCHESTRATION_WS_METHODS.retryWorkflow, input),

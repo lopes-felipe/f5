@@ -4,10 +4,18 @@ import {
   ThreadId,
   type OrchestrationReadModel,
   type PlanningWorkflow,
+  type DocumentReaderPass,
   type ProjectId as ProjectIdType,
 } from "@t3tools/contracts";
 
 export interface CreatePlanningWorkflowOptions {
+  templateId?: string;
+  templateVersion?: number;
+  documentType?: PlanningWorkflow["documentType"];
+  readerReviewEnabled?: boolean;
+  readerPersona?: string | null;
+  readerSlot?: PlanningWorkflow["readerSlot"];
+  readerPass?: PlanningWorkflow["readerPass"];
   id?: string;
   projectId?: ProjectIdType;
   now?: string;
@@ -36,6 +44,13 @@ export function createPlanningWorkflow(
   const branchBThreadId = overrides.branchBThreadId ?? ThreadId.makeUnsafe("workflow-branch-b");
 
   return {
+    templateId: overrides.templateId,
+    templateVersion: overrides.templateVersion,
+    documentType: overrides.documentType,
+    readerReviewEnabled: overrides.readerReviewEnabled,
+    readerPersona: overrides.readerPersona,
+    readerSlot: overrides.readerSlot,
+    readerPass: overrides.readerPass,
     id: PlanningWorkflowId.makeUnsafe(overrides.id ?? "workflow-1"),
     projectId,
     title: overrides.title ?? "Workflow status test",
@@ -92,5 +107,28 @@ export function createPlanningWorkflow(
     updatedAt: now,
     archivedAt: overrides.archivedAt ?? null,
     deletedAt: overrides.deletedAt ?? null,
+  };
+}
+
+export function createDocumentReaderPass(
+  overrides: Partial<DocumentReaderPass> = {},
+): DocumentReaderPass {
+  return {
+    status: "reader_running",
+    error: null,
+    errorStage: null,
+    draftTurnId: "merge-turn",
+    draftPlanId: "draft-plan",
+    readerThreadId: ThreadId.makeUnsafe("reader-thread"),
+    readerStartedAt: "2026-03-11T12:00:00.000Z",
+    pinnedTurnId: null,
+    pinnedAssistantMessageId: null,
+    polishRequestedAt: null,
+    polishTurnId: null,
+    polishFormatRepairAttempts: 0,
+    retryCount: 0,
+    lastRetryAt: null,
+    updatedAt: "2026-03-11T12:00:00.000Z",
+    ...overrides,
   };
 }

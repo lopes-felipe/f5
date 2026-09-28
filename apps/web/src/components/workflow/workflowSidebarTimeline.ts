@@ -1,3 +1,4 @@
+import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
 import type { PlanningWorkflow } from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 import type {
@@ -419,6 +420,66 @@ function deriveApplyReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
 // ---------------------------------------------------------------------------
 
 export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[] {
+  if (isDocumentWorkflow(workflow)) {
+    const phases = [
+      { ...deriveAuthoringPhase(workflow), label: "Drafting" },
+      deriveReviewsPhase(workflow),
+      deriveRevisionPhase(workflow),
+      deriveMergePhase(workflow),
+    ];
+    if (workflow.readerReviewEnabled) {
+      const pass = workflow.readerPass;
+      const phase = documentReaderPassPhase(workflow);
+      const state: PhaseState =
+        pass?.status === "skipped"
+          ? "skipped"
+          : phase === "error"
+            ? "error"
+            : phase === "done"
+              ? "completed"
+              : phase
+                ? "active"
+                : "pending";
+      phases.push({
+        id: "reader-pass",
+        label: "Reader pass",
+        state,
+        steps: [
+          {
+            key: "reader-review",
+            label: "Reader review",
+            threadId: pass?.readerThreadId ?? null,
+            state:
+              pass?.status === "skipped"
+                ? "skipped"
+                : pass?.pinnedTurnId
+                  ? "completed"
+                  : phase === "reading"
+                    ? "active"
+                    : pass?.errorStage === "reader"
+                      ? "error"
+                      : "pending",
+          },
+          {
+            key: "polish",
+            label: "Polish",
+            threadId: workflow.merge.threadId,
+            state:
+              pass?.status === "skipped"
+                ? "skipped"
+                : pass?.status === "completed"
+                  ? "completed"
+                  : phase === "polishing"
+                    ? "active"
+                    : pass?.errorStage === "polish"
+                      ? "error"
+                      : "pending",
+          },
+        ],
+      });
+    }
+    return phases;
+  }
   return [
     deriveAuthoringPhase(workflow),
     deriveReviewsPhase(workflow),

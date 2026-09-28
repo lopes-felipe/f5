@@ -398,6 +398,40 @@ function makeProviderServiceLayerForAdapters(
   );
 }
 
+it.effect(
+  "rejects a custom-named Grok instance before opening a read-only workflow session",
+  () => {
+    const codex = makeFakeCodexAdapter();
+    const registry = makeAdapterRegistryMock({ codex: codex.adapter });
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const failure = yield* service
+        .startSession(asThreadId("document"), {
+          threadId: asThreadId("document"),
+          providerInstanceId: ProviderInstanceId.make("research-account"),
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "attended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderValidationError");
+      assert.match(failure.message, /Grok cannot enforce read-only/);
+    }).pipe(
+      Effect.provide(
+        makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]), {
+          getInstanceInfo: (instanceId) =>
+            registry.getInstanceInfo(ProviderInstanceId.make("codex")).pipe(
+              Effect.map((info) => ({
+                ...info,
+                instanceId,
+                driverKind: "grok" as typeof info.driverKind,
+              })),
+            ),
+        }),
+      ),
+    );
+  },
+);
+
 const routing = makeProviderServiceLayer();
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
   const codex = makeFakeCodexAdapter();

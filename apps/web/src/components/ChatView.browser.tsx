@@ -59,7 +59,7 @@ import { useRightPanelStore } from "../rightPanelStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
-import { createPlanningWorkflow } from "../test/workflowFixtures";
+import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -5089,6 +5089,101 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each(["author", "merge", "reader"] as const)(
+    "hides implementation and ignores empty Enter in a document %s thread",
+    async (role) => {
+      const snapshot = createMergeWorkflowPlanFollowUpSnapshot();
+      const base = snapshot.planningWorkflows[0]!;
+      const document = {
+        ...base,
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+        documentType: "rfc" as const,
+        ...(role === "author"
+          ? {
+              branchA: { ...base.branchA, authorThreadId: THREAD_ID },
+              merge: { ...base.merge, threadId: "other-merge" as ThreadId },
+            }
+          : {}),
+        ...(role === "reader"
+          ? {
+              readerSlot: { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" },
+              readerPass: createDocumentReaderPass({ readerThreadId: THREAD_ID }),
+              merge: { ...base.merge, threadId: "other-merge" as ThreadId },
+            }
+          : {}),
+      };
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: {
+          ...snapshot,
+          planningWorkflows: [document],
+          threads: snapshot.threads.map((thread) =>
+            role === "reader" && thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  model: "claude-sonnet-4-6",
+                  session: thread.session
+                    ? { ...thread.session, providerName: "claudeAgent" }
+                    : null,
+                }
+              : thread,
+          ),
+        },
+        configureFixture: (fixture) => {
+          fixture.serverConfig = {
+            ...fixture.serverConfig,
+            providers: [
+              ...fixture.serverConfig.providers,
+              createTestServerProvider("claudeAgent", {
+                checkedAt: NOW_ISO,
+                models: [
+                  {
+                    slug: "claude-sonnet-4-6",
+                    name: "Claude Sonnet 4.6",
+                    isCustom: false,
+                    capabilities: null,
+                  },
+                ],
+              }),
+            ],
+          };
+        },
+      });
+      try {
+        const editor = await waitForComposerEditor();
+        await waitForLayout();
+        expect(
+          Array.from(window.document.querySelectorAll("button")).some(
+            (button) => button.textContent?.trim() === "Implement",
+          ),
+        ).toBe(false);
+        expect(
+          window.document.querySelector('button[aria-label="Implementation actions"]'),
+        ).toBeNull();
+        wsRequests.length = 0;
+        editor.focus();
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await waitForLayout();
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+        expect(getStartImplementationRequests()).toHaveLength(0);
+        if (role === "reader") {
+          expect(window.document.body.textContent).toContain("Sonnet 4.6");
+        }
+        if (role === "merge") {
+          useComposerDraftStore.getState().setPrompt(THREAD_ID, "Shorten the alternatives.");
+          (await waitForButtonByText("Refine")).click();
+          await vi.waitFor(() =>
+            expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+          );
+        }
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
   it("keeps merge-chat Refine as a plan-mode turn", async () => {
     const sentText = "Tighten the retry handling in the merged plan.";
     const mounted = await mountChatView({

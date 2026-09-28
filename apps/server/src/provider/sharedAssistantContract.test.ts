@@ -308,6 +308,9 @@ describe("sharedAssistantContract", () => {
       const contractIndex = text.indexOf("# Workflow Read-Only Host Contract");
       expect(modeIndex).toBeGreaterThanOrEqual(0);
       expect(contractIndex).toBeGreaterThan(modeIndex);
+      expect(
+        text.indexOf("If the stage request specifies the artifact's structure"),
+      ).toBeGreaterThan(modeIndex);
     }
   });
 
@@ -331,6 +334,9 @@ describe("sharedAssistantContract", () => {
     const contractIndex = update.lastIndexOf("# Workflow Read-Only Host Contract");
     expect(modeIndex).toBeGreaterThanOrEqual(0);
     expect(contractIndex).toBeGreaterThan(modeIndex);
+    expect(
+      update.indexOf("If the stage request specifies the artifact's structure"),
+    ).toBeGreaterThan(modeIndex);
   });
 
   it("delimits restored thread content as untrusted literal data", () => {
