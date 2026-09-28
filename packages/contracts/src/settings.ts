@@ -142,6 +142,13 @@ export const GrokSettings = Schema.Struct({
 });
 export type GrokSettings = typeof GrokSettings.Type;
 
+export const AntigravitySettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+});
+export type AntigravitySettings = typeof AntigravitySettings.Type;
+
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   otlpMetricsUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -215,6 +222,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -342,6 +350,13 @@ export const ServerSettingsPatch = Schema.Struct({
       cursor: Schema.optionalKey(CursorSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
+      antigravity: Schema.optionalKey(
+        Schema.Struct({
+          enabled: Schema.optionalKey(Schema.Boolean),
+          customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+          nativeCompaction: Schema.optionalKey(Schema.Boolean),
+        }),
+      ),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual

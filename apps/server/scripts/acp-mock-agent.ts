@@ -237,10 +237,30 @@ const program = Effect.gen(function* () {
   yield* agent.handleAuthenticate(() => Effect.succeed({}));
 
   yield* agent.handleCreateSession(() =>
-    Effect.succeed({
-      sessionId,
-      modes: modeState(),
-      configOptions: configOptions(),
+    Effect.gen(function* () {
+      if (process.env.F5_ACP_STARTUP_COMMANDS === "1") {
+        yield* agent.client.sessionUpdate({
+          sessionId,
+          update: {
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              { name: "review", description: "Review changes" },
+              { name: "compact", description: "Compact session" },
+            ],
+          },
+        });
+      }
+      return { sessionId, modes: modeState(), configOptions: configOptions() };
+    }),
+  );
+
+  yield* agent.handleResumeSession(() =>
+    Effect.gen(function* () {
+      if (process.env.T3_ACP_RESUME_FAIL === "missing")
+        return yield* AcpError.AcpRequestError.resourceNotFound("Mock session not found");
+      if (process.env.T3_ACP_RESUME_FAIL === "transient")
+        return yield* AcpError.AcpRequestError.internalError("Mock temporary failure");
+      return { modes: modeState(), configOptions: configOptions() };
     }),
   );
 
@@ -386,6 +406,16 @@ const program = Effect.gen(function* () {
         return { stopReason: "end_turn" };
       }
 
+      if (process.env.F5_ACP_ANTIGRAVITY_QUESTION === "1") {
+        yield* agent.client.requestPermission({
+          sessionId: requestedSessionId,
+          toolCall: { toolCallId: "interaction_test", title: "Which environment?" },
+          options: [
+            { optionId: "dev", name: "Development", kind: "allow_once" },
+            { optionId: "prod", name: "Production", kind: "allow_once" },
+          ],
+        });
+      }
       if (emitToolCalls) {
         const toolCallId = "tool-call-1";
 

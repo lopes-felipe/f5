@@ -120,6 +120,8 @@ function providerDisplayName(provider: ProviderKind): string {
       return "OpenCode";
     case "grok":
       return "Grok";
+    case "antigravity":
+      return "Antigravity";
   }
 }
 
@@ -130,6 +132,7 @@ function providerFromSessionName(value: string | null | undefined): ProviderKind
     case "cursor":
     case "opencode":
     case "grok":
+    case "antigravity":
       return value;
     default:
       return undefined;

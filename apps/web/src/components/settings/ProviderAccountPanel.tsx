@@ -93,6 +93,23 @@ export function ProviderAccountPanel({
   return (
     <div className={cn("space-y-2.5", className)}>
       <div className="flex flex-wrap items-center gap-1.5">
+        {driver === "antigravity" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={pending || isRunning}
+            onClick={() =>
+              void run(async () => {
+                setOutput("");
+                setDetails("");
+                const result = await api.loginStart({ instanceId, method: "install" });
+                setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
+              })
+            }
+          >
+            Install Antigravity
+          </Button>
+        ) : null}
         {showSignIn ? (
           <Button
             size="xs"

@@ -11,6 +11,7 @@ export type NormalizedSupportedSlashCommand = Readonly<SupportedSlashCommand>;
 export function normalizeSupportedSlashCommands(
   commands: ReadonlyArray<SupportedSlashCommand>,
 ): ReadonlyArray<NormalizedSupportedSlashCommand> {
+  const seen = new Set<string>();
   return commands
     .flatMap((command) => {
       const name =
@@ -22,9 +23,10 @@ export function normalizeSupportedSlashCommands(
         typeof command.argumentHint === "string" && command.argumentHint.trim().length > 0
           ? command.argumentHint.trim()
           : undefined;
-      if (!name || description.length === 0) {
+      if (!name || description.length === 0 || seen.has(name)) {
         return [];
       }
+      seen.add(name);
       return [
         {
           name,

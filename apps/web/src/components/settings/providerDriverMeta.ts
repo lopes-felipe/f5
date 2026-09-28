@@ -1,5 +1,5 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import { Gemini, ClaudeAI, CursorIcon, GrokIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 
 /**
  * A single editable field exposed on a provider instance. `key` must match
@@ -37,6 +37,7 @@ export interface DriverOption {
 }
 
 export const DRIVER_OPTIONS: readonly DriverOption[] = [
+  { value: ProviderDriverKind.make("antigravity"), label: "Antigravity", icon: Gemini, fields: [] },
   {
     value: ProviderDriverKind.make("codex"),
     label: "Codex",

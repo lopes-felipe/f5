@@ -440,5 +440,7 @@ export function getProviderEnvironmentKey(
       return `opencode|binary:${normalized?.opencode?.binaryPath ?? ""}|serverUrl:${normalized?.opencode?.serverUrl ?? ""}|serverPassword:${normalized?.opencode?.serverPassword ? "__set__" : ""}`;
     case "grok":
       return `grok|binary:${normalized?.grok?.binaryPath ?? ""}`;
+    case "antigravity":
+      return "antigravity|managed";
   }
 }

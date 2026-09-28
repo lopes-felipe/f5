@@ -270,6 +270,7 @@ import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
 import {
+  providerKindForImportedThread,
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
@@ -636,7 +637,8 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
     driver === "claudeAgent" ||
     driver === "cursor" ||
     driver === "opencode" ||
-    driver === "grok"
+    driver === "grok" ||
+    driver === "antigravity"
     ? (driver as ProviderKind)
     : null;
 }
@@ -1183,12 +1185,17 @@ export default function ChatView({
       activeThread.messages.length > 0 ||
       activeThread.session !== null),
   );
+  const importedThreadProvider = providerKindForImportedThread({
+    instanceId: activeThread?.modelSelection?.instanceId,
+    providers: serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
+    configured: serverConfigQuery.data?.settings?.providerInstances,
+  });
   const inferredThreadProvider =
     activeThread && activeThread.session === null && !selectedProviderByThreadId
-      ? inferProviderForModel(activeThread.model, "codex")
+      ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
       : null;
   const lockedProvider: ProviderKind | null = hasThreadStarted
-    ? (sessionProvider ?? selectedProviderByThreadId ?? null)
+    ? (sessionProvider ?? importedThreadProvider ?? selectedProviderByThreadId ?? null)
     : null;
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
@@ -2265,7 +2272,8 @@ export default function ChatView({
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
-    if (!composerTrigger) return [];
+    if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
+      return [];
     if (composerTrigger.kind === "path") {
       return workspaceEntries.map((entry) => ({
         id: `path:${entry.kind}:${entry.path}`,
@@ -2277,14 +2285,17 @@ export default function ChatView({
       }));
     }
 
-    return buildSlashComposerMenuItems({
+    const items = buildSlashComposerMenuItems({
       query: composerTrigger.query,
       runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
       provider: selectedProvider,
       projectSkills: activeProject?.skills,
+      providerSkills: selectedProviderSnapshot?.skills,
     });
+    return composerTrigger.kind === "skill" ? items.filter((item) => item.type === "skill") : items;
   }, [
     activeProject?.skills,
+    selectedProviderSnapshot?.skills,
     composerTrigger,
     latestConfiguredRuntimeActivity?.slashCommands,
     selectedProvider,
@@ -2292,7 +2303,10 @@ export default function ChatView({
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
-    Boolean(composerTrigger) && dismissedComposerPromptRef.current !== prompt;
+    Boolean(composerTrigger) &&
+    (composerTrigger?.kind !== "skill" ||
+      (selectedProvider === "codex" && composerMenuItems.length > 0)) &&
+    dismissedComposerPromptRef.current !== prompt;
   const activeComposerMenuItem = useMemo(
     () =>
       composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??
@@ -4400,6 +4414,7 @@ export default function ChatView({
         provider: selectedProvider,
         runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
         projectSkills: activeProject?.skills,
+        providerSkills: selectedProviderSnapshot?.skills,
       });
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
@@ -4828,6 +4843,7 @@ export default function ChatView({
           provider: selectedProvider,
           runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
           projectSkills: activeProject?.skills,
+          providerSkills: selectedProviderSnapshot?.skills,
         },
       );
       const inputLengthIssue = getProviderTurnInputLengthIssue(
@@ -4960,6 +4976,7 @@ export default function ChatView({
     [
       activeThread,
       activeProject?.skills,
+      selectedProviderSnapshot?.skills,
       activeProposedPlan,
       clearComposerDraftContent,
       composerMatchesClearedState,
@@ -5391,11 +5408,27 @@ export default function ChatView({
     trigger: ComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
-    return {
-      snapshot,
-      trigger: detectComposerTrigger(snapshot.value, snapshot.expandedCursor),
-    };
-  }, [readComposerSnapshot]);
+    const candidate = detectComposerTrigger(snapshot.value, snapshot.expandedCursor);
+    const trigger =
+      candidate?.kind === "skill" &&
+      (selectedProvider !== "codex" ||
+        !buildSlashComposerMenuItems({
+          query: candidate.query,
+          provider: selectedProvider,
+          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          projectSkills: activeProject?.skills,
+          providerSkills: selectedProviderSnapshot?.skills,
+        }).some((item) => item.type === "skill"))
+        ? null
+        : candidate;
+    return { snapshot, trigger };
+  }, [
+    readComposerSnapshot,
+    selectedProvider,
+    latestConfiguredRuntimeActivity?.slashCommands,
+    activeProject?.skills,
+    selectedProviderSnapshot?.skills,
+  ]);
 
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
@@ -5448,7 +5481,7 @@ export default function ChatView({
         return;
       }
       if (item.type === "skill") {
-        const replacement = buildComposerSkillReplacement(item.name);
+        const replacement = buildComposerSkillReplacement(item.name, selectedProvider);
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
@@ -5471,6 +5504,7 @@ export default function ChatView({
       handleInteractionModeChange,
       isPendingTurnDispatchBlocked,
       resolveActiveComposerTrigger,
+      selectedProvider,
     ],
   );
   const onComposerMenuItemHighlighted = useCallback((itemId: string | null) => {

@@ -1,4 +1,5 @@
 import * as Context from "effect/ServiceMap";
+import * as PlatformError from "effect/PlatformError";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Stdio from "effect/Stdio";
@@ -10,6 +11,7 @@ import * as RpcClient from "effect/unstable/rpc/RpcClient";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
+import { BoundedLines } from "./_internal/boundedLines";
 import * as AcpError from "./errors";
 import * as AcpProtocol from "./protocol";
 import * as AcpRpcs from "./rpc";
@@ -24,6 +26,9 @@ import {
 import { makeChildStdio, makeTerminationError } from "./_internal/stdio";
 
 export interface AcpClientOptions {
+  readonly transformStdoutLine?: (line: string) => string;
+  readonly onStderr?: (chunk: string) => void;
+  readonly sanitizeStderr?: (text: string) => string;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
@@ -588,6 +593,7 @@ export const layerChildProcess = (
         Stream.decodeText(),
         Stream.runForEach((chunk) =>
           Effect.sync(() => {
+            options.onStderr?.(chunk);
             stderr = (stderr + chunk).slice(-4096);
           }),
         ),
@@ -600,11 +606,42 @@ export const layerChildProcess = (
         ),
         Effect.map((error) =>
           Schema.is(AcpError.AcpProcessExitedError)(error)
-            ? new AcpError.AcpProcessExitedError({ ...error, stderr })
+            ? new AcpError.AcpProcessExitedError({
+                ...error,
+                stderr: options.sanitizeStderr?.(stderr) ?? stderr,
+              })
             : error,
         ),
       );
-      return yield* make(makeChildStdio(handle), options, terminationError);
+      const stdoutLines = new BoundedLines();
+      const protocolHandle = options.transformStdoutLine
+        ? {
+            ...handle,
+            stdout: handle.stdout.pipe(
+              Stream.decodeText(),
+              Stream.concat(Stream.succeed("\n")),
+              Stream.mapEffect((chunk) =>
+                Effect.try({
+                  try: () =>
+                    new TextEncoder().encode(
+                      stdoutLines
+                        .push(chunk)
+                        .map((line) => `${options.transformStdoutLine!(line)}\n`)
+                        .join(""),
+                    ),
+                  catch: (cause) =>
+                    PlatformError.badArgument({
+                      module: "AcpClient",
+                      method: "readStdout",
+                      description: "ACP stdout framing failed",
+                      cause,
+                    }),
+                }),
+              ),
+            ),
+          }
+        : handle;
+      return yield* make(makeChildStdio(protocolHandle), options, terminationError);
     }),
   );
 };

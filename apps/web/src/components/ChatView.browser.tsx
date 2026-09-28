@@ -1948,6 +1948,58 @@ describe("ChatView timeline (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it("submits a form with required free text and an empty optional field", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "form-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "form",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Form",
+      payload: {
+        requestId: "form-request",
+        questions: [
+          { id: "name", header: "Name", question: "Enter a name", options: [] },
+          {
+            id: "description",
+            header: "Description",
+            question: "Optional description",
+            options: [],
+            optional: true,
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await expect.element(page.getByText("Enter a name", { exact: true })).toBeVisible();
+      await page.elementLocator(await waitForComposerEditor()).fill("Ada");
+      await page.getByRole("button", { name: "Next question", exact: true }).click();
+      await expect.element(page.getByText("Optional description", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Submit answers", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              type: "thread.user-input.respond",
+              answers: { name: "Ada", description: "" },
+            }),
+          }),
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it.each(["option", "dismissal"])("preserves typed question text after %s", async (resolution) => {
     const snapshot = createSnapshotForTargetUser({
       targetMessageId: "question-user" as MessageId,
@@ -3830,6 +3882,95 @@ describe("ChatView timeline (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sends $PATH on Enter without opening skills for Claude", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "currency-user" as MessageId,
+      targetText: "Hello",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [createTestServerProvider("claudeAgent", { checkedAt: NOW_ISO })],
+        };
+      },
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          model: "claude-sonnet-4-6",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-sonnet-4-6",
+          },
+          session: thread.session
+            ? {
+                ...thread.session,
+                providerName: "claudeAgent",
+                providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+              }
+            : null,
+        })),
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("$PATH");
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe("$PATH"),
+      );
+      await vi.waitFor(async () => expect((await waitForSendButton()).disabled).toBe(false));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              message: expect.objectContaining({ text: "$PATH" }),
+            }),
+          }),
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("inserts a Codex skill mid-prompt with dollar syntax", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithCodexRuntimeSkills(),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Please use $rev");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("/review"));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Please use $review ",
+        ),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }

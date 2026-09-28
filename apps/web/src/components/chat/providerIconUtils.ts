@@ -22,6 +22,7 @@ export const PROVIDER_LABEL_BY_PROVIDER: Record<ProviderKind, string> = {
   cursor: "Cursor",
   opencode: "OpenCode",
   grok: "Grok",
+  antigravity: "Antigravity",
 };
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
@@ -30,6 +31,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
   [ProviderDriverKind.make("grok")]: GrokIcon,
+  [ProviderDriverKind.make("antigravity")]: Gemini,
 };
 
 export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
@@ -38,6 +40,7 @@ export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
   cursor: CursorIcon,
   opencode: OpenCodeIcon,
   grok: GrokIcon,
+  antigravity: Gemini,
 };
 
 export const COMING_SOON_PROVIDER_OPTIONS = [

@@ -80,7 +80,7 @@ export const ProfileDeleteInput = Schema.Struct({ profileId: ProfileId });
 export const ProviderAccountStartInput = Schema.Struct({ instanceId: ProviderInstanceId });
 export const ProviderAccountLoginStartInput = Schema.Struct({
   ...ProviderAccountStartInput.fields,
-  method: Schema.optional(Schema.Literals(["browser", "device-code"])),
+  method: Schema.optional(Schema.Literals(["browser", "device-code", "install"])),
 });
 export const ProviderAccountHandleInput = Schema.Struct({ handle: TrimmedNonEmptyString });
 export const ProviderAccountInput = Schema.Struct({

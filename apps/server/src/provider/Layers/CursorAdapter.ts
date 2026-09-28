@@ -1,3 +1,4 @@
+import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 /**
  * CursorAdapterLive — Cursor CLI (`agent acp`) via ACP.
  *
@@ -139,6 +140,7 @@ interface CursorSessionContext {
   activeTurnId: TurnId | undefined;
   assistantReply: CursorTransportFailure;
   readonly skillCommands: ReturnType<typeof cursorSkillCommands>;
+  nativeCommands: ReturnType<typeof normalizeSupportedSlashCommands>;
   stopped: boolean;
 }
 
@@ -880,6 +882,7 @@ export function makeCursorAdapter(
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
             assistantReply: new CursorTransportFailure(),
+            nativeCommands: [],
             skillCommands: cursorSkillCommands(
               yield* discoverCursorSkills(cwd, options?.environment ?? process.env).pipe(
                 Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -952,8 +955,28 @@ export function makeCursorAdapter(
                       }),
                     );
                     return;
+                  case "SlashCommandsUpdated":
+                    ctx.nativeCommands = normalizeSupportedSlashCommands(event.commands);
+                    yield* offerRuntimeEvent({
+                      ...(yield* makeEventStamp()),
+                      provider: PROVIDER,
+                      threadId: ctx.threadId,
+                      type: "session.configured",
+                      payload: {
+                        config: buildCursorConfiguredConfig({
+                          sessionId: parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? "",
+                          skillCommands: normalizeSupportedSlashCommands([
+                            ...ctx.nativeCommands,
+                            ...ctx.skillCommands,
+                          ]),
+                          model: ctx.session.model,
+                          options: undefined,
+                        }),
+                      },
+                    });
+                    return;
                   case "ContentDelta":
-                    ctx.assistantReply.push(event.text);
+                    if (event.streamKind !== "reasoning_text") ctx.assistantReply.push(event.text);
                     yield* logNative(
                       ctx.threadId,
                       "session/update",
@@ -968,6 +991,7 @@ export function makeCursorAdapter(
                         turnId: ctx.activeTurnId,
                         ...(event.itemId ? { itemId: event.itemId } : {}),
                         text: event.text,
+                        ...(event.streamKind ? { streamKind: event.streamKind } : {}),
                         rawPayload: event.rawPayload,
                       }),
                     );
@@ -996,7 +1020,10 @@ export function makeCursorAdapter(
             payload: {
               config: buildCursorConfiguredConfig({
                 sessionId: started.sessionId,
-                skillCommands: ctx.skillCommands,
+                skillCommands: normalizeSupportedSlashCommands([
+                  ...ctx.nativeCommands,
+                  ...ctx.skillCommands,
+                ]),
                 model: cursorModelSelection?.model,
                 options: cursorModelSelection?.options,
               }),
@@ -1081,7 +1108,10 @@ export function makeCursorAdapter(
           payload: {
             config: buildCursorConfiguredConfig({
               sessionId: parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? "",
-              skillCommands: ctx.skillCommands,
+              skillCommands: normalizeSupportedSlashCommands([
+                ...ctx.nativeCommands,
+                ...ctx.skillCommands,
+              ]),
               model,
               options: turnModelSelection?.options,
             }),

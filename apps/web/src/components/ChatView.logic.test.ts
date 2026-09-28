@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  providerKindForImportedThread,
   buildComposerSkillReplacement,
   applyUserMessageAttachmentPreviewHandoff,
   buildSlashComposerMenuItems,
@@ -560,6 +561,7 @@ describe("applyUserMessageAttachmentPreviewHandoff", () => {
 describe("buildComposerSkillReplacement", () => {
   it("inserts slash-form skill commands", () => {
     expect(buildComposerSkillReplacement("review")).toBe("/review ");
+    expect(buildComposerSkillReplacement("review", "codex")).toBe("$review ");
   });
 });
 
@@ -1177,4 +1179,158 @@ describe("deriveProviderRuntimeInfoEntries", () => {
       { label: "CLI", value: "2026.04.09" },
     ]);
   });
+});
+
+describe("imported thread provider routing", () => {
+  it("uses a custom instance's driver before model-name inference", () => {
+    expect(
+      providerKindForImportedThread({
+        instanceId: "personal",
+        providers: [],
+        configured: { personal: { driver: ProviderDriverKind.make("antigravity") } },
+      }),
+    ).toBe("antigravity");
+  });
+  it("does not turn an unknown driver into another built-in provider", () => {
+    expect(
+      providerKindForImportedThread({
+        instanceId: "personal",
+        providers: [],
+        configured: { personal: { driver: ProviderDriverKind.make("custom-driver") } },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("provider skill inventories", () => {
+  it("includes native plugin skills but hides disabled entries", () => {
+    const providerSkills = [
+      { name: "plugin-review", path: "/plugin/SKILL.md", enabled: true },
+      { name: "private", path: "/private/SKILL.md", enabled: false },
+    ];
+    const items = buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills });
+    expect(items.some((item) => item.type === "skill" && item.name === "plugin-review")).toBe(true);
+    expect(items.some((item) => item.type === "skill" && item.name === "private")).toBe(false);
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/plugin-review changes",
+        provider: "grok",
+        providerSkills,
+      }).skillCall,
+    ).toEqual({ name: "plugin-review" });
+  });
+});
+
+it("keeps a first Claude native skill invocation unchanged before runtime inventory arrives", () => {
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/review",
+    provider: "claudeAgent",
+    projectSkills: [
+      createProjectSkill({
+        sourcePath: ".claude/skills/review/SKILL.md",
+        nativeProviders: ["claudeAgent"],
+      }),
+    ],
+  });
+  expect(result.text).toBe("/review");
+});
+it("does not invent a native Codex invocation for another provider's skill or export absolute paths", () => {
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/review",
+    provider: "codex",
+    projectSkills: [
+      createProjectSkill({ sourcePath: "/Users/private/.claude/skills/review/SKILL.md" }),
+    ],
+  });
+  expect(result.text).toBe('/review\n\nUse the skill instructions for "review".');
+});
+it("shows the selected provider's skill definition when names collide", () => {
+  const native = createProjectSkill({ description: "Native review" });
+  const items = buildSlashComposerMenuItems({
+    query: "review",
+    provider: "claudeAgent",
+    projectSkills: [
+      createProjectSkill({
+        description: "Generic review",
+        providerVariants: { claudeAgent: native },
+      }),
+    ],
+  });
+  expect(items.find((item) => item.type === "skill")?.description).toBe("Native review");
+});
+
+it.each(["plan", "default", "model"])("does not expose a provider skill shadowing /%s", (name) => {
+  const providerSkills = [{ name, path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills }).some(
+      (item) => item.type === "skill" && item.name === name,
+    ),
+  ).toBe(false);
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/" + name,
+    provider: "grok",
+    providerSkills,
+  });
+  expect(result.text).toBe("/" + name);
+  expect(result.skillCall).toBeUndefined();
+});
+it("preserves a qualified native skill through the menu and send path", () => {
+  const providerSkills = [{ name: "acme:plan", path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills }).some(
+      (item) => item.type === "skill" && item.name === "acme:plan",
+    ),
+  ).toBe(true);
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/acme:plan changes",
+    provider: "grok",
+    providerSkills,
+  });
+  expect(result.text).toBe("/acme:plan changes");
+  expect(result.skillCall).toEqual({ name: "acme:plan" });
+});
+
+it("sends the project skill shown in the menu ahead of a same-name provider inventory skill", () => {
+  const projectSkills = [
+    createProjectSkill({ sourcePath: ".agents/skills/review/SKILL.md", nativeProviders: [] }),
+  ];
+  const providerSkills = [{ name: "review", path: "/plugin/SKILL.md", enabled: true }];
+  const items = buildSlashComposerMenuItems({
+    query: "",
+    provider: "codex",
+    projectSkills,
+    providerSkills,
+  });
+  expect(items.find((item) => item.type === "skill" && item.name === "review")?.id).toBe(
+    "skill:project:review",
+  );
+  expect(
+    rewriteComposerRuntimeSkillInvocationForSend({
+      text: "/review",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).text,
+  ).toBe('/review\n\nUse the skill instructions at ".agents/skills/review/SKILL.md".');
+});
+
+it("does not suppress a native provider skill with a project entry excluded from the menu", () => {
+  const projectSkills = [createProjectSkill({ sourcePath: undefined, nativeProviders: [] })];
+  const providerSkills = [{ name: "review", path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({
+      query: "",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).find((item) => item.type === "skill" && item.name === "review")?.id,
+  ).toBe("skill:provider:review");
+  expect(
+    rewriteComposerRuntimeSkillInvocationForSend({
+      text: "/review",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).text,
+  ).toBe("$review");
 });

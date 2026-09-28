@@ -990,6 +990,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       (await Effect.runPromise(providerService.listSessions())).some(
         (session) => session.providerInstanceId === instanceId && session.activeTurnId != null,
       ),
+    async (instanceId) => {
+      const sessions = await Effect.runPromise(providerService.listSessions());
+      if (
+        sessions.some(
+          (session) => session.providerInstanceId === instanceId && session.activeTurnId != null,
+        )
+      )
+        throw new Error("Stop this instance's active turn before changing its account.");
+      for (const session of sessions) {
+        if (session.providerInstanceId === instanceId) {
+          await Effect.runPromise(providerService.stopSession({ threadId: session.threadId }));
+        }
+      }
+    },
   );
   yield* Effect.addFinalizer(() => Effect.promise(() => accountService.dispose()));
   const previewManager = makePreviewManager();
