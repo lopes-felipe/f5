@@ -180,3 +180,37 @@ typecheck, the full workspace suite and 133 exhaustive real-Git tests, 470 brows
 tests in 50 files, desktop smoke and the mandatory online ledger check. This
 supersedes the earlier full-suite timeout result for functional validation.
 The outstanding performance comparison above is not waived by these fixes.
+
+## Isolated desktop smoke after review fixes
+
+On 2026-09-28, launched the production build at `2f50e38779` with Electron
+40.6.0 on macOS arm64, a fresh app profile, separate Electron browser storage,
+and a disposable Git repository. No provider turn was submitted.
+
+Verified interactively through Playwright against the real Electron app:
+
+- Project creation and opening the new composer.
+- `**a****b**` and `# Title **bold**` remain editable and survive a page reload.
+- Workspace listing, opening `src/app.ts`, and entering the source editor.
+- An external file change during editing produces a conflict; the external
+  contents remain on disk and the draft is retained.
+- A real PTY executes an echo command and displays its output.
+- Command palette actions and the General settings page load.
+
+No renderer exceptions were recorded. The isolated instance was closed afterwards.
+Live provider turns, native close-confirmation behavior, and Windows/Linux were
+not verified in this run. This smoke test does not resolve the performance gates
+reported above.
+
+The previous desktop smoke runner could report success after an early Electron
+launch failure. Its earlier pass reports are superseded by this run. The runner
+now launches the actual Electron executable with Playwright, uses separate app
+and browser state, clears inherited development/runtime overrides, and requires
+successful project creation plus draft restoration after reload. A failed-launch
+fixture exits nonzero. Screenshots and bounded launch logs are retained in the
+reported temporary artifact directory.
+
+Validation: formatting, lint, typecheck, online ledger validation, the updated
+real Electron smoke, and all 470 browser tests passed. The first full-suite run
+hit the existing five-second migration-test deadline; the rerun completed the
+workspace suite successfully. The exhaustive Git matrix also passed all 133 tests.
