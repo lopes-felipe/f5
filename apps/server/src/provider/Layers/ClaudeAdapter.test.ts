@@ -37,7 +37,10 @@ import {
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
   probeClaudeSessionAvailability,
+  resolveClaudeConfigDir,
   type ClaudeAdapterLiveOptions,
+  type ClaudeSessionProbeInput,
+  type ClaudeSessionStoreFs,
 } from "./ClaudeAdapter.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 
@@ -5628,83 +5631,347 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("probes resumable sessions conservatively with system messages included", () =>
-    Effect.gen(function* () {
-      const calls: Array<Record<string, unknown>> = [];
-      const result = yield* probeClaudeSessionAvailability(
-        {
-          sessionId: "550e8400-e29b-41d4-a716-446655440000",
-          cwd: "/tmp/project",
-        },
-        ((_sessionId: string, options: Record<string, unknown>) => {
-          calls.push(options);
-          return Promise.resolve(
-            calls.length === 1 ? ([{ type: "system" }] as never) : ([] as never),
-          );
-        }) as never,
-      );
+  describe("resume preflight transcript probe", () => {
+    const probeSessionId = "550e8400-e29b-41d4-a716-446655440000";
 
-      assert.equal(result, "present");
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.includeSystemMessages, true);
-      assert.equal(calls[0]?.dir, "/tmp/project");
-    }),
-  );
-
-  it.effect("requires both scoped and global resume probes to report absence", () =>
-    Effect.gen(function* () {
-      const calls: Array<Record<string, unknown>> = [];
-      const reader = ((_sessionId: string, options: Record<string, unknown>) => {
-        calls.push(options);
-        return Promise.resolve(
-          calls.length === 1 ? ([] as never) : ([{ type: "system" }] as never),
+    const withClaudeConfigDir = <A, E, R>(
+      use: (configDir: string) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        const configDir = mkdtempSync(path.join(os.tmpdir(), "f5-claude-config-"));
+        return use(configDir).pipe(
+          Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
         );
-      }) as never;
-      const present = yield* probeClaudeSessionAvailability(
-        {
-          sessionId: "550e8400-e29b-41d4-a716-446655440000",
-          cwd: "/tmp/project",
-        },
-        reader,
-      );
-      const absent = yield* probeClaudeSessionAvailability(
-        {
-          sessionId: "550e8400-e29b-41d4-a716-446655440000",
-          cwd: undefined,
-        },
-        (() => Promise.resolve([] as never)) as never,
-      );
+      });
 
-      assert.equal(present, "present");
-      assert.equal(calls[1]?.dir, undefined);
-      assert.equal(absent, "absent");
-    }),
-  );
+    const writeTranscript = (
+      configDir: string,
+      projectDir: string,
+      sessionId: string,
+      contents = '{"type":"system"}\n',
+    ) => {
+      const dir = path.join(configDir, "projects", projectDir);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, `${sessionId}.jsonl`), contents);
+    };
 
-  it.effect("treats resume probe failures and timeouts as unknown", () =>
-    Effect.gen(function* () {
-      const failed = yield* probeClaudeSessionAvailability(
-        {
-          sessionId: "550e8400-e29b-41d4-a716-446655440000",
-          cwd: undefined,
-        },
-        (() => Promise.reject(new Error("probe failed"))) as never,
+    const probeInput = (claudeConfigDir: string): ClaudeSessionProbeInput => ({
+      sessionId: probeSessionId,
+      claudeConfigDir,
+    });
+
+    const noLines = (): AsyncIterable<string> => (async function* () {})();
+
+    it.effect("reports present when any project dir holds the transcript", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(configDir, "-unrelated-project", "some-other-session");
+          writeTranscript(configDir, "-a-different-cwd", probeSessionId);
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "present");
+        }),
+      ),
+    );
+
+    it.effect("reports absent only when the readable store lacks the transcript", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(configDir, "-Users-me-project", "some-other-session");
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "absent");
+        }),
+      ),
+    );
+
+    it.effect("does not treat an empty transcript as resumable", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(configDir, "-Users-me-project", probeSessionId, "");
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "absent");
+        }),
+      ),
+    );
+
+    it.effect("does not treat a metadata-only transcript as resumable", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(
+            configDir,
+            "-Users-me-project",
+            probeSessionId,
+            [
+              '{"type":"queue-operation","operation":"enqueue"}',
+              '{"type":"summary","summary":"x"}',
+              '{"type":"file-history-snapshot","snapshot":{}}',
+              "",
+            ].join("\n"),
+          );
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "absent");
+        }),
+      ),
+    );
+
+    it.effect("finds a conversation entry after leading metadata lines", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(
+            configDir,
+            "-Users-me-project",
+            probeSessionId,
+            '{"type":"summary","summary":"x"}\r\n{"type":"user","message":{}}\r\n{"type":"assis',
+          );
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "present");
+        }),
+      ),
+    );
+
+    it.effect("reports unknown when only an unparseable line could hold the conversation", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(
+            configDir,
+            "-Users-me-project",
+            probeSessionId,
+            '{"type":"summary","summary":"x"}\n{"type":"user","mess',
+          );
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "unknown");
+        }),
+      ),
+    );
+
+    it.effect("ignores stray regular files in the projects store", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          writeTranscript(configDir, "-Users-me-project", "some-other-session");
+          writeFileSync(path.join(configDir, "projects", ".DS_Store"), "junk");
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "absent");
+
+          writeTranscript(configDir, "-a-different-cwd", probeSessionId);
+
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "present");
+        }),
+      ),
+    );
+
+    it.effect("reports unknown when the config dir has no projects store", () =>
+      withClaudeConfigDir((configDir) =>
+        Effect.gen(function* () {
+          // Regression guard: probing the wrong config dir used to report
+          // "absent" and silently discard the conversation.
+          assert.equal(yield* probeClaudeSessionAvailability(probeInput(configDir)), "unknown");
+        }),
+      ),
+    );
+
+    it.effect("treats unreadable stores, stat failures, and timeouts as unknown", () =>
+      Effect.gen(function* () {
+        const accessDenied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+        const unreadableStore: ClaudeSessionStoreFs = {
+          readdir: () => Promise.reject(accessDenied),
+          stat: () => Promise.reject(new Error("unreachable")),
+          readLines: noLines,
+        };
+        const unreadableProject: ClaudeSessionStoreFs = {
+          readdir: () => Promise.resolve(["-a", "-b"]),
+          stat: (target) =>
+            target.includes(`${path.sep}-a${path.sep}`)
+              ? Promise.reject(Object.assign(new Error("missing"), { code: "ENOENT" }))
+              : Promise.reject(accessDenied),
+          readLines: noLines,
+        };
+        const hangingStore: ClaudeSessionStoreFs = {
+          readdir: () => new Promise<never>(() => {}),
+          stat: () => new Promise<never>(() => {}),
+          readLines: noLines,
+        };
+
+        const unreadable = yield* probeClaudeSessionAvailability(
+          probeInput("/claude"),
+          unreadableStore,
+        );
+        const statFailed = yield* probeClaudeSessionAvailability(
+          probeInput("/claude"),
+          unreadableProject,
+        );
+        const timeoutFiber = yield* probeClaudeSessionAvailability(
+          probeInput("/claude"),
+          hangingStore,
+          5,
+        ).pipe(Effect.forkChild);
+        yield* TestClock.adjust("5 millis");
+        const timedOut = yield* Fiber.join(timeoutFiber);
+
+        assert.equal(unreadable, "unknown");
+        assert.equal(statFailed, "unknown");
+        assert.equal(timedOut, "unknown");
+      }),
+    );
+
+    it("resolves the config dir with the CLI's precedence", () => {
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/isolated/.claude", HOME: "/home/me" }),
+        path.resolve("/isolated/.claude"),
       );
-      const timeoutFiber = yield* probeClaudeSessionAvailability(
-        {
-          sessionId: "550e8400-e29b-41d4-a716-446655440000",
-          cwd: undefined,
-        },
-        (() => new Promise<never>(() => {})) as never,
-        5,
-      ).pipe(Effect.forkChild);
-      yield* TestClock.adjust("5 millis");
-      const timedOut = yield* Fiber.join(timeoutFiber);
+      assert.equal(
+        resolveClaudeConfigDir({ HOME: "/home/me" }, undefined, "linux"),
+        path.resolve("/home/me", ".claude"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ HOME: "" }, undefined, "linux"),
+        path.join(os.homedir(), ".claude"),
+      );
+      assert.equal(resolveClaudeConfigDir({}), path.join(os.homedir(), ".claude"));
+    });
 
-      assert.equal(failed, "unknown");
-      assert.equal(timedOut, "unknown");
-    }),
-  );
+    it("reads USERPROFILE instead of HOME for the default dir on Windows", () => {
+      // Git Bash and MSYS set HOME, but the CLI's os.homedir() reads USERPROFILE.
+      assert.equal(
+        resolveClaudeConfigDir(
+          { HOME: "/msys/home/me", USERPROFILE: "/users/me" },
+          undefined,
+          "win32",
+        ),
+        path.resolve("/users/me", ".claude"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir(
+          { CLAUDE_CONFIG_DIR: "/isolated/.claude", USERPROFILE: "/users/me" },
+          undefined,
+          "win32",
+        ),
+        path.resolve("/isolated/.claude"),
+      );
+    });
+
+    it("keeps CLAUDE_CONFIG_DIR as the CLI does, NFC-normalized and untrimmed", () => {
+      const childCwd = path.resolve("/work/project");
+      const decomposed = "/profiles/café/.claude";
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: decomposed }, childCwd),
+        path.resolve(decomposed.normalize("NFC")),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: " spaced " }, childCwd),
+        path.join(childCwd, " spaced "),
+      );
+    });
+
+    it("resolves a relative config dir against the CLI child's cwd", () => {
+      const childCwd = path.resolve("/work/project");
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: ".claude-profile" }, childCwd),
+        path.join(childCwd, ".claude-profile"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ HOME: "relative-home" }, childCwd),
+        path.join(childCwd, "relative-home", ".claude"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: ".claude-profile" }),
+        path.resolve(".claude-profile"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/isolated/.claude" }, childCwd),
+        path.resolve("/isolated/.claude"),
+      );
+    });
+
+    it.effect("probes the provider environment's config dir, not the server's", () => {
+      const probeCalls: Array<ClaudeSessionProbeInput> = [];
+      const harness = makeHarness({
+        processEnvironment: { CLAUDE_CONFIG_DIR: "/profiles/abc/provider-homes/claude/.claude" },
+        probeResumableClaudeSession: (input) => {
+          probeCalls.push(input);
+          return Effect.succeed("present" as const);
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: "claudeAgent",
+          resumeCursor: { threadId: RESUME_THREAD_ID, resume: probeSessionId, turnCount: 2 },
+          runtimeMode: "full-access",
+        });
+
+        assert.equal(probeCalls.length, 1);
+        assert.equal(probeCalls[0]?.sessionId, probeSessionId);
+        assert.equal(probeCalls[0]?.claudeConfigDir, "/profiles/abc/provider-homes/claude/.claude");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("probes a relative config dir under the session cwd, not the server cwd", () => {
+      const probeCalls: Array<ClaudeSessionProbeInput> = [];
+      const sessionCwd = path.resolve("/work/project");
+      const harness = makeHarness({
+        processEnvironment: { CLAUDE_CONFIG_DIR: ".claude-local" },
+        probeResumableClaudeSession: (input) => {
+          probeCalls.push(input);
+          return Effect.succeed("present" as const);
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: "claudeAgent",
+          cwd: sessionCwd,
+          resumeCursor: { threadId: RESUME_THREAD_ID, resume: probeSessionId, turnCount: 2 },
+          runtimeMode: "full-access",
+        });
+
+        assert.notEqual(process.cwd(), sessionCwd);
+        assert.equal(probeCalls[0]?.claudeConfigDir, path.join(sessionCwd, ".claude-local"));
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.cwd, sessionCwd);
+        assert.equal(createInput?.options.env?.CLAUDE_CONFIG_DIR, ".claude-local");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("resumes a transcript stored under an isolated CLAUDE_CONFIG_DIR", () =>
+      withClaudeConfigDir((configDir) => {
+        writeTranscript(configDir, "-Users-me-project", probeSessionId);
+        const harness = makeHarness({
+          processEnvironment: { CLAUDE_CONFIG_DIR: configDir },
+          probeResumableClaudeSession: (input) => probeClaudeSessionAvailability(input),
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const session = yield* adapter.startSession({
+            threadId: RESUME_THREAD_ID,
+            provider: "claudeAgent",
+            resumeCursor: { threadId: RESUME_THREAD_ID, resume: probeSessionId, turnCount: 3 },
+            runtimeMode: "full-access",
+          });
+
+          const createInput = harness.getLastCreateQueryInput();
+          assert.equal(createInput?.options.resume, probeSessionId);
+          assert.equal(createInput?.options.sessionId, undefined);
+          assert.equal((session.resumeCursor as Record<string, unknown>).turnCount, 3);
+          const firstEvent = yield* Stream.runHead(adapter.streamEvents);
+          assert.equal(firstEvent._tag, "Some");
+          if (firstEvent._tag !== "Some" || firstEvent.value.type !== "session.started") {
+            assert.fail("Expected session.started without a context reset warning.");
+          }
+          assert.deepEqual(firstEvent.value.payload, { resume: probeSessionId });
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      }),
+    );
+  });
 
   it.effect("surfaces a non-UUID resume cursor and starts fresh", () => {
     const harness = makeHarness();
