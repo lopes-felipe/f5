@@ -1258,3 +1258,79 @@ it("shows the selected provider's skill definition when names collide", () => {
   });
   expect(items.find((item) => item.type === "skill")?.description).toBe("Native review");
 });
+
+it.each(["plan", "default", "model"])("does not expose a provider skill shadowing /%s", (name) => {
+  const providerSkills = [{ name, path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills }).some(
+      (item) => item.type === "skill" && item.name === name,
+    ),
+  ).toBe(false);
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/" + name,
+    provider: "grok",
+    providerSkills,
+  });
+  expect(result.text).toBe("/" + name);
+  expect(result.skillCall).toBeUndefined();
+});
+it("preserves a qualified native skill through the menu and send path", () => {
+  const providerSkills = [{ name: "acme:plan", path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills }).some(
+      (item) => item.type === "skill" && item.name === "acme:plan",
+    ),
+  ).toBe(true);
+  const result = rewriteComposerRuntimeSkillInvocationForSend({
+    text: "/acme:plan changes",
+    provider: "grok",
+    providerSkills,
+  });
+  expect(result.text).toBe("/acme:plan changes");
+  expect(result.skillCall).toEqual({ name: "acme:plan" });
+});
+
+it("sends the project skill shown in the menu ahead of a same-name provider inventory skill", () => {
+  const projectSkills = [
+    createProjectSkill({ sourcePath: ".agents/skills/review/SKILL.md", nativeProviders: [] }),
+  ];
+  const providerSkills = [{ name: "review", path: "/plugin/SKILL.md", enabled: true }];
+  const items = buildSlashComposerMenuItems({
+    query: "",
+    provider: "codex",
+    projectSkills,
+    providerSkills,
+  });
+  expect(items.find((item) => item.type === "skill" && item.name === "review")?.id).toBe(
+    "skill:project:review",
+  );
+  expect(
+    rewriteComposerRuntimeSkillInvocationForSend({
+      text: "/review",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).text,
+  ).toBe('/review\n\nUse the skill instructions at ".agents/skills/review/SKILL.md".');
+});
+
+it("does not suppress a native provider skill with a project entry excluded from the menu", () => {
+  const projectSkills = [createProjectSkill({ sourcePath: undefined, nativeProviders: [] })];
+  const providerSkills = [{ name: "review", path: "/plugin/SKILL.md", enabled: true }];
+  expect(
+    buildSlashComposerMenuItems({
+      query: "",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).find((item) => item.type === "skill" && item.name === "review")?.id,
+  ).toBe("skill:provider:review");
+  expect(
+    rewriteComposerRuntimeSkillInvocationForSend({
+      text: "/review",
+      provider: "codex",
+      projectSkills,
+      providerSkills,
+    }).text,
+  ).toBe("$review");
+});

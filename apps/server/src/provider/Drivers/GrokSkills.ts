@@ -24,7 +24,9 @@ export function parseGrokSkills(text: string): ServerProviderSkill[] {
       typeof item.source?.path !== "string"
     )
       continue;
-    const name = item.name.trim();
+    const name = (typeof item.invocableAs === "string" ? item.invocableAs : item.name)
+      .trim()
+      .replace(/^\//, "");
     const path = item.source.path.trim();
     if (!name || !path) continue;
     const skill: ServerProviderSkill = {

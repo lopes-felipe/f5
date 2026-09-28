@@ -2001,3 +2001,32 @@ it.effect("blocks session creation and turn dispatch during an account change", 
     Effect.provide(makeProviderServiceLayerForAdapters(new Map([["antigravity", fake.adapter]]))),
   );
 });
+
+it.effect("uses the admitted binding without rereading routing during send", () => {
+  const fake = makeFakeCodexAdapter();
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("stable-admission");
+    yield* service.startSession(threadId, {
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "full-access",
+    });
+    const original = directory.getBinding.bind(directory);
+    let reads = 0;
+    const spy = vi.spyOn(directory, "getBinding").mockImplementation((id) => {
+      reads++;
+      // A second routing read simulates a concurrent removal/rebind.
+      return reads === 1 ? original(id) : Effect.succeed(Option.none());
+    });
+    try {
+      yield* service.sendTurn({ threadId, input: "hello", attachments: [] });
+      // One admission read and one post-dispatch persistence read.
+      assert.equal(reads, 2);
+      assert.equal(fake.sendTurn.mock.calls.length, 1);
+    } finally {
+      spy.mockRestore();
+    }
+  }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", fake.adapter]]))));
+});

@@ -254,6 +254,16 @@ const program = Effect.gen(function* () {
     }),
   );
 
+  yield* agent.handleResumeSession(() =>
+    Effect.gen(function* () {
+      if (process.env.T3_ACP_RESUME_FAIL === "missing")
+        return yield* AcpError.AcpRequestError.resourceNotFound("Mock session not found");
+      if (process.env.T3_ACP_RESUME_FAIL === "transient")
+        return yield* AcpError.AcpRequestError.internalError("Mock temporary failure");
+      return { modes: modeState(), configOptions: configOptions() };
+    }),
+  );
+
   yield* agent.handleLoadSession((request) =>
     Effect.gen(function* () {
       if (loadDelayMs > 0) {

@@ -684,8 +684,32 @@ const makeAcpSessionRuntime = (
           mcpServers: [],
         } satisfies EffectAcpSchema.LoadSessionRequest;
         if (options.resumeMethod === "resume") {
-          sessionSetupResult = yield* acp.agent.resumeSession(loadPayload);
-          sessionId = options.resumeSessionId;
+          const resumed = yield* runLoggedRequest(
+            "session/resume",
+            loadPayload,
+            acp.agent.resumeSession(loadPayload),
+          ).pipe(Effect.exit);
+          if (Exit.isSuccess(resumed)) {
+            sessionSetupResult = resumed.value;
+            sessionId = options.resumeSessionId;
+            yield* recordResumeOutcome("loaded");
+          } else if (isDefiniteResumeLoadFailure(resumed.cause)) {
+            yield* Ref.set(acceptedSessionIdRef, null);
+            const createPayload = {
+              cwd: options.cwd,
+              mcpServers: [],
+            } satisfies EffectAcpSchema.NewSessionRequest;
+            const created = yield* runLoggedRequest(
+              "session/new",
+              createPayload,
+              acp.agent.createSession(createPayload),
+            );
+            sessionId = created.sessionId;
+            sessionSetupResult = created;
+            yield* recordResumeOutcome("new-immediate");
+          } else {
+            return yield* Effect.failCause(resumed.cause);
+          }
           yield* Ref.set(acceptedSessionIdRef, sessionId);
         } else if (hardeningEnabled) {
           const decision = yield* runHardenedSessionLoad(loadPayload);

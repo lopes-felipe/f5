@@ -725,9 +725,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly operation: string;
       readonly allowRecovery: boolean;
       readonly fallbackActiveTurnId?: TurnId;
+      readonly binding?: Option.Option<ProviderRuntimeBinding>;
     }) =>
       Effect.gen(function* () {
-        const bindingOption = yield* directory.getBinding(input.threadId);
+        const bindingOption = input.binding ?? (yield* directory.getBinding(input.threadId));
         const binding = Option.getOrUndefined(bindingOption);
         if (!binding) {
           return yield* toValidationError(
@@ -1074,6 +1075,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId: input.threadId,
             operation: "ProviderService.sendTurn",
             allowRecovery: true,
+            binding,
           });
           metricProvider = routed.adapter.provider;
           if (

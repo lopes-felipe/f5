@@ -5481,7 +5481,7 @@ export default function ChatView({
         return;
       }
       if (item.type === "skill") {
-        const replacement = buildComposerSkillReplacement(item.name);
+        const replacement = buildComposerSkillReplacement(item.name, selectedProvider);
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,

@@ -232,10 +232,16 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
 
   const projectSkill = input.projectSkills
     ?.map((skill) => (input.provider ? (skill.providerVariants?.[input.provider] ?? skill) : skill))
-    .find((skill) => skill.commandName === leadingCommandName && skill.paths.length === 0);
+    .find(
+      (skill) =>
+        skill.commandName === leadingCommandName &&
+        skill.paths.length === 0 &&
+        (input.provider === "claudeAgent" || skill.sourcePath),
+    );
   const nativeKnown =
     input.runtimeSlashCommands?.some((command) => command.name === leadingCommandName) ||
-    input.providerSkills?.some((skill) => skill.enabled && skill.name === leadingCommandName) ||
+    (!projectSkill &&
+      input.providerSkills?.some((skill) => skill.enabled && skill.name === leadingCommandName)) ||
     (input.provider && projectSkill?.nativeProviders?.includes(input.provider)) ||
     (input.provider === "claudeAgent" &&
       (!projectSkill?.sourcePath || /(?:^|\/)\.claude\/skills\//.test(projectSkill.sourcePath)));

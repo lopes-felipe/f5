@@ -19,7 +19,7 @@ import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { defaultProviderContinuationIdentity, type ProviderDriver } from "../ProviderDriver.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 
 const driverKind = ProviderDriverKind.make("antigravity");
 export type AntigravityDriverEnv =
@@ -39,7 +39,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const eventLoggers = yield* ProviderEventLoggers;
       const fileSystem = yield* FileSystem.FileSystem;
       const effectiveConfig = { ...config, enabled };
-      const processEnv = mergeProviderInstanceEnvironment(environment, process.env);
+      const processEnv = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: server.profile,
+        stateDir: server.stateDir,
+        baseEnv: process.env,
+        instance: environment,
+      });
       const continuationIdentity = defaultProviderContinuationIdentity({ driverKind, instanceId });
       const makeRuntime = (input: GrokAcpRuntimeInput) =>
         makeAntigravityAcpRuntime({

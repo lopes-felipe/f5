@@ -1194,7 +1194,16 @@ export function makeOpenCodeAdapter(
         context.client.event.subscribe(undefined, { signal: eventsAbortController.signal }),
       ).pipe(
         Effect.mapError(toRequestError),
-        Effect.tapError(() => stopOpenCodeContext(context)),
+        Effect.tapError(() =>
+          stopOpenCodeContext(context).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (sessions.get(context.session.threadId) === context)
+                  sessions.delete(context.session.threadId);
+              }),
+            ),
+          ),
+        ),
       );
       yield* Stream.fromAsyncIterable(
         subscription.stream,

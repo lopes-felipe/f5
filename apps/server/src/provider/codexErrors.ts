@@ -59,15 +59,18 @@ export function formatCodexUsageError(
   const exhausted = windows.sort(
     (left, right) => (right?.resetsAt ?? 0) - (left?.resetsAt ?? 0),
   )[0];
-  if (errorInfo !== "usageLimitReached" && !exhausted) return message;
+  if (errorInfo !== "usageLimitReached") return message;
   const minutes = exhausted?.windowDurationMins;
-  const label = minutes
-    ? minutes >= 10080
-      ? "weekly"
-      : minutes >= 300
-        ? `${minutes / 60}-hour`
-        : `${minutes}-minute`
-    : undefined;
+  const label =
+    typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
+      ? minutes === 10080
+        ? "weekly"
+        : minutes % 1440 === 0
+          ? `${minutes / 1440}-day`
+          : minutes >= 300 && minutes % 60 === 0
+            ? `${minutes / 60}-hour`
+            : `${minutes}-minute`
+      : undefined;
   const reset = exhausted?.resetsAt;
   let result = usageLimitMessage("Codex", label, reset);
   if (snapshot?.rateLimitReachedType?.includes("credits_depleted"))

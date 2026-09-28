@@ -96,3 +96,31 @@ trigger path, which was fixed before the passing run. The account-job test separ
 checks admission remains blocked until an auth job exits.
 
 The revised desktop build passed its isolated Electron smoke test.
+
+## Review-thread follow-up
+
+Native ACP resume now logs requests and starts a fresh session only for definite missing-session
+failures. Transient failures remain retryable. Antigravity uses the shared profile execution
+environment, and failed OpenCode subscriptions remove only their own session context.
+
+Grok's qualified invocation names survive discovery, menus and sending. Project skills keep
+the menu's precedence over provider inventory during send. The existing shared guard already
+excluded bare host-local commands; regression coverage now verifies that protection. Antigravity
+also appears in the usage-history provider filter.
+
+Account admission and turn routing use the same captured binding. Codex limit hints require
+a typed usage-limit error, so an exhausted cached window cannot relabel an unrelated failure.
+Window labels preserve exact durations and reject invalid values rather than rounding hours.
+
+Regression tests cover resume success/missing/transient outcomes, profile isolation, subscription
+failure and retry, qualified and reserved skill names, source precedence, stable dispatch binding,
+and unrelated errors with an exhausted usage snapshot.
+
+The summary's Codex mid-prompt insertion finding is fixed by passing the selected provider
+to the existing replacement helper. A browser regression verifies selecting the skill
+preserves dollar syntax and does not send the prompt.
+
+Validation passed: formatting, lint (10 existing warnings, no errors), all eight typecheck
+tasks, the full workspace suite and all 133 real-Git matrix tests, 483 browser tests plus
+the new mid-prompt insertion browser regression, desktop smoke, and online ledger validation.
+The final skill-precedence unit suite passed all 63 cases.

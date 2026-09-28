@@ -724,3 +724,40 @@ describe("AcpSessionRuntime", () => {
     );
   });
 });
+
+describe("native session resume recovery", () => {
+  for (const failure of ["", "missing", "transient"]) {
+    it.effect("handles native resume: " + (failure || "success"), () => {
+      const events: AcpSessionRequestLogEvent[] = [];
+      return Effect.gen(function* () {
+        const runtime = yield* AcpSessionRuntime;
+        const result = yield* runtime.start().pipe(Effect.exit);
+        expect(result._tag).toBe(failure === "transient" ? "Failure" : "Success");
+        const methods = events
+          .filter((event) => event.status === "started")
+          .map((event) => event.method);
+        expect(methods.filter((method) => method === "session/resume")).toHaveLength(1);
+        expect(methods.filter((method) => method === "session/new")).toHaveLength(
+          failure === "missing" ? 1 : 0,
+        );
+      }).pipe(
+        Effect.provide(
+          AcpSessionRuntime.layer({
+            spawn: { command: bunExe, args: [mockAgentPath], env: { T3_ACP_RESUME_FAIL: failure } },
+            cwd: process.cwd(),
+            resumeSessionId: "previous-session",
+            resumeMethod: "resume",
+            clientInfo: { name: "t3-test", version: "0.0.0" },
+            authMethodId: "test",
+            requestLogger: (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(NodeServices.layer),
+      );
+    });
+  }
+});

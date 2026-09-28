@@ -73,3 +73,23 @@ it("does not run global inventory in the server checkout", async () => {
     run.mockRestore();
   }
 });
+
+it("preserves qualified invocations when plugins and local skills share a name", () => {
+  const skills = parseGrokSkills(
+    JSON.stringify({
+      skills: [
+        {
+          name: "commit",
+          invocableAs: "local:commit",
+          source: { path: "/local/SKILL.md", type: "project" },
+        },
+        {
+          name: "commit",
+          invocableAs: "acme:commit",
+          source: { path: "/plugin/SKILL.md", type: "plugin" },
+        },
+      ],
+    }),
+  );
+  expect(skills.map(({ name }) => name)).toEqual(["acme:commit", "local:commit"]);
+});

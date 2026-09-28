@@ -3948,6 +3948,34 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("inserts a Codex skill mid-prompt with dollar syntax", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithCodexRuntimeSkills(),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Please use $rev");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("/review"));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Please use $review ",
+        ),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("rewrites Codex runtime slash skills to dollar syntax when sending", async () => {
     const typedPrompt = "/review current diff";
 

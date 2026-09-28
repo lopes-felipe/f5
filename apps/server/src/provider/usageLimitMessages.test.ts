@@ -35,9 +35,9 @@ describe("provider usage-limit messages", () => {
       secondary: { usedPercent: 0 },
     });
     expect(merged?.primary).toEqual(original.primary);
-    expect(formatCodexUsageError("out of credits", merged, "2026-09-28T00:00:00Z")).toContain(
-      "5-hour usage limit",
-    );
+    expect(
+      formatCodexUsageError("out of credits", merged, "2026-09-28T00:00:00Z", "usageLimitReached"),
+    ).toContain("5-hour usage limit");
   });
   it("names the longer blocking Codex window and leaves unrelated errors intact", () => {
     expect(
@@ -48,6 +48,7 @@ describe("provider usage-limit messages", () => {
           secondary: { usedPercent: 100, resetsAt: reset + 86400, windowDurationMins: 10080 },
         },
         "2026-09-28T00:00:00Z",
+        "usageLimitReached",
       ),
     ).toContain("weekly");
     expect(formatCodexUsageError("connection reset", undefined, "2026-09-28T00:00:00Z")).toBe(
@@ -82,3 +83,42 @@ it("retains the original diagnostic when adding a typed usage hint", () => {
     ),
   ).toMatch(/^Detailed provider message /);
 });
+
+it.each([
+  [450, "450-minute"],
+  [4320, "3-day"],
+  [10080, "weekly"],
+  [300, "5-hour"],
+])("keeps the exact duration for a %s minute window", (minutes, label) => {
+  expect(
+    formatCodexUsageError(
+      "Limit",
+      { primary: { usedPercent: 100, resetsAt: 1790683200, windowDurationMins: Number(minutes) } },
+      "2026-09-28T00:00:00Z",
+      "usageLimitReached",
+    ),
+  ).toContain(label);
+});
+it.each([NaN, Infinity, 0, -1])("omits invalid window duration %s", (minutes) => {
+  const message = formatCodexUsageError(
+    "Limit",
+    { primary: { usedPercent: 100, resetsAt: 1790683200, windowDurationMins: minutes } },
+    "2026-09-28T00:00:00Z",
+    "usageLimitReached",
+  );
+  expect(message).toContain("Codex usage limit");
+  expect(message).not.toMatch(/NaN|Infinity|minute|hour/);
+});
+
+it.each(["disk is full", "connection reset", "TPM exceeded; retrying"])(
+  "does not mislabel %s with stale limit state",
+  (message) => {
+    expect(
+      formatCodexUsageError(
+        message,
+        { primary: { usedPercent: 100, resetsAt: 1790683200, windowDurationMins: 300 } },
+        "2026-09-28T00:00:00Z",
+      ),
+    ).toBe(message);
+  },
+);

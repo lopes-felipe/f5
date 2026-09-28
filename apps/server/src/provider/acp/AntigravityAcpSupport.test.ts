@@ -1,3 +1,5 @@
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
+import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore.ts";
 import { describe, expect, it } from "vitest";
 import {
   antigravityAuthorizationUrl,
@@ -138,4 +140,29 @@ it("only offers native permission choices and preserves their security warning",
     },
     { decision: "cancel", label: "Cancel" },
   ]);
+});
+
+it("keeps provider profile isolation when building the Antigravity child environment", () => {
+  const stateDir = "/isolated/profile";
+  const env = antigravityEnvironment(
+    buildAccountExecutionEnvironment({
+      purpose: "provider",
+      stateDir,
+      profile: { ...fallbackDefaultProfile(stateDir), isDefault: false },
+      baseEnv: {
+        HOME: "/personal",
+        GH_TOKEN: "personal-secret",
+        GITHUB_TOKEN: "personal-secret",
+        GIT_AUTHOR_EMAIL: "personal@example.com",
+      },
+    }),
+    "/isolated/antigravity",
+    "/harness",
+    "helper",
+  );
+  expect(env.HOME).not.toBe("/personal");
+  expect(env.GH_CONFIG_DIR).toContain(stateDir);
+  expect(env.GH_TOKEN).toBeUndefined();
+  expect(env.GITHUB_TOKEN).toBeUndefined();
+  expect(env.GIT_AUTHOR_EMAIL).toBeUndefined();
 });
