@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import {
   WORKFLOW_DOCUMENT_PROFILES,
+  DEFAULT_WORKFLOW_DOCUMENT_TYPE,
   WORKFLOW_DOCUMENT_TYPE_ORDER,
   defaultDocumentReaderSlot,
 } from "@t3tools/shared/documentWorkflow";
@@ -488,7 +489,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
   const [workflowType, setWorkflowType] = useState<WorkflowTypeValue>("planning");
   const [requirementPrompt, setRequirementPrompt] = useState("");
-  const [documentType, setDocumentType] = useState<WorkflowDocumentType>("rfc");
+  const [documentType, setDocumentType] = useState<WorkflowDocumentType>(
+    DEFAULT_WORKFLOW_DOCUMENT_TYPE,
+  );
   const [readerReviewEnabled, setReaderReviewEnabled] = useState(true);
   const [readerPersona, setReaderPersona] = useState("");
   const [readerSlot, setReaderSlot] = useState<WorkflowModelSlot | null>(null);
@@ -674,7 +677,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     );
 
     setWorkflowType("planning");
-    setDocumentType("rfc");
+    setDocumentType(DEFAULT_WORKFLOW_DOCUMENT_TYPE);
     setReaderReviewEnabled(true);
     setReaderPersona("");
     setReaderSlot(null);

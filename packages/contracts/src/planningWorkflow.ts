@@ -129,6 +129,9 @@ export const WorkflowBranch = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   authorFormatRepairAttempts: Schema.optional(Schema.Number).pipe(
     Schema.withDecodingDefault(() => 0),
   ),
@@ -148,6 +151,9 @@ export const WorkflowMerge = Schema.Struct({
   approvedPlanId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   status: WorkflowMergeStatus,
   error: Schema.NullOr(Schema.String),
+  rejectedDocumentTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   formatRepairAttempts: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });

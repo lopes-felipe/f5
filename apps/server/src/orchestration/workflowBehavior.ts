@@ -231,6 +231,6 @@ export function documentWorkflowCreateInvariant(input: {
   }
   if (!input.documentType) return "Document workflows require a document type.";
   if (input.requirementPrompt.length > DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS)
-    return "Document briefs must be at most 24,000 characters.";
+    return `Document briefs must be at most ${DOCUMENT_WORKFLOW_BRIEF_MAX_CHARS.toLocaleString("en-US")} characters.`;
   return null;
 }

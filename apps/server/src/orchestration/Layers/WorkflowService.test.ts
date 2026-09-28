@@ -603,8 +603,9 @@ async function createHarness(
     acpHardeningEnabled: false,
   } satisfies ServerConfigShape;
 
+  const getReadModel = vi.fn(() => Effect.succeed(snapshot));
   const engine: OrchestrationEngineShape = {
-    getReadModel: () => Effect.succeed(snapshot),
+    getReadModel,
     readEvents: () => Stream.empty,
     dispatch: (command) =>
       Effect.sync(() => {
@@ -738,6 +739,7 @@ async function createHarness(
 
   return {
     service,
+    getReadModel,
     dispatched,
     generateThreadTitle,
     createWorktree,
@@ -936,6 +938,7 @@ describe("WorkflowService", () => {
         await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id })),
       ).toEqual({ status: "started" });
       expect(turnStartsForThread(harness.dispatched, target)).toHaveLength(1);
+      expect(turnStartsForThread(harness.dispatched, target)[0]!.message.text).toContain(error);
       const next = harness.getSnapshot().planningWorkflows[0]!;
       expect(
         stage === "merge"
@@ -1302,6 +1305,222 @@ describe("WorkflowService", () => {
     expect(
       turnStartsForThread(harness.dispatched, base.branchA.authorThreadId)[0]!.message.text,
     ).toContain(actualReview);
+  });
+  it.each(["authoring", "merge"] as const)(
+    "recovers an accepted document %s turn requested before its session error",
+    async (stage) => {
+      for (const finishesBeforeRetry of [false, true]) {
+        const base = documentWorkflow({ readerReviewEnabled: false });
+        const mergeId = ThreadId.makeUnsafe("accepted-document-merge");
+        const target = stage === "merge" ? mergeId : base.branchA.authorThreadId;
+        const failedAt = new Date(Date.parse(NOW) + 1000).toISOString();
+        const finishedAt = new Date(Date.parse(NOW) + 2000).toISOString();
+        const workflow = {
+          ...base,
+          branchA:
+            stage === "authoring"
+              ? {
+                  ...base.branchA,
+                  status: "error" as const,
+                  errorStage: "authoring" as const,
+                  error: "Provider disconnected",
+                  updatedAt: failedAt,
+                }
+              : base.branchA,
+          branchB:
+            stage === "authoring"
+              ? { ...base.branchB, status: "authoring" as const }
+              : base.branchB,
+          merge:
+            stage === "merge"
+              ? {
+                  ...base.merge,
+                  threadId: mergeId,
+                  status: "error" as const,
+                  error: "Provider disconnected",
+                  updatedAt: failedAt,
+                }
+              : base.merge,
+        };
+        const completed = completedDocumentThread(
+          target,
+          "accepted-document-turn",
+          documentMarkdown,
+        );
+        const active = {
+          ...completed,
+          latestTurn: { ...completed.latestTurn!, state: "running" as const, completedAt: null },
+          proposedPlans: [],
+          messages: [],
+          session: {
+            threadId: target,
+            status: "running" as const,
+            providerName: "codex",
+            runtimeMode: "full-access" as const,
+            activeTurnId: TurnId.makeUnsafe("accepted-document-turn"),
+            lastError: null,
+            updatedAt: NOW,
+          },
+        };
+        const otherThreads =
+          stage === "merge"
+            ? [
+                completedDocumentThread(
+                  base.branchA.authorThreadId,
+                  "revision-a",
+                  documentMarkdown,
+                ),
+                completedDocumentThread(
+                  base.branchB.authorThreadId,
+                  "revision-b",
+                  documentMarkdown,
+                ),
+              ]
+            : [];
+        harness = await createHarness(
+          makeReadModel({
+            workflow,
+            threads: [
+              ...otherThreads,
+              finishesBeforeRetry
+                ? {
+                    ...completed,
+                    latestTurn: { ...completed.latestTurn!, completedAt: finishedAt },
+                  }
+                : active,
+            ],
+          }),
+          {
+            recheckDelivery: (threadId) =>
+              Effect.succeed(makeProviderTurnDelivery(threadId, "accepted")),
+          },
+        );
+        await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+        expect(turnStartsForThread(harness.dispatched, target)).toHaveLength(0);
+        if (!finishesBeforeRetry) {
+          await harness.start();
+          const at = new Date(Date.now() + 1000).toISOString();
+          harness.setSnapshot({
+            ...harness.getSnapshot(),
+            threads: [
+              ...otherThreads,
+              { ...completed, latestTurn: { ...completed.latestTurn!, completedAt: at } },
+            ],
+          });
+          await harness.emit(
+            makeEvent(
+              "thread.turn-processing-quiesced",
+              {
+                threadId: target,
+                turnId: TurnId.makeUnsafe("accepted-document-turn"),
+                processingQuiescedAt: at,
+              },
+              at,
+            ),
+          );
+          await waitFor(() => {
+            const current = harness!.getSnapshot().planningWorkflows[0]!;
+            return stage === "merge"
+              ? current.merge.status === "manual_review"
+              : current.branchA.status === "plan_saved";
+          });
+        }
+        const next = harness.getSnapshot().planningWorkflows[0]!;
+        expect(stage === "merge" ? next.merge.status : next.branchA.status).toBe(
+          stage === "merge" ? "manual_review" : "plan_saved",
+        );
+        expect(turnStartsForThread(harness.dispatched, target)).toHaveLength(0);
+        await harness.dispose();
+        harness = null;
+      }
+    },
+  );
+
+  it("ignores streamed and user messages before reading workflow state, and never rechecks active polish", async () => {
+    const mergeId = ThreadId.makeUnsafe("streaming-polish");
+    const readerId = ThreadId.makeUnsafe("streaming-reader");
+    const workflow = markPolishRequested(
+      markDocumentMergeDrafted(
+        documentWorkflow({ merge: { ...makeWorkflow().merge, threadId: mergeId } }),
+        { turnId: "draft", draftPlanId: "plan-draft", readerThreadId: readerId, updatedAt: NOW },
+      ),
+      NOW,
+    );
+    const draft = completedDocumentThread(mergeId, "draft", documentMarkdown);
+    const active = {
+      ...draft,
+      latestTurn: {
+        ...draft.latestTurn!,
+        turnId: TurnId.makeUnsafe("polish"),
+        state: "running" as const,
+        completedAt: null,
+      },
+      session: {
+        threadId: mergeId,
+        status: "running" as const,
+        providerName: "codex",
+        runtimeMode: "full-access" as const,
+        activeTurnId: TurnId.makeUnsafe("polish"),
+        lastError: null,
+        updatedAt: NOW,
+      },
+    };
+    const recheck = vi.fn<ProviderTurnDeliveryWorkerShape["recheck"]>(() =>
+      Effect.fail(new Error("Should not recheck active polish")),
+    );
+    harness = await createHarness(makeReadModel({ workflow, threads: [active] }), {
+      recheckDelivery: recheck,
+    });
+    await harness.start();
+    await harness.drain();
+    const reads = harness.getReadModel.mock.calls.length;
+    for (const threadId of [mergeId, ThreadId.makeUnsafe("unrelated")]) {
+      for (let i = 0; i < 20; i++)
+        await harness.emit(
+          makeEvent("thread.message-sent", {
+            threadId,
+            messageId: MessageId.makeUnsafe(`delta-${threadId}-${i}`),
+            role: i % 2 === 0 ? "assistant" : "user",
+            text: "token",
+            attachments: [],
+            streaming: i % 2 === 0,
+            turnId: TurnId.makeUnsafe("polish"),
+            createdAt: NOW,
+            updatedAt: NOW,
+          }),
+        );
+    }
+    await harness.drain();
+    expect(harness.getReadModel.mock.calls.length).toBe(reads);
+    await harness.emit(
+      makeEvent("thread.message-sent", {
+        threadId: mergeId,
+        messageId: MessageId.makeUnsafe("finished-message"),
+        role: "assistant",
+        text: "Still processing",
+        attachments: [],
+        streaming: false,
+        turnId: TurnId.makeUnsafe("polish"),
+        createdAt: NOW,
+        updatedAt: NOW,
+      }),
+    );
+    await harness.drain();
+    await waitFor(() => harness!.getReadModel.mock.calls.length > reads);
+    expect(harness.getReadModel.mock.calls.length).toBe(reads + 2);
+    expect(recheck).not.toHaveBeenCalled();
+    expect(harness.getSnapshot().planningWorkflows[0]!.readerPass?.status).toBe("polishing");
+  });
+
+  it("does not substitute another turn's reply for a missing pinned review", () => {
+    const thread = completedDocumentThread(
+      ThreadId.makeUnsafe("review"),
+      "other-turn",
+      "Unrelated reply",
+      NOW,
+      false,
+    );
+    expect(reviewFeedbackForPinnedTurn(thread, "missing-turn", null)).toBeNull();
   });
   it("creates document authors read-only with a distinct default reader and no worktree", async () => {
     harness = await createHarness(makeReadModel({}));
@@ -1761,6 +1980,17 @@ describe("WorkflowService", () => {
         "message-review",
       )?.text,
     ).toContain("Detailed review");
+    const recovered = reviewFeedbackForPinnedTurn(
+      {
+        ...thread,
+        messages: [{ ...thread.messages[0]!, text: "Captured.", reasoningText: "Evidence" }],
+      },
+      "review",
+      "message-review",
+    );
+    expect(recovered?.text).toContain("Detailed review");
+    expect(recovered?.text).toContain("## Reviewer reasoning\n\nEvidence");
+    expect(recovered?.source).toBe("combined");
     const text = "Longer independent feedback with detailed reasoning. ".repeat(5);
     expect(
       reviewFeedbackForPinnedTurn(
