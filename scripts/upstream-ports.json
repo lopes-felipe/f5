@@ -357,10 +357,11 @@
     {
       "upstreamSha": "052c7ae53e46c705d5fd5dfa995275bc3100744e",
       "subject": "feat(chat): show provider thinking traces (#11784)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(chat): show provider thinking traces. Reimplement in f5; not yet delivered.",
+      "reason": "ACP agent_thought_chunk uses the existing reasoning stream for Cursor, Grok and Antigravity.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AcpRuntimeModel.ts:660"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "053affbed2659f90cd1b1efaaa7a75865c4131c7",
@@ -446,10 +447,15 @@
     {
       "upstreamSha": "06336460c9988f29c71e839c4c9c840c4552e077",
       "subject": "feat(providers): add Google Antigravity via the official ACP agent (#9348)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(providers): add Google Antigravity via the official ACP agent. Reimplement in f5; not yet delivered.",
+      "reason": "F5-native Antigravity driver, pinned explicit installation, isolated OAuth, native requests, model discovery, attachments and gated native compaction.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:30",
+        "apps/server/src/provider/AntigravityInstallation.test.ts:33",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "063ed7120a17de65fcd5bd835b5c7c4e19536037",
@@ -512,10 +518,14 @@
     {
       "upstreamSha": "06de9e90ab0832727968c58ce72282b94a95ae17",
       "subject": "fix(server): keep previously used providers working after upgrades (#8176)",
-      "reason": "Phase 4: fix(server): keep previously used providers working after upgrades. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 preserves enabled-by-default decoding for every pre-existing provider and persisted instance configuration; only the newly introduced Antigravity driver defaults off.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "packages/contracts/src/settings.ts:103",
+        "packages/contracts/src/settings.ts:138"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "074bcd6dc897f9c28b1bbc04737daa6ee3d8e40f",
@@ -859,10 +869,14 @@
     {
       "upstreamSha": "0aae1e2ad7ab174004f39746eb4c72b905de932d",
       "subject": "fix(antigravity): discover legacy workspace skills (#9410)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): discover legacy workspace skills. Reimplement in f5; not yet delivered.",
+      "reason": "Discover current and legacy Antigravity project skill roots, including flat Markdown files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:447",
+        "apps/server/src/orchestration/projectSkills.test.ts:246"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "0acf05f4f561b873853587f8629ca691b18a613a",
@@ -902,10 +916,14 @@
     {
       "upstreamSha": "0b83045d00d88d0a0b0866fe4942a50a41a08471",
       "subject": "feat(providers): expose native slash commands across clients (#11519)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(providers): expose native slash commands across clients. Reimplement in f5; not yet delivered.",
+      "reason": "ACP command notifications reach the composer; OpenCode SDK native commands acknowledge their matching user-message receipt before generation completes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:674",
+        "apps/server/src/provider/Layers/GrokAdapter.test.ts:321"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "0ba06a122bc73f705bfc18875366b4eeb1160992",
@@ -1656,10 +1674,14 @@
     {
       "upstreamSha": "15fea6c5f40331c8325f33bd08b2dcbf924e935a",
       "subject": "fix(providers): discover workspace skills everywhere (#9180)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(providers): discover workspace skills everywhere. Reimplement in f5; not yet delivered.",
+      "reason": "Scan supported project/user skill roots and expose discovered skills across provider composers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:447",
+        "apps/web/src/components/ChatView.logic.ts:80"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "160c76c6d1c5ab78441e21503cd10e7942b917f6",
@@ -2496,10 +2518,14 @@
     {
       "upstreamSha": "2120fbc185737b71f09de020b95224f9e636d1e5",
       "subject": "fix(web): avoid duplicate Antigravity install status (#9419)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): avoid duplicate Antigravity install status. Reimplement in f5; not yet delivered.",
+      "reason": "F5 uses one owner-scoped account panel and one explicit install job; it does not implement the upstream duplicate setup-status surfaces.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/web/src/components/settings/ProviderAccountPanel.tsx:110",
+        "apps/server/src/profiles/ProviderAccountService.ts:179"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "2152d44de2db30a6bae965b0afd30be080e5c872",
@@ -2632,10 +2658,11 @@
     {
       "upstreamSha": "2271a27dad1205b403a66af01461f856986e5064",
       "subject": "fix(server): keep Homebrew mise shims manual-only (#10085)",
-      "reason": "Phase 4: fix(server): keep Homebrew mise shims manual-only. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 provider maintenance is advisory only and never automatically executes Homebrew or mise updates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/Layers/ProviderUpdateAdvisorLive.ts:60"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "2274444e92275fda2033de6636e3143ac3599ffb",
@@ -2883,10 +2910,11 @@
     {
       "upstreamSha": "2675e3c70327719a99af4ae6e53e7b74fb8a9be0",
       "subject": "fix(antigravity): keep subagent batches active after launch (#9579)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): keep subagent batches active after launch. Reimplement in f5; not yet delivered.",
+      "reason": "A completed start_subagent tool is a launch receipt, not completion of its batch; keep task activity until the parent turn ends.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityTasks.test.ts:14"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "26894dda7b6d78c5863ccec6581caf0ec7f4843b",
@@ -3146,10 +3174,11 @@
     {
       "upstreamSha": "2a47fc905a7a1054823919980f625b7cd869f1c1",
       "subject": "fix(skills): support unicode currency symbols as skill aliases (#12098)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(skills): support unicode currency symbols as skill aliases. Reimplement in f5; not yet delivered.",
+      "reason": "Unicode currency symbols open the skill picker while numeric monetary tokens are excluded.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/composer-logic.test.ts:321"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "2a7a449cca3c7760b689a54b3aa02476a206dbc9",
@@ -4528,10 +4557,14 @@
     {
       "upstreamSha": "3bf74eb6dce3e1372cfafc2ca84825f4b13bae6a",
       "subject": "fix(claude): report usage limits on retried turns (#10549)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): report usage limits on retried turns. Reimplement in f5; not yet delivered.",
+      "reason": "Track rejected windows and warning identities per Claude turn, including retries, and clear recovered windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502",
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:174"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "3c0665543f0e31db1e3425d4fcf9f4aea295a8ce",
@@ -4616,10 +4649,11 @@
     {
       "upstreamSha": "3d00cfd5a710a58bf108de7a66fbe00a1420cc78",
       "subject": "fix(claude): name the expired login or usage limit instead of a generic API error (#10321)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): name the expired login or usage limit instead of a generic API error. Reimplement in f5; not yet delivered.",
+      "reason": "Explain expired Claude login with /login and replace generic failed-result text with known usage-window evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "3d32797f6f4614205debf8a61f09e950f5f9a81c",
@@ -6529,10 +6563,11 @@
     {
       "upstreamSha": "58ba5594439c984b08d13b6d4efb5407adb06943",
       "subject": "fix(server): bound OpenCode skill discovery output (#7675)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): bound OpenCode skill discovery output. Reimplement in f5; not yet delivered.",
+      "reason": "F5 discovers OpenCode skills through a time-bounded SDK call rather than CLI pipe output, and retains only skill metadata, never document content.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:338"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "58f89818e3ada7f680bede396d41ed27eb618203",
@@ -7299,10 +7334,14 @@
     {
       "upstreamSha": "6349a0e68a958cc51b7b5198683c1d1db88b8d28",
       "subject": "fix(antigravity): distinguish session initialization auth failures (#9919)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): distinguish session initialization auth failures. Reimplement in f5; not yet delivered.",
+      "reason": "F5 account authentication and thread initialization are separate operations. Login does not create a session or load models, so session initialization failure cannot be misreported as failed Google authentication.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/server/src/profiles/AntigravityAccountProcess.ts:39",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "6365919f2e5bcfb4fa4020b95e19af26ae40979f",
@@ -9131,10 +9170,14 @@
     {
       "upstreamSha": "7e65b226e7a74ecd13bf8b4738ea6bdd096cb1ba",
       "subject": "feat(auth): share provider sign-in flows and credential bindings (#12983)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(auth): share provider sign-in flows and credential bindings. Reimplement in f5; not yet delivered.",
+      "reason": "Reuse F5 owner-scoped account jobs and exclusive OAuth leases for Antigravity installation, sign-in and logout while retaining per-profile and per-instance credentials.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/profiles/ProviderAccountService.ts:179",
+        "apps/server/src/profiles/ProviderAccountService.test.ts:180"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "7e7cd32463b528838cb10ef6b89ef6ceac1f7a4c",
@@ -9253,10 +9296,14 @@
     {
       "upstreamSha": "80a14b6588f0e856983e6d10002cde9e00e9d3e2",
       "subject": "fix(server): discover project skills for Codex and OpenCode (#8778)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): discover project skills for Codex and OpenCode. Reimplement in f5; not yet delivered.",
+      "reason": "Expose project .agents/.codex/.opencode skill definitions to Codex and OpenCode with explicit instruction paths when absent from native inventories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:447",
+        "apps/web/src/components/ChatView.logic.ts:246"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "80b53730d1e821563e5c348fdf4f5fc7616a49f7",
@@ -10006,10 +10053,14 @@
     {
       "upstreamSha": "8b033de48247086c1b6c6968ce7cf33b358a1ec5",
       "subject": "fix(clients): dedupe skills in composer menus (#8043)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(clients): dedupe skills in composer menus. Reimplement in f5; not yet delivered.",
+      "reason": "Deduplicate skill and command names across native and filesystem inventories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:80",
+        "apps/server/src/provider/supportedSlashCommands.ts:14"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "8b1ea4dd2465f3cf3cfa02d6878beaa1ec22e71a",
@@ -10086,10 +10137,14 @@
     {
       "upstreamSha": "8c18b5bb21a5349fbadba8c77456ea34c41b7339",
       "subject": "fix(antigravity): stop health checks from filling the disk with _MEI folders (#12008)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): stop health checks from filling the disk with _MEI folders. Reimplement in f5; not yet delivered.",
+      "reason": "Antigravity status checks only inspect files; live processes use scoped temporary directories cleaned after shutdown.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:158"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "8c3b5bef17a637bf53f297189350359790ef7afb",
@@ -10279,10 +10334,14 @@
     {
       "upstreamSha": "8ea52c8f2f4361e875d72ab30d72d37cfae4d87f",
       "subject": "fix(antigravity): update managed runtime to 1.1.1 (#9509)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): update managed runtime to 1.1.1. Reimplement in f5; not yet delivered.",
+      "reason": "Pin official agy_acp_server_1.1.1 assets with exact archive/executable sizes and SHA-256 verification.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/antigravityRelease.ts:1",
+        "apps/server/src/provider/AntigravityInstallation.ts:110"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "8eb1f6e74869130b7602e0c6b0ab56b7805c0889",
@@ -10707,10 +10766,14 @@
     {
       "upstreamSha": "940e8233c227a186044078e99e45e1933eb525e4",
       "subject": "fix(claude): surface usage-limit pauses in the thread (#7165)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): surface usage-limit pauses in the thread. Reimplement in f5; not yet delivered.",
+      "reason": "Show deduplicated Claude rejected-window warnings with reset timestamps without warning on available overage.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/usageLimitMessages.ts:15",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "941acb4f919bcef337d4d9e1623101bdc30d3616",
@@ -11384,10 +11447,14 @@
     {
       "upstreamSha": "9da0fab08e0ee444affdfb4916e294c579158bb6",
       "subject": "feat(web): redesign skills in `$` menu and in `/` menu (#8009)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(web): redesign skills in `$` menu and in `/` menu. Reimplement in f5; not yet delivered.",
+      "reason": "F5-native skill picker is available through currency triggers and alongside slash commands, includes enabled native inventories, and keeps existing composer layout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:80",
+        "apps/web/src/components/ChatView.tsx:2294"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "9dbdcece5f488c66f6b9ac516b610f45bbbb676a",
@@ -12204,10 +12271,14 @@
     {
       "upstreamSha": "ab67795dde448a3608d8689f7ad1975bb977e5a9",
       "subject": "fix(antigravity): load user skills from ~/.gemini for every project (#10257)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): load user skills from ~/.gemini for every project. Reimplement in f5; not yet delivered.",
+      "reason": "Expose user Gemini skills from both supported global directories while linking only skill directories into the isolated runtime home.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:113",
+        "apps/server/src/orchestration/projectSkills.ts:447"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "ab8182cb4e5338caf93ee90a7bd57351a0c77283",
@@ -12354,10 +12425,11 @@
     {
       "upstreamSha": "ad47d2347c6917f7db33e6e3902e1e8e5d5281ec",
       "subject": "fix(claude): discover repo-local .agents/skills in skill discovery (#5488)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): discover repo-local .agents/skills in skill discovery. Reimplement in f5; not yet delivered.",
+      "reason": "Include repository and user .agents/skills for Claude discovery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/orchestration/projectSkills.ts:447"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "adcd90858c3bfece59095465d2f49860ba3dcea9",
@@ -13287,10 +13359,14 @@
     {
       "upstreamSha": "baf67b6e3accd48d510fd0d39a4e6b978a1eea80",
       "subject": "fix(antigravity): keep model choices up to date (#9511)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): keep model choices up to date. Reimplement in f5; not yet delivered.",
+      "reason": "Read Antigravity model choices from the live config reference on status refresh and retain explicit custom models.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:54",
+        "apps/server/src/provider/Layers/AntigravityProvider.test.ts:24"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
@@ -13319,10 +13395,11 @@
     {
       "upstreamSha": "bba79cc254b65969bde6b6bfc3032c3b5b9316ae",
       "subject": "fix(web): hide invalid slash skill completions (#8904)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): hide invalid slash skill completions. Reimplement in f5; not yet delivered.",
+      "reason": "Only valid, host-compatible, non-reserved skill names become slash completions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "bbd5cc03231b8b831b44bdbd6e62bf736391cb1f",
@@ -13399,10 +13476,14 @@
     {
       "upstreamSha": "bc918e74ace5dbb4fe1ce73b59d06a9ca1be9ed3",
       "subject": "fix(server): discover project skills for Claude (#9210)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): discover project skills for Claude. Reimplement in f5; not yet delivered.",
+      "reason": "Keep project-scoped Claude skills, project-over-user precedence and explicit source-file dispatch.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:447",
+        "apps/web/src/components/ChatView.logic.ts:246"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "bc9428a06a60db59cfddb99c6d7044a9db47eb1c",
@@ -14284,10 +14365,11 @@
     {
       "upstreamSha": "c7dc3cbd068a93c9fb5027df7bea719d16e4ffbe",
       "subject": "fix(server): keep mise-owned npm packages manual-only (#9927)",
-      "reason": "Phase 4: fix(server): keep mise-owned npm packages manual-only. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 does not run automated npm provider maintenance, including mise-owned packages; the update advisor only supplies suggestions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/Layers/ProviderUpdateAdvisorLive.ts:60"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "c7e6d711d3f2982e54854258987509e8f69b31cd",
@@ -14345,10 +14427,14 @@
     {
       "upstreamSha": "c8872fd22aadb8d155f1bedc10576d8314f93e56",
       "subject": "fix(server): keep the Antigravity Google sign-in across server restarts (#10244)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): keep the Antigravity Google sign-in across server restarts. Reimplement in f5; not yet delivered.",
+      "reason": "Read the profile-local native token on startup instead of replacing persisted login state with an unauthenticated probe.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
+        "apps/server/src/profiles/ProviderAccountService.test.ts:180"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "c89e3e12a41e13e09e0103d08a41d0688a99fb49",
@@ -14764,10 +14850,14 @@
     {
       "upstreamSha": "cf251c3bd00ff0e0cc90a78b20c043cf58f330ad",
       "subject": "Add OpenCode skill discovery (#3154)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): Add OpenCode skill discovery. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode SDK skill inventory feeds configured runtime commands and the composer; provider inventories also appear in the skill picker.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1400",
+        "apps/web/src/components/ChatView.logic.ts:80"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "cf5c9948c895e120965165b7b2b643ca275c5315",
@@ -15125,10 +15215,14 @@
     {
       "upstreamSha": "d487dfbf46be344e818725be70ee04be2436bfb4",
       "subject": "fix(web): resume Antigravity threads without repeated sign-in (#9647)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): resume Antigravity threads without repeated sign-in. Reimplement in f5; not yet delivered.",
+      "reason": "Resume Antigravity using session/resume and the existing isolated account home; expired sign-in directs the user to account setup instead of launching hidden login.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/acp/AcpSessionRuntime.ts:686",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:84"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "d4ba2a1f11498eae9683f6dc95a08b1c17c29765",
@@ -15237,10 +15331,14 @@
     {
       "upstreamSha": "d64335bb5913c21869633a4236d9409911e3da52",
       "subject": "fix(codex): name the usage limit and its reset instead of relaying \"out of credits\" (#10473)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(codex): name the usage limit and its reset instead of relaying \"out of credits\". Reimplement in f5; not yet delivered.",
+      "reason": "Name Codex main usage windows and reset times, preserve partial updates and exclude Spark snapshots.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/codexErrors.ts:35",
+        "apps/server/src/provider/usageLimitMessages.test.ts:57"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "d67157a09c28883d7856d03d2b1d3aecdbf1b890",
@@ -15449,10 +15547,14 @@
     {
       "upstreamSha": "d92dca74eb7b7c6068619752f5b9a55c0e36f352",
       "subject": "fix(web): resume imported custom-provider threads (#10184)",
-      "reason": "Phase 4: fix(web): resume imported custom-provider threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Resolve imported histories through their configured/live provider instance before model inference, preserving custom instance routing.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:893",
+        "apps/web/src/components/ChatView.logic.test.ts:1184"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "d937e30759ceae421bf3cc1b84414de4b67df76c",
@@ -15990,10 +16092,11 @@
     {
       "upstreamSha": "e01c153c18a94a2aa33df7115c6cfee1eb09880f",
       "subject": "fix(antigravity): forward Google sign-in URLs from browser helper (#9425)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): forward Google sign-in URLs from browser helper. Reimplement in f5; not yet delivered.",
+      "reason": "The isolated browser helper returns validated Google OAuth URLs to the owning account job rather than opening a server-side browser.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:137"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "e022fa430edbf8d448efe0f34303ff290ebb3dc0",
@@ -16502,10 +16605,11 @@
     {
       "upstreamSha": "e723501227b7d1d0b960eb8fcfd9c8d6099d805e",
       "subject": "feat(composer): list skills with slash commands (#7737)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(composer): list skills with slash commands. Reimplement in f5; not yet delivered.",
+      "reason": "Combine native slash commands with discovered project and provider skills in the composer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "e74c668d786ffc14f40a9540cd3aede02ba5d62e",
@@ -16691,10 +16795,11 @@
     {
       "upstreamSha": "ea71a19d4181ce13b0e8f374f45ba9237ee4a9ce",
       "subject": "fix(claude): skills picked from the composer now run (#9128)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): skills picked from the composer now run. Reimplement in f5; not yet delivered.",
+      "reason": "Composer skill selections retain structured invocation metadata and explicit source paths when the provider has no matching native skill.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:182"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "ea8c9e5ca3ace89cbf6cf0a2aa03047aab1d3ef9",
@@ -16725,10 +16830,15 @@
     {
       "upstreamSha": "ead4ce52a1624d9c55461f61524580978fc8b719",
       "subject": "fix(grok): improve skills, plans, usage, and turn reliability (#8358)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(grok): improve skills, plans, usage, and turn reliability. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 4 delivers Grok skill discovery, native commands and reasoning, retaining Phase 1c lifecycle fixes. This multi-area commit remains open for the Usage readers/dashboard work explicitly assigned to Phase 11.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "evidence": [
+        "apps/server/src/provider/Drivers/GrokSkills.test.ts:6",
+        "apps/server/src/provider/Layers/GrokAdapter.test.ts:54"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"],
+      "plannedWorkstream": "11"
     },
     {
       "upstreamSha": "eadeaf228267be215a2e9486f16b876d703dcccc",
@@ -16768,10 +16878,11 @@
     {
       "upstreamSha": "eb334ca57448742139fb8ec38fb397c1e51c45c5",
       "subject": "fix(antigravity): handle native sign-in URLs on stderr (#9514)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): handle native sign-in URLs on stderr. Reimplement in f5; not yet delivered.",
+      "reason": "Recognize validated native OAuth links on stderr as well as helper/stdout notices; redact URLs from termination diagnostics.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:204"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "eb6c170c42eaec20d063ce80ff810e97d4dddb37",
@@ -17265,10 +17376,14 @@
     {
       "upstreamSha": "f193a6863c494fdfa36a1ef3132e42a7d7b42926",
       "subject": "fix(server): bypass owned caches on explicit provider refresh (#13109)",
-      "reason": "Phase 4: fix(server): bypass owned caches on explicit provider refresh. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Explicit F5 refresh already invalidates instance-owned Claude capability/account caches before snapshot refresh; Cursor automatic status intentionally avoids ACP model probes, and F5 has no upstream ModelManifest cache.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderRegistry.ts:200",
+        "apps/server/src/provider/Drivers/ClaudeProbeCache.ts:55"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "f1a08116f9c6f98d933d53fa897be3d8e3ac1e03",
@@ -17357,10 +17472,14 @@
     {
       "upstreamSha": "f25e4428961982e3935300cfd3c78f7d0fac4ee9",
       "subject": "fix(antigravity): allow slow runtime startup during setup (#9510)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): allow slow runtime startup during setup. Reimplement in f5; not yet delivered.",
+      "reason": "Account jobs allow ten minutes for slow first startup/login and 45 minutes for explicit installation; passive status checks never start the native runtime.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/profiles/ProviderAccountService.ts:236",
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "f26198d799bb81bf754985d457a60f8a851ea895",
@@ -17764,10 +17883,11 @@
     {
       "upstreamSha": "f8a14b28ff80a92d8f4df9a9aa53bfacb8195199",
       "subject": "feat(antigravity): show subagent calls and results (#9515)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(antigravity): show subagent calls and results. Reimplement in f5; not yet delivered.",
+      "reason": "Show native Antigravity subagent launch/progress/failure without confusing MCP tools or treating launch receipts as completed agents.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityTasks.test.ts:14"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "f8b4c464b4760d73e0ece7e68011c738803d8b69",
