@@ -802,6 +802,25 @@ export function ProviderInstanceCard({
               />
             </div>
 
+            {driverKind === "antigravity" ? (
+              <label className="flex items-center justify-between border-t border-border/60 px-4 py-3 sm:px-5">
+                <span className="text-xs">Enable native /compact command</span>
+                <Switch
+                  checked={
+                    typeof instance.config === "object" &&
+                    instance.config !== null &&
+                    "nativeCompaction" in instance.config &&
+                    instance.config.nativeCompaction === true
+                  }
+                  onCheckedChange={(value) =>
+                    onUpdate({
+                      ...instance,
+                      config: nextConfigBlobWithValue(instance.config, "nativeCompaction", value),
+                    })
+                  }
+                />
+              </label>
+            ) : null}
             {driverOption?.fields.map((field) => (
               <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
                 <label htmlFor={`provider-instance-${instanceId}-${field.key}`} className="block">
@@ -825,7 +844,9 @@ export function ProviderInstanceCard({
               </div>
             ))}
 
-            {(driverKind === "codex" || driverKind === "claudeAgent") && (
+            {(driverKind === "codex" ||
+              driverKind === "claudeAgent" ||
+              driverKind === "antigravity") && (
               <ProviderAccountPanel instanceId={instanceId} driver={instance.driver} />
             )}
             {driverOption !== undefined ? (

@@ -61,6 +61,7 @@ export const ProviderModelOptions = Schema.Struct({
   cursor: Schema.optional(CursorModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   grok: Schema.optional(Schema.Struct({})),
+  antigravity: Schema.optional(Schema.Struct({})),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -206,6 +207,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   ],
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
+  antigravity: [{ slug: "antigravity-default", name: "Antigravity Default" }],
 } as const satisfies Record<ProviderKind, readonly ModelOption[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 export type ClaudeBuiltInModelSlug = ModelOptionsByProvider["claudeAgent"][number]["slug"];
@@ -219,6 +221,7 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
   cursor: "auto",
   opencode: "openai/gpt-5",
   grok: "grok-build",
+  antigravity: "antigravity-default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
@@ -233,6 +236,7 @@ export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
   cursor: "composer-2",
   opencode: "openai/gpt-5",
   grok: "grok-build",
+  antigravity: "antigravity-default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
@@ -241,6 +245,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   cursor: "composer-2",
   opencode: "openai/gpt-5",
   grok: "grok-build",
+  antigravity: "antigravity-default",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
@@ -306,6 +311,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
   },
   opencode: {},
   grok: {},
+  antigravity: {},
 } as const satisfies Record<ProviderKind, Record<string, ModelSlug>>;
 
 export const PROVIDER_DISPLAY_NAMES = {
@@ -314,6 +320,7 @@ export const PROVIDER_DISPLAY_NAMES = {
   cursor: "Cursor",
   opencode: "OpenCode",
   grok: "Grok",
+  antigravity: "Antigravity",
 } as const satisfies Record<ProviderKind, string>;
 
 export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
@@ -322,6 +329,7 @@ export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
   cursor: CURSOR_REASONING_OPTIONS,
   opencode: [],
   grok: [],
+  antigravity: [],
 } as const satisfies Record<ProviderKind, readonly ProviderReasoningEffort[]>;
 
 export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
@@ -330,4 +338,5 @@ export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
   cursor: "high",
   opencode: "high",
   grok: "high",
+  antigravity: "high",
 } as const satisfies Record<ProviderKind, ProviderReasoningEffort>;

@@ -2799,6 +2799,7 @@ describe("PROVIDER_OPTIONS", () => {
       { value: "cursor", label: "Cursor", available: true },
       { value: "opencode", label: "OpenCode", available: true },
       { value: "grok", label: "Grok", available: true },
+      { value: "antigravity", label: "Antigravity", available: true },
     ]);
     expect(claude).toEqual({
       value: "claudeAgent",

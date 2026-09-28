@@ -28,6 +28,11 @@ F5 needs at least one authenticated coding-agent provider on the machine running
 
 - F5 launches Claude sessions through the Claude Agent SDK, which discovers credentials from the standard Claude Code install locations.
 
+## Antigravity
+
+Enable Antigravity in Settings, explicitly install its pinned runtime, then sign in with Google.
+See [Antigravity setup and isolation](providers/antigravity.md). It is disabled by default.
+
 ## Windows executable overrides
 
 F5 launches provider arguments without a command shell so workspace paths and provider options are

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   GrokSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -249,6 +250,130 @@ it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) =>
 
       yield* adapter.stopSession(threadId);
       yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+});
+
+const AntigravityAdapterTestLayer = Layer.effect(
+  GrokAdapter,
+  Effect.gen(function* () {
+    const dir = yield* Effect.promise(() =>
+      mkdtemp(path.join(os.tmpdir(), "antigravity-acp-mock-")),
+    );
+    const wrapperPath = writeAcpWrapper(path.join(dir, "fake-antigravity"), mockAgentPath, {
+      env: { F5_ACP_ANTIGRAVITY_QUESTION: "1", F5_ACP_STARTUP_COMMANDS: "1" },
+    });
+    return yield* makeGrokAdapter(Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }), {
+      provider: "antigravity",
+      instanceId: ProviderInstanceId.make("antigravity"),
+    });
+  }),
+).pipe(
+  Layer.provideMerge(
+    ServerConfig.layerTest(
+      process.cwd(),
+      { prefix: "f5-agy-adapter-test-" },
+      { acpHardeningEnabled: true },
+    ),
+  ),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
+  it.effect("waits for the user's answer even in full-access mode", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("antigravity-question");
+      let question: Extract<ProviderRuntimeEvent, { type: "user-input.requested" }> | undefined;
+      const events: ProviderRuntimeEvent[] = [];
+      yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+            if (event.type === "user-input.requested") question = event;
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter
+        .sendTurn({ threadId, input: "Ask first", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => vi.waitFor(() => assert.ok(question)));
+      assert.equal(
+        events.some((event) => event.type === "turn.completed"),
+        false,
+      );
+      const request = question!;
+      yield* adapter.respondToUserInput(threadId, ApprovalRequestId.make(request.requestId!), {
+        interaction_test: "Development",
+      });
+      yield* Fiber.join(turn);
+      assert.equal(events.filter((event) => event.type === "user-input.resolved").length, 1);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+  it.effect("retains native commands published before session creation returns", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("startup-commands");
+      const configured: ProviderRuntimeEvent[] = [];
+      yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            configured.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "approval-required",
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            configured.some(
+              (event) =>
+                event.type === "session.configured" &&
+                JSON.stringify(event.payload).includes("Review changes"),
+            ),
+          ),
+        ),
+      );
+      assert.equal(
+        configured.some(
+          (event) =>
+            event.type === "session.configured" &&
+            JSON.stringify(event.payload).includes("Compact session"),
+        ),
+        false,
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+  it.effect("keeps native compaction disabled by default", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("antigravity-no-compact");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "/compact", attachments: [] })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      yield* adapter.stopSession(threadId);
     }),
   );
 });

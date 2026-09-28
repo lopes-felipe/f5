@@ -1,3 +1,4 @@
+import { checkAntigravityProviderStatus } from "./AntigravityProvider.ts";
 /**
  * HarnessValidationLive - On-demand harness validation checks.
  *
@@ -97,6 +98,8 @@ function connectivityTimeoutMessage(provider: ProviderKind): string {
       return "OpenCode one-off prompt query timed out.";
     case "grok":
       return "Grok one-off prompt query timed out.";
+    case "antigravity":
+      return "Antigravity one-off prompt query timed out.";
   }
 }
 
@@ -242,6 +245,8 @@ function providerDisplayName(provider: ProviderKind): string {
       return "OpenCode";
     case "grok":
       return "Grok";
+    case "antigravity":
+      return "Antigravity";
   }
 }
 
@@ -417,6 +422,14 @@ export const HarnessValidationLive = Layer.effect(
       readonly providerOptions?: ProviderStartOptions;
     }) => {
       switch (params.provider) {
+        case "antigravity":
+          return checkAntigravityProviderStatus(
+            params.settings.providers.antigravity,
+            serverConfig.stateDir,
+            "antigravity",
+          ).pipe(
+            Effect.map((snapshot) => providerSnapshotToPreflightStatus("antigravity", snapshot)),
+          );
         case "codex": {
           if (!params.settings.providers.codex.enabled) {
             return Effect.succeed(providerDisabledPreflight("codex"));

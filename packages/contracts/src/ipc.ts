@@ -481,7 +481,7 @@ export interface NativeApi {
     remove: (input: { profileId: ProfileId }) => Promise<void>;
     loginStart: (input: {
       instanceId: import("./providerInstance").ProviderInstanceId;
-      method?: "browser" | "device-code";
+      method?: "browser" | "device-code" | "install";
     }) => Promise<{ handle: string }>;
     input: (input: { handle: string; data: string }) => Promise<void>;
     cancel: (input: { handle: string }) => Promise<void>;

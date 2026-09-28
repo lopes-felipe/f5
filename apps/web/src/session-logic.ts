@@ -74,6 +74,7 @@ export const PROVIDER_OPTIONS: Array<{
   { value: "cursor", label: "Cursor", available: true },
   { value: "opencode", label: "OpenCode", available: true },
   { value: "grok", label: "Grok", available: true },
+  { value: "antigravity", label: "Antigravity", available: true },
 ];
 
 export interface WorkLogEntry {

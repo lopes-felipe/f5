@@ -4,6 +4,7 @@ import {
   type CanonicalRequestType,
   type EventId,
   type ProviderApprovalDecision,
+  type ProviderApprovalOption,
   type ProviderKind,
   type ProviderRuntimeEvent,
   type RuntimeRequestId,
@@ -84,6 +85,7 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly requestId: RuntimeRequestId;
   readonly permissionRequest: AcpPermissionRequest;
   readonly detail: string;
+  readonly approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
   readonly args: unknown;
   readonly source: AcpAdapterRawSource;
   readonly method: string;
@@ -99,6 +101,7 @@ export function makeAcpRequestOpenedEvent(input: {
     payload: {
       requestType: canonicalRequestTypeFromAcpKind(input.permissionRequest.kind),
       detail: input.detail,
+      ...(input.approvalOptions ? { approvalOptions: input.approvalOptions } : {}),
       args: input.args,
     },
     raw: {
@@ -220,6 +223,7 @@ export function makeAcpContentDeltaEvent(input: {
   readonly turnId: TurnId | undefined;
   readonly itemId?: string;
   readonly text: string;
+  readonly streamKind?: "assistant_text" | "reasoning_text";
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
   return {
@@ -230,7 +234,7 @@ export function makeAcpContentDeltaEvent(input: {
     turnId: input.turnId,
     ...(input.itemId ? { itemId: RuntimeItemId.make(input.itemId) } : {}),
     payload: {
-      streamKind: "assistant_text",
+      streamKind: input.streamKind ?? "assistant_text",
       delta: input.text,
     },
     raw: {

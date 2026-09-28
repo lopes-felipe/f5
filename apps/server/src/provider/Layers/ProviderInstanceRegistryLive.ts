@@ -157,7 +157,7 @@ const buildEntry = <R>(input: {
     if (
       profileConfig._tag === "Some" &&
       profileConfig.value.profile?.isDefault === false &&
-      !["codex", "claudeAgent"].includes(entry.driver)
+      !["codex", "claudeAgent", "antigravity"].includes(entry.driver)
     )
       return {
         kind: "unavailable" as const,

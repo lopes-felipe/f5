@@ -45,6 +45,31 @@ describe("projectSkills", () => {
     }
   });
 
+  it("discovers provider directories and prefers a project skill over a user skill", async () => {
+    const root = createTempRoot();
+    tempRoots.push(root);
+    const userHome = path.join(root, "home");
+    const workspaceRoot = path.join(root, "repo");
+    writeSkill(
+      userHome,
+      [".codex", "skills", "review"],
+      "---\ndescription: User review\n---\nReview.",
+    );
+    writeSkill(
+      workspaceRoot,
+      [".agents", "skills", "review"],
+      "---\ndescription: Project review\n---\nReview.",
+    );
+    writeSkill(
+      workspaceRoot,
+      [".opencode", "skills", "deploy"],
+      "---\ndescription: Deploy\n---\nDeploy.",
+    );
+    const result = await runScan({ userHome, workspaceRoot });
+    expect(result.skills.filter((skill) => skill.commandName === "review")).toHaveLength(1);
+    expect(result.skills.find((skill) => skill.commandName === "review")?.scope).toBe("project");
+    expect(result.skills.some((skill) => skill.commandName === "deploy")).toBe(true);
+  });
   it("parses supported Claude skill frontmatter fields", () => {
     expect(
       parseClaudeSkillDocument({
@@ -217,5 +242,22 @@ description: Implement the approved plan.
       "project:implement",
       "user:research",
     ]);
+  });
+  it("discovers flat Antigravity skills and rejects oversized documents", async () => {
+    const root = createTempRoot();
+    tempRoots.push(root);
+    const workspaceRoot = path.join(root, "workspace");
+    const userHome = path.join(root, "home");
+    const skills = path.join(workspaceRoot, ".gemini", "skills");
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(
+      path.join(skills, "review.md"),
+      "---\ndescription: Review changes\n---\nReview the diff.",
+    );
+    writeSkill(workspaceRoot, [".agents", "skills", "huge"], "x".repeat(1024 * 1024 + 1));
+    const result = await runScan({ userHome, workspaceRoot });
+    expect(result.skills.map((skill) => skill.commandName)).toEqual(["review"]);
+    expect(result.skills[0]?.sourcePath).toBe(path.join(skills, "review.md"));
+    expect(result.warnings.some((warning) => warning.reason.includes("1 MiB"))).toBe(true);
   });
 });

@@ -18,6 +18,7 @@ export function runtimeModeCapabilities(provider: ProviderKind): ReadonlySet<Run
       return EDIT_MODES;
     case "cursor":
     case "grok":
+    case "antigravity":
       return BASIC_MODES;
   }
 }

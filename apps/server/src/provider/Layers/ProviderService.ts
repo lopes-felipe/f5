@@ -851,12 +851,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
           if (
-            resolvedProvider === "grok" &&
+            (resolvedProvider === "grok" || resolvedProvider === "antigravity") &&
             parsed.workflowExecutionProfile?.endsWith("readonly")
           ) {
             return yield* toValidationError(
               "ProviderService.startSession",
-              "Grok cannot enforce read-only workflow turns.",
+              `${resolvedProvider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
             );
           }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
@@ -1064,12 +1064,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           metricProvider = routed.adapter.provider;
           if (
-            routed.adapter.provider === "grok" &&
+            (routed.adapter.provider === "grok" || routed.adapter.provider === "antigravity") &&
             input.workflowExecutionProfile?.endsWith("readonly")
           ) {
             return yield* toValidationError(
               "ProviderService.sendTurn",
-              "Grok cannot enforce read-only workflow turns.",
+              `${routed.adapter.provider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
             );
           }
           metricModel = input.model;

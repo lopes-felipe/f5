@@ -28,7 +28,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   const approveDisabled = isResponding || !canApprove;
-  if (requestKind === "mcp-elicitation") {
+  if (requestKind === "mcp-elicitation" || approvalOptions?.length) {
     const options = approvalOptions?.length
       ? approvalOptions
       : [
@@ -48,6 +48,17 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
             {option.label}
           </Button>
         ))}
+        {options
+          .filter((option) => "warning" in option && option.warning)
+          .map((option) => (
+            <p
+              key={`warning:${option.decision}`}
+              role="note"
+              className="w-full text-xs text-muted-foreground"
+            >
+              {option.label}: {"warning" in option ? option.warning : undefined}
+            </p>
+          ))}
       </>
     );
   }

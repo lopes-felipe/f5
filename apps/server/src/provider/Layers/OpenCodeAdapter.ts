@@ -1,3 +1,4 @@
+import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
 import {
   EventId,
   type OpenCodeSettings,
@@ -13,7 +14,19 @@ import {
   type UserInputQuestion,
   type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
-import { Cause, Effect, Exit, Queue, Random, Ref, Scope, Stream, Schedule } from "effect";
+import {
+  Cause,
+  Deferred,
+  Fiber,
+  Effect,
+  Exit,
+  Queue,
+  Random,
+  Ref,
+  Scope,
+  Stream,
+  Schedule,
+} from "effect";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
@@ -63,6 +76,8 @@ type OpenCodeSubscribedEvent =
 interface OpenCodeSessionContext {
   session: ProviderSession;
   readonly client: OpencodeClient;
+  readonly nativeCommands: Set<string>;
+  readonly commandReceipts: Map<string, Deferred.Deferred<void>>;
   readonly server: OpenCodeServerConnection;
   readonly directory: string;
   readonly openCodeSessionId: string;
@@ -862,6 +877,10 @@ export function makeOpenCodeAdapter(
 
       switch (event.type) {
         case "message.updated": {
+          if (event.properties.info.role === "user") {
+            const receipt = context.commandReceipts.get(event.properties.info.id);
+            if (receipt) yield* Deferred.succeed(receipt, undefined);
+          }
           context.messageRoleById.set(event.properties.info.id, event.properties.info.role);
           if (event.properties.info.role === "assistant") {
             for (const part of context.partById.values()) {
@@ -1167,23 +1186,24 @@ export function makeOpenCodeAdapter(
 
       // Fibers forked into `context.sessionScope` are interrupted
       // automatically when the scope closes — no bookkeeping required.
-      yield* Effect.flatMap(
-        runOpenCodeSdk("event.subscribe", () =>
-          context.client.event.subscribe(undefined, {
-            signal: eventsAbortController.signal,
-          }),
-        ),
-        (subscription) =>
-          Stream.fromAsyncIterable(
-            subscription.stream,
-            (cause) =>
-              new OpenCodeRuntimeError({
-                operation: "event.subscribe",
-                detail: openCodeRuntimeErrorDetail(cause),
-                cause,
-              }),
-          ).pipe(Stream.runForEach((event) => handleSubscribedEvent(context, event))),
+      // Establish SSE before exposing the session to sends. Native commands
+      // can publish their acceptance receipt before the HTTP command completes.
+      const subscription = yield* runOpenCodeSdk("event.subscribe", () =>
+        context.client.event.subscribe(undefined, { signal: eventsAbortController.signal }),
       ).pipe(
+        Effect.mapError(toRequestError),
+        Effect.tapError(() => stopOpenCodeContext(context)),
+      );
+      yield* Stream.fromAsyncIterable(
+        subscription.stream,
+        (cause) =>
+          new OpenCodeRuntimeError({
+            operation: "event.subscribe",
+            detail: openCodeRuntimeErrorDetail(cause),
+            cause,
+          }),
+      ).pipe(
+        Stream.runForEach((event) => handleSubscribedEvent(context, event)),
         Effect.exit,
         Effect.flatMap((exit) =>
           Effect.gen(function* () {
@@ -1332,6 +1352,8 @@ export function makeOpenCodeAdapter(
         const context: OpenCodeSessionContext = {
           session,
           client: started.client,
+          nativeCommands: new Set(),
+          commandReceipts: new Map(),
           server: started.server,
           directory,
           openCodeSessionId: started.openCodeSession.id,
@@ -1371,6 +1393,10 @@ export function makeOpenCodeAdapter(
           },
         });
 
+        const commands = yield* loadOpenCodeCommands(started.client).pipe(
+          Effect.orElseSucceed(() => []),
+        );
+        for (const command of commands) context.nativeCommands.add(command.name);
         const skills = yield* loadOpenCodeSkills(started.client).pipe(
           Effect.orElseSucceed(() => []),
         );
@@ -1386,12 +1412,13 @@ export function makeOpenCodeAdapter(
           type: "session.configured",
           payload: {
             config: {
-              slashCommands: normalizeSupportedSlashCommands(
-                skills.map((skill) => ({
+              slashCommands: normalizeSupportedSlashCommands([
+                ...commands,
+                ...skills.map((skill) => ({
                   name: skill.name,
                   description: skill.description ?? `Use ${skill.name}`,
                 })),
-              ),
+              ]),
             },
           },
         });
@@ -1476,18 +1503,48 @@ export function makeOpenCodeAdapter(
         },
       });
 
-      yield* runOpenCodeSdk("session.promptAsync", () =>
-        context.client.session.promptAsync({
-          sessionID: context.openCodeSessionId,
-          model: parsedModel,
-          ...(context.activeAgent ? { agent: context.activeAgent } : {}),
-          ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [
-            ...(text ? [{ type: "text" as const, text }] : []),
-            ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
-            ...fileParts,
-          ],
-        }),
+      const commandMatch = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text ?? "");
+      const nativeCommand =
+        commandMatch?.[1] && context.nativeCommands.has(commandMatch[1])
+          ? commandMatch[1]
+          : undefined;
+      const messageId = `msg_${(yield* Random.nextUUIDv4).replaceAll("-", "")}`;
+      const receipt = yield* Deferred.make<void>();
+      if (nativeCommand) context.commandReceipts.set(messageId, receipt);
+      const submission = (
+        nativeCommand
+          ? runOpenCodeSdk("session.command", (signal) =>
+              context.client.session.command(
+                {
+                  sessionID: context.openCodeSessionId,
+                  messageID: messageId,
+                  command: nativeCommand,
+                  arguments: [commandMatch?.[2] ?? "", attachmentContext]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                  model: `${parsedModel.providerID}/${parsedModel.modelID}`,
+                  ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+                  ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+                  parts: fileParts,
+                },
+                { signal },
+              ),
+            ).pipe(Effect.asVoid)
+          : runOpenCodeSdk("session.promptAsync", () =>
+              context.client.session.promptAsync({
+                sessionID: context.openCodeSessionId,
+                model: parsedModel,
+                ...(context.activeAgent ? { agent: context.activeAgent } : {}),
+                ...(context.activeVariant ? { variant: context.activeVariant } : {}),
+                parts: [
+                  ...(text ? [{ type: "text" as const, text }] : []),
+                  ...(attachmentContext
+                    ? [{ type: "text" as const, text: attachmentContext }]
+                    : []),
+                  ...fileParts,
+                ],
+              }),
+            ).pipe(Effect.asVoid)
       ).pipe(
         Effect.mapError(toRequestError),
         // On failure: clear active-turn state, flip the session back to ready
@@ -1496,6 +1553,7 @@ export function makeOpenCodeAdapter(
         // already produced the right shape.
         Effect.tapError((requestError) =>
           Effect.gen(function* () {
+            if (context.activeTurnId !== turnId) return;
             context.activeTurnId = undefined;
             context.activeAgent = undefined;
             context.activeVariant = undefined;
@@ -1521,6 +1579,16 @@ export function makeOpenCodeAdapter(
           }),
         ),
       );
+
+      if (nativeCommand) {
+        // command() responds after generation. The matching user message is
+        // the acceptance receipt; keep the request scoped to the session.
+        const fiber = yield* submission.pipe(
+          Effect.ensuring(Effect.sync(() => context.commandReceipts.delete(messageId))),
+          Effect.forkIn(context.sessionScope),
+        );
+        yield* Effect.raceFirst(Fiber.join(fiber), Deferred.await(receipt));
+      } else yield* submission;
 
       return {
         threadId: input.threadId,

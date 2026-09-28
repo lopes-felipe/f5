@@ -230,8 +230,7 @@ it("observes three successive atomic registry replacements", async () => {
           store.path,
           String(value),
         ]);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        expect(notifications).toBe(value);
+        await expect.poll(() => notifications, { timeout: 5_000 }).toBe(value);
       }
     } finally {
       close();

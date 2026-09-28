@@ -1,3 +1,4 @@
+import { claudeLimitState } from "../usageLimitMessages.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -169,6 +170,9 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
+  authenticationFailureMessage?: string;
+  rejectedUsageLimits?: Map<string, string>;
+  announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
   /**
    * Deferred signalled from `completeTurn` to cancel the interrupt watchdog
@@ -3612,6 +3616,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (context.turnState) {
+          if (message.type === "assistant" && message.error === "authentication_failed") {
+            context.turnState.authenticationFailureMessage =
+              "Claude login expired or is invalid. Run /login in this provider account, then retry.";
+          }
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -3629,8 +3637,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
-        const status = turnStatusFromResult(message);
-        const errorMessage = resultUserFacingError(message);
+        const hint =
+          context.turnState?.authenticationFailureMessage ??
+          [...(context.turnState?.rejectedUsageLimits?.values() ?? [])][0];
+        const status = message.is_error && hint ? "failed" : turnStatusFromResult(message);
+        const errorMessage = status === "failed" && hint ? hint : resultUserFacingError(message);
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;
@@ -4001,6 +4012,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (message.type === "rate_limit_event") {
+          const info = message.rate_limit_info;
+          const turn = context.turnState;
+          if (info && turn) {
+            const limit = claudeLimitState(info as unknown as Record<string, unknown>);
+            turn.rejectedUsageLimits ??= new Map();
+            turn.announcedUsageLimits ??= new Set();
+            if (limit.blocked) {
+              turn.rejectedUsageLimits.set(limit.window, limit.message);
+              if (!turn.announcedUsageLimits.has(limit.key)) {
+                turn.announcedUsageLimits.add(limit.key);
+                yield* emitRuntimeWarning(context, limit.message, {
+                  detail: { rateLimitType: limit.window },
+                });
+              }
+            } else if (
+              info.status === "allowed" ||
+              info.status === "allowed_warning" ||
+              info.status === "rejected"
+            ) {
+              turn.rejectedUsageLimits.delete(limit.window);
+            }
+          }
           yield* offerRuntimeEvent({
             ...base,
             type: "account.rate-limits.updated",

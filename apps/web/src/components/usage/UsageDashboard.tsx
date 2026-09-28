@@ -261,6 +261,8 @@ function providerLabel(provider: UsageSummary["byProvider"][number]["provider"])
 
     case "grok":
       return "Grok";
+    case "antigravity":
+      return "Antigravity";
   }
 }
 

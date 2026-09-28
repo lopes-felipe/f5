@@ -3498,6 +3498,79 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const scenario of ["blocked", "recovered", "login"] as const) {
+    it.effect(`reports Claude ${scenario} evidence at turn completion`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+        if (scenario === "login") {
+          harness.query.emit({
+            type: "assistant",
+            error: "authentication_failed",
+            uuid: "login-error",
+            session_id: "limits-session",
+            parent_tool_use_id: null,
+            message: { id: "login-error", role: "assistant", content: [], usage: {} },
+          } as unknown as SDKMessage);
+        } else {
+          harness.query.emit({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: 1790607600,
+            },
+            uuid: "limit",
+            session_id: "limits-session",
+          } as unknown as SDKMessage);
+          if (scenario === "recovered")
+            harness.query.emit({
+              type: "rate_limit_event",
+              rate_limit_info: { status: "allowed", rateLimitType: "five_hour" },
+              uuid: "recovered",
+              session_id: "limits-session",
+            } as unknown as SDKMessage);
+        }
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: scenario !== "recovered",
+          result: "",
+          session_id: "limits-session",
+          uuid: "limit-result",
+          usage: {},
+          modelUsage: {},
+        } as unknown as SDKMessage);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+        );
+        assert.equal(completed._tag, "Some");
+        if (completed._tag === "Some") {
+          assert.equal(
+            completed.value.payload.state,
+            scenario === "recovered" ? "completed" : "failed",
+          );
+          if (scenario === "login")
+            assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
+          if (scenario === "blocked")
+            assert.match(completed.value.payload.errorMessage ?? "", /5-hour.*Resets at/);
+          if (scenario === "recovered")
+            assert.equal(completed.value.payload.errorMessage, undefined);
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+
   it.effect("surfaces in-band Fable alias rejection and completes a supported-model retry", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

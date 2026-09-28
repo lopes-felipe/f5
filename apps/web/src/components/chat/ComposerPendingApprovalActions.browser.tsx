@@ -45,3 +45,38 @@ it("names the app and sends the user's advertised persistent approval", async ()
     await screen.unmount();
   }
 });
+
+it("honors native permission choices and displays persistence warnings", async () => {
+  const requestId = ApprovalRequestId.make("native-permission");
+  const respond = vi.fn(async () => {});
+  const screen = await render(
+    <ComposerPendingApprovalActions
+      requestId={requestId}
+      requestKind="command"
+      canApprove
+      isResponding={false}
+      approvalOptions={[
+        { decision: "accept", label: "Allow once" },
+        { decision: "cancel", label: "Cancel" },
+        {
+          decision: "acceptForSession",
+          label: "Allow for this thread",
+          warning: "This allows future shell commands.",
+        },
+      ]}
+      onRespondToApproval={respond}
+    />,
+  );
+  try {
+    await expect
+      .element(page.getByText("Allow for this thread: This allows future shell commands."))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: "Always allow this session" }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Allow once", exact: true }).click();
+    expect(respond).toHaveBeenCalledExactlyOnceWith(requestId, "accept");
+  } finally {
+    await screen.unmount();
+  }
+});

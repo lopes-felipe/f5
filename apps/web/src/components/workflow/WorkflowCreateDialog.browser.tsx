@@ -419,6 +419,7 @@ describe("WorkflowCreateDialog", () => {
           cursor: [{ slug: "auto", name: "Auto" }],
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
+          antigravity: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -464,6 +465,7 @@ describe("WorkflowCreateDialog", () => {
           cursor: [{ slug: "auto", name: "Auto" }],
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
+          antigravity: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -502,6 +504,7 @@ describe("WorkflowCreateDialog", () => {
           cursor: [{ slug: "auto", name: "Auto" }],
           opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
           grok: [{ slug: "grok-build", name: "Grok Build" }],
+          antigravity: [],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}

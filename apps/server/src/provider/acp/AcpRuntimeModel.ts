@@ -43,6 +43,14 @@ export interface AcpPermissionRequest {
 
 export type AcpParsedSessionEvent =
   | {
+      readonly _tag: "SlashCommandsUpdated";
+      readonly commands: ReadonlyArray<{
+        name: string;
+        description: string;
+        argumentHint?: string;
+      }>;
+    }
+  | {
       readonly _tag: "ModeChanged";
       readonly modeId: string;
     }
@@ -66,6 +74,7 @@ export type AcpParsedSessionEvent =
     }
   | {
       readonly _tag: "ContentDelta";
+      readonly streamKind?: "assistant_text" | "reasoning_text";
       readonly itemId?: string;
       readonly text: string;
       readonly rawPayload: unknown;
@@ -243,6 +252,7 @@ const RAW_OUTPUT_TEXT_FIELDS = ["content", "stdout", "stderr", "output"] as cons
 // text-bearing fields the same way so a chatty provider cannot smuggle unbounded output
 // through this field instead.
 function boundToolCallRawOutput(rawOutput: unknown, depth = 0): unknown {
+  if (typeof rawOutput === "string") return boundToolCallOutputText(rawOutput);
   if (!isRecord(rawOutput)) {
     return rawOutput;
   }
@@ -636,11 +646,26 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       }
       break;
     }
+    case "available_commands_update": {
+      events.push({
+        _tag: "SlashCommandsUpdated",
+        commands: upd.availableCommands.map((command) => ({
+          name: command.name,
+          description: command.description,
+          ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
+        })),
+      });
+      break;
+    }
+    case "agent_thought_chunk":
     case "agent_message_chunk": {
       if (upd.content.type === "text" && upd.content.text.length > 0) {
         events.push({
           _tag: "ContentDelta",
           text: upd.content.text,
+          ...(upd.sessionUpdate === "agent_thought_chunk"
+            ? { streamKind: "reasoning_text" as const }
+            : {}),
           rawPayload: params,
         });
       }

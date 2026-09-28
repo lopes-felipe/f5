@@ -1,3 +1,5 @@
+import { createAntigravityAccountProcess } from "./AntigravityAccountProcess.ts";
+import { hasAntigravityAccount } from "../provider/Layers/AntigravityProvider.ts";
 import { parseClaudeAuthStatusFromOutput } from "../provider/Layers/ProviderHealth";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -47,6 +49,9 @@ export class ProviderAccountService {
     private readonly emit: (event: typeof ProviderAccountEvent.Type, owner: object) => void,
     private readonly refresh: (instanceId: ProviderInstanceId) => Promise<void>,
     private readonly isBusy: (instanceId: ProviderInstanceId) => Promise<boolean>,
+    private readonly stopIdleSessions: (
+      instanceId: ProviderInstanceId,
+    ) => Promise<void> = async () => {},
   ) {}
   async resolve(instanceId: ProviderInstanceId) {
     const settings = await Effect.runPromise(this.settings.getSettings);
@@ -94,6 +99,17 @@ export class ProviderAccountService {
     return { instance, config, environment, invocation };
   }
   async status(instanceId: ProviderInstanceId) {
+    const settings = await Effect.runPromise(this.settings.getSettings);
+    if (deriveProviderInstanceConfigMap(settings)[instanceId]?.driver === "antigravity") {
+      const authenticated = await hasAntigravityAccount(this.config.stateDir, instanceId);
+      await this.refresh(instanceId);
+      return {
+        status: authenticated ? "authenticated" : "unauthenticated",
+        detail: authenticated
+          ? "Signed in to this profile’s Antigravity account."
+          : "Install Antigravity and sign in using Settings.",
+      };
+    }
     const resolved = await this.resolve(instanceId);
     const command = resolved.invocation(
       resolved.instance.driver === "codex" ? ["login", "status"] : ["auth", "status"],
@@ -141,15 +157,21 @@ export class ProviderAccountService {
     instanceId: ProviderInstanceId,
     logout = false,
     owner: object = this,
-    method: "browser" | "device-code" = "browser",
+    method: "browser" | "device-code" | "install" = "browser",
   ): Promise<{ handle: string }> {
     if (logout && (await this.isBusy(instanceId)))
       throw new Error("Stop this instance's active turn before signing out.");
-    const resolved = await this.resolve(instanceId);
+    const settings = await Effect.runPromise(this.settings.getSettings);
+    const instance = deriveProviderInstanceConfigMap(settings)[instanceId];
+    const antigravity = instance?.driver === "antigravity";
+    if (method === "install" && (!antigravity || logout))
+      throw new Error("Installation is supported only for Antigravity setup.");
+    const resolved = antigravity ? undefined : await this.resolve(instanceId);
     if (this.disconnectedOwners.has(owner)) throw new Error("Account connection closed.");
     const createProcess = this.terminals.createAccountProcess;
-    if (!createProcess) throw new Error("Account terminals are unavailable in this runtime.");
-    if (method === "device-code" && (logout || resolved.instance.driver !== "codex")) {
+    if (!antigravity && !createProcess)
+      throw new Error("Account terminals are unavailable in this runtime.");
+    if (method === "device-code" && (logout || resolved?.instance.driver !== "codex")) {
       throw new Error("Device-code login is supported only for Codex sign-in.");
     }
     const root = this.config.profilesRoot;
@@ -162,34 +184,57 @@ export class ProviderAccountService {
       );
     });
     try {
-      if (!logout && method === "browser" && resolved.instance.driver === "codex")
+      if (antigravity && method !== "install") {
+        if (await this.isBusy(instanceId))
+          throw new Error("Stop this instance's active turn before changing its account.");
+        await this.stopIdleSessions(instanceId);
+      }
+      if (!logout && method === "browser" && resolved?.instance.driver === "codex")
         await assertOAuthPortAvailable(1455);
-      const args =
-        resolved.instance.driver === "codex"
-          ? [
-              logout ? "logout" : "login",
-              ...(!logout && method === "device-code" ? ["--device-auth"] : []),
-            ]
-          : ["auth", logout ? "logout" : "login"];
-      const command = resolved.invocation(args);
-      const child = await Effect.runPromise(
-        createProcess({
-          shell: command.file,
-          args: [...command.args],
-          env: resolved.environment,
-          cwd: this.config.stateDir,
-          cols: 100,
-          rows: 26,
-        }),
-      );
+      const child = antigravity
+        ? createAntigravityAccountProcess({
+            stateDir: this.config.stateDir,
+            instanceId,
+            action: method === "install" ? "install" : logout ? "logout" : "login",
+            environment: buildAccountExecutionEnvironment({
+              purpose: "account",
+              profile: this.config.profile,
+              stateDir: this.config.stateDir,
+              baseEnv: process.env,
+              instance: instance.environment,
+            }),
+          })
+        : await (async () => {
+            const args =
+              resolved!.instance.driver === "codex"
+                ? [
+                    logout ? "logout" : "login",
+                    ...(!logout && method === "device-code" ? ["--device-auth"] : []),
+                  ]
+                : ["auth", logout ? "logout" : "login"];
+            const command = resolved!.invocation(args);
+            return Effect.runPromise(
+              createProcess!({
+                shell: command.file,
+                args: [...command.args],
+                env: resolved!.environment,
+                cwd: this.config.stateDir,
+                cols: 100,
+                rows: 26,
+              }),
+            );
+          })();
       const handle = `${terminalOwnerKey({ kind: "account", instanceId })}:${randomUUID()}`;
       let finish!: () => void;
       const done = new Promise<void>((resolve) => {
         finish = resolve;
       });
-      const timeout = setTimeout(() => {
-        void this.cancel(handle, owner);
-      }, 600000);
+      const timeout = setTimeout(
+        () => {
+          void this.cancel(handle, owner);
+        },
+        method === "install" ? 45 * 60_000 : 600000,
+      );
       this.jobs.set(handle, { instanceId, process: child, done, timeout, owner });
       const unsubscribe = child.onData((data) =>
         this.emit({ handle, instanceId, type: "output", data }, owner),
@@ -202,7 +247,8 @@ export class ProviderAccountService {
         finish();
         this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
         void (async () => {
-          if (logout && event.exitCode === 0) await this.clearConfiguredCredentials(instanceId);
+          if (logout && !antigravity && event.exitCode === 0)
+            await this.clearConfiguredCredentials(instanceId);
           await this.refresh(instanceId);
         })().catch(() =>
           this.emit(

@@ -178,6 +178,7 @@ export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 export const ProviderApprovalOption = Schema.Struct({
   decision: ProviderApprovalDecision,
   label: Schema.String,
+  warning: Schema.optional(Schema.String),
 });
 export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
@@ -276,6 +277,7 @@ export const ProjectSkillScope = Schema.Literals(["project", "user"]);
 export type ProjectSkillScope = typeof ProjectSkillScope.Type;
 
 export const ProjectSkill = Schema.Struct({
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
   id: TrimmedNonEmptyString,
   projectId: ProjectId,
   scope: ProjectSkillScope,

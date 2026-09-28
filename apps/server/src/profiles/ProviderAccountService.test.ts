@@ -148,7 +148,9 @@ it("rechecks the snapshot and honors Claude loggedIn=false even with exit code z
   const refresh = vi.fn(async () => {});
   const service = new ProviderAccountService(
     {} as ServerConfigShape,
-    {} as ServerSettingsShape,
+    {
+      getSettings: Effect.succeed(Schema.decodeUnknownSync(ServerSettings)({})),
+    } as unknown as ServerSettingsShape,
     {} as TerminalManagerShape,
     () => {},
     refresh,
@@ -172,4 +174,81 @@ it("rechecks the snapshot and honors Claude loggedIn=false even with exit code z
     process.mockRestore();
     resolved.mockRestore();
   }
+});
+
+describe("Antigravity account ownership", () => {
+  it("keeps one profile's account invisible to another with the same instance ID", async () => {
+    const { antigravityProfileDirectory } =
+      await import("../provider/acp/AntigravityAcpSupport.ts");
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-agy-profiles-"));
+    const settings = Schema.decodeUnknownSync(ServerSettings)({
+      providerInstances: { antigravity: { driver: "antigravity", config: { enabled: true } } },
+    });
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const make = (stateDir: string) =>
+      new ProviderAccountService(
+        { stateDir } as ServerConfigShape,
+        { getSettings: Effect.succeed(settings) } as unknown as ServerSettingsShape,
+        {} as TerminalManagerShape,
+        () => {},
+        async () => {},
+        async () => false,
+      );
+    try {
+      const a = Path.join(root, "a");
+      const b = Path.join(root, "b");
+      const token = Path.join(antigravityProfileDirectory(a, instanceId), "antigravity-acp");
+      await FS.mkdir(token, { recursive: true });
+      await FS.writeFile(Path.join(token, "acp_token.json"), '{"token":"synthetic"}');
+      expect((await make(a).status(instanceId)).status).toBe("authenticated");
+      expect((await make(b).status(instanceId)).status).toBe("unauthenticated");
+    } finally {
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("holds the OAuth lease during install and only lets its owner cancel", async () => {
+    const { AntigravityInstallation } = await import("../provider/AntigravityInstallation.ts");
+    const install = vi
+      .spyOn(AntigravityInstallation.prototype, "install")
+      .mockImplementation(
+        (signal) =>
+          new Promise((_resolve, reject) =>
+            signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }),
+          ),
+      );
+    const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-agy-owner-"));
+    const settings = Schema.decodeUnknownSync(ServerSettings)({
+      providerInstances: { antigravity: { driver: "antigravity" } },
+    });
+    const emit = vi.fn();
+    const service = new ProviderAccountService(
+      { stateDir: root, profilesRoot: root } as ServerConfigShape,
+      { getSettings: Effect.succeed(settings) } as unknown as ServerSettingsShape,
+      {} as TerminalManagerShape,
+      emit,
+      async () => {},
+      async () => false,
+    );
+    const owner = {};
+    const stranger = {};
+    const instanceId = ProviderInstanceId.make("antigravity");
+    try {
+      const { handle } = await service.start(instanceId, false, owner, "install");
+      await expect(service.cancel(handle, stranger)).rejects.toThrow("another connection");
+      await expect(
+        acquireInstanceLock(Path.join(root, "locks", "provider-oauth.lock.sqlite")),
+      ).rejects.toThrow();
+      await service.disconnect(owner);
+      expect(emit.mock.calls.every(([, recipient]) => recipient === owner)).toBe(true);
+      const lease = await acquireInstanceLock(
+        Path.join(root, "locks", "provider-oauth.lock.sqlite"),
+      );
+      lease.release();
+    } finally {
+      await service.dispose();
+      install.mockRestore();
+      await FS.rm(root, { recursive: true, force: true });
+    }
+  });
 });

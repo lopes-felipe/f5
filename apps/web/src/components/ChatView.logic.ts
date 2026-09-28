@@ -10,11 +10,12 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ServerProvider,
+  type ServerProviderSkill,
   type ServerProviderModel,
   type ServerSettings,
   type ThreadTurnStartBootstrap,
   type CompactRuntimeConfiguredActivityPayload,
-  type ProviderKind,
+  ProviderKind,
   type ModelSelection,
   type UserMessageSkillCall,
 } from "@t3tools/contracts";
@@ -84,6 +85,7 @@ export function buildSlashComposerMenuItems(input: {
     | undefined;
   provider?: ProviderKind | null | undefined;
   projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
+  providerSkills?: ReadonlyArray<ServerProviderSkill> | undefined;
 }): Array<Extract<ComposerCommandItem, { type: "slash-command" | "skill" }>> {
   const seenSkillNames = new Set<string>();
   const runtimeSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
@@ -107,16 +109,14 @@ export function buildSlashComposerMenuItems(input: {
   });
 
   const projectSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
-    input.provider === "claudeAgent" ? (input.projectSkills ?? []) : []
+    input.provider ? (input.projectSkills ?? []) : []
   )
-    .filter((skill) => skill.paths.length === 0)
+    .filter(
+      (skill) => skill.paths.length === 0 && (input.provider === "claudeAgent" || skill.sourcePath),
+    )
     .flatMap((skill) => {
-      const name = normalizeComposerInsertedSkillName(skill.commandName);
-      if (
-        name.length === 0 ||
-        isReservedHostLocalSlashCommandName(name) ||
-        seenSkillNames.has(name)
-      ) {
+      const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.commandName);
+      if (!name || isReservedHostLocalSlashCommandName(name) || seenSkillNames.has(name)) {
         return [];
       }
       // Runtime commands are authoritative when both sources publish the same
@@ -134,11 +134,27 @@ export function buildSlashComposerMenuItems(input: {
       ];
     });
 
+  const providerSkillItems = (input.providerSkills ?? []).flatMap((skill) => {
+    const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.name);
+    if (!skill.enabled || !name || seenSkillNames.has(name)) return [];
+    seenSkillNames.add(name);
+    return [
+      {
+        id: `skill:provider:${name}`,
+        type: "skill" as const,
+        name,
+        label: `/${name}`,
+        description: skill.description ?? `Use ${name}`,
+        argumentHint: null,
+      },
+    ];
+  });
   const query = input.query.trim().toLowerCase();
   const slashItems = [
     ...HOST_LOCAL_SLASH_COMMAND_ITEMS,
     ...runtimeSkillItems,
     ...projectSkillItems,
+    ...providerSkillItems,
   ] satisfies Array<Extract<ComposerCommandItem, { type: "slash-command" | "skill" }>>;
   if (!query) {
     return slashItems;
@@ -159,8 +175,8 @@ export function buildSlashComposerMenuItems(input: {
   });
 }
 
-export function buildComposerSkillReplacement(skillName: string): string {
-  return `/${normalizeComposerInsertedSkillName(skillName)} `;
+export function buildComposerSkillReplacement(skillName: string, provider?: ProviderKind): string {
+  return `${provider === "codex" ? "$" : "/"}${normalizeComposerInsertedSkillName(skillName)} `;
 }
 
 export function rewriteComposerRuntimeSkillInvocationForSend(input: {
@@ -171,6 +187,7 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     | null
     | undefined;
   projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
+  providerSkills?: ReadonlyArray<ServerProviderSkill> | undefined;
 }): { text: string; skillCall: UserMessageSkillCall | undefined } {
   const leadingCommandMatch = /^([/$])([^\s/$]+)(?=\s|$)/.exec(input.text);
   if (!leadingCommandMatch) {
@@ -189,9 +206,13 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
       .map((command) => normalizeHostCompatibleRuntimeSlashCommandName(command.name))
       .flatMap((name) => (name ? [name] : [])),
   );
-  if (input.provider === "claudeAgent") {
+  for (const skill of input.providerSkills ?? []) {
+    const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.name);
+    if (skill.enabled && name) knownRuntimeSkillNames.add(name);
+  }
+  if (input.provider) {
     for (const skill of input.projectSkills ?? []) {
-      if (skill.paths.length > 0) {
+      if (skill.paths.length > 0 || (input.provider !== "claudeAgent" && !skill.sourcePath)) {
         continue;
       }
       const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.commandName);
@@ -204,10 +225,8 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     return { text: input.text, skillCall: undefined };
   }
 
-  if (leadingCommandMatch[1] === "$") {
-    return input.provider === "codex"
-      ? { text: input.text, skillCall: { name: leadingCommandName } }
-      : { text: input.text, skillCall: undefined };
+  if (leadingCommandMatch[1] === "$" && input.provider !== "codex") {
+    return { text: input.text, skillCall: undefined };
   }
 
   // Codex runtime skills use dollar-form invocation; other providers keep
@@ -216,7 +235,17 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     input.provider === "codex"
       ? `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`
       : input.text;
-  return { text, skillCall: { name: leadingCommandName } };
+  const projectSkill = input.projectSkills?.find(
+    (skill) => skill.commandName === leadingCommandName && skill.paths.length === 0,
+  );
+  const nativeKnown = input.runtimeSlashCommands?.some(
+    (command) => command.name === leadingCommandName,
+  );
+  const textWithPath =
+    projectSkill?.sourcePath && !nativeKnown
+      ? `${text}\n\nUse the skill instructions at ${JSON.stringify(projectSkill.sourcePath)}.`
+      : text;
+  return { text: textWithPath, skillCall: { name: leadingCommandName } };
 }
 
 export function shouldRenderTimelineContent(input: {
@@ -622,6 +651,7 @@ export function getProviderDispatchModelsByProvider(
     cursor: modelsFor("cursor"),
     opencode: modelsFor("opencode"),
     grok: modelsFor("grok"),
+    antigravity: modelsFor("antigravity"),
   };
 }
 
@@ -857,4 +887,19 @@ export function buildExpiredTerminalContextToastCopy(
     title: `${noun} omitted from message`,
     description: "Re-add it if you want that terminal output included.",
   };
+}
+
+/** Imported histories have an instance id before they have a live session. */
+export function providerKindForImportedThread(input: {
+  instanceId: string | undefined;
+  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "driver">>;
+  configured:
+    | Readonly<Record<string, { readonly driver: ProviderDriverKind } | undefined>>
+    | undefined;
+}): ProviderKind | null {
+  if (!input.instanceId) return null;
+  const driver =
+    input.providers.find((provider) => provider.instanceId === input.instanceId)?.driver ??
+    input.configured?.[input.instanceId]?.driver;
+  return Schema.is(ProviderKind)(driver) ? driver : null;
 }

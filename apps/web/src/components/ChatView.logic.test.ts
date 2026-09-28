@@ -11,6 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  providerKindForImportedThread,
   buildComposerSkillReplacement,
   applyUserMessageAttachmentPreviewHandoff,
   buildSlashComposerMenuItems,
@@ -560,6 +561,7 @@ describe("applyUserMessageAttachmentPreviewHandoff", () => {
 describe("buildComposerSkillReplacement", () => {
   it("inserts slash-form skill commands", () => {
     expect(buildComposerSkillReplacement("review")).toBe("/review ");
+    expect(buildComposerSkillReplacement("review", "codex")).toBe("$review ");
   });
 });
 
@@ -1176,5 +1178,45 @@ describe("deriveProviderRuntimeInfoEntries", () => {
       { label: "Session", value: "cursor-session-1" },
       { label: "CLI", value: "2026.04.09" },
     ]);
+  });
+});
+
+describe("imported thread provider routing", () => {
+  it("uses a custom instance's driver before model-name inference", () => {
+    expect(
+      providerKindForImportedThread({
+        instanceId: "personal",
+        providers: [],
+        configured: { personal: { driver: ProviderDriverKind.make("antigravity") } },
+      }),
+    ).toBe("antigravity");
+  });
+  it("does not turn an unknown driver into another built-in provider", () => {
+    expect(
+      providerKindForImportedThread({
+        instanceId: "personal",
+        providers: [],
+        configured: { personal: { driver: ProviderDriverKind.make("custom-driver") } },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("provider skill inventories", () => {
+  it("includes native plugin skills but hides disabled entries", () => {
+    const providerSkills = [
+      { name: "plugin-review", path: "/plugin/SKILL.md", enabled: true },
+      { name: "private", path: "/private/SKILL.md", enabled: false },
+    ];
+    const items = buildSlashComposerMenuItems({ query: "", provider: "grok", providerSkills });
+    expect(items.some((item) => item.type === "skill" && item.name === "plugin-review")).toBe(true);
+    expect(items.some((item) => item.type === "skill" && item.name === "private")).toBe(false);
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/plugin-review changes",
+        provider: "grok",
+        providerSkills,
+      }).skillCall,
+    ).toEqual({ name: "plugin-review" });
   });
 });

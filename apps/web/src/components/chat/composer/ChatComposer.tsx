@@ -140,7 +140,7 @@ export interface ChatComposerProps {
   isWorking: boolean;
   hasPendingTurnDispatch: boolean;
   showInteractionModeToggle: boolean;
-  selectedProvider: "codex" | "claudeAgent" | "cursor" | "opencode" | "grok";
+  selectedProvider: "codex" | "claudeAgent" | "cursor" | "opencode" | "grok" | "antigravity";
   runtimeMode: "auto" | "approval-required" | "auto-accept-edits" | "full-access";
   threadId: import("@t3tools/contracts").ThreadId;
   selectedModel: string;

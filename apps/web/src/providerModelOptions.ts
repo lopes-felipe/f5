@@ -192,6 +192,7 @@ export function providerSelectionsToModelOptions(
           ...(stringValue("agent") ? { agent: stringValue("agent") } : {}),
         },
       });
+    case "antigravity":
     case "grok":
       return null;
   }
@@ -249,6 +250,7 @@ export function providerModelOptionsToSelections(
       pushString("agent", openCodeOptions.agent);
       break;
     }
+    case "antigravity":
     case "grok":
       break;
   }

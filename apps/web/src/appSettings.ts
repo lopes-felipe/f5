@@ -109,6 +109,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   cursor: new Set(getModelOptions("cursor").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   grok: new Set(getModelOptions("grok").map((option) => option.slug)),
+  antigravity: new Set(getModelOptions("antigravity").map((option) => option.slug)),
 };
 
 type PersistedAppSettingsValue = Record<string, unknown> & {
