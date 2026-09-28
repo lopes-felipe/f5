@@ -1,18 +1,14 @@
+import { customModelSlug, normalizeCustomModels } from "@t3tools/shared/customModels";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
-  MODEL_OPTIONS_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import {
-  createModelSelection,
-  normalizeModelSlug,
-  resolveSelectableModel,
-} from "@t3tools/shared/model";
+import { createModelSelection, resolveSelectableModel } from "@t3tools/shared/model";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import {
@@ -24,7 +20,6 @@ import { ModelEsque } from "./components/chat/providerIconUtils";
 import { type ProviderInstanceEntry, deriveProviderInstanceEntries } from "./providerInstances";
 import { sortModelsForProviderInstance } from "./modelOrdering";
 
-const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 const DEFAULT_TEXT_GENERATION_INSTANCE_ID = ProviderInstanceId.make("codex");
 const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_DRIVER =
@@ -120,38 +115,11 @@ export function normalizeCustomModelSlugs(
   builtInModelSlugs: ReadonlySet<string>,
   provider: ProviderDriverKind = ProviderDriverKind.make("codex"),
 ): string[] {
-  const normalizedModels: string[] = [];
-  const seen = new Set<string>();
-  const staticBuiltInModels = (
-    MODEL_OPTIONS_BY_PROVIDER as Record<
-      string,
-      ReadonlyArray<{ readonly slug: string; readonly name: string }> | undefined
-    >
-  )[provider];
-  const reservedBuiltInModelSlugs = new Set([
-    ...builtInModelSlugs,
-    ...(staticBuiltInModels?.map((model) => model.slug) ?? []),
-  ]);
-
-  for (const candidate of models) {
-    const normalized = normalizeModelSlug(candidate, provider);
-    if (
-      !normalized ||
-      normalized.length > MAX_CUSTOM_MODEL_LENGTH ||
-      reservedBuiltInModelSlugs.has(normalized) ||
-      seen.has(normalized)
-    ) {
-      continue;
-    }
-
-    seen.add(normalized);
-    normalizedModels.push(normalized);
-    if (normalizedModels.length >= MAX_CUSTOM_MODEL_COUNT) {
-      break;
-    }
-  }
-
-  return normalizedModels;
+  return normalizeCustomModels(
+    [...models].filter((model): model is string => typeof model === "string"),
+    provider,
+    builtInModelSlugs,
+  ).map(customModelSlug);
 }
 
 export function getAppModelOptions(

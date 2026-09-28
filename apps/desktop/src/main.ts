@@ -1,3 +1,4 @@
+import { installDesktopAttention } from "./desktopAttention";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -1744,7 +1745,12 @@ function configureApplicationMenu(): void {
         { role: "hideOthers" },
         { role: "unhide" },
         { type: "separator" },
-        { role: "quit" },
+        {
+          label: "Quit F5",
+          accelerator: "CmdOrCtrl+Q",
+          registerAccelerator: false,
+          click: () => app.quit(),
+        },
       ],
     });
   }
@@ -1753,6 +1759,16 @@ function configureApplicationMenu(): void {
     {
       label: "File",
       submenu: [
+        ...(process.platform !== "darwin"
+          ? [
+              {
+                label: "Quit F5",
+                accelerator: "CmdOrCtrl+Q",
+                registerAccelerator: false,
+                click: () => app.quit(),
+              },
+            ]
+          : []),
         ...(process.platform === "darwin"
           ? []
           : [
@@ -1960,6 +1976,7 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
     await Promise.all(
       [...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
     );
+    shutdownComplete = true;
     autoUpdater.quitAndInstall();
     return { accepted: true, completed: true };
   } catch (error: unknown) {
@@ -2900,13 +2917,31 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-app.on("before-quit", () => {
+installDesktopAttention((id) => profileByWebContentsId.get(id));
+
+let shutdownPending = false;
+let shutdownComplete = false;
+app.on("before-quit", (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownPending) return;
+  shutdownPending = true;
   isQuitting = true;
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
-  for (const runtime of backends.values()) stopBackend(runtime);
-  void previewRuntime.dispose();
-  restoreStdIoCapture?.();
+  for (const window of BrowserWindow.getAllWindows()) window.hide();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 6000));
+  void Promise.race([
+    Promise.allSettled([
+      ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
+      previewRuntime.dispose(),
+    ]),
+    timeout,
+  ]).finally(() => {
+    shutdownComplete = true;
+    restoreStdIoCapture?.();
+    app.quit();
+  });
 });
 
 app

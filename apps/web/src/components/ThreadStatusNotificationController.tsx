@@ -1,3 +1,10 @@
+import {
+  createNotificationSound,
+  needsThreadAttention,
+  setThreadAttentionBadge,
+} from "../threadAttention";
+import { toastManager } from "./ui/toast";
+import { threadStatusLabel } from "../threadStatus";
 import { BellIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
@@ -32,10 +39,29 @@ export function ThreadStatusNotificationControllerContent({
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const { settings } = useAppSettings();
+  const systemEnabled =
+    settings.notificationMode === "system" || settings.notificationMode === "system-and-sound";
+  const soundEnabled =
+    settings.notificationMode === "sound" || settings.notificationMode === "system-and-sound";
+  const sound = useRef<ReturnType<typeof createNotificationSound> | null>(null);
+  useEffect(() => {
+    if (!soundEnabled) return;
+    const player = createNotificationSound();
+    sound.current = player;
+    const unlock = () => player.unlock();
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+      player.dispose();
+      sound.current = null;
+    };
+  }, [soundEnabled]);
   const permission = useThreadStatusNotificationPermissionState();
   const promptState = useThreadStatusNotificationPromptState();
   const previousStatusByThreadIdRef = useRef<Map<ThreadId, ThreadStatus> | null>(null);
-  const previousNotificationsEnabledRef = useRef(settings.enableThreadStatusNotifications);
+  const previousNotificationsEnabledRef = useRef(systemEnabled);
   const promptVisibleForSessionRef = useRef(false);
   const [appFocused, setAppFocused] = useState(() => isAppWindowFocused());
   const [promptVisible, setPromptVisible] = useState(false);
@@ -48,7 +74,7 @@ export function ThreadStatusNotificationControllerContent({
       threadTitle: thread.title,
       projectName: projectNameById.get(thread.projectId) ?? null,
       status: resolveThreadStatusForThread(thread),
-      snoozed: isSnoozedThread(thread),
+      snoozed: isSnoozedThread(thread) || Boolean(thread.archivedAt),
     }));
   }, [projects, threads]);
 
@@ -70,17 +96,28 @@ export function ThreadStatusNotificationControllerContent({
   }, []);
 
   useEffect(() => {
+    const count =
+      threadsHydrated && settings.showAttentionBadge
+        ? threadStatusSnapshots.filter(
+            (thread) => !thread.snoozed && needsThreadAttention(thread.status),
+          ).length
+        : 0;
+    setThreadAttentionBadge(count);
+  }, [settings.showAttentionBadge, threadStatusSnapshots, threadsHydrated]);
+  useEffect(() => () => setThreadAttentionBadge(0), []);
+
+  useEffect(() => {
     const wasEnabled = previousNotificationsEnabledRef.current;
-    previousNotificationsEnabledRef.current = settings.enableThreadStatusNotifications;
-    if (!wasEnabled && settings.enableThreadStatusNotifications) {
+    previousNotificationsEnabledRef.current = systemEnabled;
+    if (!wasEnabled && systemEnabled) {
       promptVisibleForSessionRef.current = false;
       resetThreadStatusNotificationPrompt();
     }
-  }, [settings.enableThreadStatusNotifications]);
+  }, [systemEnabled]);
 
   useEffect(() => {
     const canPrompt =
-      settings.enableThreadStatusNotifications &&
+      systemEnabled &&
       permission === "default" &&
       getThreadStatusNotificationPermissionState() !== "unsupported";
 
@@ -109,12 +146,7 @@ export function ThreadStatusNotificationControllerContent({
     promptVisibleForSessionRef.current = true;
     setPromptVisible(true);
     markThreadStatusNotificationPromptShown();
-  }, [
-    permission,
-    promptState.dismissed,
-    promptState.shown,
-    settings.enableThreadStatusNotifications,
-  ]);
+  }, [permission, promptState.dismissed, promptState.shown, systemEnabled]);
 
   useEffect(() => {
     if (!threadsHydrated) {
@@ -127,10 +159,33 @@ export function ThreadStatusNotificationControllerContent({
     );
     previousStatusByThreadIdRef.current = nextStatusByThreadId;
 
+    let sounded = false;
     for (const transition of transitions) {
+      if (needsThreadAttention(transition.status)) {
+        if (soundEnabled && !appFocused && !sounded) {
+          sound.current?.play();
+          sounded = true;
+        }
+        if (settings.inAppThreadNotifications) {
+          toastManager.add({
+            title: threadStatusLabel(transition.status) ?? "Thread update",
+            description: [transition.projectName, transition.threadTitle]
+              .filter(Boolean)
+              .join(" · "),
+            type: "info",
+            data: { threadStatus: transition.status },
+            actionProps: {
+              children: "View",
+              onClick: () => {
+                void navigateToThread(transition.threadId);
+              },
+            },
+          });
+        }
+      }
       if (
         !shouldDispatchThreadStatusNotification({
-          enabled: settings.enableThreadStatusNotifications,
+          enabled: systemEnabled,
           permission,
           appFocused,
           status: transition.status,
@@ -146,6 +201,7 @@ export function ThreadStatusNotificationControllerContent({
       showThreadStatusNotification({
         NotificationConstructor: window.Notification,
         transition,
+        silent: soundEnabled,
         focusWindow: () => {
           window.focus();
         },
@@ -156,7 +212,9 @@ export function ThreadStatusNotificationControllerContent({
     appFocused,
     navigateToThread,
     permission,
-    settings.enableThreadStatusNotifications,
+    systemEnabled,
+    soundEnabled,
+    settings.inAppThreadNotifications,
     threadStatusSnapshots,
     threadsHydrated,
   ]);

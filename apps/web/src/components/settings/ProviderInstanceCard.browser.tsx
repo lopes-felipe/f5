@@ -258,4 +258,35 @@ describe("ProviderInstanceCard advisory", () => {
       await screen.unmount();
     }
   });
+  it("renames a custom model without losing its slug or capabilities", async () => {
+    const onUpdate = vi.fn();
+    const screen = await renderCard({
+      instance: makeInstance({
+        config: {
+          customModels: [
+            { slug: "private/model", name: "Before", capabilities: { optionDescriptors: [] } },
+          ],
+        },
+      }),
+      liveProvider: makeLiveProvider({ models: [] }),
+      isExpanded: true,
+      onUpdate,
+    });
+    try {
+      await page.getByRole("button", { name: "Rename private/model", exact: true }).click();
+      await page.getByRole("textbox", { name: "Display name for private/model" }).fill("Reviewer");
+      await page.getByRole("button", { name: "Save name", exact: true }).click();
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: {
+            customModels: [
+              { slug: "private/model", name: "Reviewer", capabilities: { optionDescriptors: [] } },
+            ],
+          },
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
 });

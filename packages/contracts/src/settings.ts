@@ -2,7 +2,11 @@ import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  ProviderOptionSelections,
+  ModelCapabilities,
+} from "./model";
 import { ModelSelection } from "./orchestration";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
@@ -100,13 +104,23 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(() => fallback),
   );
 
+export const CustomModelSetting = Schema.Union([
+  Schema.String,
+  Schema.Struct({
+    slug: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    name: Schema.optionalKey(TrimmedString.check(Schema.isMaxLength(120))),
+    capabilities: Schema.optionalKey(ModelCapabilities),
+  }),
+]);
+export type CustomModelSetting = typeof CustomModelSetting.Type;
+
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CodexSettings = typeof CodexSettings.Type;
 
@@ -114,7 +128,7 @@ export const ClaudeSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -123,7 +137,7 @@ export const CursorSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("agent"),
   apiEndpoint: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CursorSettings = typeof CursorSettings.Type;
 export const OpenCodeSettings = Schema.Struct({
@@ -131,20 +145,20 @@ export const OpenCodeSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("opencode"),
   serverUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   serverPassword: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
 export const GrokSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("grok"),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type GrokSettings = typeof GrokSettings.Type;
 
 export const AntigravitySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type AntigravitySettings = typeof AntigravitySettings.Type;
@@ -274,14 +288,14 @@ const CodexSettingsPatch = Schema.Struct({
   homePath: Schema.optionalKey(Schema.String),
   shadowHomePath: Schema.optionalKey(Schema.String),
   launchArgs: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
   launchArgs: Schema.optionalKey(Schema.String),
 });
 
@@ -289,7 +303,7 @@ const CursorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   apiEndpoint: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const OpenCodeSettingsPatch = Schema.Struct({
@@ -297,13 +311,13 @@ const OpenCodeSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(Schema.String),
   serverUrl: Schema.optionalKey(Schema.String),
   serverPassword: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const GrokSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const PrHubSettingsPatch = Schema.Struct({
@@ -353,7 +367,7 @@ export const ServerSettingsPatch = Schema.Struct({
       antigravity: Schema.optionalKey(
         Schema.Struct({
           enabled: Schema.optionalKey(Schema.Boolean),
-          customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+          customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
           nativeCompaction: Schema.optionalKey(Schema.Boolean),
         }),
       ),

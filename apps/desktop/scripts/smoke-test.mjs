@@ -39,6 +39,7 @@ const env = Object.fromEntries(
 );
 env.F5_HOME = join(directory, "app");
 let application;
+let electronProcess;
 let output = "";
 try {
   application = await _electron.launch({
@@ -48,7 +49,8 @@ try {
     env,
     timeout: 60_000,
   });
-  for (const stream of [application.process().stdout, application.process().stderr]) {
+  electronProcess = application.process();
+  for (const stream of [electronProcess.stdout, electronProcess.stderr]) {
     stream?.on("data", (chunk) => {
       output = (output + chunk.toString()).slice(-65_536);
     });
@@ -80,11 +82,45 @@ try {
   }
   await page.screenshot({ path: join(directory, "workspace.png") });
   if (errors.length) throw new Error(errors.join("\n"));
+  await page.evaluate(() => window.desktopBridge.setAttentionBadge(3));
+  if (
+    process.platform === "darwin" &&
+    (await application.evaluate(({ app }) => app.getBadgeCount())) !== 3
+  )
+    throw new Error("Desktop attention badge was not updated");
+  await page.evaluate(() => window.desktopBridge.setAttentionBadge(0));
+  const popupEvent = application.waitForEvent("window");
+  await application.evaluate(({ BrowserWindow }) => {
+    const popup = new BrowserWindow({ width: 320, height: 240, webPreferences: { sandbox: true } });
+    void popup.loadURL("data:text/html,<title>Quit smoke popup</title><p>Quit shortcut smoke</p>");
+  });
+  const popup = await popupEvent;
+  await popup.waitForLoadState();
+  // Inject through Electron so this exercises before-input-event on a non-app renderer.
+  // CDP keyboard events do not consistently reach that native hook on macOS.
+  const pressQuit = () =>
+    application.evaluate(async ({ BrowserWindow }) => {
+      const popup = BrowserWindow.getAllWindows().find(
+        (window) => window.getTitle() === "Quit smoke popup",
+      );
+      if (!popup) throw new Error("Missing quit smoke popup");
+      const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
+      popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
+    });
+  await pressQuit();
+  await new Promise((resolve) => setTimeout(resolve, 650));
+  if (electronProcess.exitCode !== null) throw new Error("A single quit tap closed the app");
+  const closed = application.waitForEvent("close", { timeout: 10000 });
+  await pressQuit();
+  await pressQuit();
+  await closed;
   console.log(`Desktop smoke test passed. Isolated artifacts: ${directory}`);
 } catch (error) {
   console.error("Desktop smoke test failed:", error, output);
   process.exitCode = 1;
 } finally {
   writeFileSync(join(directory, "desktop.log"), output);
-  await application?.close();
+  if (electronProcess?.exitCode === null) await application.close();
 }

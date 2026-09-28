@@ -19,7 +19,7 @@ export function ComposerMarkdownStylePlugin({ enabled }: { enabled: boolean }) {
   const [editor] = useLexicalComposerContext();
   useEffect(() => {
     const transform = (node: TextNode) => {
-      if (editor.isComposing()) return;
+      if (editor.isComposing() || node.isTextEntity()) return;
       if (!enabled) {
         if (node.getStyle()) node.setStyle("");
         return;

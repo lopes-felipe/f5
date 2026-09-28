@@ -1,3 +1,4 @@
+import { customModelSlug, readCustomModels } from "@t3tools/shared/customModels";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
@@ -562,10 +563,12 @@ function getServerCustomModelsForProvider(
     "customModels",
   );
   if (instanceCustomModels !== undefined) {
-    return instanceCustomModels;
+    return readCustomModels(serverSettings.providerInstances?.[defaultInstanceId]?.config).map(
+      customModelSlug,
+    );
   }
 
-  return serverSettings.providers[provider].customModels;
+  return serverSettings.providers[provider].customModels.map(customModelSlug);
 }
 
 function getProviderCustomModelsForPicker(

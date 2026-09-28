@@ -1,3 +1,4 @@
+import type { CustomModelSetting } from "@t3tools/contracts";
 import type { GrokSettings, ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { Effect, Option, Result } from "effect";
@@ -73,7 +74,7 @@ export function buildInitialGrokProviderSnapshot(grokSettings: GrokSettings): Se
 }
 
 function grokModelsFromSettings(
-  customModels: ReadonlyArray<string> | undefined,
+  customModels: ReadonlyArray<CustomModelSetting> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = GROK_BUILT_IN_MODELS,
 ): ReadonlyArray<ServerProviderModel> {
   return providerModelsFromSettings(builtInModels, "grok", customModels ?? [], EMPTY_CAPABILITIES);

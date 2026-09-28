@@ -1,3 +1,4 @@
+import { QuitHoldOverlay } from "../components/QuitHoldOverlay";
 import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
 import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
@@ -120,6 +121,7 @@ function ChatRouteLayout() {
         <ProjectCloneController />
         <ModelRecencyController />
         <ThreadStatusNotificationController />
+        <QuitHoldOverlay />
         <NextTurnQueueController />
         <LegacyPinnedThreadsMigrationController />
         <SnoozedThreadWakeController />

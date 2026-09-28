@@ -1,5 +1,8 @@
 "use client";
 
+import type { CustomModelSetting } from "@t3tools/contracts";
+import { customModelSlug } from "@t3tools/shared/customModels";
+
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -56,7 +59,7 @@ interface ProviderModelsSectionProps {
    * and is the array we hand back verbatim (with the new slug appended /
    * removed) via `onChange`.
    */
-  readonly customModels: ReadonlyArray<string>;
+  readonly customModels: ReadonlyArray<CustomModelSetting>;
   /** Server-returned model slugs hidden from the model picker. */
   readonly hiddenModels: ReadonlyArray<string>;
   /** Model slugs favorited for this provider instance. */
@@ -68,7 +71,7 @@ interface ProviderModelsSectionProps {
    * write to the correct storage (legacy `settings.providers[kind]` vs.
    * `providerInstances[id].config`).
    */
-  readonly onChange: (next: ReadonlyArray<string>) => void;
+  readonly onChange: (next: ReadonlyArray<CustomModelSetting>) => void;
   readonly onHiddenModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onFavoriteModelsChange: (next: ReadonlyArray<string>) => void;
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
@@ -99,6 +102,7 @@ export function ProviderModelsSection({
   onModelOrderChange,
 }: ProviderModelsSectionProps) {
   const [input, setInput] = useState("");
+  const [editingName, setEditingName] = useState<{ slug: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const hiddenModelSet = useMemo(() => new Set(hiddenModels), [hiddenModels]);
@@ -125,7 +129,7 @@ export function ProviderModelsSection({
       setError(`Model slugs must be ${MAX_CUSTOM_MODEL_LENGTH} characters or less.`);
       return;
     }
-    if (customModels.includes(normalized)) {
+    if (customModels.some((model) => customModelSlug(model) === normalized)) {
       setError("That custom model is already saved.");
       return;
     }
@@ -151,7 +155,7 @@ export function ProviderModelsSection({
   };
 
   const handleRemove = (slug: string) => {
-    onChange(customModels.filter((model) => model !== slug));
+    onChange(customModels.filter((model) => customModelSlug(model) !== slug));
     onModelOrderChange(modelOrder.filter((model) => model !== slug));
     onFavoriteModelsChange(favoriteModels.filter((model) => model !== slug));
     setError(null);
@@ -311,6 +315,52 @@ export function ProviderModelsSection({
                 ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
+                {model.isCustom &&
+                  (editingName?.slug === model.slug ? (
+                    <>
+                      <Input
+                        aria-label={`Display name for ${model.slug}`}
+                        maxLength={120}
+                        value={editingName.name}
+                        onChange={(event) =>
+                          setEditingName({ slug: model.slug, name: event.target.value })
+                        }
+                      />
+                      <Button
+                        size="xs"
+                        onClick={() => {
+                          onChange(
+                            customModels.map((candidate) =>
+                              customModelSlug(candidate) === model.slug
+                                ? {
+                                    ...(typeof candidate === "string"
+                                      ? { slug: candidate }
+                                      : candidate),
+                                    name: editingName.name.trim(),
+                                  }
+                                : candidate,
+                            ),
+                          );
+                          setEditingName(null);
+                        }}
+                      >
+                        Save name
+                      </Button>
+                      <Button size="xs" variant="ghost" onClick={() => setEditingName(null)}>
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      aria-label={`Rename ${model.slug}`}
+                      onClick={() => setEditingName({ slug: model.slug, name: model.name })}
+                    >
+                      Rename
+                    </Button>
+                  ))}
+
                 <Tooltip>
                   <TooltipTrigger
                     render={

@@ -6265,4 +6265,69 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it.each([false, true])(
+    "quotes an assistant selection and sends portable Markdown (shortcut=%s)",
+    async (shortcut) => {
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotWithRichAssistantTarget(),
+      });
+      try {
+        const paragraph = await vi.waitFor(() => {
+          const node = document.querySelector('[data-message-role="assistant"] p');
+          expect(node).not.toBeNull();
+          return node!;
+        });
+        const text = paragraph.textContent!.trim().slice(0, 4000);
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await page.getByRole("textbox", { name: "Quote comment" }).fill("Please explain.");
+        await page.getByRole("button", { name: "Back", exact: true }).click();
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .toHaveValue("Please explain.");
+        if (shortcut) {
+          const comment = page.getByRole("textbox", { name: "Quote comment" }).element();
+          comment.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Enter",
+              metaKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        } else {
+          await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
+        }
+        if (!shortcut) {
+          await vi.waitFor(() => {
+            const prompt =
+              useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
+            expect(prompt).toContain("> " + text);
+            expect(prompt).toContain("Please explain.");
+          });
+          const send = await waitForSendButton();
+          await vi.waitFor(() => expect(send.disabled).toBe(false));
+          send.click();
+        }
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
+            expect.objectContaining({
+              command: expect.objectContaining({
+                message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
+              }),
+            }),
+          ),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 });

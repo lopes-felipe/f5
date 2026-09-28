@@ -2,10 +2,26 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const NOTIFICATIONS_SETTINGS_DESCRIPTORS = [
   {
+    id: "notifications.in-app",
+    category: "notifications",
+    label: "In-app thread notifications",
+    description: "Show thread status toasts while F5 is open.",
+    keywords: ["desktop", "preferences"],
+    targetSelector: '[aria-label="In-app thread notifications"]',
+  },
+  {
+    id: "notifications.attention-badge",
+    category: "notifications",
+    label: "Show attention badge",
+    description: "Count threads needing attention on the app icon and web title.",
+    keywords: ["desktop", "preferences"],
+    targetSelector: '[aria-label="Show attention badge"]',
+  },
+  {
     id: "notifications.thread-status",
     category: "notifications",
     label: "Thread status notifications",
-    description: "Notify when a thread needs attention or finishes.",
+    description: "Choose system notifications, sounds, both, or off when a thread needs attention.",
     keywords: ["approval", "input", "completed", "browser"],
     targetSelector: '[aria-label="Thread status notifications"]',
   },

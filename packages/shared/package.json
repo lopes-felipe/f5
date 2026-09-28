@@ -215,6 +215,10 @@
     "./profilePaths": {
       "types": "./src/profilePaths.ts",
       "import": "./src/profilePaths.ts"
+    },
+    "./customModels": {
+      "types": "./src/customModels.ts",
+      "import": "./src/customModels.ts"
     }
   },
   "scripts": {
