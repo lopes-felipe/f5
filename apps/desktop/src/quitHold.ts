@@ -22,6 +22,7 @@ const QUIT_HOLD_REPEAT_CADENCE_MULTIPLIER = 2;
 export interface QuitHoldKeyInput {
   readonly type: string;
   readonly key: string;
+  readonly code?: string;
   readonly meta: boolean;
   readonly control: boolean;
   readonly alt: boolean;
@@ -100,7 +101,10 @@ export function makeQuitShortcutHandler(
   };
 
   return (event, input) => {
-    const key = input.key.toLowerCase();
+    // Keep Latin remappings (e.g. AZERTY Cmd+A) intact; use physical Q only
+    // when the layout does not report a Latin shortcut character.
+    const key =
+      input.code === "KeyQ" && !/^[a-z]$/i.test(input.key) ? "q" : input.key.toLowerCase();
     if (input.type === "keyUp") {
       if (key === "q") {
         const shouldQuit = quitOnRelease;

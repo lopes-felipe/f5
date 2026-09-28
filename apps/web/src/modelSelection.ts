@@ -1,9 +1,14 @@
-import { customModelSlug, normalizeCustomModels } from "@t3tools/shared/customModels";
+import {
+  customModelSlug,
+  normalizeCustomModels,
+  readCustomModels,
+} from "@t3tools/shared/customModels";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
+  type CustomModelSetting,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -45,13 +50,13 @@ function readInstanceCustomModels(
   settings: UnifiedSettings,
   instanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
-): ReadonlyArray<string> {
+): ReadonlyArray<CustomModelSetting> {
   const instance = settings.providerInstances?.[instanceId];
   const config = instance?.config;
   if (config !== null && typeof config === "object") {
     const value = (config as Record<string, unknown>).customModels;
     if (Array.isArray(value)) {
-      return value.filter((entry): entry is string => typeof entry === "string");
+      return readCustomModels(config);
     }
   }
   const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
@@ -60,9 +65,9 @@ function readInstanceCustomModels(
   }
   const legacyProviders = settings.providers as Record<
     string,
-    { readonly customModels: ReadonlyArray<string> } | undefined
+    { readonly customModels: ReadonlyArray<CustomModelSetting> } | undefined
   >;
-  return legacyProviders[driverKind]?.customModels ?? [];
+  return readCustomModels(legacyProviders[driverKind]);
 }
 
 export interface AppModelOption {
@@ -111,12 +116,12 @@ function applyInstanceModelPreferences(
 }
 
 export function normalizeCustomModelSlugs(
-  models: Iterable<string | null | undefined>,
+  models: Iterable<CustomModelSetting | null | undefined>,
   builtInModelSlugs: ReadonlySet<string>,
   provider: ProviderDriverKind = ProviderDriverKind.make("codex"),
 ): string[] {
   return normalizeCustomModels(
-    [...models].filter((model): model is string => typeof model === "string"),
+    readCustomModels({ customModels: [...models] }),
     provider,
     builtInModelSlugs,
   ).map(customModelSlug);
@@ -144,7 +149,8 @@ export function getAppModelOptions(
   // see the user's authored custom models.
   const defaultInstanceId = defaultInstanceIdForDriver(provider);
   const customModels = readInstanceCustomModels(settings, defaultInstanceId, provider);
-  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs, provider)) {
+  for (const candidate of normalizeCustomModels(customModels, provider, builtInModelSlugs)) {
+    const slug = customModelSlug(candidate);
     if (seen.has(slug)) {
       continue;
     }
@@ -153,9 +159,10 @@ export function getAppModelOptions(
     const snapshotModel = getProviderModels(providers, provider).find(
       (model) => model.slug === slug,
     );
-    options.push(
-      snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true },
-    );
+    options.push({
+      ...(snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true }),
+      ...(typeof candidate !== "string" ? { name: candidate.name?.trim() || slug } : {}),
+    });
   }
 
   return applyInstanceModelPreferences(
@@ -189,16 +196,18 @@ export function getAppModelOptionsForInstance(
 
   const customModels = readInstanceCustomModels(settings, entry.instanceId, entry.driverKind);
   const normalizer = entry.driverKind;
-  for (const slug of normalizeCustomModelSlugs(customModels, builtInModelSlugs, normalizer)) {
+  for (const candidate of normalizeCustomModels(customModels, normalizer, builtInModelSlugs)) {
+    const slug = customModelSlug(candidate);
     if (seen.has(slug)) {
       continue;
     }
 
     seen.add(slug);
     const snapshotModel = entry.models.find((model) => model.slug === slug);
-    options.push(
-      snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true },
-    );
+    options.push({
+      ...(snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true }),
+      ...(typeof candidate !== "string" ? { name: candidate.name?.trim() || slug } : {}),
+    });
   }
 
   return applyInstanceModelPreferences(

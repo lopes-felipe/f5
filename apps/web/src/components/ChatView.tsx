@@ -5860,15 +5860,41 @@ export default function ChatView({
         <AssistantQuoteToolbar
           key={activeThread.id}
           currentLength={prompt.length}
-          onInsert={(quote, send) => {
+          maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
+          onInsert={async (quote, send) => {
+            if (activePendingProgress)
+              return {
+                inserted: false,
+                error: "Finish the pending question before quoting into chat.",
+              };
+            if (
+              isConnecting ||
+              sendInFlightRef.current ||
+              hasPendingTurnDispatch ||
+              pendingComposerImageImportCount > 0
+            )
+              return {
+                inserted: false,
+                error:
+                  "Wait for the connection, current send, or image import before adding this quote.",
+              };
             const editor = composerEditorRef.current;
-            if (!editor) return false;
+            if (!editor) return { inserted: false };
             editor.insertAssistantQuote(quote);
             if (send) {
               promptRef.current = editor.readSnapshot().value;
-              void onSend();
+              let admitted = false;
+              await onSend(undefined, "auto", () => {
+                admitted = true;
+              });
+              if (!admitted)
+                return {
+                  inserted: true,
+                  error:
+                    "Quote added to the composer, but sending was not confirmed. Review the draft or pending send before trying again.",
+                };
             }
-            return true;
+            return { inserted: true };
           }}
         />
         {/* Top bar */}

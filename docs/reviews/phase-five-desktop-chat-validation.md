@@ -65,3 +65,41 @@ Passed checks: `bun fmt`, `bun lint` (10 existing warnings, no errors), `bun typ
 `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`, the web browser suite (489 tests), the final toast/quote browser checks (3 tests), and
 `bun run test:desktop-smoke`. Native smoke coverage is macOS arm64; Linux and Windows
 runtime behavior is covered by unit cases, not a native run on this host.
+
+## PR review follow-up
+
+Structured custom models now pass through both instance and legacy option builders;
+renaming does not remove a model or select a replacement before the snapshot refreshes.
+Quote submission uses the advertised server text limit, waits for durable send admission,
+and leaves feedback visible on rejection or an uncertain send. A pending question must
+be completed before quoting into chat, so its previously selected answer cannot be sent
+by the quote shortcut. An inserted but unconfirmed quote cannot be inserted twice.
+
+Normal quit now runs backend and preview cleanup at `will-quit`, after renderer unload
+checks succeed. A renderer veto reveals the windows and resets quit flags without stopping
+the backend. Update installation first closes windows with the same veto protection,
+then runs shared bounded cleanup. A synchronous installer failure resets the flags,
+reinitializes preview resources and restarts stopped backends. The isolated desktop smoke
+now includes a real `beforeunload` veto and a successful renderer reload afterwards.
+
+The physical Q key works on non-Latin layouts. Preview guests route hints to their host
+renderer, while standalone popups retain the native hint. Duplicate non-macOS Quit menu
+items were removed. Notification reset visibility includes every notification key, the
+legacy notification boolean reflects system-notification mode for downgrade compatibility,
+and enabling sound unlocks controller-owned audio in the settings gesture. Unsupported
+forge kinds no longer receive invented issue URLs.
+
+The all-webContents quit shortcut remains intentional under the approved Phase 5 scope,
+including Ctrl+Q on Windows/Linux. Skipping terminals or preview guests would change that
+requirement. Bare `#N` and qualified repository names remain linked as requested; syntax
+alone cannot distinguish prose numbering or a repository named `foo.ts` from a file path.
+
+The original PR CI run failed to launch Electron on Linux and timed out in three existing
+Windows legacy-ledger migration tests. Turbo now preserves the Xvfb display environment
+for desktop smoke execution. Windows native execution remains unverified on this host;
+the legacy migration timeout thresholds are unchanged in this feature PR.
+
+Follow-up validation passed: all 493 browser tests, 150 desktop unit tests, the full
+workspace suite and 133 real-Git tests, formatting, lint and typecheck, online ledger
+validation, and the expanded isolated desktop smoke. The physical-key fallback also
+preserves Latin remappings such as AZERTY select-all.

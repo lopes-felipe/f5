@@ -44,7 +44,13 @@ export function GeneralSettings() {
             }}
           >
             <SelectTrigger aria-label="Quit shortcut">
-              <SelectValue />
+              <SelectValue>
+                {settings.quitShortcutMode === "hold"
+                  ? "Hold or press twice"
+                  : settings.quitShortcutMode === "double-click"
+                    ? "Press twice"
+                    : "Quit immediately"}
+              </SelectValue>
             </SelectTrigger>
             <SelectPopup>
               <SelectItem value="hold">Hold or press twice</SelectItem>

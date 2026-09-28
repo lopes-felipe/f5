@@ -92,3 +92,18 @@ it("rejects unowned windows and subframes and aggregates profile badges once", (
   two.emit("destroyed");
   expect(electron.badge).toHaveBeenLastCalledWith(2);
 });
+
+it("routes preview guest hints to the owning renderer", async () => {
+  installDesktopAttention((id) => (id === 1 ? "a" : undefined));
+  const host = contents(1);
+  const guest = Object.assign(contents(2), { hostWebContents: host });
+  electron.listeners.get("web-contents-created")!({}, guest);
+  guest.emit(
+    "before-input-event",
+    { preventDefault: vi.fn() },
+    { type: "keyDown", key: "q", meta: true, control: true, isAutoRepeat: false },
+  );
+  await Promise.resolve();
+  expect(host.send).toHaveBeenCalledWith("desktop:quit-hint", { state: "down", mode: "hold" });
+  expect(electron.show).not.toHaveBeenCalled();
+});

@@ -10,6 +10,12 @@ export function issueReferenceUrl(
   number: string,
   qualified?: string,
 ): string | null {
+  if (
+    !["github", "gitlab", "bitbucket", "forgejo", "gitea", "azure-devops"].includes(
+      context.provider,
+    )
+  )
+    return null;
   try {
     const url = new URL(context.webUrl);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;

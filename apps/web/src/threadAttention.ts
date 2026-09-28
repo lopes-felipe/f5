@@ -59,3 +59,8 @@ export function setThreadAttentionBadge(count: number) {
   const title = document.title.replace(/^\(\d+\) /, "");
   document.title = count > 0 ? `(${count}) ${title}` : title;
 }
+
+/** Run synchronously in the settings gesture so browser audio permission carries through. */
+export function unlockThreadNotificationSound(): void {
+  window.dispatchEvent(new Event("f5:unlock-notification-sound"));
+}

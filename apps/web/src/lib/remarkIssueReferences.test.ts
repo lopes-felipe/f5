@@ -74,3 +74,9 @@ describe("repository references", () => {
     ).toEqual({ provider: "gitlab", webUrl: "https://gitlab.com/base/repo" });
   });
 });
+
+it("does not invent issue routes for unsupported forges", () => {
+  expect(
+    issueReferenceUrl({ provider: "unknown", webUrl: "https://git.example/a/b" }, "2"),
+  ).toBeNull();
+});

@@ -9,14 +9,21 @@ import {
 export function AssistantQuoteToolbar({
   onInsert,
   currentLength,
+  maxLength,
 }: {
-  onInsert: (quote: AssistantQuote, send: boolean) => boolean;
+  onInsert: (
+    quote: AssistantQuote,
+    send: boolean,
+  ) => Promise<{ inserted: boolean; error?: string }> | { inserted: boolean; error?: string };
   currentLength: number;
+  maxLength: number;
 }) {
   const [selection, setSelection] = useState<{ messageId: string; text: string } | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [alreadyInserted, setAlreadyInserted] = useState(false);
   useEffect(() => {
     const capture = (event: Event) => {
       if (event.target instanceof Element && event.target.closest("[data-quote-toolbar]")) return;
@@ -51,15 +58,30 @@ export function AssistantQuoteToolbar({
     };
   }, [editing]);
   if (!selection) return null;
-  const insert = (send = false) => {
+  const insert = async (send = false) => {
+    if (busy || alreadyInserted) return;
+    if (maxLength <= 0) {
+      setError("Waiting for server capabilities. Reconnect before adding a quote.");
+      return;
+    }
     const quote = { ...selection, comment };
-    if (currentLength + serializeAssistantQuote(quote).length + 2 > 120000) {
+    if (currentLength + serializeAssistantQuote(quote).length + 2 > maxLength) {
       setError("This quote would exceed the message limit.");
       return;
     }
-    if (!onInsert(quote, send)) {
-      setError("The composer is not ready yet.");
+    setBusy(true);
+    try {
+      const result = await onInsert(quote, send);
+      if (result.error || !result.inserted) {
+        setAlreadyInserted(result.inserted);
+        setError(result.error ?? "The composer is not ready yet.");
+        return;
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add quote.");
       return;
+    } finally {
+      setBusy(false);
     }
     setComment("");
     setSelection(null);
@@ -85,6 +107,7 @@ export function AssistantQuoteToolbar({
           </blockquote>
           <Textarea
             autoFocus
+            disabled={busy || alreadyInserted}
             aria-label="Quote comment"
             value={comment}
             maxLength={4000}
@@ -97,7 +120,7 @@ export function AssistantQuoteToolbar({
               ) {
                 event.preventDefault();
                 event.stopPropagation();
-                insert(true);
+                void insert(true);
               }
               if (event.key === "Escape") {
                 event.stopPropagation();
@@ -107,22 +130,29 @@ export function AssistantQuoteToolbar({
           />
           {error && <p role="alert">{error}</p>}
           <div className="mt-2 flex gap-2">
-            <Button size="sm" onClick={() => insert()}>
+            <Button size="sm" disabled={busy || alreadyInserted} onClick={() => void insert()}>
               Add quote to composer
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            <Button
+              size="sm"
+              disabled={busy || alreadyInserted}
+              variant="ghost"
+              onClick={() => setEditing(false)}
+            >
               Back
             </Button>
             <Button
               size="sm"
+              disabled={busy}
               variant="ghost"
               onClick={() => {
                 setSelection(null);
                 setComment("");
                 setEditing(false);
+                setAlreadyInserted(false);
               }}
             >
-              Cancel
+              {alreadyInserted ? "Close" : "Cancel"}
             </Button>
           </div>
         </>

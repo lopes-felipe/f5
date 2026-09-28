@@ -1,3 +1,4 @@
+import { closeWindowsForQuit } from "./quitPreflight";
 import { installDesktopAttention } from "./desktopAttention";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
@@ -1779,7 +1780,7 @@ function configureApplicationMenu(): void {
               },
               { type: "separator" as const },
             ]),
-        { role: process.platform === "darwin" ? "close" : "quit" },
+        ...(process.platform === "darwin" ? [{ role: "close" as const }] : []),
       ],
     },
     { role: "editMenu" },
@@ -1971,17 +1972,25 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
   }
 
   isQuitting = true;
-  clearUpdatePollTimer();
   try {
-    await Promise.all(
-      [...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
-    );
+    if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
+      cancelQuit();
+      return { accepted: true, completed: false };
+    }
+    await cleanupBeforeExit();
     shutdownComplete = true;
     autoUpdater.quitAndInstall();
+    restoreStdIoCapture?.();
     return { accepted: true, completed: true };
   } catch (error: unknown) {
     const message = formatErrorMessage(error);
-    isQuitting = false;
+    cancelQuit();
+    await previewRuntime.initialize();
+    for (const runtime of backends.values()) {
+      runtime.stopped = false;
+      startBackend(runtime);
+    }
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
     setUpdateState(reduceDesktopUpdateStateOnInstallFailure(updateState, message));
     console.error(`[desktop-updater] Failed to install update: ${message}`);
     return { accepted: true, completed: false };
@@ -2898,7 +2907,7 @@ async function bootstrap(): Promise<void> {
         window.webContents.send("desktop:profiles-changed");
     }, 100);
   });
-  app.once("before-quit", () => {
+  app.once("quit", () => {
     registryWatcher.close();
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
@@ -2921,23 +2930,48 @@ installDesktopAttention((id) => profileByWebContentsId.get(id));
 
 let shutdownPending = false;
 let shutdownComplete = false;
-app.on("before-quit", (event) => {
+function cancelQuit(): void {
+  shutdownPending = false;
+  shutdownComplete = false;
+  isQuitting = false;
+  for (const window of BrowserWindow.getAllWindows()) window.show();
+}
+
+async function cleanupBeforeExit(): Promise<void> {
+  clearUpdatePollTimer();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled([
+        ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
+        previewRuntime.dispose(),
+      ]),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 6000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+app.on("web-contents-created", (_event, contents) => {
+  // Electron cancels quit on a renderer veto. Keep drafts and backends usable.
+  contents.on("will-prevent-unload", () => {
+    if (isQuitting) cancelQuit();
+  });
+});
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+app.on("will-quit", (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (shutdownPending) return;
   shutdownPending = true;
   isQuitting = true;
-  writeDesktopLogHeader("before-quit received");
-  clearUpdatePollTimer();
-  for (const window of BrowserWindow.getAllWindows()) window.hide();
-  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 6000));
-  void Promise.race([
-    Promise.allSettled([
-      ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
-      previewRuntime.dispose(),
-    ]),
-    timeout,
-  ]).finally(() => {
+  // will-quit is emitted only after all renderer unload checks have succeeded.
+  void cleanupBeforeExit().finally(() => {
     shutdownComplete = true;
     restoreStdIoCapture?.();
     app.quit();
@@ -2967,7 +3001,7 @@ app
   });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+  if (process.platform !== "darwin" && !isQuitting) {
     app.quit();
   }
 });
@@ -2978,8 +3012,6 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
-    for (const runtime of backends.values()) stopBackend(runtime);
-    restoreStdIoCapture?.();
     app.quit();
   });
 
@@ -2988,8 +3020,6 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
-    for (const runtime of backends.values()) stopBackend(runtime);
-    restoreStdIoCapture?.();
     app.quit();
   });
 }

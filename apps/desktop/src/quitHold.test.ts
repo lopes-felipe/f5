@@ -63,6 +63,28 @@ function makeHarness(options?: {
 }
 
 describe("makeQuitShortcutHandler", () => {
+  it.each(["darwin", "linux", "win32"] as const)(
+    "recognizes physical Q on a non-Latin layout on %s",
+    async (platform) => {
+      const harness = makeHarness({ platform });
+      await harness.send(
+        makeInput({
+          key: "й",
+          code: "KeyQ",
+          meta: platform === "darwin",
+          control: platform !== "darwin",
+        }),
+      );
+      expect(harness.preventDefault).toHaveBeenCalled();
+      expect(harness.notifications).toContainEqual(HOLD_DOWN);
+    },
+  );
+  it("does not turn AZERTY select-all into quit", async () => {
+    const harness = makeHarness();
+    await harness.send(makeInput({ key: "a", code: "KeyQ" }));
+    expect(harness.preventDefault).not.toHaveBeenCalled();
+    expect(harness.quit).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

@@ -6265,6 +6265,65 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it("does not submit a selected pending answer when sending a quote", async () => {
+    const snapshot = createSnapshotWithRichAssistantTarget();
+    const question = createThreadActivity({
+      id: "quote-question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "quote-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which choice?",
+            options: [{ label: "Original answer", description: "Keep it" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await page.getByText("Original answer", { exact: true }).click();
+      const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Quote comment" }).fill("Explain this quote");
+      page
+        .getByRole("textbox", { name: "Quote comment" })
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      await expect
+        .element(
+          page.getByText("Finish the pending question before quoting into chat.", { exact: true }),
+        )
+        .toBeVisible();
+      expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it.each([false, true])(
     "quotes an assistant selection and sends portable Markdown (shortcut=%s)",
     async (shortcut) => {

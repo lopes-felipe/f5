@@ -1,3 +1,4 @@
+import { unlockThreadNotificationSound } from "../../../threadAttention";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import {
   GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
@@ -124,6 +125,8 @@ export function NotificationsSettings() {
             <Select
               value={settings.notificationMode}
               onValueChange={(value) => {
+                if (value === "sound" || value === "system-and-sound")
+                  unlockThreadNotificationSound();
                 if (
                   value === "off" ||
                   value === "system" ||
@@ -132,7 +135,8 @@ export function NotificationsSettings() {
                 )
                   updateSettings({
                     notificationMode: value,
-                    enableThreadStatusNotifications: false,
+                    enableThreadStatusNotifications:
+                      value === "system" || value === "system-and-sound",
                   });
               }}
             >
@@ -227,8 +231,7 @@ export function NotificationsSettings() {
           </div>
         </div>
 
-        {settings.enableThreadStatusNotifications !== defaults.enableThreadStatusNotifications ||
-        settings.enablePrAttentionNotifications !== defaults.enablePrAttentionNotifications ? (
+        {NOTIFICATION_KEYS.some((key) => settings[key] !== defaults[key]) ? (
           <div className="mt-3 flex justify-end">
             <Button
               size="xs"

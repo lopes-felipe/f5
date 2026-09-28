@@ -61,7 +61,8 @@ export function installDesktopAttention(profileForRenderer: (id: number) => stri
   });
   app.on("web-contents-created", (_event, contents) => {
     contents.on("before-input-event", (event, input) => {
-      source = contents;
+      const host = contents.hostWebContents;
+      source = host && profileForRenderer(host.id) ? host : contents;
       handle(event, input);
     });
     contents.once("destroyed", () => {

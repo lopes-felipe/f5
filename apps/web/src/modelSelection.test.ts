@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { deriveProviderInstanceEntries } from "./providerInstances";
 import {
   getAppModelOptionsForInstance,
+  getAppModelOptions,
   resolveAppModelSelectionForInstance,
   resolveAppModelSelectionState,
 } from "./modelSelection";
@@ -497,4 +498,51 @@ it("keeps configured custom model display metadata", () => {
     shortName: "Custom",
     isCustom: true,
   });
+});
+
+it.each(["codex", "codex_private"])(
+  "keeps renamed custom models selectable on %s before snapshots refresh",
+  (id) => {
+    const snapshot = provider({ instanceId: id, models: ["gpt-5.4"] });
+    const entry = deriveProviderInstanceEntries([snapshot])[0]!;
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [id]: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { customModels: [{ slug: "private/model", name: "Reviewer" }] },
+        },
+      },
+    };
+    expect(getAppModelOptionsForInstance(settings, entry)).toContainEqual({
+      slug: "private/model",
+      name: "Reviewer",
+      isCustom: true,
+    });
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make(id),
+        settings,
+        [snapshot],
+        "private/model",
+      ),
+    ).toBe("private/model");
+  },
+);
+
+it("reads structured legacy custom models through the default option builder", () => {
+  const snapshot = provider({ instanceId: "codex", models: ["gpt-5.4"] });
+  const settings: UnifiedSettings = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providers: {
+      ...DEFAULT_UNIFIED_SETTINGS.providers,
+      codex: {
+        ...DEFAULT_UNIFIED_SETTINGS.providers.codex,
+        customModels: [{ slug: "legacy/model", name: "Legacy name" }],
+      },
+    },
+  };
+  expect(getAppModelOptions(settings, [snapshot], ProviderDriverKind.make("codex"))).toContainEqual(
+    { slug: "legacy/model", name: "Legacy name", isCustom: true },
+  );
 });

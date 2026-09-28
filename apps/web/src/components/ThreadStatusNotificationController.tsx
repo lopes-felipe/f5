@@ -45,8 +45,20 @@ export function ThreadStatusNotificationControllerContent({
     settings.notificationMode === "sound" || settings.notificationMode === "system-and-sound";
   const sound = useRef<ReturnType<typeof createNotificationSound> | null>(null);
   useEffect(() => {
+    const unlock = () => {
+      sound.current ??= createNotificationSound();
+      sound.current.unlock();
+    };
+    window.addEventListener("f5:unlock-notification-sound", unlock);
+    return () => {
+      window.removeEventListener("f5:unlock-notification-sound", unlock);
+      sound.current?.dispose();
+      sound.current = null;
+    };
+  }, []);
+  useEffect(() => {
     if (!soundEnabled) return;
-    const player = createNotificationSound();
+    const player = sound.current ?? createNotificationSound();
     sound.current = player;
     const unlock = () => player.unlock();
     window.addEventListener("pointerdown", unlock);

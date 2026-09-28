@@ -89,6 +89,28 @@ try {
   )
     throw new Error("Desktop attention badge was not updated");
   await page.evaluate(() => window.desktopBridge.setAttentionBadge(0));
+  const observeUnloadDialog = () => {};
+  page.on("dialog", observeUnloadDialog);
+  await page.evaluate(() => {
+    window.__smokeQuitVeto = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", window.__smokeQuitVeto);
+  });
+  await application.evaluate(({ app }) => app.quit());
+  await page.waitForTimeout(300);
+  if (electronProcess.exitCode !== null) throw new Error("Draft veto did not cancel quit");
+  if (
+    !(await application.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().some((window) => window.isVisible()),
+    ))
+  )
+    throw new Error("Cancelled quit left the app hidden");
+  await page.evaluate(() => window.removeEventListener("beforeunload", window.__smokeQuitVeto));
+  page.off("dialog", observeUnloadDialog);
+  await page.reload();
+  await page.locator('[contenteditable="true"]').waitFor({ timeout: 60000 });
   const popupEvent = application.waitForEvent("window");
   await application.evaluate(({ BrowserWindow }) => {
     const popup = new BrowserWindow({ width: 320, height: 240, webPreferences: { sandbox: true } });
@@ -107,7 +129,8 @@ try {
       const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
       popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
       await new Promise((resolve) => setTimeout(resolve, 40));
-      popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
+      if (!popup.isDestroyed())
+        popup.webContents.sendInputEvent({ type: "keyUp", keyCode: "Q", modifiers });
     });
   await pressQuit();
   await new Promise((resolve) => setTimeout(resolve, 650));

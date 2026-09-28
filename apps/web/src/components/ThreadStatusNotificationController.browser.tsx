@@ -1,3 +1,4 @@
+import { unlockThreadNotificationSound } from "../threadAttention";
 import { toastManager } from "./ui/toast";
 import "../index.css";
 
@@ -357,4 +358,29 @@ describe("ThreadStatusNotificationController", () => {
       Object.defineProperty(navigator, "setAppBadge", { configurable: true, value: undefined });
     }
   });
+});
+
+it("unlocks controller audio synchronously in the sound settings gesture", async () => {
+  const resume = vi.fn().mockResolvedValue(undefined),
+    close = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal(
+    "AudioContext",
+    class {
+      resume = resume;
+      close = close;
+    },
+  );
+  const screen = await render(
+    <StoreProvider>
+      <ThreadStatusNotificationControllerContent navigateToThread={() => {}} />
+    </StoreProvider>,
+  );
+  try {
+    unlockThreadNotificationSound();
+    expect(resume).toHaveBeenCalledOnce();
+  } finally {
+    await screen.unmount();
+    vi.unstubAllGlobals();
+  }
+  expect(close).toHaveBeenCalled();
 });
