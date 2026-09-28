@@ -5795,6 +5795,7 @@ export default function ChatView({
           )}
         >
           <ChatHeader
+            isServerThread={isServerThread}
             activeThreadId={activeThread.id}
             activeThreadTitle={activeThread.title}
             estimatedContextTokens={activeThread.estimatedContextTokens}

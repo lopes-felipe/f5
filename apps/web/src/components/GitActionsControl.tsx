@@ -22,6 +22,7 @@ import {
   resolveDefaultBranchActionDialogCopy,
   resolveQuickAction,
   summarizeGitResult,
+  shouldSavePullRequestLink,
 } from "./GitActionsControl.logic";
 import { useAppSettings } from "~/appSettings";
 import { Button } from "~/components/ui/button";
@@ -58,6 +59,7 @@ import { readNativeApi } from "~/nativeApi";
 interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadId: ThreadId | null;
+  isServerThread: boolean;
 }
 
 interface PendingDefaultBranchAction {
@@ -194,7 +196,11 @@ function GitQuickActionIcon({ quickAction }: { quickAction: GitQuickAction }) {
   return <InfoIcon className={iconClassName} />;
 }
 
-export default function GitActionsControl({ gitCwd, activeThreadId }: GitActionsControlProps) {
+export default function GitActionsControl({
+  gitCwd,
+  activeThreadId,
+  isServerThread,
+}: GitActionsControlProps) {
   const { settings } = useAppSettings();
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
@@ -515,8 +521,18 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
           ? githubThreadLink(prUrl, result.pr.title ?? actionStatus?.pr?.title ?? "")
           : null;
         const api = readNativeApi();
-        if (pullRequest && activeThreadId && api) {
-          void api.orchestration
+        if (
+          pullRequest &&
+          activeThreadId &&
+          api &&
+          shouldSavePullRequestLink(
+            isServerThread,
+            result.pr.status,
+            pullRequest.url,
+            existingOpenPrUrl,
+          )
+        ) {
+          await api.orchestration
             .dispatchCommand({
               type: "thread.meta.update",
               commandId: newCommandId(),
@@ -614,6 +630,7 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
 
     [
       activeThreadId,
+      isServerThread,
       isDefaultBranch,
       runImmediateGitActionMutation,
       setPendingDefaultBranchAction,

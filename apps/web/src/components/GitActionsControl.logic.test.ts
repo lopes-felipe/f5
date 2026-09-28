@@ -8,6 +8,7 @@ import {
   resolveDefaultBranchActionDialogCopy,
   resolveQuickAction,
   summarizeGitResult,
+  shouldSavePullRequestLink,
 } from "./GitActionsControl.logic";
 
 function status(overrides: Partial<GitStatusResult> = {}): GitStatusResult {
@@ -1014,4 +1015,20 @@ describe("resolveAutoFeatureBranchName", () => {
     const branch = resolveAutoFeatureBranchName(["main"]);
     assert.equal(branch, "feature/update");
   });
+});
+
+it("only records new PR observations for server threads", () => {
+  const url = "https://github.com/owner/repo/pull/1";
+  assert.isFalse(shouldSavePullRequestLink(false, "created", url, undefined));
+  assert.isFalse(shouldSavePullRequestLink(true, "skipped_not_requested", url, url));
+  assert.isTrue(shouldSavePullRequestLink(true, "created", url, undefined));
+  assert.isTrue(shouldSavePullRequestLink(true, "opened_existing", url, url));
+  assert.isTrue(
+    shouldSavePullRequestLink(
+      true,
+      "skipped_not_requested",
+      url,
+      "https://github.com/owner/repo/pull/2",
+    ),
+  );
 });

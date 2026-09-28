@@ -886,3 +886,18 @@ describe("Phase 3 shortcut contexts", () => {
     );
   });
 });
+
+it("omits desktop-only compound labels while retaining web alternatives", () => {
+  const electron = whenIdentifier("isElectron");
+  const focus = whenIdentifier("composerFocus");
+  const label = (whenAst: KeybindingWhenNode) =>
+    shortcutLabelForCommand(
+      compile([{ shortcut: modShortcut("e"), command: "composer.effort", whenAst }]),
+      "composer.effort",
+      "Linux",
+    );
+  assert.isNull(label({ type: "and", left: electron, right: focus }));
+  assert.isNull(label({ type: "and", left: focus, right: electron }));
+  assert.isNotNull(label({ type: "or", left: electron, right: focus }));
+  assert.isNotNull(label({ type: "not", node: electron }));
+});

@@ -3,6 +3,7 @@ import { terminalClipboardAction, terminalRightClickPastes } from "./terminalCli
 const key = {
   type: "keydown",
   key: "c",
+  code: "KeyC",
   ctrlKey: true,
   metaKey: false,
   altKey: false,
@@ -33,4 +34,13 @@ it("preserves macOS Ctrl+C and disables right-click paste", () => {
   expect(terminalRightClickPastes("MacIntel")).toBe(false);
   expect(terminalRightClickPastes("Linux x86_64")).toBe(true);
   expect(terminalRightClickPastes("Win32")).toBe(true);
+});
+
+it("copies the physical C key on non-Latin layouts without stealing modified interrupts", () => {
+  const cyrillic = { ...key, key: "с" };
+  expect(terminalClipboardAction(cyrillic, true, "Linux")).toBe("copy");
+  expect(terminalClipboardAction(cyrillic, false, "Linux")).toBeNull();
+  expect(terminalClipboardAction({ ...cyrillic, altKey: true }, true, "Linux")).toBeNull();
+  expect(terminalClipboardAction({ ...cyrillic, metaKey: true }, true, "Linux")).toBeNull();
+  expect(terminalClipboardAction(cyrillic, true, "MacIntel")).toBeNull();
 });

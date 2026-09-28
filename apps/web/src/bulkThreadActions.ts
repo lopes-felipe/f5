@@ -57,7 +57,15 @@ export async function applyBulkThreadAction(
     }
     return {
       succeeded: action === "pin" ? eligible : threads.map((thread) => thread.id),
-      failures: [],
+      failures:
+        action === "pin"
+          ? ids
+              .filter((id) => !eligible.includes(id))
+              .map((id) => ({
+                id,
+                error: new Error("Archived, snoozed, or unavailable threads cannot be pinned."),
+              }))
+          : [],
     };
   }
   const succeeded: ThreadId[] = [];

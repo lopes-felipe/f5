@@ -234,3 +234,35 @@ it("quarantines corrupt history without preventing startup", async () => {
     ),
   );
 });
+it("rejects dash-leading SSH hosts and accepts internal hyphens", () => {
+  for (const url of ["git@-oProxyCommand:repo", "ssh://git@-host/repo"])
+    expect(() => normalizeCloneUrl(url)).toThrow();
+  expect(normalizeCloneUrl("git@my-host:owner/repo")).toBe("git@my-host:owner/repo");
+});
+
+it("releases an empty reservation after persistence fails so the same operation can retry", async () => {
+  const input = await fixture();
+  const clone = vi.fn(() => Effect.never);
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const tracker = yield* makeProjectCloneTracker({
+          ...input,
+          scope: yield* Effect.scope,
+          git: { cloneRepository: clone },
+          onComplete: () => Effect.void,
+        });
+        // A file in place of the state directory makes the first job write fail.
+        yield* Effect.promise(() => writeFile(input.stateDir, "blocked"));
+        const result = yield* tracker.start(input).pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        expect(tracker.list()).toEqual([]);
+        expect(clone).not.toHaveBeenCalled();
+        expect(yield* Effect.promise(() => readdir(input.parentPath))).not.toContain("repo");
+        yield* Effect.promise(() => rm(input.stateDir));
+        const retry = yield* tracker.start(input);
+        expect(retry.operationId).toBe(input.operationId);
+      }),
+    ),
+  );
+});

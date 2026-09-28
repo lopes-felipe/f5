@@ -1,6 +1,9 @@
 /** Clipboard keys must leave Ctrl+C available to the shell when nothing is selected. */
 export function terminalClipboardAction(
-  event: Pick<KeyboardEvent, "type" | "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">,
+  event: Pick<
+    KeyboardEvent,
+    "type" | "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey"
+  >,
   hasSelection: boolean,
   platform: string,
 ): "copy" | "paste" | null {
@@ -10,7 +13,7 @@ export function terminalClipboardAction(
     event.ctrlKey &&
     !event.shiftKey &&
     hasSelection &&
-    (event.key.toLowerCase() === "c" || event.key === "Insert")
+    (event.code === "KeyC" || event.key.toLowerCase() === "c" || event.key === "Insert")
   )
     return "copy";
   if (event.shiftKey && !event.ctrlKey && event.key === "Insert") return "paste";

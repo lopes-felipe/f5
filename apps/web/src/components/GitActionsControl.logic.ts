@@ -348,3 +348,16 @@ export function resolveDefaultBranchActionDialogCopy(input: {
 
 // Re-export from shared for backwards compatibility in this module's exports
 export { resolveAutoFeatureBranchName } from "@t3tools/shared/git";
+
+/** Drafts have no server aggregate; ordinary pushes must not rewrite an unchanged link. */
+export function shouldSavePullRequestLink(
+  isServerThread: boolean,
+  status: GitRunStackedActionResult["pr"]["status"],
+  url: string,
+  existingOpenPrUrl: string | undefined,
+): boolean {
+  return (
+    isServerThread &&
+    (status === "created" || status === "opened_existing" || url !== existingOpenPrUrl)
+  );
+}

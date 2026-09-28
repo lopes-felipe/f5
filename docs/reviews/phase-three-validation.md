@@ -214,3 +214,30 @@ Validation: formatting, lint, typecheck, online ledger validation, the updated
 real Electron smoke, and all 470 browser tests passed. The first full-suite run
 hit the existing five-second migration-test deadline; the rerun completed the
 workspace suite successfully. The exhaustive Git matrix also passed all 133 tests.
+
+## Follow-up GitHub review comments
+
+Addressed the remaining inline findings: dash-leading SSH hosts are rejected;
+PR-link events require a server thread and a new PR observation; bulk pin reports
+ineligible selections; shortcut labels evaluate platform conditions from the AST;
+and terminal copy recognizes the physical C key on non-Latin layouts. Added
+regressions for each decision. The earlier bounded stderr fix remains in place.
+
+The outside-diff clone reservation finding is also fixed. If the initial job write
+fails, the tracker restores its previous in-memory jobs and attempts `rmdir` on
+its empty reservation. Cleanup cannot erase files added by another process or
+replace the original persistence failure. A regression verifies that the same
+operation and destination can be retried after the write failure is repaired.
+
+Clone authority remains profile-wide, like the existing authenticated project
+creation and filesystem APIs. There is no new multi-user/project authorization
+boundary in this PR. A failed final job-status write does not undo a successfully
+registered project; startup marks interrupted jobs failed without re-running Git.
+The outstanding performance acceptance noted above is unchanged.
+
+Follow-up validation passed: `bun fmt`, `bun lint` (nine existing warnings),
+`bun typecheck`, `bun run test:full` including all 133 exhaustive Git tests,
+470 browser tests, the isolated desktop smoke, and mandatory online ledger
+validation. A direct server-package test invocation also ran unrelated provider
+and CLI tests without the root task's environment filtering; those failed under
+the inherited provider environment. The required root full-suite run passed.

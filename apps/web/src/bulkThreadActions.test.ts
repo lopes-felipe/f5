@@ -61,3 +61,19 @@ it("does not offer undo for a rejected pin transaction", async () => {
   await expect(applyBulkThreadAction(ids, "unpin")).rejects.toThrow("Revision changed");
   expect(actions.undo).not.toHaveBeenCalled();
 });
+it("reports archived, snoozed and missing selections as pin failures", async () => {
+  state.threads = state.threads.map((thread, index) => ({
+    ...thread,
+    pinnedAt: null,
+    pinOrderKey: null,
+    archivedAt: index === 1 ? new Date().toISOString() : null,
+    snoozedUntil: index === 2 ? "2099-01-01T00:00:00Z" : null,
+  }));
+  const missing = ThreadId.makeUnsafe("missing");
+  const result = await applyBulkThreadAction([...ids, missing], "pin");
+  expect(result.succeeded).toEqual([ids[0]]);
+  expect(result.failures.map(({ id }) => id)).toEqual([ids[1], ids[2], missing]);
+  expect(actions.replace).toHaveBeenCalledWith(
+    expect.objectContaining({ pinnedThreadIds: [ids[0]] }),
+  );
+});

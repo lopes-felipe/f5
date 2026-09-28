@@ -12,11 +12,12 @@ export function normalizeCloneUrl(raw: string): string {
   const value = raw.trim();
   if (/^[\w.-]+\/[\w.-]+$/.test(value))
     return `https://github.com/${value.replace(/\.git$/, "")}.git`;
-  if (/^git@[\w.-]+:[\w./-]+$/.test(value)) return value;
+  if (/^git@[\w.][\w.-]*:[\w./-]+$/.test(value)) return value;
   const url = new URL(value);
   if (
     !["https:", "ssh:"].includes(url.protocol) ||
     url.password ||
+    url.hostname.startsWith("-") ||
     url.search ||
     url.hash ||
     (url.username && !(url.protocol === "ssh:" && url.username === "git"))
@@ -165,9 +166,11 @@ export const makeProjectCloneTracker = Effect.fn(function* (input: {
         }
         yield* persist.pipe(
           Effect.tapError(() =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               jobs.clear();
               for (const [id, entry] of original) jobs.set(id, entry);
+              // Never remove files someone added after the reservation.
+              yield* Effect.tryPromise(() => fs.rmdir(destination)).pipe(Effect.ignore);
             }),
           ),
         );
