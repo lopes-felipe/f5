@@ -1409,8 +1409,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1537"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1501"]
     },
     {
       "upstreamSha": "12e8997e58dbca8f1bd8c63b67d662eb69cf0e0d",
@@ -2892,8 +2895,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3e",
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1228"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1192"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "26af903b9bec7f8da56bb5f545d9980d08d418e1",
@@ -4068,8 +4074,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1089"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1053"]
     },
     {
       "upstreamSha": "36caf200c2b24c12838570966f5c85786a1fc1f8",
@@ -4972,8 +4981,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:358"],
-      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
+      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:360"],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "43700b83e73fca3af7b63769876c409b5c6f5a3f",
@@ -5834,7 +5846,7 @@
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "3e",
-      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:501"],
+      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:503"],
       "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
@@ -6183,8 +6195,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3f",
-      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:43"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "549d182aaadbf0e1e195d1a8cdc1805200e6751e",
@@ -6313,8 +6328,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1842"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1806"]
     },
     {
       "upstreamSha": "57100fba854fb1214ae7a413111efae14443d445",
@@ -7508,7 +7526,7 @@
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "3b",
-      "evidence": ["apps/web/src/components/ChatView.tsx:4185"],
+      "evidence": ["apps/web/src/components/ChatView.tsx:4192"],
       "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
@@ -8975,7 +8993,7 @@
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "1d",
-      "evidence": ["apps/web/src/components/ChatView.tsx:4283"],
+      "evidence": ["apps/web/src/components/ChatView.tsx:4290"],
       "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
@@ -9678,9 +9696,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:878"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:842"]
     },
     {
       "upstreamSha": "860caaa6023a3aaf616a5899816c74c195ca8de2",
@@ -9749,9 +9768,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1140"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1104"]
     },
     {
       "upstreamSha": "871192933fe0a501fd92a1ed3a5d317ba1eea9d3",
@@ -10159,8 +10179,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3f",
-      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:43"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "8d7f78121660eb8599d4c5ff40cb4394159abfab",
@@ -11052,9 +11075,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1218"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1182"]
     },
     {
       "upstreamSha": "994654198d5820b6fab9ee09063646a8b6fd8e22",
@@ -11926,8 +11950,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3c",
-      "evidence": ["apps/web/src/components/ChatView.tsx:5780"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/web/src/components/ChatView.tsx:5786"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "a6c9b41f902fba2a4137806c09e829935e91baac",
@@ -11996,8 +12023,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1603"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1567"]
     },
     {
       "upstreamSha": "a850895f6833b99d90fc6c50192b5eaa4966d5c7",
@@ -13684,9 +13714,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:212"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:213"]
     },
     {
       "upstreamSha": "c0490e9d0eb057218bfa5df3f25a7c26c37145a5",
@@ -16016,8 +16047,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3b",
-      "evidence": ["apps/web/src/components/ChatView.tsx:3720"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/web/src/components/ChatView.tsx:3728"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "e0c85a20ef0ec9b49ade5989a13850493036a49b",
@@ -16437,9 +16471,10 @@
       "plannedWorkstream": "1a",
       "f5Shas": [
         "0356087b4e557a1aa753c82f6beae5d39216b751",
-        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1718"]
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1682"]
     },
     {
       "upstreamSha": "e6ae764f47d678b96f4a1b2c8c76eedf1a342e26",
@@ -16785,8 +16820,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3f",
-      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:43"],
-      "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
+      "evidence": ["apps/server/src/project/ProjectCloneTracker.ts:44"],
+      "f5Shas": [
+        "de26827bdc26045fcaef20ae12dfd5032648e0cd",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ]
     },
     {
       "upstreamSha": "ec28eefa0d017e2b0cb65ba4269cee1adddb0e98",
@@ -17098,8 +17136,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:923"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:887"]
     },
     {
       "upstreamSha": "f075a58119f392137d699cefe5290b2aa6e55935",
@@ -17292,7 +17333,7 @@
       "subject": "fix(server): generate PR diffs from branch changes (#13170)",
       "reason": "f5 already computes PR patches against the merge base with a three-dot diff range; retain its existing implementation.",
       "reviewStatus": "reviewed",
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1211"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1175"],
       "f5Shas": ["2b3a2a981edc3b0f46d6f986d0ecdf70f78ca654"],
       "disposition": "equivalent"
     },
@@ -17346,12 +17387,13 @@
       "disposition": "ported",
       "plannedWorkstream": "1d",
       "evidence": [
-        "apps/web/src/components/FileBrowserPanel.tsx:214",
+        "apps/web/src/components/FileBrowserPanel.tsx:216",
         "apps/web/src/components/FileViewPanel.browser.tsx:1"
       ],
       "f5Shas": [
         "56e880d36d6d31977f2b16a695eb8dac61137e7d",
-        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
       ]
     },
     {
@@ -17530,8 +17572,11 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1a",
-      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
-      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1707"]
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "4300abe15527c94f1605e8d681ad49ec3adf3878"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1671"]
     },
     {
       "upstreamSha": "f559fe0ba6fb5950bd14a2404f10b9c94b33f696",
@@ -17540,7 +17585,7 @@
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "3c",
-      "evidence": ["apps/web/src/components/ChatView.tsx:5794"],
+      "evidence": ["apps/web/src/components/ChatView.tsx:5800"],
       "f5Shas": ["de26827bdc26045fcaef20ae12dfd5032648e0cd"]
     },
     {
