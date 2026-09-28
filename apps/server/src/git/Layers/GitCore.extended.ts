@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, PlatformError, Scope } from "effect";
+import { Effect, Fiber, FileSystem, Layer, PlatformError, Scope } from "effect";
 import { describe, expect, vi } from "vitest";
 
 import { GitServiceLive } from "./GitService.ts";
@@ -128,6 +128,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       createBranch: (input) => core.createBranch(input),
       checkoutBranch: (input) => core.checkoutBranch(input),
       initRepo: (input) => core.initRepo(input),
+      cloneRepository: (input) => core.cloneRepository(input),
       listLocalBranchNames: (cwd) => core.listLocalBranchNames(cwd),
     } satisfies GitCoreShape;
   });
@@ -243,6 +244,64 @@ function commitWithDate(
 
 it.layer(TestLayer)("git integration", (it) => {
   describe("upstream Git safety", () => {
+    it.effect("clones into its reserved empty directory using a local bare remote", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const destination = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        const core = yield* GitCore;
+        const chunks: Uint8Array[] = [];
+        yield* core.cloneRepository({
+          cwd: destination,
+          url: remote,
+          onProgress: (chunk) => chunks.push(chunk),
+        });
+        expect(yield* git(destination, ["remote", "get-url", "origin"])).toBe(remote);
+        expect(yield* git(destination, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
+        expect(chunks.length).toBeGreaterThan(0);
+      }),
+    );
+    it.effect("cancelling real git clone can remove its incomplete repository", () =>
+      Effect.gen(function* () {
+        const destination = yield* makeTmpDir();
+        let requested = false;
+        const server = yield* Effect.acquireRelease(
+          Effect.promise(
+            () =>
+              new Promise<ReturnType<typeof createServer>>((resolve) => {
+                const server = createServer(() => {
+                  requested = true;
+                });
+                server.listen(0, "127.0.0.1", () => resolve(server));
+              }),
+          ),
+          (server) =>
+            Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  server.closeAllConnections();
+                  server.close(() => resolve());
+                }),
+            ),
+        );
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Missing test server port");
+        const core = yield* GitCore;
+        const fiber = yield* core
+          .cloneRepository({
+            cwd: destination,
+            url: `http://127.0.0.1:${address.port}/repo.git`,
+            onProgress: () => {},
+          })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => expect.poll(() => requested, { timeout: 10_000 }).toBe(true));
+        expect(existsSync(path.join(destination, ".git"))).toBe(true);
+        yield* Fiber.interrupt(fiber);
+        expect(existsSync(destination)).toBe(true);
+        if (process.platform !== "win32")
+          expect(existsSync(path.join(destination, ".git"))).toBe(false);
+      }),
+    );
     it.effect("does not restore a tracked file when a stale branch name matches it", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();

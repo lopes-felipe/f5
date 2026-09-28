@@ -7,7 +7,7 @@ export function getServerHttpOrigin(): string {
       : envUrl && envUrl.length > 0
         ? envUrl
         : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`;
-  const httpUrl = wsUrl.replace(/^wss:/u, "https:").replace(/^ws:/u, "http:");
+  const httpUrl = wsUrl.replace(/^wss:/iu, "https:").replace(/^ws:/iu, "http:");
   try {
     return new URL(httpUrl).origin;
   } catch {

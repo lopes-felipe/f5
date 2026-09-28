@@ -1,4 +1,6 @@
 import { PlanningWorkflowId, ProjectId, ThreadId, PlanningWorkflow } from "@t3tools/contracts";
+import { inspectWorkflowPlatformRun } from "../workflowPlatform.ts";
+import { createEmptyReadModel } from "./projector.ts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { buildPlanningWorkflowRecord } from "./workflowRecordBuilders.ts";
@@ -45,6 +47,42 @@ const drafted = () =>
     updatedAt: now,
   });
 describe("document reader transitions", () => {
+  it("shows a pinned empty reader report as an error in the run inspector", () => {
+    const saved = markReaderSaved(markReaderRunning(drafted(), now), {
+      turnId: "empty-reader",
+      messageId: null,
+      updatedAt: now,
+    });
+    const workflow = markReaderPassError(
+      { ...saved, readerReviewEnabled: true },
+      "reader",
+      "Reader review produced no report.",
+      now,
+    );
+    const result = inspectWorkflowPlatformRun(
+      { runKind: "planning", workflowId: workflow.id },
+      {
+        ...createEmptyReadModel(now),
+        planningWorkflows: [workflow],
+        projects: [
+          {
+            id: workflow.projectId,
+            title: "Project",
+            workspaceRoot: "/tmp/project",
+            defaultModel: null,
+            scripts: [],
+            memories: [],
+            createdAt: now,
+            updatedAt: now,
+            deletedAt: null,
+          },
+        ],
+      },
+    );
+    expect(result.status).toBe("error");
+    expect(result.nodes.find((node) => node.nodeId === "reader-review")?.status).toBe("error");
+    expect(result.nodes.find((node) => node.nodeId === "polish")?.status).toBe("not_started");
+  });
   it("pins the draft separately and only approves the polished document", () => {
     let workflow = drafted();
     expect(workflow.merge).toMatchObject({

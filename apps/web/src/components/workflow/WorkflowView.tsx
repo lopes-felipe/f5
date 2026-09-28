@@ -298,7 +298,13 @@ export function WorkflowView(props: { workflowId: string }) {
                   .skipDocumentReaderPass({ workflowId: workflow.id })
                   .then(() => setSkipOpen(false))
                   .catch((error) =>
-                    toastManager.add({ type: "error", title: retryErrorMessage(error) }),
+                    toastManager.add({
+                      type: "error",
+                      title:
+                        error instanceof Error
+                          ? error.message
+                          : "Failed to finish without reader review.",
+                    }),
                   )
                   .finally(() => setRetrying(false));
               }}

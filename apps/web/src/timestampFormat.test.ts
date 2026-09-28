@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getTimestampFormatOptions } from "./timestampFormat";
+import { getTimestampFormatOptions, resolveTimestampLocale } from "./timestampFormat";
 
 describe("getTimestampFormatOptions", () => {
   it("omits hour12 when locale formatting is requested", () => {
@@ -27,4 +27,21 @@ describe("getTimestampFormatOptions", () => {
       hour12: false,
     });
   });
+});
+
+describe("resolveTimestampLocale", () => {
+  it("accepts the OS locale and safely falls back for missing or malformed values", () => {
+    expect(resolveTimestampLocale(" de-DE ")).toBe("de-DE");
+    expect(resolveTimestampLocale("de_DE")).toBeUndefined();
+    expect(resolveTimestampLocale(null)).toBeUndefined();
+    expect(resolveTimestampLocale("")).toBeUndefined();
+  });
+});
+
+import { isOlderCalendarDay } from "./timestampFormat";
+it("includes a date across calendar boundaries, even less than 24 hours apart", () => {
+  const now = new Date(2026, 8, 25, 0, 10);
+  expect(isOlderCalendarDay(new Date(2026, 8, 24, 23, 59), now)).toBe(true);
+  expect(isOlderCalendarDay(new Date(2026, 8, 25, 0, 1), now)).toBe(false);
+  expect(isOlderCalendarDay(new Date(2025, 8, 25, 0, 10), now)).toBe(true);
 });

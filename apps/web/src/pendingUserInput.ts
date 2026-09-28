@@ -175,3 +175,13 @@ export function derivePendingUserInputProgress(
     canAdvance: resolvedAnswer !== null,
   };
 }
+
+/** Preserve displaced answer text as a draft when an option replaces it. */
+export function carryDisplacedCustomAnswerIntoPrompt(
+  prompt: string,
+  customAnswer: string | undefined,
+): string {
+  const displaced = customAnswer?.trim() ?? "";
+  if (!displaced) return prompt;
+  return prompt.trim() ? `${prompt.trimEnd()}\n\n${displaced}` : displaced;
+}

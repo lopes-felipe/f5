@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Schema } from "effect";
+import { Effect, FileSystem, Layer, Schema, Stream } from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 import {
@@ -758,3 +758,15 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }),
   );
 });
+
+it.effect(
+  "buffers a settings change after acquiring a subscription and before its watcher runs",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const changes = yield* service.subscribeChanges;
+      yield* service.updateSettings({ enableAssistantStreaming: false });
+      const values = yield* Stream.runCollect(changes.pipe(Stream.take(1)));
+      assert.strictEqual(values[0]?.enableAssistantStreaming, false);
+    }).pipe(Effect.scoped, Effect.provide(ServerSettingsService.layerTest())),
+);

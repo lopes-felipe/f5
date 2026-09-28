@@ -733,15 +733,16 @@ function documentReaderNodes(
 ): WorkflowRunNodeInspection[] {
   const pass = workflow.readerPass;
   const skipped = !workflow.readerReviewEnabled || pass?.status === "skipped";
-  const readerStatus = pass?.pinnedTurnId
-    ? "completed"
-    : skipped
-      ? "skipped"
-      : pass?.errorStage === "reader"
-        ? "error"
-        : pass?.status === "reader_requested" || pass?.status === "reader_running"
-          ? "running"
-          : "not_started";
+  const readerStatus =
+    pass?.status === "error" && pass.errorStage === "reader"
+      ? "error"
+      : pass?.pinnedTurnId
+        ? "completed"
+        : skipped
+          ? "skipped"
+          : pass?.status === "reader_requested" || pass?.status === "reader_running"
+            ? "running"
+            : "not_started";
   const polishStatus = skipped
     ? "skipped"
     : pass?.status === "completed"

@@ -11,6 +11,7 @@ import {
   ProjectEntry,
   PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
   ProjectListEntriesInput,
+  type ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -851,6 +852,63 @@ async function searchWorkspaceEntriesWithFff(params: {
     });
     return null;
   }
+}
+
+/** Lists one directory without building or changing the workspace search index. */
+export async function listWorkspaceDirectory(
+  input: ProjectListDirectoryInput,
+): Promise<ProjectListEntriesResult> {
+  const root = await fs.realpath(input.cwd);
+  if (path.isAbsolute(input.relativePath) || isWindowsAbsolutePath(input.relativePath))
+    throw new Error("Directory must be relative to the workspace.");
+  const segments = input.relativePath
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((part) => part && part !== ".");
+  if (segments.some((part) => part === ".." || part === ".git"))
+    throw new Error("Directory is outside the browsable workspace.");
+  let directory = root;
+  for (const segment of segments) {
+    directory = path.join(directory, segment);
+    const stat = await fs.lstat(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw new Error("Cannot browse a symbolic link or non-directory.");
+  }
+  const resolved = await fs.realpath(directory);
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative))
+    throw new Error("Directory is outside the workspace.");
+  const children = await fs.readdir(resolved, { withFileTypes: true });
+  const parentPath = segments.join("/");
+  const entries: ProjectEntry[] = children
+    .filter(
+      (child) =>
+        child.name !== ".git" && (input.includeIgnored || !IGNORED_DIRECTORY_NAMES.has(child.name)),
+    )
+    .map((child) => ({
+      path: [...segments, child.name].join("/"),
+      kind: child.isDirectory() ? "directory" : "file",
+      ...(parentPath ? { parentPath } : {}),
+    }));
+  const allowed = input.includeIgnored
+    ? null
+    : new Set(
+        await filterGitIgnoredPaths(
+          root,
+          entries.map((entry) => entry.path),
+        ),
+      );
+  const sorted = entries
+    .filter((entry) => !allowed || allowed.has(entry.path))
+    .sort((a, b) =>
+      a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === "directory" ? -1 : 1,
+    );
+  const limit = input.limit ?? PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
+  return {
+    entries: sorted.slice(0, limit),
+    truncated: sorted.length > limit,
+    totalEntries: sorted.length,
+  };
 }
 
 export async function listWorkspaceEntries(

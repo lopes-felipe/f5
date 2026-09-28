@@ -1,4 +1,5 @@
 import * as FS from "node:fs/promises";
+import { GITHUB_HOST_PATTERN } from "@t3tools/contracts";
 import { githubUnavailablePath, prepareGithubLauncher } from "./GithubCliLauncher";
 import { GithubCliProjection, type GithubProfilePaths } from "./GithubCliProjection";
 import { Effect } from "effect";
@@ -11,7 +12,7 @@ export type GithubAccountRequest = (
 
 function accountHost(host: string): string {
   const normalized = host.toLowerCase();
-  if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(normalized) || normalized.includes(".."))
+  if (!GITHUB_HOST_PATTERN.test(normalized) || normalized.includes(".."))
     throw new Error("Invalid GitHub hostname.");
   return normalized;
 }
@@ -117,6 +118,16 @@ export class ProfileGithubAccount {
   }
 
   private async verify(host: string, token: string): Promise<{ login: string }> {
+    const { login } = await this.identify(host, token);
+    return { login };
+  }
+
+  /**
+   * Resolves a token's account without saving it. `scopes` comes from GitHub's
+   * `X-OAuth-Scopes` header (OAuth and classic tokens); `null` when GitHub doesn't report it
+   * (e.g. fine-grained tokens).
+   */
+  async identify(host: string, token: string): Promise<{ login: string; scopes: string[] | null }> {
     const normalized = accountHost(host);
     const response = await this.request(
       normalized === "github.com"
@@ -132,7 +143,17 @@ export class ProfileGithubAccount {
     const value = (await response.json()) as { login?: unknown };
     if (typeof value.login !== "string" || !value.login)
       throw new Error("GitHub returned an invalid account identity.");
-    return { login: value.login };
+    const header = response.headers.get("x-oauth-scopes");
+    return {
+      login: value.login,
+      scopes:
+        header === null
+          ? null
+          : header
+              .split(",")
+              .map((scope) => scope.trim())
+              .filter(Boolean),
+    };
   }
 
   async set(

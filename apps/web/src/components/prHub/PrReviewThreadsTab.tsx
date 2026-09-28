@@ -1,3 +1,4 @@
+import { PrAuthorLink } from "./PrAuthorLink";
 import { PrThreadReply } from "./PrThreadReply";
 import { useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
@@ -128,14 +129,9 @@ function Thread({
       </p>
       {comments.map((comment) => (
         <div key={comment.id} className="border-l-2 border-border pl-3">
-          <a
-            href={comment.url}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-muted-foreground"
-          >
-            @{comment.author ?? "unknown"}
-          </a>
+          <span className="text-xs text-muted-foreground">
+            @<PrAuthorLink prUrl={pr.url} login={comment.author} />
+          </span>
           <p className="whitespace-pre-wrap text-sm">{comment.bodyText}</p>
         </div>
       ))}

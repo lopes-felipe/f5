@@ -137,6 +137,8 @@ export interface ServerSettingsShape {
 
   /** Stream of settings change events. */
   readonly streamChanges: Stream.Stream<ServerSettings>;
+  /** Acquire before forking a watcher so a settings write cannot be missed. */
+  readonly subscribeChanges: Effect.Effect<Stream.Stream<ServerSettings>, never, Scope.Scope>;
 }
 
 export class ServerSettingsService extends ServiceMap.Service<
@@ -176,6 +178,7 @@ export class ServerSettingsService extends ServiceMap.Service<
               Effect.tap((nextSettings) => PubSub.publish(changes, nextSettings)),
             ),
           streamChanges: Stream.fromPubSub(changes),
+          subscribeChanges: PubSub.subscribe(changes).pipe(Effect.map(Stream.fromSubscription)),
         } satisfies ServerSettingsShape;
       }),
     );
@@ -700,20 +703,26 @@ const makeServerSettings = Effect.gen(function* () {
         }),
       ),
     get streamChanges() {
-      return Stream.fromPubSub(changesPubSub).pipe(
-        Stream.mapEffect((settings) =>
-          materializeProviderEnvironmentSecrets(settings).pipe(
-            Effect.tapError((error: ServerSettingsError) =>
-              Effect.logError("failed to materialize provider environment secrets", {
-                detail: error.detail,
-              }),
+      return Stream.unwrap(this.subscribeChanges);
+    },
+    get subscribeChanges() {
+      return Effect.gen(function* () {
+        return (yield* PubSub.subscribe(changesPubSub)).pipe(
+          Stream.fromSubscription,
+          Stream.mapEffect((settings) =>
+            materializeProviderEnvironmentSecrets(settings).pipe(
+              Effect.tapError((error: ServerSettingsError) =>
+                Effect.logError("failed to materialize provider environment secrets", {
+                  detail: error.detail,
+                }),
+              ),
+              Effect.result,
             ),
-            Effect.result,
           ),
-        ),
-        Stream.filterMap((settings) => settings),
-        Stream.map(resolveTextGenerationProvider),
-      );
+          Stream.filterMap((settings) => settings),
+          Stream.map(resolveTextGenerationProvider),
+        );
+      });
     },
   } satisfies ServerSettingsShape;
 });

@@ -32,6 +32,7 @@ export function PrActionDialogs({
   reviewers,
   setReviewers,
   mergeMethod,
+  allowedMergeMethods,
   mergeComparison,
   mergeComparisonError,
   reloadMergeComparison,
@@ -99,13 +100,19 @@ export function PrActionDialogs({
             {pendingAction === "merge" ? (
               <Select
                 value={mergeMethod}
-                onValueChange={(value) => setMergeMethod(value as typeof mergeMethod)}
+                onValueChange={(value) =>
+                  value && setMergeMethod(value as "squash" | "merge" | "rebase")
+                }
               >
-                <SelectButton size="sm">{mergeMethod}</SelectButton>
+                <SelectButton size="sm">
+                  {mergeMethod ?? "Refresh PR hub to load merge methods"}
+                </SelectButton>
                 <SelectPopup>
-                  <SelectItem value="squash">squash</SelectItem>
-                  <SelectItem value="merge">merge</SelectItem>
-                  <SelectItem value="rebase">rebase</SelectItem>
+                  {allowedMergeMethods.map((method) => (
+                    <SelectItem key={method} value={method}>
+                      {method}
+                    </SelectItem>
+                  ))}
                 </SelectPopup>
               </Select>
             ) : null}
@@ -129,7 +136,7 @@ export function PrActionDialogs({
                 onClick={() => void runAction()}
                 disabled={
                   isRunning ||
-                  (pendingAction === "merge" && !mergeComparison) ||
+                  (pendingAction === "merge" && (!mergeComparison || !mergeMethod)) ||
                   (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
                 }
               >

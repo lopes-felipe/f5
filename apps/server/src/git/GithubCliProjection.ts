@@ -1,4 +1,5 @@
 import * as FS from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -37,11 +38,42 @@ export async function secureGithubPaths(paths: ProtectedPath[]): Promise<void> {
   ]);
 }
 
+/**
+ * Token projected for known-but-disconnected hosts (those listed in `hosts.yml`) so gh does not
+ * fall back to the OS keychain for them. gh still consults the keychain for hosts that are not
+ * listed at all, so credential answers must come from `git-credentials.json`, never from gh.
+ */
+export const GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN = "f5-profile-not-connected";
+export const isGithubPlaceholderToken = (token: string | null | undefined): boolean =>
+  token?.trim() === GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN;
+
+export const githubConfigDir = (stateDir: string) => Path.join(stateDir, "github");
+/** Connected hosts only (`{ version, hosts: { [host]: token } }`), same protection as hosts.yml. */
+export const githubGitCredentialsPath = (stateDir: string) =>
+  Path.join(githubConfigDir(stateDir), "git-credentials.json");
+
+/** Hosts listed in the profile projection (github.com is always listed). */
+export function knownGithubHostsSync(stateDir: string): string[] {
+  const hosts = new Set(["github.com"]);
+  try {
+    const value: unknown = parse(
+      readFileSync(Path.join(githubConfigDir(stateDir), "hosts.yml"), "utf8"),
+    );
+    if (value && typeof value === "object" && !Array.isArray(value))
+      for (const host of Object.keys(value))
+        if (/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) && !host.includes(".."))
+          hosts.add(host);
+  } catch {
+    // Missing or unreadable projection: only the always-listed default host is known.
+  }
+  return [...hosts].sort();
+}
+
 const disconnected = {
   user: "f5-disconnected",
-  oauth_token: "f5-profile-not-connected",
+  oauth_token: GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN,
   git_protocol: "https",
-  users: { "f5-disconnected": { oauth_token: "f5-profile-not-connected" } },
+  users: { "f5-disconnected": { oauth_token: GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN } },
 };
 
 /** Disposable profile projection, never an OS-keychain credential source. */
@@ -91,9 +123,23 @@ export class GithubCliProjection {
     const config: unknown = parse(existing);
     if (config !== null && (typeof config !== "object" || Array.isArray(config)))
       throw new Error("Invalid GitHub CLI configuration.");
+    const credentials = Object.fromEntries(
+      Object.entries(accounts).flatMap(([host, value]) => {
+        const token = (value as { oauth_token?: unknown } | null)?.oauth_token;
+        return typeof token === "string" && token && !isGithubPlaceholderToken(token)
+          ? [[host, token]]
+          : [];
+      }),
+    );
     const content = [
       ["hosts.yml", stringify({ "github.com": disconnected, ...accounts })],
-      ["config.yml", stringify({ ...(config as Record<string, unknown> | null), version: "1" })],
+      [
+        "config.yml",
+        // gh writes unset keys as empty values; a literal `null` is read back as the string
+        // "null" (e.g. `http_unix_socket: null` makes every request dial unix socket "null").
+        stringify({ ...(config as Record<string, unknown> | null), version: "1" }, { nullStr: "" }),
+      ],
+      ["git-credentials.json", `${JSON.stringify({ version: 1, hosts: credentials })}\n`],
     ] as const;
     const files: { target: string; temporary: string; content: string }[] = [];
     try {

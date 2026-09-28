@@ -125,7 +125,7 @@ export const makeGlobalSearch: Effect.Effect<GlobalSearchService, never, SqlClie
             document.turn_id AS "turnId",
             document.file_change_id AS "fileChangeId",
             CASE
-              WHEN document.kind = 'message' THEN coalesce(thread.title, document.title)
+              WHEN document.kind IN ('message', 'thread') THEN coalesce(thread.title, document.title)
               ELSE document.title
             END AS title,
             CASE

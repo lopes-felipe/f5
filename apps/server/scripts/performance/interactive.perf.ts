@@ -17,6 +17,7 @@ import { Effect, Exit, Layer, ManagedRuntime, Ref, Scope } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import WebSocket, { WebSocketServer } from "ws";
 import { expect, it } from "vitest";
+import * as Contracts from "@t3tools/contracts";
 import type { OrchestrationEvent } from "@t3tools/contracts";
 import { TerminalManagerRuntime } from "../../src/terminal/Layers/Manager.ts";
 import { NodePtyAdapterLive } from "../../src/terminal/Layers/NodePTY.ts";
@@ -62,7 +63,9 @@ it("measures the production renderer, real WS backpressure and native terminal s
     throw new Error("Build apps/web first");
   const method = smoke ? { ...fixture.method, warmups: 1, repetitions: 2 } : fixture.method;
   const directory = mkdtempSync(path.join(tmpdir(), "f5-interactive-perf-"));
-  const data = createBrowserFixture();
+  // Old pinned builds predate the protocol constant; their welcome fixture uses v1.
+  const protocolVersion = (Contracts as { F5_PROTOCOL_VERSION?: number }).F5_PROTOCOL_VERSION ?? 1;
+  const data = createBrowserFixture(protocolVersion);
   const clients = Effect.runSync(Ref.make(new Set<WebSocket>()));
   const controller = makeWebSocketSendController({ clients });
   const scope = Effect.runSync(Scope.make());

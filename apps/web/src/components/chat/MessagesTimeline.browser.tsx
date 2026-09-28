@@ -22,6 +22,7 @@ import { render } from "vitest-browser-react";
 import type { deriveTimelineEntries } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
+import { readTimelineScrollAnchor } from "./timelineScrollAnchors";
 import { MessagesTimeline } from "./MessagesTimeline";
 import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
 import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
@@ -156,6 +157,7 @@ function makeCommandEntry(
 }
 
 interface HarnessProps {
+  threadId?: ThreadId;
   initialEntries: TimelineEntry[];
   onIsAtEndChangeSpy: (value: boolean) => void;
   onListRefChange?: (ref: LegendListRef | null) => void;
@@ -237,6 +239,7 @@ function TimelineHarness(
     <div style={{ height, display: "flex", flexDirection: "column" }}>
       <QueryClientProvider client={queryClientRef.current}>
         <MessagesTimeline
+          {...(props.threadId ? { threadId: props.threadId } : {})}
           hasMessages={entries.length > 0}
           isWorking={isWorking}
           activeTurnStartedAt={activeTurnStartedAt}
@@ -383,6 +386,48 @@ describe("MessagesTimeline (LegendList)", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("restores a thread reading position after navigating away", async () => {
+    const threadId = ThreadId.makeUnsafe("remember-reading-position");
+    const entries = makeOverflowEntries(40);
+    let list: LegendListRef | null = null;
+    const screen = await render(
+      <TimelineHarness
+        threadId={threadId}
+        initialEntries={entries}
+        onIsAtEndChangeSpy={vi.fn()}
+        initialHeight={360}
+        onListRefChange={(value) => {
+          list = value;
+        }}
+      />,
+    );
+    const node = () =>
+      document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]')!;
+    await expect.poll(() => node()?.scrollHeight ?? 0).toBeGreaterThan(1000);
+    await scrollTimelineToOffset(list, node(), 700);
+    const before = readTimelineScrollAnchor(node());
+
+    await screen.unmount();
+    const reopened = await render(
+      <TimelineHarness
+        threadId={threadId}
+        initialEntries={entries}
+        onIsAtEndChangeSpy={vi.fn()}
+        initialHeight={360}
+      />,
+    );
+    try {
+      await expect
+        .poll(() => {
+          const after = readTimelineScrollAnchor(node());
+          return after.rowId === before.rowId ? Math.abs(after.top - before.top) : 99999;
+        })
+        .toBeLessThan(3);
+    } finally {
+      await reopened.unmount();
+    }
   });
 
   it("navigates from a turn-rail tick to an offscreen user turn", async () => {

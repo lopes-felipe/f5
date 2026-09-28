@@ -63,7 +63,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
   const detailLabel = approvalDetailLabel(approval.requestKind);
 
   return (
-    <div className="px-4 py-3.5 sm:px-5 sm:py-4">
+    <div className="min-w-0 px-4 py-3.5 sm:px-5 sm:py-4">
       <div className="flex flex-wrap items-center gap-2">
         <span className="uppercase text-sm tracking-[0.2em]">PENDING APPROVAL</span>
         <span className="text-sm font-medium">{summary}</span>
@@ -78,11 +78,11 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
         </p>
       ) : null}
       {approval.detail ? (
-        <div className="mt-3 rounded-lg border border-border/65 bg-background/70 p-3">
+        <div className="mt-3 min-w-0 max-w-full rounded-lg border border-border/65 bg-background/70 p-3">
           <p className="text-xs font-medium text-muted-foreground">{detailLabel}</p>
           <pre
             aria-label={detailLabel}
-            className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground"
+            className="mt-2 min-w-0 max-w-full max-h-40 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-foreground"
             data-approval-detail="complete"
           >
             {approval.detail}
@@ -90,7 +90,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
         </div>
       ) : null}
       {approval.requestKind === "permission" ? (
-        <pre className="mt-3 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground">
+        <pre className="mt-3 min-w-0 max-w-full max-h-40 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] rounded-md border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground">
           {formatRequestedPermissions(approval.requestedPermissions)}
         </pre>
       ) : null}

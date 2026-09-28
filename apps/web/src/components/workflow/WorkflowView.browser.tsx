@@ -41,6 +41,7 @@ const workflowId = PlanningWorkflowId.makeUnsafe("retry-workflow");
 describe("WorkflowView retry", () => {
   beforeEach(() => {
     nativeApiMocks.retryWorkflow.mockReset();
+    nativeApiMocks.skipDocumentReaderPass.mockReset();
     useStore.setState({
       threads: [],
       planningWorkflows: [
@@ -200,6 +201,51 @@ describe("WorkflowView retry", () => {
       await screen.unmount();
     }
   });
+
+  it.each([new Error("The reader is still running."), "unavailable"])(
+    "shows the appropriate skip failure for %s",
+    async (failure) => {
+      nativeApiMocks.skipDocumentReaderPass.mockRejectedValue(failure);
+      const addToast = vi.spyOn(toastManager, "add");
+      useStore.setState({
+        planningWorkflows: [
+          createPlanningWorkflow({
+            id: workflowId,
+            templateId: "builtin.document.dual",
+            documentType: "rfc",
+            readerReviewEnabled: true,
+            readerPass: createDocumentReaderPass({
+              status: "error",
+              errorStage: "reader",
+              error: "Reader failed",
+            }),
+            merge: { status: "merged" },
+          }),
+        ],
+      });
+      const screen = await render(<WorkflowView workflowId={workflowId} />);
+      try {
+        await page
+          .getByRole("button", { name: "Finish without reader review", exact: true })
+          .click();
+        await page
+          .getByRole("alertdialog")
+          .getByRole("button", { name: "Finish without reader review", exact: true })
+          .click();
+        await vi.waitFor(() =>
+          expect(addToast).toHaveBeenCalledWith({
+            type: "error",
+            title:
+              failure instanceof Error
+                ? failure.message
+                : "Failed to finish without reader review.",
+          }),
+        );
+      } finally {
+        await screen.unmount();
+      }
+    },
+  );
 
   it("shows retry failures instead of swallowing them", async () => {
     nativeApiMocks.retryWorkflow.mockRejectedValue(new Error("Provider is unavailable"));

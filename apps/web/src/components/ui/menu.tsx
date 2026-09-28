@@ -1,14 +1,27 @@
 "use client";
 
+import { usePopupFocus } from "./popupFocus";
+
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { ChevronRightIcon } from "lucide-react";
 import type * as React from "react";
+import { useEffect, useRef } from "react";
+import { PREVIEW_FOCUSED_EVENT } from "~/lib/previewFocus";
 
 import { cn } from "~/lib/utils";
 
 const MenuCreateHandle = MenuPrimitive.createHandle;
 
-const Menu = MenuPrimitive.Root;
+function Menu<Payload>(props: MenuPrimitive.Root.Props<Payload>) {
+  const localActions = useRef<MenuPrimitive.Root.Actions | null>(null);
+  const actions = props.actionsRef ?? localActions;
+  useEffect(() => {
+    const close = () => actions.current?.close();
+    window.addEventListener(PREVIEW_FOCUSED_EVENT, close);
+    return () => window.removeEventListener(PREVIEW_FOCUSED_EVENT, close);
+  }, [actions]);
+  return <MenuPrimitive.Root {...props} actionsRef={actions} />;
+}
 
 const MenuPortal = MenuPrimitive.Portal;
 
@@ -36,6 +49,7 @@ function MenuPopup({
   side?: MenuPrimitive.Positioner.Props["side"];
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
 }) {
+  const finalFocus = usePopupFocus();
   return (
     <MenuPrimitive.Portal>
       <MenuPrimitive.Positioner
@@ -48,8 +62,9 @@ function MenuPopup({
         sideOffset={sideOffset}
       >
         <MenuPrimitive.Popup
+          finalFocus={finalFocus}
           className={cn(
-            "relative flex not-[class*='w-']:min-w-32 origin-(--transform-origin) rounded-lg border bg-popover not-dark:bg-clip-padding shadow-lg/5 outline-none before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] focus:outline-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
+            "[-webkit-app-region:no-drag] relative flex not-[class*='w-']:min-w-32 origin-(--transform-origin) rounded-lg border bg-popover not-dark:bg-clip-padding shadow-lg/5 outline-none before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-lg)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] focus:outline-none dark:before:shadow-[0_-1px_--theme(--color-white/6%)]",
             className,
           )}
           data-slot="menu-popup"

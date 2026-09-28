@@ -252,6 +252,11 @@ export interface GitCoreShape {
   /**
    * Initialize a repository in the provided directory.
    */
+  readonly cloneRepository: (input: {
+    cwd: string;
+    url: string;
+    onProgress: (chunk: Uint8Array) => void;
+  }) => Effect.Effect<void, GitCommandError>;
   readonly initRepo: (input: GitInitInput) => Effect.Effect<void, GitCommandError>;
 
   /**

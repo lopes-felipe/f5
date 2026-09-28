@@ -57,6 +57,23 @@ layer("GitServiceLive", (it) => {
       }),
   );
 
+  it.effect("retains stderr diagnostics while streaming progress", () =>
+    Effect.gen(function* () {
+      const gitService = yield* GitService;
+      const chunks: Uint8Array[] = [];
+      const result = yield* gitService.execute({
+        operation: "GitProcess.test.progress",
+        cwd: process.cwd(),
+        args: ["rev-parse", "--verify", "__missing_progress_ref__"],
+        allowNonZeroExit: true,
+        onStderrChunk: (chunk) => chunks.push(chunk),
+      });
+      assert.notEqual(result.code, 0);
+      assert.ok(chunks.length > 0);
+      assert.include(result.stderr, "fatal:");
+      assert.ok(result.stderr.length <= 4096);
+    }),
+  );
   it.effect("runGit can return non-zero exit codes when allowed", () =>
     Effect.gen(function* () {
       const gitService = yield* GitService;

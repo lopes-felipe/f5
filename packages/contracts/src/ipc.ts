@@ -33,6 +33,10 @@ import type {
   ProjectAuthorizeEntryInput,
   ProjectAuthorizeEntryResult,
   ProjectListEntriesInput,
+  ProjectCloneInput,
+  ProjectCloneCancelInput,
+  ProjectCloneJob,
+  ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
   ProjectReadFileResult,
@@ -392,6 +396,7 @@ export interface DesktopImageDownloadResult {
 }
 
 export interface DesktopBridge {
+  getSystemLocale?: () => string | null;
   getProfileId?: () => string | null;
   switchProfile?: (profileId: string) => Promise<boolean>;
   stopProfile?: (profileId: string) => Promise<boolean>;
@@ -406,6 +411,7 @@ export interface DesktopBridge {
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
   ) => Promise<T | null>;
+  readClipboardText?: (source: "clipboard" | "selection") => Promise<string>;
   copyImage?: (pngBytes: Uint8Array) => Promise<void>;
   downloadImage?: (bytes: Uint8Array, filename: string) => Promise<DesktopImageDownloadResult>;
   openExternal: (url: string) => Promise<boolean>;
@@ -443,7 +449,7 @@ export interface DesktopPreviewBridge {
   };
   automation?: {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
-    snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
+    snapshot: (tabId: string, save?: boolean) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
     press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
@@ -464,6 +470,11 @@ export interface NativeApi {
     githubSet: (input: { host: string; token: string }) => Promise<{ login: string }>;
     githubRemove: (input: { host: string }) => Promise<void>;
     githubStatus: (input: { host: string }) => Promise<{ login: string | null }>;
+    githubCliCandidates: () => Promise<import("./profile").GithubCliCandidates>;
+    githubCliImport: (input: {
+      host: string;
+      login: string;
+    }) => Promise<import("./profile").GithubCliImportResult>;
     list: () => Promise<typeof ProfileListResult.Type>;
     create: (input: ProfileCreateInput) => Promise<ProfileSummary>;
     update: (input: ProfileUpdateInput) => Promise<ProfileSummary>;
@@ -515,6 +526,10 @@ export interface NativeApi {
   projects: {
     getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
+    clone: (input: ProjectCloneInput) => Promise<ProjectCloneJob>;
+    cloneList: () => Promise<ReadonlyArray<ProjectCloneJob>>;
+    cloneCancel: (input: ProjectCloneCancelInput) => Promise<void>;
+    listDirectory: (input: ProjectListDirectoryInput) => Promise<ProjectListEntriesResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     searchContents: (input: ProjectSearchContentsInput) => Promise<ProjectSearchContentsResult>;

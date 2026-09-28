@@ -469,3 +469,24 @@ it.layer(NodeServices.layer)("resolveAvailableEditors", (it) => {
     }),
   );
 });
+
+vitestIt("detects and launches a macOS app-bundled editor without PATH installation", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "f5-editor-home-"));
+  const command = path.join(
+    home,
+    "Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+  );
+  try {
+    fs.mkdirSync(path.dirname(command), { recursive: true });
+    fs.writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const env = { HOME: home, PATH: "/nonexistent" };
+    expect(resolveAvailableEditors("darwin", env)).toContain("vscode");
+    expect(
+      await Effect.runPromise(
+        resolveEditorLaunch({ editor: "vscode", cwd: "/repo/file.ts:4" }, "darwin", env),
+      ),
+    ).toEqual({ command, args: ["--goto", "/repo/file.ts:4"] });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

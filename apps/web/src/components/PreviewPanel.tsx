@@ -1,3 +1,4 @@
+import { notifyPreviewFocused } from "../lib/previewFocus";
 import {
   type DesktopPreviewBridge,
   type DesktopPreviewTabState,
@@ -418,6 +419,7 @@ function PreviewBrowserWebview(props: {
       });
     };
 
+    webview.addEventListener("focus", notifyPreviewFocused);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("did-start-loading", onStart);
     webview.addEventListener("did-finish-load", onSuccess);
@@ -427,6 +429,7 @@ function PreviewBrowserWebview(props: {
     webview.addEventListener("did-fail-load", onFail);
     register();
     return () => {
+      webview.removeEventListener("focus", notifyPreviewFocused);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("did-start-loading", onStart);
       webview.removeEventListener("did-finish-load", onSuccess);
@@ -1247,7 +1250,10 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         }
 
         case "snapshot":
-          return previewAutomation.snapshot(requireTabId());
+          return previewAutomation.snapshot(
+            requireTabId(),
+            (request.input as { save?: boolean })?.save === true,
+          );
         case "click":
           await previewAutomation.click(
             requireTabId(),

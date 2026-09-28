@@ -1,5 +1,7 @@
 import { FileTextIcon } from "lucide-react";
 import { workflowDisplayType } from "../lib/workflowType";
+import { applyBulkThreadAction } from "../bulkThreadActions";
+import { resolveSnoozePreset } from "../lib/snoozePresets";
 import { ProfileSwitcher } from "./ProfileSwitcher";
 import { registerProjectFromPath } from "../lib/registerProject";
 import {
@@ -1214,7 +1216,7 @@ export default function Sidebar() {
 
   const {
     archiveThread,
-    deleteThread,
+    deleteThreads,
     executeAction: executeThreadAction,
     menuItemsForThread: threadActionMenuItems,
     renameThread,
@@ -1346,10 +1348,8 @@ export default function Sidebar() {
       if (!confirmed) return;
 
       try {
-        const deletedThreadIds = new Set(projectThreads.map((thread) => thread.id));
-        for (const thread of projectThreads) {
-          await deleteThread(thread.id, { deletedThreadIds });
-        }
+        const result = await deleteThreads(projectThreads.map((thread) => thread.id));
+        if (result.failures.length > 0) throw result.failures[0]!.error;
 
         clearProjectDraftThreadId(project.id);
         await api.orchestration.dispatchCommand({
@@ -1367,7 +1367,7 @@ export default function Sidebar() {
         });
       }
     },
-    [clearProjectDraftThreadId, deleteThread],
+    [clearProjectDraftThreadId, deleteThreads],
   );
 
   const handleThreadContextMenu = useCallback(
@@ -1396,6 +1396,10 @@ export default function Sidebar() {
       const clicked = await api.contextMenu.show(
         [
           { id: "mark-unread", label: `Mark unread (${count})` },
+          { id: "pin", label: `Pin (${count})` },
+          { id: "unpin", label: `Unpin (${count})` },
+          { id: "snooze", label: `Snooze for 3 hours (${count})` },
+          { id: "archive", label: `Archive (${count})` },
           { id: "delete", label: `Delete (${count})`, destructive: true },
         ],
         position,
@@ -1409,6 +1413,36 @@ export default function Sidebar() {
         return;
       }
 
+      if (
+        clicked === "pin" ||
+        clicked === "unpin" ||
+        clicked === "archive" ||
+        clicked === "snooze"
+      ) {
+        try {
+          const result = await applyBulkThreadAction(
+            ids,
+            clicked,
+            clicked === "snooze" ? resolveSnoozePreset("three-hours") : undefined,
+          );
+          removeFromSelection(result.succeeded);
+          if (result.failures.length)
+            toastManager.add({
+              type: "error",
+              title: `Updated ${result.succeeded.length} of ${count} threads`,
+              description: result.failures
+                .map(({ error }) => (error instanceof Error ? error.message : String(error)))
+                .join("; "),
+            });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Could not update selected threads",
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
       if (clicked !== "delete") return;
 
       if (appSettings.confirmThreadDelete) {
@@ -1421,16 +1455,22 @@ export default function Sidebar() {
         if (!confirmed) return;
       }
 
-      const deletedIds = new Set<ThreadId>(ids);
-      for (const id of ids) {
-        await deleteThread(id, { deletedThreadIds: deletedIds });
+      const { succeeded, failures } = await deleteThreads(ids);
+      removeFromSelection(succeeded);
+      if (succeeded.length !== ids.length) {
+        toastManager.add({
+          type: "error",
+          title: `Deleted ${succeeded.length} of ${ids.length} threads`,
+          description: failures
+            .map(({ error }) => (error instanceof Error ? error.message : "Unknown deletion error"))
+            .join("; "),
+        });
       }
-      removeFromSelection(ids);
     },
     [
       appSettings.confirmThreadDelete,
       clearSelection,
-      deleteThread,
+      deleteThreads,
       markThreadUnread,
       removeFromSelection,
     ],
@@ -2348,12 +2388,30 @@ export default function Sidebar() {
                               {...dragHandleProps.listeners}
                               onPointerDownCapture={handleProjectTitlePointerDownCapture}
                               onClick={(event) => handleProjectTitleClick(event, project.id)}
-                              onKeyDown={(event) => handleProjectTitleKeyDown(event, project.id)}
                               onContextMenu={(event) => {
                                 event.preventDefault();
                                 void handleProjectContextMenu(project.id, {
                                   x: event.clientX,
                                   y: event.clientY,
+                                });
+                              }}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.target !== event.currentTarget ||
+                                  !(
+                                    event.key === "ContextMenu" ||
+                                    (event.shiftKey && event.key === "F10")
+                                  )
+                                ) {
+                                  handleProjectTitleKeyDown(event, project.id);
+                                  return;
+                                }
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const rect = event.currentTarget.getBoundingClientRect();
+                                void handleProjectContextMenu(project.id, {
+                                  x: rect.left,
+                                  y: rect.bottom,
                                 });
                               }}
                             >
@@ -2364,6 +2422,7 @@ export default function Sidebar() {
                               />
                               <ProjectIcon
                                 projectId={project.id}
+                                name={project.name}
                                 icon={project.icon}
                                 className="size-3.5 shrink-0 text-muted-foreground/50"
                               />

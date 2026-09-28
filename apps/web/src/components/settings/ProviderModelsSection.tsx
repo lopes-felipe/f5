@@ -187,7 +187,39 @@ export function ProviderModelsSection({
 
   return (
     <div className="border-t border-border/60 px-4 py-3 sm:px-5">
-      <div className="text-xs font-medium text-foreground">Models</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-medium text-foreground">Models</div>
+        <div className="flex gap-1">
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!models.some((model) => !model.isCustom && hiddenModelSet.has(model.slug))}
+            onClick={() => {
+              const visible = new Set(
+                models.filter((model) => !model.isCustom).map((model) => model.slug),
+              );
+              onHiddenModelsChange(hiddenModels.filter((slug) => !visible.has(slug)));
+            }}
+          >
+            Show all
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!models.some((model) => !model.isCustom && !hiddenModelSet.has(model.slug))}
+            onClick={() =>
+              onHiddenModelsChange([
+                ...new Set([
+                  ...hiddenModels,
+                  ...models.filter((model) => !model.isCustom).map((model) => model.slug),
+                ]),
+              ])
+            }
+          >
+            Hide all
+          </Button>
+        </div>
+      </div>
       <div className="mt-1 text-xs text-muted-foreground">
         {models.length} model{models.length === 1 ? "" : "s"} available.
       </div>

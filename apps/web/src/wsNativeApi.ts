@@ -1,5 +1,6 @@
 import type { ProfileListResult, ProviderAccountEvent } from "@t3tools/contracts";
 import {
+  ProjectCloneJob,
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
   USAGE_WS_METHODS,
@@ -394,6 +395,8 @@ export function createWsNativeApi(): NativeApi {
       githubSet: (input) => transport.request(WS_METHODS.githubAccountSet, input),
       githubRemove: (input) => transport.request(WS_METHODS.githubAccountRemove, input),
       githubStatus: (input) => transport.request(WS_METHODS.githubAccountStatus, input),
+      githubCliCandidates: () => transport.request(WS_METHODS.githubAccountCliCandidates, {}),
+      githubCliImport: (input) => transport.request(WS_METHODS.githubAccountCliImport, input),
       list: () => transport.request(WS_METHODS.profilesList),
       create: (input) => transport.request(WS_METHODS.profilesCreate, input),
       update: (input) => transport.request(WS_METHODS.profilesUpdate, input),
@@ -462,9 +465,16 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     projects: {
+      clone: (input) => transport.request(WS_METHODS.projectsClone, input),
+      cloneList: async () =>
+        Schema.decodeUnknownSync(Schema.Array(ProjectCloneJob))(
+          await transport.request(WS_METHODS.projectsCloneList, {}),
+        ),
+      cloneCancel: (input) => transport.request(WS_METHODS.projectsCloneCancel, input),
       getCheckedInConfig: (input) =>
         transport.request(WS_METHODS.projectsGetCheckedInConfig, input),
       authorizeEntry: (input) => transport.request(WS_METHODS.projectsAuthorizeEntry, input),
+      listDirectory: (input) => transport.request(WS_METHODS.projectsListDirectory, input),
       listEntries: (input) => transport.request(WS_METHODS.projectsListEntries, input),
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
       searchContents: (input) => transport.request(WS_METHODS.projectsSearchContents, input),

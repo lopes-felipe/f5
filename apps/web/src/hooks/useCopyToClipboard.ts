@@ -1,11 +1,73 @@
 import * as React from "react";
 
 export async function writeTextToClipboard(value: string): Promise<void> {
-  if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-    throw new Error("Clipboard API unavailable.");
-  }
   if (!value) throw new Error("Cannot copy empty text to clipboard.");
-  await navigator.clipboard.writeText(value);
+  let clipboardError: unknown;
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (error) {
+      clipboardError = error;
+      // Remote HTTP deployments and denied clipboard permissions need the
+      // browser's selection-based copy path.
+    }
+  }
+  if (typeof document === "undefined")
+    throw new Error("Clipboard API unavailable.", { cause: clipboardError });
+  const focused = document.activeElement;
+  const selection = document.getSelection();
+  const ranges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) =>
+        selection.getRangeAt(index).cloneRange(),
+      )
+    : [];
+  const inputSelection =
+    focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
+      ? {
+          start: focused.selectionStart,
+          end: focused.selectionEnd,
+          direction: focused.selectionDirection,
+        }
+      : null;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.readOnly = true;
+  textarea.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.appendChild(textarea);
+  const suppressCopyFocus = (event: Event) => {
+    if (event.target === focused || event.target === textarea) event.stopImmediatePropagation();
+  };
+  const focusEvents = ["blur", "focusout", "focus", "focusin"] as const;
+  for (const type of focusEvents) window.addEventListener(type, suppressCopyFocus, true);
+  try {
+    textarea.select();
+    if (typeof document.execCommand !== "function" || !document.execCommand("copy"))
+      throw new Error("Clipboard copy failed.", { cause: clipboardError });
+  } finally {
+    try {
+      textarea.remove();
+      if (selection) {
+        selection.removeAllRanges();
+        for (const range of ranges) selection.addRange(range);
+      }
+      if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+      if (
+        inputSelection &&
+        (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) &&
+        inputSelection.start !== null &&
+        inputSelection.end !== null
+      ) {
+        focused.setSelectionRange(
+          inputSelection.start,
+          inputSelection.end,
+          inputSelection.direction ?? undefined,
+        );
+      }
+    } finally {
+      for (const type of focusEvents) window.removeEventListener(type, suppressCopyFocus, true);
+    }
+  }
 }
 
 export function useCopyToClipboard<TContext = void>({

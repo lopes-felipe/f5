@@ -138,31 +138,51 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     Boolean(workspaceRoot && filePath && canDisplayFileInPanel) &&
     Boolean(fileQuery.data?.contentSha256) &&
     fileQuery.data?.truncated === false;
-  const dirty = Boolean(fileQuery.data && draftContents !== fileQuery.data.contents);
+  const fileKey = JSON.stringify([workspaceRoot, filePath]);
+  const fileScopeRef = useRef({ key: fileKey });
+  if (fileScopeRef.current.key !== fileKey) fileScopeRef.current = { key: fileKey };
+  const fileScope = fileScopeRef.current;
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const draftBaseRef = useRef<{ key: string; contents: string; hash: string | undefined } | null>(
+    null,
+  );
+  const dirty = Boolean(
+    draftBaseRef.current?.key === fileKey && draftContents !== draftBaseRef.current.contents,
+  );
 
   useEffect(() => {
-    if (!fileQuery.data) {
-      setDraftContents("");
-      setEditing(false);
-      setSaveError(null);
-      setSaveConflict(false);
+    const previous = draftBaseRef.current;
+    const sameFile = previous?.key === fileKey;
+    if (sameFile && editing && draftContents !== previous.contents) {
+      if (fileQuery.data && fileQuery.data.contentSha256 !== previous.hash) {
+        setSaveConflict(true);
+        setSaveError(
+          "The file changed outside this editor. Reload it before saving; your draft has been preserved.",
+        );
+      }
       return;
     }
-    const nextContents = fileQuery.data.contents;
-    setDraftContents((current) => {
-      return reconcileDraftContents({
-        currentDraft: current,
-        incomingContents: nextContents,
-        editing,
-      });
-    });
-    setSaveError(null);
-    setSaveConflict(false);
-  }, [editing, fileQuery.data?.contentSha256, fileQuery.data?.contents, fileQuery.data]);
-
-  useEffect(() => {
-    setEditing(false);
-  }, [filePath]);
+    if (!sameFile) {
+      setEditing(false);
+      setSaving(false);
+    }
+    const data = fileQuery.data;
+    draftBaseRef.current = data
+      ? { key: fileKey, contents: data.contents, hash: data.contentSha256 }
+      : null;
+    setDraftContents(data?.contents ?? "");
+    // A conflict is cleared only by a successful save or explicit reload.
+    if (!sameFile || !editing) {
+      setSaveError(null);
+      setSaveConflict(false);
+    }
+  }, [editing, fileKey, fileQuery.data]);
 
   useEffect(() => {
     if (fileQuery.data?.truncated) {
@@ -172,6 +192,8 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
 
   const saveDraft = useCallback(async () => {
     if (
+      !mountedRef.current ||
+      fileScopeRef.current !== fileScope ||
       !workspaceRoot ||
       !filePath ||
       !fileQuery.data ||
@@ -191,7 +213,16 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     }
 
     const savedContents = draftContents;
-    const expectedContentSha256 = fileQuery.data.contentSha256;
+    const base = draftBaseRef.current;
+    if (base?.key !== fileKey || !base.hash) return;
+    if (base.hash !== fileQuery.data.contentSha256) {
+      setSaveConflict(true);
+      setSaveError(
+        "The file changed outside this editor. Reload it before saving; your draft has been preserved.",
+      );
+      return;
+    }
+    const expectedContentSha256 = base.hash;
     const requestedFilePath = filePath;
 
     setSaving(true);
@@ -203,6 +234,25 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         contents: savedContents,
         expectedContentSha256,
       });
+      if (!mountedRef.current || fileScopeRef.current !== fileScope) {
+        // The RPC may already have reached disk. Refresh its cache without installing
+        // an obsolete response into a new visit to the same file.
+        void queryClient.invalidateQueries({
+          queryKey: providerQueryKeys.fileContent({
+            cwd: workspaceRoot,
+            relativePath: requestedFilePath,
+          }),
+        });
+        return;
+      }
+      {
+        draftBaseRef.current = {
+          key: fileKey,
+          contents: savedContents,
+          hash: result.contentSha256,
+        };
+        setSaveConflict(false);
+      }
       const savedData = {
         relativePath: result.relativePath,
         contents: savedContents,
@@ -221,17 +271,20 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
         );
       }
     } catch (error) {
+      if (!mountedRef.current || fileScopeRef.current !== fileScope) return;
       const message = error instanceof Error ? error.message : "Failed to save file.";
       setSaveError(message);
       if (message.toLowerCase().includes("changed before save")) {
         setSaveConflict(true);
       }
     } finally {
-      setSaving(false);
+      if (mountedRef.current && fileScopeRef.current === fileScope) setSaving(false);
     }
   }, [
     dirty,
     draftContents,
+    fileKey,
+    fileScope,
     filePath,
     fileQuery.data,
     queryClient,
@@ -511,6 +564,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             ) : (
               <div ref={viewerRef} className="min-h-0 flex-1 overflow-auto">
                 <FileViewer
+                  key={`${fileKey}:${fileQuery.data.contentSha256 ?? ""}`}
                   file={{ name: fileQuery.data.relativePath, contents: fileQuery.data.contents }}
                   selectedLines={selectedLines}
                   options={{

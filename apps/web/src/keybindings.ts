@@ -1,3 +1,4 @@
+import { isElectron } from "./env";
 import {
   type KeybindingCommand,
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
@@ -73,6 +74,7 @@ function resolvePlatform(options: ShortcutMatchOptions | undefined): string {
 
 function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatchContext {
   return {
+    isElectron,
     terminalFocus: false,
     terminalOpen: false,
     dialogFocus: false,
@@ -129,6 +131,42 @@ export function resolveShortcutCommand(
   return resolveShortcutBinding(event, keybindings, options)?.command ?? null;
 }
 
+// Keep contextual labels, but omit bindings that cannot run on this platform.
+// Unknown context keys may be either true or false; preserve OR and NOT semantics.
+function platformWhenValue(node: KeybindingWhenNode | undefined): boolean | undefined {
+  if (!node) return true;
+  switch (node.type) {
+    case "identifier":
+      return node.name === "isElectron"
+        ? isElectron
+        : node.name === "true"
+          ? true
+          : node.name === "false"
+            ? false
+            : undefined;
+    case "not": {
+      const value = platformWhenValue(node.node);
+      return value === undefined ? undefined : !value;
+    }
+    case "and":
+    case "or": {
+      const left = platformWhenValue(node.left);
+      const right = platformWhenValue(node.right);
+      if (node.type === "and")
+        return left === false || right === false
+          ? false
+          : left === true && right === true
+            ? true
+            : undefined;
+      return left === true || right === true
+        ? true
+        : left === false && right === false
+          ? false
+          : undefined;
+    }
+  }
+}
+
 export function shortcutLabelForCommand(
   keybindings: ResolvedKeybindingsConfig,
   command: KeybindingCommand | null,
@@ -138,6 +176,7 @@ export function shortcutLabelForCommand(
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding || binding.command !== command) continue;
+    if (platformWhenValue(binding.whenAst) === false) continue;
     return formatShortcutLabel(binding.shortcut, platform);
   }
   return null;

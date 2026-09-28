@@ -50,12 +50,13 @@ const COLOR_CLASS_BY_NAME: Readonly<Record<ProjectIconColor, string>> = {
 
 export interface ProjectIconProps {
   readonly projectId: ProjectId;
+  readonly name?: string;
   readonly icon?: ProjectIconDefinition | null | undefined;
   readonly className?: string;
 }
 
-/** Manual project icon, then checked-in/discovered favicon, then a folder fallback. */
-export function ProjectIcon({ projectId, icon, className }: ProjectIconProps) {
+/** Manual project icon, then checked-in/discovered favicon, then a project monogram. */
+export function ProjectIcon({ projectId, name, icon, className }: ProjectIconProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const origin = useMemo(() => getServerHttpOrigin(), []);
   const src = `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
@@ -75,8 +76,32 @@ export function ProjectIcon({ projectId, icon, className }: ProjectIconProps) {
     return <Icon aria-hidden="true" className={cn(COLOR_CLASS_BY_NAME[icon.color], className)} />;
   }
 
-  if (imageFailed) {
-    return <FolderIcon aria-hidden="true" className={className} />;
+  if (imageFailed || icon?.type === "monogram") {
+    const initials =
+      icon?.type === "monogram"
+        ? icon.text
+        : (name ?? "")
+            .trim()
+            .split(/[\s_/-]+/u)
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((part) => Array.from(part)[0])
+            .join("")
+            .toLocaleUpperCase();
+    return initials ? (
+      <span
+        aria-hidden="true"
+        className={cn(
+          "relative isolate inline-flex items-center justify-center rounded-sm text-[0.6em] font-semibold before:absolute before:inset-0 before:-z-10 before:rounded-[inherit] before:bg-current before:opacity-15",
+          COLOR_CLASS_BY_NAME[icon?.type === "monogram" ? icon.color : "blue"],
+          className,
+        )}
+      >
+        {initials}
+      </span>
+    ) : (
+      <FolderIcon aria-hidden="true" className={className} />
+    );
   }
 
   return (

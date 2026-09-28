@@ -114,6 +114,7 @@ export interface RefreshStateRow {
 }
 
 export interface NormalizedPr {
+  readonly allowedMergeMethods?: TrackedPullRequest["allowedMergeMethods"];
   readonly mergeRequirements?: TrackedPullRequest["mergeRequirements"];
   readonly reasonEvidence?: Record<string, { id: string; url: string }[]>;
   readonly repositoryArchived: boolean;
@@ -715,6 +716,7 @@ export function buildTrackedPullRequest(
     ...prAttentionText(reasons[0]!.code, pr.actionableUnresolvedThreadCount),
     mergeRequirements: pr.mergeRequirements,
     mergePermission: pr.mergePermission,
+    allowedMergeMethods: pr.allowedMergeMethods,
     checkRollup: pr.checkRollup,
     reviewDecision: pr.reviewDecision,
     mergeable: pr.mergeable,
@@ -801,6 +803,15 @@ export function normalizeGraphqlPr(input: {
     host: input.host,
     author: authorLogin,
     repositoryArchived: repositoryNode?.isArchived === true,
+    allowedMergeMethods: (
+      [
+        ["squash", repositoryNode?.squashMergeAllowed],
+        ["merge", repositoryNode?.mergeCommitAllowed],
+        ["rebase", repositoryNode?.rebaseMergeAllowed],
+      ] as const
+    )
+      .filter(([, allowed]) => allowed === true)
+      .map(([method]) => method),
     isDraft: booleanValue(input.node.isDraft),
     state: normalizePullRequestState(input.node.state),
     checkRollup: normalizeCheckRollup(statusCheckState(input.node)),
@@ -1033,7 +1044,7 @@ fragment PrFields on PullRequest {
   deletions
   changedFiles
   author { login }
-  repository { nameWithOwner isPrivate isArchived viewerPermission }
+  repository { nameWithOwner isPrivate isArchived viewerPermission squashMergeAllowed mergeCommitAllowed rebaseMergeAllowed }
   ${PR_HUB_BRANCH_REQUIREMENTS_FIELDS}
   labels(first:10){ nodes { name } }
   assignees(first:10){ nodes { login } }

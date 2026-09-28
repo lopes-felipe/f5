@@ -73,10 +73,14 @@ GC. Local transport is enabled only for fixture submodule setup.
 | `git.status-large-nested-submodules`   | Production `GitCore.statusDetails` over 10,000 files, three nested repositories and two real submodules. Assert the known tracked modification is returned.                                                |
 
 Terminal byte limits are checked separately after injecting a line larger than
-4 MiB. Current history is line-bounded and can exceed this planned byte ceiling;
-the harness must preserve that result until Phase 2 fixes it. The PTY adapter
-delivers deterministic bytes instead of starting interactive shells. Process
-discovery/polling cost and native PTY integration are **not measured** here.
+4 MiB. The pinned original baseline is only line-bounded and exceeds this ceiling.
+The Phase 2 terminal implementation retains at most 5,000 lines and 4 MiB of UTF-8
+content, dropping whole old lines first and truncating oversized lines only at
+code-point boundaries. Live output is not truncated. The PTY adapter delivers
+deterministic bytes instead of starting interactive shells. Process discovery/polling
+cost and native PTY integration are **not measured** by the server-component runner;
+the interactive soak exercises the shared two-second process poller with native PTYs.
+See [the terminal validation report](reviews/phase-two-terminal-validation.md).
 
 ## Browser, transport and retained memory
 

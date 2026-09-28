@@ -439,6 +439,9 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             interactionMode: bootstrap.createThread.interactionMode,
             branch: bootstrap.createThread.branch,
             worktreePath: bootstrap.createThread.worktreePath,
+            ...(bootstrap.createThread.pullRequest
+              ? { pullRequest: bootstrap.createThread.pullRequest }
+              : {}),
             createdAt: bootstrap.createThread.createdAt,
           }),
         );

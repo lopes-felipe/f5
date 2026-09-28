@@ -18,6 +18,7 @@ import {
   TerminalWriteInput,
 } from "@t3tools/contracts";
 import { PtyProcess } from "./PTY";
+import type { BoundedTerminalHistory } from "../BoundedTerminalHistory";
 import { Effect, Schema, ServiceMap } from "effect";
 
 export class TerminalError extends Schema.TaggedErrorClass<TerminalError>()("TerminalError", {
@@ -31,7 +32,7 @@ export interface TerminalSessionState {
   cwd: string;
   status: TerminalSessionStatus;
   pid: number | null;
-  history: string;
+  history: BoundedTerminalHistory;
   exitCode: number | null;
   exitSignal: number | null;
   updatedAt: string;

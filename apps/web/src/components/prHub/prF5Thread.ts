@@ -220,6 +220,14 @@ export async function createPrF5Thread(input: {
   const threadId = newThreadId();
   const createdAt = new Date().toISOString();
   const title = `PR #${input.pr.number}: ${input.pr.title}`;
+  const pullRequest = {
+    provider: input.pr.provider,
+    host: input.pr.host,
+    repository: input.pr.repository.nameWithOwner,
+    number: input.pr.number,
+    title: input.pr.title,
+    url: input.pr.url,
+  };
   const { model, modelSelection } = resolvePrF5ModelSelection(
     input.providers,
     input.preferredModel,
@@ -232,6 +240,7 @@ export async function createPrF5Thread(input: {
       threadId,
       projectId: input.candidate.projectId,
       title,
+      pullRequest,
       model,
       modelSelection,
       runtimeMode: "approval-required",
@@ -264,6 +273,7 @@ export async function createPrF5Thread(input: {
         createThread: {
           projectId: input.candidate.projectId,
           title,
+          pullRequest,
           model,
           modelSelection,
           runtimeMode: "approval-required",

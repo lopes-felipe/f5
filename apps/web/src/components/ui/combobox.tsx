@@ -1,5 +1,7 @@
 "use client";
 
+import { usePopupFocus } from "./popupFocus";
+
 import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox";
 import { CheckIcon, ChevronsUpDownIcon, XIcon } from "lucide-react";
 import * as React from "react";
@@ -151,6 +153,7 @@ function ComboboxPopup({
   side?: ComboboxPrimitive.Positioner.Props["side"];
   anchor?: ComboboxPrimitive.Positioner.Props["anchor"];
 }) {
+  const finalFocus = usePopupFocus();
   const { chipsRef } = React.useContext(ComboboxContext);
   const anchor = anchorProp ?? chipsRef;
 
@@ -172,6 +175,7 @@ function ComboboxPopup({
           )}
         >
           <ComboboxPrimitive.Popup
+            finalFocus={finalFocus}
             className="flex max-h-[min(var(--available-height),23rem)] flex-1 flex-col text-foreground"
             data-slot="combobox-popup"
             {...props}

@@ -125,8 +125,10 @@ export function ProjectsSettings() {
     deleteMemory,
   } = useSettingsRouteContext();
   const [emojiDraft, setEmojiDraft] = useState("");
+  const [monogramDraft, setMonogramDraft] = useState("");
 
   useEffect(() => {
+    setMonogramDraft(selectedProject?.icon?.type === "monogram" ? selectedProject.icon.text : "");
     setEmojiDraft(selectedProject?.icon?.type === "emoji" ? selectedProject.icon.emoji : "");
   }, [selectedProject?.icon, selectedProject?.id]);
 
@@ -230,6 +232,7 @@ export function ProjectsSettings() {
             <div className="space-y-3" data-settings-search-target="projects.icon">
               <div className="flex items-center gap-3">
                 <ProjectIcon
+                  name={selectedProject.name}
                   projectId={selectedProject.id}
                   icon={selectedProject.icon}
                   className="size-8"
@@ -245,6 +248,19 @@ export function ProjectsSettings() {
                         void updateSelectedProjectMetadata({
                           icon: { type: "emoji", emoji: emojiDraft.trim() || "📁" },
                         });
+                      } else if (value === "monogram") {
+                        void updateSelectedProjectMetadata({
+                          icon: {
+                            type: "monogram",
+                            text:
+                              monogramDraft.trim() ||
+                              Array.from(selectedProject.name)
+                                .slice(0, 2)
+                                .join("")
+                                .toLocaleUpperCase(),
+                            color: "blue",
+                          },
+                        });
                       } else if (value === "lucide") {
                         void updateSelectedProjectMetadata({
                           icon: { type: "lucide", glyph: "folder", color: "gray" },
@@ -259,17 +275,68 @@ export function ProjectsSettings() {
                           ? "Emoji"
                           : selectedProject.icon?.type === "lucide"
                             ? "Symbol"
-                            : "Automatic"}
+                            : selectedProject.icon?.type === "monogram"
+                              ? "Monogram"
+                              : "Automatic"}
                       </SelectValue>
                     </SelectTrigger>
                     <SelectPopup>
                       <SelectItem value="automatic">Automatic</SelectItem>
+                      <SelectItem value="monogram">Monogram</SelectItem>
                       <SelectItem value="emoji">Emoji</SelectItem>
                       <SelectItem value="lucide">Symbol</SelectItem>
                     </SelectPopup>
                   </Select>
                 </label>
               </div>
+
+              {selectedProject.icon?.type === "monogram" && (
+                <div className="flex gap-2">
+                  <Input
+                    aria-label="Project monogram"
+                    value={monogramDraft}
+                    maxLength={6}
+                    onChange={(event) => setMonogramDraft(event.target.value)}
+                  />
+                  <Select
+                    value={selectedProject.icon.color}
+                    disabled={projectMetadataPending}
+                    onValueChange={(value) => {
+                      if (
+                        selectedProject.icon?.type === "monogram" &&
+                        PROJECT_ICON_COLORS.includes(value as ProjectIconColor)
+                      )
+                        void updateSelectedProjectMetadata({
+                          icon: { ...selectedProject.icon, color: value as ProjectIconColor },
+                        });
+                    }}
+                  >
+                    <SelectTrigger aria-label="Project monogram color">
+                      <SelectValue>{labelProjectIconColor(selectedProject.icon.color)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {PROJECT_ICON_COLORS.map((color) => (
+                        <SelectItem key={color} value={color}>
+                          {labelProjectIconColor(color)}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={projectMetadataPending || !monogramDraft.trim()}
+                    onClick={() => {
+                      if (selectedProject.icon?.type === "monogram")
+                        void updateSelectedProjectMetadata({
+                          icon: { ...selectedProject.icon, text: monogramDraft.trim() },
+                        });
+                    }}
+                  >
+                    Save monogram
+                  </Button>
+                </div>
+              )}
 
               {selectedProject.icon?.type === "emoji" ? (
                 <div className="flex gap-2">

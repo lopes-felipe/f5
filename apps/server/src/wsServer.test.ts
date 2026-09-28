@@ -16,7 +16,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Data, Effect, Exit, Layer, Option, PlatformError, PubSub, Scope, Stream } from "effect";
 import { describe, expect, it, afterEach, vi } from "vitest";
-import { createServer, resolveWorkspaceReadPath } from "./wsServer";
+import { createServer, readWebSocketRequestId, resolveWorkspaceReadPath } from "./wsServer";
 import WebSocket from "ws";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { makeServerRuntimeServicesLayer } from "./serverLayers";
@@ -2445,6 +2445,33 @@ describe("WebSocket Server", () => {
     const response = await sendRequest(ws, "nonexistent.method");
     expect(response.error).toBeDefined();
     expect(response.error!.message).toContain("Invalid request format");
+    // The caller's id is echoed so clients reject immediately instead of timing out.
+    expect(response.id).not.toBe("unknown");
+  });
+
+  it("rejects GitHub CLI imports for invalid hosts or logins immediately", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    for (const params of [
+      { host: "https://github.com", login: "octocat" },
+      { host: "github.com", login: "-not-a-login" },
+    ]) {
+      const response = await sendRequest(ws, WS_METHODS.githubAccountCliImport, params);
+      expect(response.result).toBeUndefined();
+      expect(response.error?.message).toContain("Invalid request format");
+      expect(response.id).not.toBe("unknown");
+    }
+  });
+
+  it("recovers request ids from undecodable requests", () => {
+    expect(readWebSocketRequestId(JSON.stringify({ id: "abc", body: { _tag: "x" } }))).toBe("abc");
+    expect(readWebSocketRequestId(JSON.stringify({ id: 7 }))).toBeNull();
+    expect(readWebSocketRequestId(JSON.stringify({ id: "x".repeat(200) }))).toBeNull();
+    expect(readWebSocketRequestId("not json")).toBeNull();
+    expect(readWebSocketRequestId("null")).toBeNull();
   });
 
   it("returns error when requesting turn diff for unknown thread", async () => {

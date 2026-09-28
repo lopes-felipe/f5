@@ -12,6 +12,13 @@ import { randomUUID } from "./utils";
 
 export const projectQueryKeys = {
   all: ["projects"] as const,
+  listDirectories: (cwd: string | null) => ["projects", "list-directory", cwd] as const,
+  listDirectory: (
+    cwd: string | null,
+    relativePath: string,
+    includeIgnored: boolean,
+    limit: number | undefined,
+  ) => ["projects", "list-directory", cwd, relativePath, includeIgnored, limit ?? null] as const,
   listEntries: (cwd: string | null, limit: number | undefined) =>
     ["projects", "list-entries", cwd, limit ?? null] as const,
   searchEntries: (cwd: string | null, query: string, limit: number) =>
@@ -52,6 +59,33 @@ const EMPTY_SEARCH_ENTRIES_RESULT: ProjectSearchEntriesResult = {
   entries: [],
   truncated: false,
 };
+
+export function projectListDirectoryQueryOptions(input: {
+  cwd: string | null;
+  relativePath: string;
+  includeIgnored: boolean;
+  limit?: number;
+}) {
+  return queryOptions({
+    queryKey: projectQueryKeys.listDirectory(
+      input.cwd,
+      input.relativePath,
+      input.includeIgnored,
+      input.limit,
+    ),
+    queryFn: () => {
+      if (!input.cwd) throw new Error("Workspace directory is unavailable.");
+      return ensureNativeApi().projects.listDirectory({
+        cwd: input.cwd,
+        relativePath: input.relativePath,
+        includeIgnored: input.includeIgnored,
+        ...(input.limit ? { limit: input.limit } : {}),
+      });
+    },
+    enabled: input.cwd !== null,
+    staleTime: DEFAULT_LIST_ENTRIES_STALE_TIME,
+  });
+}
 
 export function projectListEntriesQueryOptions(input: {
   cwd: string | null;

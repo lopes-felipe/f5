@@ -4,6 +4,8 @@ import {
   type WindowsRegistryPathReader,
 } from "@t3tools/shared/windowsPath";
 
+const LOCALE_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
+
 export function syncShellEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   options: {
@@ -32,7 +34,15 @@ export function syncShellEnvironment(
     const shellEnvironment = (options.readEnvironment ?? readEnvironmentFromLoginShell)(shell, [
       "PATH",
       "SSH_AUTH_SOCK",
+      ...LOCALE_NAMES,
     ]);
+
+    // Locale categories form a precedence group; never override an inherited choice.
+    if (LOCALE_NAMES.every((name) => !env[name]?.trim())) {
+      for (const name of LOCALE_NAMES) {
+        if (shellEnvironment[name]?.trim()) env[name] = shellEnvironment[name];
+      }
+    }
 
     if (shellEnvironment.PATH) {
       env.PATH = shellEnvironment.PATH;
@@ -44,5 +54,6 @@ export function syncShellEnvironment(
   } catch {
     // Keep inherited environment if shell lookup fails.
   }
+  if (LOCALE_NAMES.every((name) => !env[name]?.trim())) env.LC_CTYPE = "en_US.UTF-8";
   return Promise.resolve();
 }

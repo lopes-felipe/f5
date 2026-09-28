@@ -35,6 +35,7 @@ import {
   shouldVirtualizeBranchListForCount,
 } from "./BranchToolbar.logic";
 import { Button } from "./ui/button";
+import { MiddleTruncate } from "./MiddleTruncate";
 import {
   Combobox,
   ComboboxEmpty,
@@ -421,7 +422,7 @@ export function BranchToolbarBranchSelector({
         onClick={() => selectBranch(branch)}
       >
         <div className="flex w-full items-center justify-between gap-2">
-          <span className="truncate">{itemValue}</span>
+          <MiddleTruncate text={itemValue} />
           {badge && <span className="shrink-0 text-[10px] text-muted-foreground/45">{badge}</span>}
         </div>
       </ComboboxItem>
@@ -489,11 +490,11 @@ export function BranchToolbarBranchSelector({
         value={resolvedActiveBranch}
       >
         <ComboboxTrigger
-          render={<Button variant="ghost" size="xs" />}
+          render={<Button data-composer-control="branch" variant="ghost" size="xs" />}
           className="text-muted-foreground/70 hover:text-foreground/80"
           disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
         >
-          <span className="max-w-[240px] truncate">{triggerLabel}</span>
+          <MiddleTruncate className="max-w-[240px]" text={triggerLabel} />
           <ChevronDownIcon />
         </ComboboxTrigger>
         <ComboboxPopup align="end" side="top" className="w-80">

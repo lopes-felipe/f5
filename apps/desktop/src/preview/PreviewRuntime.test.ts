@@ -96,6 +96,24 @@ describe("PreviewRuntime", () => {
     expect(artifact).not.toHaveProperty("path");
   });
 
+  it("saves the snapshot bytes without capturing the page a second time", async () => {
+    const { runtime, stateDirectory } = makeRuntime();
+    await runtime.initialize();
+    const png = Buffer.from([137, 80, 78, 71, 1, 2, 3]);
+    const artifact = await runtime.saveScreenshot(png, 20, 30);
+    expect(artifact).toMatchObject({
+      kind: "screenshot",
+      bytes: png.length,
+      width: 20,
+      height: 30,
+    });
+    expect(artifact).not.toHaveProperty("path");
+    const files = fs.readdirSync(path.join(stateDirectory, "preview-artifacts"));
+    const saved = files.find((name) => name.endsWith(".png"));
+    expect(saved).toBeDefined();
+    expect(fs.readFileSync(path.join(stateDirectory, "preview-artifacts", saved!))).toEqual(png);
+  });
+
   it("emulates and retains a per-tab color scheme for the debugger session", async () => {
     const { runtime, mock } = makeRuntime();
     await runtime.initialize();

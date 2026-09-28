@@ -1,5 +1,8 @@
+import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
+import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { toastManager } from "~/components/ui/toast";
 import { PrReviewThreadsTab } from "./PrReviewThreadsTab";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 
 import { cn } from "../../lib/utils";
@@ -22,6 +25,23 @@ export function PrDetailsTabs({
   onTabChange?: (tab: PrDetailTab) => void;
 }) {
   const [localTab, setLocalTab] = useState<PrDetailTab>("summary");
+  const keybindings = useServerKeybindings();
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("input, textarea, [contenteditable=true], [role=dialog]")) return;
+      if (resolveShortcutCommand(event, keybindings) !== "prHub.copyNumber") return;
+      event.preventDefault();
+      void writeTextToClipboard(String(pr.number)).then(
+        () => toastManager.add({ type: "success", title: "PR number copied" }),
+        () => toastManager.add({ type: "error", title: "Could not copy PR number" }),
+      );
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  }, [keybindings, pr.number]);
+
   const tab = activeTab ?? localTab;
   const setTab = (next: PrDetailTab) => {
     setLocalTab(next);

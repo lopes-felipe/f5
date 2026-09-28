@@ -1,3 +1,4 @@
+import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
 import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
@@ -1006,7 +1007,15 @@ const ProjectInvestigationWorkflowDeleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadPullRequestLink = Schema.Struct({
+  ...SourceControlPullRequestRef.fields,
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048), Schema.isPattern(/^https?:\/\//)),
+});
+export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
+
 const ThreadCreateCommand = Schema.Struct({
+  pullRequest: Schema.optional(ThreadPullRequestLink),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1081,6 +1090,7 @@ const ThreadUnsnoozeCommand = Schema.Struct({
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
+  pullRequest: Schema.optional(ThreadPullRequestLink),
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1101,7 +1111,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
         input.model === undefined &&
         input.modelSelection === undefined &&
         input.branch === undefined &&
-        input.worktreePath === undefined) ||
+        input.worktreePath === undefined &&
+        input.pullRequest === undefined) ||
       "regenerateTitle cannot be combined with other metadata changes",
   ),
 );
@@ -1123,6 +1134,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 export const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+  pullRequest: Schema.optional(ThreadPullRequestLink),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   model: TrimmedNonEmptyString,
@@ -1706,6 +1718,7 @@ export const ProjectInvestigationWorkflowDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1778,6 +1791,7 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 });
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
+  pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
   titleSource: Schema.optional(ThreadTitleSource),

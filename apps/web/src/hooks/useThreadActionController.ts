@@ -4,7 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef } from "react";
 
 import { useAppSettings } from "~/appSettings";
-import { deleteThreadWithCleanup, setThreadArchived } from "~/archiveActions";
+import { deleteThreadsWithCleanup, setThreadArchived } from "~/archiveActions";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { isSnoozedThread } from "~/lib/threadOrdering";
@@ -194,17 +194,14 @@ export function useThreadActionController(input: {
     await setThreadArchived({ threadId, archived });
   }, []);
 
-  const deleteThread = useCallback(
-    async (
-      threadId: ThreadId,
-      options: { readonly deletedThreadIds?: ReadonlySet<ThreadId> } = {},
-    ) => {
-      await deleteThreadWithCleanup({
-        threadId,
+  const deleteThreads = useCallback(
+    async (threadIds: ReadonlyArray<ThreadId>) => {
+      return await deleteThreadsWithCleanup({
+        threadIds,
+        getThreads: () => useStore.getState().threads,
         threads,
         projects,
         activeThreadId: input.activeThreadId,
-        deletedThreadIds: options.deletedThreadIds,
         clearComposerDraftForThread,
         clearProjectDraftThreadById,
         clearTerminalState,
@@ -231,6 +228,14 @@ export function useThreadActionController(input: {
       removeWorktreeMutation,
       threads,
     ],
+  );
+
+  const deleteThread = useCallback(
+    async (threadId: ThreadId) => {
+      const result = await deleteThreads([threadId]);
+      if (result.failures[0]) throw result.failures[0].error;
+    },
+    [deleteThreads],
   );
 
   const executeAction = useCallback(
@@ -366,6 +371,7 @@ export function useThreadActionController(input: {
   return {
     archiveThread,
     deleteThread,
+    deleteThreads,
     executeAction,
     menuItemsForThread,
     renameThread,

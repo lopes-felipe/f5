@@ -3,7 +3,7 @@ import { create } from "zustand";
 
 export type RightPanelSurface =
   | { id: "diff"; kind: "diff" }
-  | { id: "files"; kind: "files" }
+  | { id: "files"; kind: "files"; revealPath?: string }
   | {
       id: `file:${string}`;
       kind: "file";
@@ -34,6 +34,7 @@ export interface OpenFileSurfaceInput {
 interface RightPanelStoreState {
   byThreadId: Record<string, ThreadRightPanelState>;
   open: (threadId: ThreadId, kind: Exclude<RightPanelSurfaceKind, "file">) => void;
+  openDirectory: (threadId: ThreadId, relativePath: string) => void;
   openFile: (threadId: ThreadId, input: OpenFileSurfaceInput) => RightPanelSurface;
   activateSurface: (threadId: ThreadId, surfaceId: string) => void;
   closeSurface: (threadId: ThreadId, surfaceId: string) => void;
@@ -131,6 +132,16 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
       byThreadId: updateThread(state.byThreadId, threadId, (current) =>
         upsertSurface(current, singletonSurface(kind)),
       ),
+    })),
+  openDirectory: (threadId, relativePath) =>
+    set((state) => ({
+      byThreadId: {
+        ...state.byThreadId,
+        [threadKey(threadId)]: upsertSurface(
+          state.byThreadId[threadKey(threadId)] ?? EMPTY_THREAD_RIGHT_PANEL_STATE,
+          { id: "files", kind: "files", revealPath: relativePath },
+        ),
+      },
     })),
   openFile: (threadId, input) => {
     const surface = createFileRightPanelSurface(input);

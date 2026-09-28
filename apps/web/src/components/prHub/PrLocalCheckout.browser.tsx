@@ -28,8 +28,11 @@ vi.mock("../../nativeApi", () => ({
     orchestration: { dispatchCommand: api.dispatch },
   }),
 }));
+vi.mock("../../hooks/useSettings", () => ({ useSettings: () => null }));
 vi.mock("../../appSettings", () => ({
-  useAppSettings: () => ({ settings: { addProjectBaseDirectory: api.baseDirectory } }),
+  useAppSettings: () => ({
+    settings: { addProjectBaseDirectory: api.baseDirectory, prHubLastMergeMethods: {} },
+  }),
 }));
 vi.mock("./prF5Thread", async (original) => ({
   ...(await original<typeof import("./prF5Thread")>()),

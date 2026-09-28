@@ -263,6 +263,7 @@ export function createPrHubRepository(
           waitingSince: payload.waitingSince ?? null,
           lastVerifiedAt: payload.lastVerifiedAt ?? null,
           mergeRequirements: payload.mergeRequirements ?? unknownMergeRequirements(),
+          allowedMergeMethods: payload.allowedMergeMethods,
           additions: row.additions,
           deletions: row.deletions,
           changedFiles: row.changed_files,
@@ -466,6 +467,7 @@ export function createPrHubRepository(
             ${pr.state === "open" ? null : pr.updatedAt},
             ${JSON.stringify({
               repositoryArchived: pr.repositoryArchived,
+              allowedMergeMethods: pr.allowedMergeMethods,
               headRefOid: pr.headRefOid,
               baseRefName: pr.baseRefName,
               headRefName: pr.headRefName,

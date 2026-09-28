@@ -124,6 +124,9 @@ export const PrHubMergeRequirements = Schema.Struct({
 export type PrHubMergeRequirements = typeof PrHubMergeRequirements.Type;
 
 export const TrackedPullRequest = Schema.Struct({
+  allowedMergeMethods: Schema.optional(
+    Schema.Array(Schema.Literals(["squash", "merge", "rebase"])),
+  ),
   mergeRequirements: Schema.optional(PrHubMergeRequirements),
   repositoryArchived: Schema.optional(Schema.Boolean),
   key: PullRequestKey,

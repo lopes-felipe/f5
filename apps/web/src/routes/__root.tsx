@@ -1,3 +1,4 @@
+import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import {
   acceptProfileWelcome,
   refreshProfiles,
@@ -16,6 +17,8 @@ import {
 } from "@t3tools/contracts";
 import {
   Outlet,
+  Link,
+  useRouter,
   createRootRouteWithContext,
   type ErrorComponentProps,
   useNavigate,
@@ -81,6 +84,7 @@ export const Route = createRootRouteWithContext<{
 }>()({
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
+  notFoundComponent: RootRouteNotFoundView,
   head: () => ({
     meta: [{ name: "title", content: APP_DISPLAY_NAME }],
   }),
@@ -150,7 +154,22 @@ function RootRouteView() {
   );
 }
 
+function RootRouteNotFoundView() {
+  return (
+    <main className="flex min-h-screen items-center justify-center p-6">
+      <div className="flex max-w-sm flex-col items-center gap-4 text-center">
+        <h1 className="text-lg font-medium">Page not found</h1>
+        <p className="text-sm text-muted-foreground">
+          This link does not point to a page in {APP_DISPLAY_NAME}.
+        </p>
+        <Button render={<Link to="/" replace />}>Go home</Button>
+      </div>
+    </main>
+  );
+}
+
 function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
+  const router = useRouter();
   const message = errorMessage(error);
   const details = errorDetails(error);
 
@@ -171,11 +190,28 @@ function RootRouteErrorView({ error, reset }: ErrorComponentProps) {
         <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{message}</p>
 
         <div className="mt-5 flex flex-wrap gap-2">
-          <Button size="sm" onClick={() => reset()}>
+          <Button
+            size="sm"
+            onClick={() => {
+              void router.invalidate().then(reset);
+            }}
+          >
             Try again
           </Button>
           <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
             Reload app
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              void writeTextToClipboard(details).then(
+                () => toastManager.add({ type: "success", title: "Error report copied" }),
+                () => toastManager.add({ type: "error", title: "Could not copy error report" }),
+              );
+            }}
+          >
+            Copy error report
           </Button>
         </div>
 
@@ -363,6 +399,9 @@ function EventRouter() {
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const navigate = useNavigate();
   const { settings, updateSettings } = useAppSettings();
+  useEffect(() => {
+    document.documentElement.dataset.diffColorScheme = settings.diffColorPalette;
+  }, [settings.diffColorPalette]);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const visibleRouteMatch = useRouterState({
     select: (state) => {
@@ -484,6 +523,7 @@ function EventRouter() {
 
     const invalidateProviderAndProjectQueries = () => {
       void queryClient.invalidateQueries({ queryKey: providerQueryKeys.all });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKeys.fileContentAll });
       // Invalidate workspace entry queries so the @-mention file picker
       // reflects files created, deleted, or restored during this turn.
       void queryClient.invalidateQueries({ queryKey: projectQueryKeys.all });

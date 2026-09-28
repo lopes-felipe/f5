@@ -6520,6 +6520,59 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.tasks).toEqual([]);
   });
 
+  it.each(["turn.completed", "turn.aborted"] as const)(
+    "dismisses blocking questions after %s",
+    async (type) => {
+      const harness = await createHarness();
+      const turnId = asTurnId("question-turn");
+      const threadId = asThreadId("thread-1");
+      for (const requestId of ["question-one", "question-two"]) {
+        harness.emit({
+          type: "user-input.requested",
+          eventId: asEventId(requestId),
+          provider: "codex",
+          createdAt: new Date().toISOString(),
+          threadId,
+          turnId,
+          requestId: ApprovalRequestId.makeUnsafe(requestId),
+          payload: {
+            questions: [
+              {
+                id: "choice",
+                header: "Choice",
+                question: "Continue?",
+                options: [{ label: "Yes", description: "Continue" }],
+              },
+            ],
+          },
+        });
+      }
+      await waitForThread(
+        harness.engine,
+        (entry) => entry.activities.filter((a) => a.kind === "user-input.requested").length === 2,
+      );
+      harness.emit({
+        type,
+        eventId: asEventId("question-ended"),
+        provider: "codex",
+        threadId,
+        turnId,
+        createdAt: new Date().toISOString(),
+        payload: type === "turn.completed" ? { state: "completed" } : { reason: "Stopped" },
+      });
+      const thread = await waitForThread(
+        harness.engine,
+        (entry) => entry.activities.filter((a) => a.kind === "user-input.resolved").length === 2,
+      );
+      expect(
+        thread.activities
+          .filter((a) => a.kind === "user-input.resolved")
+          .map((a) => (a.payload as { requestId: string }).requestId)
+          .sort(),
+      ).toEqual(["question-one", "question-two"]);
+    },
+  );
+
   it("projects structured user input request and resolution as thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

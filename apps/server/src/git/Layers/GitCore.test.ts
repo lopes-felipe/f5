@@ -288,6 +288,7 @@ describe("GitCore unit", () => {
       "diff",
       "--cached",
       "--patch",
+      "--find-renames",
       "--src-prefix=a/",
       "--dst-prefix=b/",
       "--minimal",

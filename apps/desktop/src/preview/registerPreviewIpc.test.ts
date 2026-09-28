@@ -66,6 +66,15 @@ describe("registerPreviewIpc", () => {
     expect(operationsForSender).toHaveBeenCalledWith(17);
   });
 
+  it("validates the snapshot save flag through the owner-scoped operations", () => {
+    const { invoke, operations } = makeHarness();
+    invoke(PREVIEW_IPC_CHANNELS.automationSnapshot, "tab-1", true);
+    expect(operations.automationSnapshot).toHaveBeenCalledWith("tab-1", true);
+    expect(() => invoke(PREVIEW_IPC_CHANNELS.automationSnapshot, "tab-1", "true")).toThrow(
+      "Invalid snapshot save flag",
+    );
+  });
+
   it("rejects stale viewport revisions in the runtime-facing operation", () => {
     const { invoke, operations } = makeHarness();
     invoke(PREVIEW_IPC_CHANNELS.setViewport, "tab-1", {
