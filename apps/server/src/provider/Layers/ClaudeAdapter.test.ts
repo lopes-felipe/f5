@@ -5755,6 +5755,26 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(resolveClaudeConfigDir({}), path.join(os.homedir(), ".claude"));
     });
 
+    it("resolves a relative config dir against the CLI child's cwd", () => {
+      const childCwd = path.resolve("/work/project");
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: ".claude-profile" }, childCwd),
+        path.join(childCwd, ".claude-profile"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ HOME: "relative-home" }, childCwd),
+        path.join(childCwd, "relative-home", ".claude"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: ".claude-profile" }),
+        path.resolve(".claude-profile"),
+      );
+      assert.equal(
+        resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: "/isolated/.claude" }, childCwd),
+        path.resolve("/isolated/.claude"),
+      );
+    });
+
     it.effect("probes the provider environment's config dir, not the server's", () => {
       const probeCalls: Array<ClaudeSessionProbeInput> = [];
       const harness = makeHarness({

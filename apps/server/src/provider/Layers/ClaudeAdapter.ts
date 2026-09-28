@@ -387,14 +387,19 @@ export interface ClaudeSessionProbeInput {
 /**
  * Mirrors the Claude CLI's config dir precedence: an explicit
  * `CLAUDE_CONFIG_DIR` wins, otherwise `$HOME/.claude`.
+ *
+ * Relative values are resolved against `cwd`, the CLI child's working
+ * directory, because that is where the CLI resolves them. When `cwd` is
+ * undefined the child inherits the server's cwd, so `process.cwd()` is right.
  */
-export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv): string {
+export function resolveClaudeConfigDir(env: NodeJS.ProcessEnv, cwd?: string): string {
+  const base = cwd ?? process.cwd();
   const configured = env.CLAUDE_CONFIG_DIR?.trim();
   if (configured) {
-    return configured;
+    return NodePath.resolve(base, configured);
   }
   const home = env.HOME?.trim();
-  return NodePath.join(home ? home : NodeOS.homedir(), ".claude");
+  return NodePath.resolve(base, home ? home : NodeOS.homedir(), ".claude");
 }
 
 export interface ClaudeSessionStoreFs {
@@ -4397,6 +4402,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               input.providerOptions?.claudeAgent,
               options?.processEnvironment ?? process.env,
             ),
+            input.cwd,
           );
           const probeResult = yield* probeResumableClaudeSession({
             sessionId: resumeState.resume,
