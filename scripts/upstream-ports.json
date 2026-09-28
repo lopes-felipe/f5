@@ -773,7 +773,10 @@
         "apps/desktop/src/quitHold.test.ts:1",
         "apps/desktop/src/desktopAttention.test.ts:48"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "098bf5329727fcd7d973bf842e6b4d50d6e7b924",
@@ -1116,9 +1119,13 @@
       "evidence": [
         "apps/web/src/appSettings.ts:367",
         "apps/web/src/threadAttention.ts:13",
-        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1"
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:363"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "0e1570bde5b64458449a45989f1b56d6fd651883",
@@ -1253,7 +1260,10 @@
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:101",
         "apps/web/src/components/ChatView.browser.tsx:6268"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "10421bcdc9a059e0a717250257769af92567b645",
@@ -2858,11 +2868,18 @@
     {
       "upstreamSha": "24c4ba68f536d56e8482a1e4d7070a6771da551d",
       "subject": "fix(desktop): close the window before quit cleanup (#6562)",
-      "reason": "F5 conceals all desktop windows immediately before bounded backend and preview cleanup, then exits; renderer state remains available during graceful cleanup.",
+      "reason": "Close desktop windows after renderer unload checks and before bounded backend/preview cleanup; a veto reveals the app without stopping backends. Update handoff uses the same preflight and cleanup.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
-      "evidence": ["apps/desktop/src/main.ts:2924", "apps/desktop/scripts/smoke-test.mjs:90"],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "evidence": [
+        "apps/desktop/src/main.ts:2940",
+        "apps/desktop/src/quitPreflight.test.ts:1",
+        "apps/desktop/scripts/smoke-test.mjs:90"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "252df7742047af8a1b859dc652b2f40b639d16b3",
@@ -3461,7 +3478,10 @@
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:25",
         "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "2d5464afbc19058be8c125d5ee70481d721d14f4",
@@ -5027,7 +5047,10 @@
         "apps/web/src/repositoryLinkContext.ts:6",
         "apps/web/src/components/ChatMarkdown.test.tsx:89"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42b6bcc6f59bd0369377746b0f2ef370c275b624",
@@ -5039,7 +5062,10 @@
         "apps/web/src/components/ThreadStatusNotificationController.tsx:164",
         "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42bdea1c9c1d4b7c5c2e77cd23cf53fae68a6fd4",
@@ -6755,9 +6781,14 @@
         "packages/contracts/src/settings.ts:107",
         "apps/server/src/provider/providerSnapshot.ts:154",
         "apps/web/src/components/settings/ProviderModelsSection.tsx:319",
-        "packages/shared/src/customModels.test.ts:1"
+        "packages/shared/src/customModels.test.ts:1",
+        "apps/web/src/modelSelection.ts:49",
+        "apps/web/src/modelSelection.test.ts:503"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "5a61f50cce12685f70d530aa5fdf83d9c9b065d7",
@@ -7663,7 +7694,10 @@
         "apps/desktop/src/quitHold.test.ts:1",
         "apps/desktop/src/desktopAttention.test.ts:48"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "67993623afb14c017bb0b959478dc892f9c427da",
@@ -8858,9 +8892,13 @@
       "disposition": "ported",
       "evidence": [
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:93",
+        "apps/web/src/components/ChatView.browser.tsx:6268",
         "apps/web/src/components/ChatView.browser.tsx:6268"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "7810fb263f5a92b9d438d1eabf408d2ac705e944",
@@ -11505,7 +11543,10 @@
         "apps/desktop/src/desktopAttention.ts:83",
         "apps/web/src/components/QuitHoldOverlay.tsx:5"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "9d28c21a26aeef198cb064fe466e49cbeabfe09c",
@@ -13286,7 +13327,10 @@
         "apps/desktop/src/quitHold.test.ts:1",
         "apps/desktop/src/desktopAttention.test.ts:48"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b7fc81dea2b7c963c34a365b82644ce963df19a2",
@@ -13304,9 +13348,13 @@
       "evidence": [
         "apps/desktop/src/quitHold.ts:40",
         "apps/desktop/src/quitHold.test.ts:1",
-        "apps/desktop/src/desktopAttention.test.ts:48"
+        "apps/desktop/src/desktopAttention.test.ts:48",
+        "apps/desktop/src/desktopAttention.test.ts:96"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b84f63bb13f13b1d0ee8537c4d244d6f1efdb987",
@@ -14689,7 +14737,10 @@
         "apps/desktop/src/quitHold.test.ts:1",
         "apps/desktop/src/desktopAttention.test.ts:48"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "caab2fdbac041ac2e851ad4fa3ac4a40a1d4a8f6",
@@ -16812,7 +16863,10 @@
         "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.ts:14",
         "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.test.ts:17"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "e7f6a30caba5c390d5bbc9c300de89b68601c057",
@@ -17770,7 +17824,10 @@
         "apps/desktop/src/quitHold.test.ts:1",
         "apps/desktop/src/desktopAttention.test.ts:48"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "f3d3fe4569274c5ee6f3c5435809330bef494a2d",
@@ -18434,7 +18491,10 @@
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:116",
         "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
       ],
-      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "fe281c5408164250da6688de6fc71ac12d8a9d8f",
