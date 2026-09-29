@@ -83,10 +83,15 @@
     {
       "upstreamSha": "0141bc2bf5fcf52a563240a6bce4b58050496db5",
       "subject": "feat(settings): choose how new worktrees initialize submodules (#12955)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): choose how new worktrees initialize submodules. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: global and project submodule policy is applied to worktree creation and missing-worktree recreation, including PR worktrees.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1005"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "0150c6a53b409ba3bcb45645709b649cf8708354",
@@ -1422,10 +1427,15 @@
     {
       "upstreamSha": "1262d2f3ab2940c1d47ca4f5c4ca42e5c7259765",
       "subject": "feat(server): let t3.json limit or disable submodule init in new worktrees (#12953)",
-      "reason": "Phase 6 (project-scoped settings): feat(server): let t3.json limit or disable submodule init in new worktrees. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: checked-in worktreeSubmodules supports none, shallow and recursive; project overrides take precedence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/contracts/src/settings.ts:203",
+        "apps/server/src/git/Layers/GitCore.ts:1653"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "126afb56fca56c663f4f40acd46f123ab27eee2b",
@@ -2817,10 +2827,12 @@
     {
       "upstreamSha": "242816af805b048aec653d6cc359ecc784ef98c5",
       "subject": "feat(web): show settings scope as a sentence at the top of the page (#13139)",
-      "reason": "Phase 6 (project-scoped settings): feat(web): show settings scope as a sentence at the top of the page. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: visible Global/project scope at the top of settings, using the final breadcrumb design selected in review.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": ["apps/web/src/components/settings/ProjectSettingsScope.tsx:23"],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "2433f4c1c01cf9e9eca983c9aeec375524e29273",
@@ -3357,10 +3369,15 @@
     {
       "upstreamSha": "2c0e891740f86205784506a974096cf110b64da7",
       "subject": "feat(settings): add per-project overrides for scopable server settings (#11176)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): add per-project overrides for scopable server settings. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: f5-native seven-key project overrides, replacement/reset, source resolution, server consumers and deletion cleanup; no environment layer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/shared/src/projectSettings.ts:12",
+        "apps/server/src/wsServer.test.ts:1897"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "2c16c1d264173d86fc354e9a4c0c78cd42e514b7",
@@ -8636,10 +8653,15 @@
     {
       "upstreamSha": "742173a13250bcba880b700aaead34e1b0810dff",
       "subject": "feat(settings): resolve t3.json inside the project settings resolver (#12954)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): resolve t3.json inside the project settings resolver. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: checked-in f5.json/t3.json values participate in the shared precedence resolver, with bounded regular-file reads and per-field fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/project/projectSettings.ts:10",
+        "packages/shared/src/checkedInProjectFile.ts:103"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "7441b36926eb111a193183f98c06aced4f4c3acf",
@@ -9781,10 +9803,15 @@
     {
       "upstreamSha": "84b9d9bc2d8a13a8b13d59b81f1012f5cb57ebd2",
       "subject": "fix(clients): honor project default models in new threads (#6011)",
-      "reason": "Phase 6: fix(clients): honor project default models in new threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 6: fresh drafts honor f5's explicit project model default before last-used preferences; reused drafts keep their chosen model. Mobile and upstream environment-specific storage are outside scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:38",
+        "apps/web/src/hooks/useHandleNewThread.test.ts:51"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "850e4582e4c828b1533a400bf56a532721239198",
@@ -10214,10 +10241,15 @@
     {
       "upstreamSha": "8b2c0465def151f022e01dd04b1b6ba3859bd714",
       "subject": "feat(web): pick settings environment and project as two selects (#10636)",
-      "reason": "Phase 6 (project-scoped settings): feat(web): pick settings environment and project as two selects. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: Global/project scope selector and project URL parameter; upstream environment selector excluded by the approved scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "apps/web/src/routes/_chat.settings.tsx:1"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
@@ -10781,10 +10813,12 @@
     {
       "upstreamSha": "9257bd860a44ce2a324c917ca66a1a81e73607bd",
       "subject": "fix(web): add back button to project settings (#8168)",
-      "reason": "Phase 6: fix(web): add back button to project settings. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5's sidebar already provides Back for every /settings scope, including the new project scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "equivalent",
+      "plannedWorkstream": "6",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:3534"],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "929f7e6479d00754dee4e4554b24b25478b8064d",
@@ -11751,10 +11785,15 @@
     {
       "upstreamSha": "9f40b2f563c662b43887b11ff99c466fe871c1af",
       "subject": "feat(settings): add shared project defaults and scoped overrides (#9754)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): add shared project defaults and scoped overrides. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: shared defaults and project overrides use f5's server settings and existing profile/account boundaries; existing threads retain their explicit modes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/contracts/src/settings.ts:203",
+        "packages/shared/src/projectSettings.test.ts:41"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "9f73ca3677faa975be00f0ac55460279671df726",
@@ -13837,10 +13876,15 @@
     {
       "upstreamSha": "be3da50e96bb6700fbd111e061d8071a04427fb0",
       "subject": "fix(server): check out submodules in a new worktree (#7674)",
-      "reason": "Phase 6 (project-scoped settings): fix(server): check out submodules in a new worktree. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: initialize new-worktree submodules, disable file transport, and retain the worktree with a warning if initialization fails.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "apps/server/src/git/Layers/GitCore.test.ts:1"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "be53bbd85044e937c359a89b6004c3d3c38ffcf1",
@@ -14658,10 +14702,15 @@
     {
       "upstreamSha": "c8ec7df12415140c6413372f53e3be4fe2e959f8",
       "subject": "fix(web): make settings project scopes searchable and scrollable (#10570)",
-      "reason": "Phase 6: fix(web): make settings project scopes searchable and scrollable. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 6: searchable project scope picker with bounded scrolling and browser coverage.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "c8f77e0d441264efb0acfac312e852c81ae3da83",
@@ -14859,10 +14908,15 @@
     {
       "upstreamSha": "cbe93e8dfba68ff6fbe8c69e43a633fdc79db62d",
       "subject": "fix(web): show project settings for new threads (#9743)",
-      "reason": "Phase 6: fix(web): show project settings for new threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5 already exposes project actions and project configuration from ChatHeader for local drafts as well as persisted threads; the action is not gated on server-thread existence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "equivalent",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/chat/ChatHeader.tsx:151",
+        "apps/web/src/hooks/useProjectBreadcrumbActions.ts:33"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "cc39ec1008ce584e088e79210b69d3359357463b",
@@ -15041,10 +15095,15 @@
     {
       "upstreamSha": "cf1ba3d7da98357243ee056d2fd358eed8171981",
       "subject": "feat(settings): configure default permissions for new threads (#11346)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): configure default permissions for new threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: global/project permission defaults seed new drafts after resolving server settings; existing draft/turn choices remain explicit.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:1",
+        "apps/web/src/composerDraftStore.ts:1094"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "cf251c3bd00ff0e0cc90a78b20c043cf58f330ad",
@@ -15966,10 +16025,12 @@
     {
       "upstreamSha": "db9a0671bb8921ebf5f9da16cd54f7e87f5ef3b0",
       "subject": "refactor(web): move settings scope pickers into breadcrumbs (#13165)",
-      "reason": "Phase 6 (project-scoped settings): refactor(web): move settings scope pickers into breadcrumbs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: scope controls are a Global › Project breadcrumb with search, scroll and URL persistence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": ["apps/web/src/components/settings/ProjectSettingsScope.tsx:23"],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "dbc7bfa3f36cc61a3f1a2015e47d71ae9dee5421",
@@ -16477,10 +16538,15 @@
     {
       "upstreamSha": "e22040dfc190d04573238c5db2e69df72e5f1017",
       "subject": "feat(settings): edit any scopable setting as a project override (#10639)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): edit any scopable setting as a project override. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: all seven approved scoped keys editable with inheritance badges and reset; global-only controls hidden in project scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:80",
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "e25021af767b10c560862fcec714cf67fb22cfae",
