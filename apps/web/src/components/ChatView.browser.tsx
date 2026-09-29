@@ -6324,12 +6324,35 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it.each([false, true])(
-    "quotes an assistant selection and sends portable Markdown (shortcut=%s)",
-    async (shortcut) => {
+  it.each([
+    { shortcut: false, planFollowUp: false },
+    { shortcut: true, planFollowUp: false },
+    { shortcut: true, planFollowUp: true },
+  ])(
+    "quotes an assistant selection and sends portable Markdown ($shortcut, plan follow-up=$planFollowUp)",
+    async ({ shortcut, planFollowUp }) => {
+      let snapshot = createSnapshotWithRichAssistantTarget();
+      if (planFollowUp) {
+        const planThread = createPlanFollowUpSnapshot().threads.find(
+          (thread) => thread.id === THREAD_ID,
+        )!;
+        snapshot = {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  interactionMode: planThread.interactionMode,
+                  latestTurn: planThread.latestTurn,
+                  proposedPlans: planThread.proposedPlans,
+                }
+              : thread,
+          ),
+        };
+      }
       const mounted = await mountChatView({
         viewport: DEFAULT_VIEWPORT,
-        snapshot: createSnapshotWithRichAssistantTarget(),
+        snapshot,
       });
       try {
         const paragraph = await vi.waitFor(() => {
@@ -6382,6 +6405,14 @@ describe("ChatView timeline (full app)", () => {
                 message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
               }),
             }),
+          ),
+        );
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .not.toBeInTheDocument();
+        await vi.waitFor(() =>
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(
+            "",
           ),
         );
       } finally {

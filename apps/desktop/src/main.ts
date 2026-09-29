@@ -1971,6 +1971,9 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
     return { accepted: false, completed: false };
   }
 
+  // Cleanup marks every runtime stopped; retain the pre-install set so recovery
+  // cannot revive profiles the user stopped or exceed the active-profile limit.
+  const runningBeforeInstall = [...backends.values()].filter((runtime) => !runtime.stopped);
   isQuitting = true;
   try {
     if (!(await closeWindowsForQuit(BrowserWindow.getAllWindows()))) {
@@ -1986,7 +1989,7 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
     const message = formatErrorMessage(error);
     cancelQuit();
     await previewRuntime.initialize();
-    for (const runtime of backends.values()) {
+    for (const runtime of runningBeforeInstall) {
       runtime.stopped = false;
       startBackend(runtime);
     }

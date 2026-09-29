@@ -4295,6 +4295,7 @@ export default function ChatView({
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(onAdmitted ? { onAdmitted } : {}),
       });
       return;
     }
@@ -4825,9 +4826,11 @@ export default function ChatView({
     async ({
       text,
       interactionMode: nextInteractionMode,
+      onAdmitted,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      onAdmitted?: () => void;
     }) => {
       const api = readNativeApi();
       if (
@@ -4941,6 +4944,7 @@ export default function ChatView({
           localDispatch,
           failureMessage: "Failed to send plan follow-up.",
           onStarted: () => {
+            onAdmitted?.();
             setOptimisticUserMessages((existing) => [
               ...existing,
               {
@@ -4954,6 +4958,7 @@ export default function ChatView({
             ]);
           },
           onQueued: () => {
+            onAdmitted?.();
             toastManager.add({ type: "success", title: "Plan follow-up added to the queue." });
           },
           onNonTransportFailure: (message, failureRollback) => {

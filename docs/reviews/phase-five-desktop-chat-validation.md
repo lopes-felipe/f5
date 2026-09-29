@@ -79,7 +79,7 @@ Normal quit now runs backend and preview cleanup at `will-quit`, after renderer 
 checks succeed. A renderer veto reveals the windows and resets quit flags without stopping
 the backend. Update installation first closes windows with the same veto protection,
 then runs shared bounded cleanup. A synchronous installer failure resets the flags,
-reinitializes preview resources and restarts stopped backends. The isolated desktop smoke
+reinitializes preview resources and restarts only backends that were running before installation. The isolated desktop smoke
 now includes a real `beforeunload` veto and a successful renderer reload afterwards.
 
 The physical Q key works on non-Latin layouts. Preview guests route hints to their host
@@ -103,3 +103,15 @@ Follow-up validation passed: all 493 browser tests, 150 desktop unit tests, the 
 workspace suite and 133 real-Git tests, formatting, lint and typecheck, online ledger
 validation, and the expanded isolated desktop smoke. The physical-key fallback also
 preserves Latin remappings such as AZERTY select-all.
+
+### Additional review follow-up
+
+Failed update recovery snapshots the active profiles before shutdown, preserving user-stopped
+profiles and the active-profile limit. Quote admission now propagates through both started
+and queued Plan follow-up submissions. The browser regression exercises quote-and-send
+from a completed plan and checks that the quote dialog closes and the draft clears.
+
+Validation passed: formatting, lint, typecheck, the full workspace suite and 133 real-Git
+tests, all 494 browser tests, isolated desktop smoke, and online ledger validation.
+The first parallel browser run failed the existing shared turn-diff-fetch assertion;
+all 34 timeline tests passed separately, followed by a clean full browser rerun.
