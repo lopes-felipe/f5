@@ -219,6 +219,10 @@
     "./customModels": {
       "types": "./src/customModels.ts",
       "import": "./src/customModels.ts"
+    },
+    "./projectSettings": {
+      "types": "./src/projectSettings.ts",
+      "import": "./src/projectSettings.ts"
     }
   },
   "scripts": {

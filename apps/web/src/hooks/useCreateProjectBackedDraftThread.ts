@@ -1,4 +1,5 @@
-import { DEFAULT_RUNTIME_MODE, type ProjectId, ThreadId } from "@t3tools/contracts";
+import { ensureNativeApi } from "../nativeApi";
+import { type ProjectId, ThreadId } from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 
@@ -34,7 +35,17 @@ export interface CreateProjectBackedDraftThreadResult {
   threadId: ThreadId;
 }
 
-export function seedDraftThreadFromModelPreferences(threadId: ThreadId): void {
+export function seedDraftThreadFromModelPreferences(
+  threadId: ThreadId,
+  projectId?: ProjectId,
+): void {
+  const project = useStore.getState().projects.find((entry) => entry.id === projectId);
+  if (project?.defaultModel) {
+    const draft = useComposerDraftStore.getState();
+    draft.setProvider(threadId, "codex");
+    draft.setModel(threadId, project.defaultModel);
+    return;
+  }
   const preferences = getModelPreferences();
   const { setModel, setModelOptions, setProvider } = useComposerDraftStore.getState();
   if (preferences.lastProvider) {
@@ -165,9 +176,10 @@ export async function createProjectBackedDraftThread({
     branch: options?.branch ?? null,
     worktreePath: options?.worktreePath ?? null,
     envMode: requestedEnvMode,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
+    runtimeMode: (await ensureNativeApi().server.getProjectSettings({ projectId })).settings
+      .defaultRuntimeMode,
   });
-  seedDraftThreadFromModelPreferences(threadId);
+  seedDraftThreadFromModelPreferences(threadId, projectId);
   maybeMarkOnboardingLiteCompleted(projectId, threadId, onboardingLiteStatus, updateSettings);
 
   await navigate({

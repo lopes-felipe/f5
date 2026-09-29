@@ -1,4 +1,9 @@
-import { Effect } from "effect";
+import {
+  ProjectionProjectRepository,
+  type ProjectionProject,
+} from "../persistence/Services/ProjectionProjects";
+import { ProjectionThreadRepository } from "../persistence/Services/ProjectionThreads";
+import { Effect, Layer, Option } from "effect";
 
 import type { GitCoreShape, GitStatusDetails } from "./Services/GitCore.ts";
 import type { GitHubCliShape, GitHubPullRequestSummary } from "./Services/GitHubCli.ts";
@@ -336,3 +341,21 @@ export function makeFakeTextGeneration(
     ...overrides,
   };
 }
+
+export const makeGitProjectRepositories = (projects: readonly ProjectionProject[] = []) =>
+  Layer.mergeAll(
+    Layer.succeed(ProjectionProjectRepository, {
+      listAll: () => Effect.succeed(projects),
+      getById: () => Effect.succeed(Option.none()),
+      upsert: () => Effect.void,
+      deleteById: () => Effect.void,
+    }),
+    Layer.succeed(ProjectionThreadRepository, {
+      listByProjectId: () => Effect.succeed([]),
+      getById: () => Effect.succeed(Option.none()),
+      upsert: () => Effect.void,
+      deleteById: () => Effect.void,
+    }),
+  );
+
+export const emptyGitProjectRepositories = makeGitProjectRepositories();

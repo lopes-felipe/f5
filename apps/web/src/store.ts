@@ -220,6 +220,7 @@ function mapProjectsFromReadModel(
     return {
       id: project.id,
       name: project.title,
+      defaultModel: project.defaultModel,
       cwd: project.workspaceRoot,
       model:
         existing?.model ??

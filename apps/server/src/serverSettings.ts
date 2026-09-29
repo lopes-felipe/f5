@@ -17,6 +17,8 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
   isKnownProviderKind,
+  type MigrateClientSettingInput,
+  type MigrateClientSettingResult,
   type ModelSelection,
   type ProviderKind,
   type ProviderInstanceConfig,
@@ -135,6 +137,10 @@ export interface ServerSettingsShape {
     patch: ServerSettingsPatch,
   ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+  readonly migrateClientSetting: (
+    input: MigrateClientSettingInput,
+  ) => Effect.Effect<MigrateClientSettingResult, ServerSettingsError>;
+
   /** Stream of settings change events. */
   readonly streamChanges: Stream.Stream<ServerSettings>;
   /** Acquire before forking a watcher so a settings write cannot be missed. */
@@ -158,6 +164,23 @@ export class ServerSettingsService extends ServiceMap.Service<
           start: Effect.void,
           ready: Effect.void,
           getSettings: Ref.get(currentSettingsRef),
+          migrateClientSetting: ({ key, value }) =>
+            Ref.modify(
+              currentSettingsRef,
+              (current): readonly [MigrateClientSettingResult, ServerSettings] => {
+                if (current.clientSettingMigrations[key])
+                  return [{ applied: false, currentValue: current[key] }, current] as const;
+                const next = {
+                  ...current,
+                  [key]: value,
+                  clientSettingMigrations: {
+                    ...current.clientSettingMigrations,
+                    [key]: new Date().toISOString(),
+                  },
+                };
+                return [{ applied: true, currentValue: value }, next] as const;
+              },
+            ),
           updateSettings: (patch) =>
             Ref.get(currentSettingsRef).pipe(
               Effect.flatMap((currentSettings) =>
@@ -593,6 +616,30 @@ const makeServerSettings = Effect.gen(function* () {
         Effect.map(resolveTextGenerationProvider),
       ),
     ),
+    migrateClientSetting: ({ key, value }) =>
+      writeSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const current = yield* getSettingsFromCache;
+          if (current.clientSettingMigrations[key])
+            return { applied: false, currentValue: current[key] };
+          const next = {
+            ...current,
+            [key]: value,
+            clientSettingMigrations: {
+              ...current.clientSettingMigrations,
+              [key]: new Date().toISOString(),
+            },
+          };
+          yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              yield* writeSettingsAtomically(next);
+              yield* Cache.set(settingsCache, cacheKey, next);
+              yield* emitChange(next);
+            }),
+          );
+          return { applied: true, currentValue: value };
+        }),
+      ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {

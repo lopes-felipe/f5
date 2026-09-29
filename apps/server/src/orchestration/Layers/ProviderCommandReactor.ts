@@ -1,3 +1,4 @@
+import { readProjectSettings } from "../../project/projectSettings";
 import { isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
 import { ensureWorkspaceDirectory } from "../../provider/workspaceDirectory.ts";
 import {
@@ -298,6 +299,19 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const serverSettings = yield* ServerSettingsService;
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
+  const settingsForThread = (thread: { projectId: ProjectId; worktreePath: string | null }) =>
+    Effect.gen(function* () {
+      const global = yield* serverSettings.getSettings;
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((p) => p.id === thread.projectId);
+      return project
+        ? (yield* readProjectSettings(
+            global,
+            project,
+            thread.worktreePath ?? project.workspaceRoot,
+          )).settings
+        : global;
+    });
   const threadModelOptions = new Map<string, ProviderModelOptions>();
 
   const appendProviderFailureActivity = (input: {
@@ -988,6 +1002,7 @@ const make = Effect.gen(function* () {
       const project = model.projects.find((entry) => entry.id === thread.projectId);
       if (project)
         yield* git.ensureWorktree({
+          submodules: (yield* settingsForThread(thread)).worktreeSubmodules,
           cwd: project.workspaceRoot,
           path: thread.worktreePath,
           branch: thread.branch,
@@ -1118,7 +1133,7 @@ const make = Effect.gen(function* () {
     const oldBranch = input.branch;
     const cwd = input.worktreePath;
     const attachments = input.attachments ?? [];
-    const writingPreferences = yield* serverSettings.getSettings.pipe(
+    const writingPreferences = yield* settingsForThread(thread).pipe(
       Effect.map((settings) => settings.sourceControlWriting),
       Effect.catch((error) =>
         Effect.logWarning("failed to read branch writing settings; using defaults", {
@@ -1257,7 +1272,7 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const settings = yield* serverSettings.getSettings;
+    const settings = yield* settingsForThread(thread);
     const requestedSelection =
       event.payload.titleGenerationModelSelection ??
       (event.payload.titleGenerationModel !== undefined

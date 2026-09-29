@@ -1,3 +1,4 @@
+import { defaultDraftRuntimeMode } from "./lib/draftSettingsDefaults";
 import { getServerSendLimits } from "./protocolState";
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
@@ -16,7 +17,7 @@ import {
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
-import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
+import { DEFAULT_INTERACTION_MODE, type ChatImageAttachment } from "./types";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   type TerminalContextDraft,
@@ -1090,7 +1091,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
             : new Date().toISOString(),
         runtimeMode: isRuntimeMode(candidateDraftThread.runtimeMode)
           ? candidateDraftThread.runtimeMode
-          : DEFAULT_RUNTIME_MODE,
+          : defaultDraftRuntimeMode(projectId as ProjectId),
         interactionMode:
           candidateDraftThread.interactionMode === "plan" ||
           candidateDraftThread.interactionMode === "default"
@@ -1122,7 +1123,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           draftThreadsByThreadId[threadId as ThreadId] = {
             projectId,
             createdAt: new Date().toISOString(),
-            runtimeMode: DEFAULT_RUNTIME_MODE,
+            runtimeMode: defaultDraftRuntimeMode(projectId as ProjectId),
             interactionMode: DEFAULT_INTERACTION_MODE,
             branch: null,
             worktreePath: null,
@@ -1519,7 +1520,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             projectId,
             createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
             runtimeMode:
-              options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+              options?.runtimeMode ??
+              existingThread?.runtimeMode ??
+              defaultDraftRuntimeMode(projectId),
             interactionMode:
               options?.interactionMode ??
               existingThread?.interactionMode ??

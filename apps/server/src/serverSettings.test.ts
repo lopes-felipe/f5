@@ -30,6 +30,39 @@ const makeServerSettingsLayer = () =>
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
+    "migrates a browser default once under concurrent clients and persists the winner",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const results = yield* Effect.all(
+          [
+            service.migrateClientSetting({ key: "defaultThreadEnvMode", value: "worktree" }),
+            service.migrateClientSetting({ key: "defaultThreadEnvMode", value: "local" }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        assert.equal(results.filter((r) => r.applied).length, 1);
+        const winner = results.find((r) => r.applied)!;
+        const next = yield* service.getSettings;
+        assert.equal(next.defaultThreadEnvMode, winner.currentValue);
+        assert.ok(next.clientSettingMigrations.defaultThreadEnvMode);
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const persisted = Schema.decodeUnknownSync(ServerSettings)(
+          JSON.parse(yield* fs.readFileString(config.settingsPath!)),
+        );
+        assert.equal(persisted.defaultThreadEnvMode, winner.currentValue);
+        assert.deepEqual(
+          yield* service.migrateClientSetting({
+            key: "defaultThreadEnvMode",
+            value: winner.currentValue === "local" ? "worktree" : "local",
+          }),
+          { applied: false, currentValue: winner.currentValue },
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
     "persists summary selection atomically without falling back from disabled instances",
     () =>
       Effect.gen(function* () {

@@ -1,3 +1,6 @@
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import "../index.css";
 
 import type { NativeApi, ProjectId, ServerConfig } from "@t3tools/contracts";
@@ -182,7 +185,7 @@ function seedProjects() {
 }
 
 function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> }) {
-  const serverConfig: ServerConfig = {
+  let serverConfig: ServerConfig = {
     cwd: "/repo/project-one",
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
@@ -196,6 +199,23 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
   nativeApiRef.current = {
     server: {
       getConfig: vi.fn(async () => serverConfig),
+      updateSettings: vi.fn(async (patch) => {
+        serverConfig = {
+          ...serverConfig,
+          settings: applyServerSettingsPatch(
+            serverConfig.settings ?? DEFAULT_SERVER_SETTINGS,
+            patch,
+          ),
+        };
+        return serverConfig.settings;
+      }),
+      getProjectSettings: vi.fn(async ({ projectId }) =>
+        resolveProjectSettings({
+          projectId,
+          global: serverConfig.settings ?? DEFAULT_SERVER_SETTINGS,
+        }),
+      ),
+      migrateClientSetting: vi.fn(async ({ value }) => ({ applied: true, currentValue: value })),
     },
     shell: {
       openInEditor: vi.fn(async () => undefined),
@@ -362,7 +382,7 @@ async function renderSettingsRoute(
   const screen = await render(<RouterProvider router={router} />);
 
   await vi.waitFor(() => {
-    expect(document.body.textContent).toContain("Settings");
+    expect(document.body.textContent).toMatch(/settings/i);
   });
 
   return { screen, router, history };
@@ -383,6 +403,57 @@ describe("settings route", () => {
       codeReviewWorkflows: [],
       investigationWorkflows: [],
     });
+  });
+
+  it("searches project scopes and keeps the selected scope in the URL", async () => {
+    const { screen, router } = await renderSettingsRoute("/settings");
+    try {
+      await page.getByRole("combobox", { name: "Settings scope" }).click();
+      await page.getByRole("combobox", { name: "Search projects" }).fill("Project Two");
+      await expect
+        .element(page.getByRole("option", { name: "Project One", exact: true }))
+        .not.toBeInTheDocument();
+      await page.getByRole("option", { name: "Project Two", exact: true }).click();
+      await expect
+        .element(page.getByRole("heading", { name: "Project settings", exact: true }))
+        .toBeVisible();
+      expect(router.state.location.search.project).toBe(PROJECT_TWO);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("persists and resets project overrides while hiding global-only controls", async () => {
+    const { screen, router } = await renderSettingsRoute(`/settings?project=${PROJECT_ONE}`);
+    try {
+      await expect
+        .element(page.getByRole("heading", { name: "Project settings", exact: true }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("button", { name: "Appearance", exact: true }))
+        .not.toBeInTheDocument();
+      await page
+        .getByRole("combobox", { name: "Default permissions", exact: true })
+        .selectOptions("approval-required");
+      await expect
+        .element(page.getByRole("combobox", { name: "Default permissions", exact: true }))
+        .toHaveValue("approval-required");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Project override"));
+      expect(nativeApiRef.current!.server.updateSettings).toHaveBeenCalledWith({
+        projectSettingsOverrides: { [PROJECT_ONE]: { defaultRuntimeMode: "approval-required" } },
+      });
+      await page.getByRole("button", { name: "Reset all project overrides" }).click();
+      await expect
+        .element(page.getByRole("combobox", { name: "Default permissions", exact: true }))
+        .toHaveValue("full-access");
+      expect(router.state.location.search.project).toBe(PROJECT_ONE);
+      await page.getByRole("button", { name: "Global", exact: true }).click();
+      await expect
+        .element(page.getByRole("button", { name: "Appearance", exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
   });
 
   it("renders the category nav, updates the URL, and supports back/forward", async () => {

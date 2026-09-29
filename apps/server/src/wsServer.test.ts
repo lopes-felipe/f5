@@ -1894,6 +1894,90 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({});
   });
 
+  it("resolves project settings over files, replaces overrides and prunes deleted projects", async () => {
+    const workspaceRoot = makeTempDir("f5-project-scope-");
+    fs.writeFileSync(
+      path.join(workspaceRoot, "f5.json"),
+      JSON.stringify({ defaultRuntimeMode: "approval-required", worktreeSubmodules: "none" }),
+    );
+    server = await createTestServer({ cwd: workspaceRoot });
+    const address = server.address();
+    const [ws] = await connectAndAwaitWelcome(
+      typeof address === "object" && address ? address.port : 0,
+    );
+    connections.push(ws);
+    const projectId = "scoped-project";
+    const createdAt = new Date().toISOString();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "scope-project-create",
+          projectId,
+          title: "Scoped",
+          workspaceRoot,
+          defaultModel: "gpt-5",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    const original = await sendRequest(ws, WS_METHODS.serverGetProjectSettings, { projectId });
+    expect(original.error).toBeUndefined();
+    expect(original.result).toMatchObject({
+      settings: { defaultRuntimeMode: "approval-required", worktreeSubmodules: "none" },
+      sources: { defaultRuntimeMode: "f5.json" },
+    });
+    expect(
+      (
+        await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          projectSettingsOverrides: { [projectId]: { defaultRuntimeMode: "full-access" } },
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (await sendRequest(ws, WS_METHODS.serverGetProjectSettings, { projectId })).result,
+    ).toMatchObject({
+      settings: { defaultRuntimeMode: "full-access" },
+      sources: { defaultRuntimeMode: "project" },
+    });
+    expect(
+      (
+        await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+          projectSettingsOverrides: { [projectId]: { enableAssistantStreaming: true } },
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (await sendRequest(ws, WS_METHODS.serverGetProjectSettings, { projectId })).result,
+    ).toMatchObject({
+      overrides: { enableAssistantStreaming: true },
+      settings: { defaultRuntimeMode: "approval-required" },
+    });
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.delete",
+          commandId: "scope-project-delete",
+          projectId,
+          deletedAt: createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    await expect
+      .poll(
+        async () =>
+          (
+            (await sendRequest(ws, WS_METHODS.serverGetConfig)).result as {
+              settings: ServerSettings;
+            }
+          ).settings.projectSettingsOverrides[projectId as ProjectId],
+      )
+      .toBeUndefined();
+    expect(
+      (await sendRequest(ws, WS_METHODS.serverGetProjectSettings, { projectId })).error,
+    ).toBeDefined();
+  });
+
   it("responds to server.getConfig", async () => {
     const stateDir = makeTempDir("t3code-state-get-config-");
     const keybindingsPath = path.join(stateDir, "keybindings.json");

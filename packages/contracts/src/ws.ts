@@ -150,7 +150,7 @@ import {
   ServerUpdateKeybindingInput,
   ServerValidateHarnessesInput,
 } from "./server";
-import { ServerSettingsPatch } from "./settings";
+import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
 import {
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
@@ -311,6 +311,8 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverUpdateSettings: "server.updateSettings",
+  serverGetProjectSettings: "server.getProjectSettings",
+  serverMigrateClientSetting: "server.migrateClientSetting",
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -594,6 +596,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
+  tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
+  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
+  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),

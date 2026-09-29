@@ -1,3 +1,6 @@
+import { readProjectSettings, isInsideProjectWorkspace } from "../../project/projectSettings";
+import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads";
 import { GitCommandError } from "../Errors.ts";
 import {
   isSshRemoteUrl,
@@ -427,14 +430,38 @@ export const makeGitManager = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
 
-  const getWritingPreferences = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.sourceControlWriting),
-    Effect.catch((error) =>
-      Effect.logWarning("failed to read source-control writing settings; using defaults", {
-        reason: error.message,
-      }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
-    ),
-  );
+  const projects = yield* ProjectionProjectRepository;
+  const threads = yield* ProjectionThreadRepository;
+  const getProjectSettings = (cwd: string) =>
+    Effect.gen(function* () {
+      const settings = yield* serverSettings.getSettings;
+      const candidates = (yield* projects.listAll())
+        .filter((p) => p.deletedAt === null)
+        .sort((a, b) => b.workspaceRoot.length - a.workspaceRoot.length);
+      for (const project of candidates) {
+        const linked =
+          isInsideProjectWorkspace(project.workspaceRoot, cwd) ||
+          (yield* threads.listByProjectId({ projectId: project.projectId })).some(
+            (t) => !t.deletedAt && t.worktreePath === cwd,
+          );
+        if (linked)
+          return (yield* readProjectSettings(
+            settings,
+            { ...project, id: project.projectId },
+            isInsideProjectWorkspace(project.workspaceRoot, cwd) ? project.workspaceRoot : cwd,
+          )).settings;
+      }
+      return settings;
+    }).pipe(Effect.mapError((cause) => gitManagerError("projectSettings", cause.message)));
+  const getWritingPreferences = (cwd: string) =>
+    getProjectSettings(cwd).pipe(
+      Effect.map((settings) => settings.sourceControlWriting),
+      Effect.catch((error) =>
+        Effect.logWarning("failed to read source-control writing settings; using defaults", {
+          reason: error.message,
+        }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
+      ),
+    );
 
   const configurePullRequestHeadUpstream = (
     cwd: string,
@@ -813,7 +840,7 @@ export const makeGitManager = Effect.gen(function* () {
         };
       }
 
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = yield* getWritingPreferences(input.cwd);
       if (!writingPreferences.generateCommitMessages) {
         const deterministic = buildDeterministicCommitMessage(
           context.stagedSummary,
@@ -831,6 +858,7 @@ export const makeGitManager = Effect.gen(function* () {
 
       const generated = yield* textGeneration
         .generateCommitMessage({
+          modelSelection: (yield* getProjectSettings(input.cwd)).textGenerationModelSelection,
           cwd: input.cwd,
           branch: input.branch,
           stagedSummary: limitContext(context.stagedSummary, 8_000),
@@ -931,9 +959,10 @@ export const makeGitManager = Effect.gen(function* () {
         sourceControlProvider,
       );
       const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = yield* getWritingPreferences(cwd);
       const generated = writingPreferences.generatePrContent
         ? yield* textGeneration.generatePrContent({
+            modelSelection: (yield* getProjectSettings(cwd)).textGenerationModelSelection,
             cwd,
             baseBranch,
             headBranch: headContext.headBranch,
@@ -1217,6 +1246,7 @@ export const makeGitManager = Effect.gen(function* () {
       }
 
       const worktree = yield* gitCore.createWorktree({
+        submodules: (yield* getProjectSettings(input.cwd)).worktreeSubmodules,
         cwd: input.cwd,
         branch: localPullRequestBranch,
         path: resolveDefaultWorktreePath({
@@ -1259,7 +1289,7 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = yield* getWritingPreferences(cwd);
       const generatedBranch = suggestion.branch ?? sanitizeFeatureBranchName(suggestion.subject);
       const preferredBranch = sanitizeFeatureBranchName(
         prefixGeneratedBranchName(generatedBranch, writingPreferences),

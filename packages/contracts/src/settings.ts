@@ -1,13 +1,13 @@
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
+import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   ProviderOptionSelections,
   ModelCapabilities,
 } from "./model";
-import { ModelSelection } from "./orchestration";
+import { ModelSelection, RuntimeMode } from "./orchestration";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
 export { ThreadEnvMode };
@@ -197,7 +197,33 @@ export const SourceControlWritingSettings = Schema.Struct({
 });
 export type SourceControlWritingSettings = typeof SourceControlWritingSettings.Type;
 
+export const WorktreeSubmodules = Schema.Literals(["none", "shallow", "recursive"]);
+export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
+
+export const ProjectSettingsOverrides = Schema.Struct({
+  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
+  textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  sourceControlWriting: Schema.optionalKey(SourceControlWritingSettings),
+  enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  prHubDefaultMergeMethod: Schema.optionalKey(
+    Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
+  ),
+});
+export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
+
 export const ServerSettings = Schema.Struct({
+  defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
+  worktreeSubmodules: WorktreeSubmodules.pipe(
+    Schema.withDecodingDefault(() => "recursive" as const),
+  ),
+  projectSettingsOverrides: Schema.Record(ProjectId, ProjectSettingsOverrides).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
+  clientSettingMigrations: Schema.Record(Schema.String, IsoDateTime).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
   gitAuthorName: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   gitAuthorEmail: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -337,6 +363,11 @@ const SourceControlWritingSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
+  projectSettingsOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+  ),
   gitAuthorName: Schema.optionalKey(Schema.String),
   gitAuthorEmail: Schema.optionalKey(Schema.String),
   // Server settings
@@ -380,3 +411,38 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
+
+export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "defaultRuntimeMode",
+  "defaultThreadEnvMode",
+  "worktreeSubmodules",
+  "textGenerationModelSelection",
+  "sourceControlWriting",
+  "enableAssistantStreaming",
+  "prHubDefaultMergeMethod",
+] as const satisfies ReadonlyArray<keyof ServerSettings>;
+export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
+export const ProjectSettingSource = Schema.Literals([
+  "project",
+  "legacy-project",
+  "f5.json",
+  "t3.json",
+  "global",
+  "default",
+]);
+export const ProjectSettingsResult = Schema.Struct({
+  settings: ServerSettings,
+  sources: Schema.Record(Schema.Literals(PROJECT_SCOPED_SERVER_SETTING_KEYS), ProjectSettingSource),
+  overrides: ProjectSettingsOverrides,
+});
+export type ProjectSettingsResult = typeof ProjectSettingsResult.Type;
+export const MigrateClientSettingInput = Schema.Union([
+  Schema.Struct({ key: Schema.Literal("defaultThreadEnvMode"), value: ThreadEnvMode }),
+  Schema.Struct({ key: Schema.Literal("enableAssistantStreaming"), value: Schema.Boolean }),
+]);
+export type MigrateClientSettingInput = typeof MigrateClientSettingInput.Type;
+export const MigrateClientSettingResult = Schema.Struct({
+  applied: Schema.Boolean,
+  currentValue: Schema.Union([ThreadEnvMode, Schema.Boolean]),
+});
+export type MigrateClientSettingResult = typeof MigrateClientSettingResult.Type;

@@ -547,6 +547,9 @@ export function createWsNativeApi(): NativeApi {
     },
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
+      getProjectSettings: (input) => transport.request(WS_METHODS.serverGetProjectSettings, input),
+      migrateClientSetting: (input) =>
+        transport.request(WS_METHODS.serverMigrateClientSetting, input),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
       refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
       validateHarnesses: (input) => transport.request(WS_METHODS.serverValidateHarnesses, input),

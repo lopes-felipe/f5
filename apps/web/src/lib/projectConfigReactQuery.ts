@@ -3,9 +3,9 @@ import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { nonDefaultThreadEnvMode, resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 
-import { useAppSettings } from "../appSettings";
+import { projectSettingsQueryOptions } from "./projectSettingsQuery";
+import { migrateLegacyClientSetting } from "../hooks/useMigrateClientSettings";
 import { ensureNativeApi } from "../nativeApi";
-import { useStore } from "../store";
 
 const CHECKED_IN_PROJECT_CONFIG_STALE_TIME_MS = 5_000;
 
@@ -43,30 +43,21 @@ export function resolveProjectThreadEnvModeImmediately(input: {
 
 export function useProjectThreadEnvModeResolver() {
   const queryClient = useQueryClient();
-  const projects = useStore((state) => state.projects);
-  const { settings } = useAppSettings();
-
   return useCallback(
     async (
       projectId: ProjectId,
       options: ResolveProjectThreadEnvModeOptions = {},
     ): Promise<ThreadEnvMode> => {
-      const projectDefault =
-        projects.find((project) => project.id === projectId)?.defaultEnvMode ?? null;
-      const query = projectCheckedInConfigQueryOptions(projectId);
-      return resolveProjectThreadEnvModeImmediately({
-        options,
-        projectDefault,
-        cachedConfigDefault: queryClient.getQueryData(query.queryKey)?.defaultThreadEnvMode ?? null,
-        globalDefault: settings.defaultThreadEnvMode,
-        // A checked-in project config is useful, but reading it must never sit
-        // on the critical path for opening a local draft. Prime the cache for
-        // the next resolution while immediately using any value available.
-        prefetchConfig: () => {
-          void queryClient.prefetchQuery(query).catch(() => undefined);
-        },
-      });
+      if (options.requested)
+        return options.forceNonDefault
+          ? nonDefaultThreadEnvMode(options.requested)
+          : options.requested;
+      await migrateLegacyClientSetting();
+      const { settings } = await queryClient.fetchQuery(projectSettingsQueryOptions(projectId));
+      return options.forceNonDefault
+        ? nonDefaultThreadEnvMode(settings.defaultThreadEnvMode)
+        : settings.defaultThreadEnvMode;
     },
-    [projects, queryClient, settings.defaultThreadEnvMode],
+    [queryClient],
   );
 }

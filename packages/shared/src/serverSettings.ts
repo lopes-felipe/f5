@@ -142,7 +142,13 @@ export function applyServerSettingsPatch(
   current: ServerSettings,
   patch: ServerSettingsPatch,
 ): ServerSettings {
-  const next = deepMerge(current, patch);
+  const { projectSettingsOverrides: overridePatch, ...rest } = patch;
+  let overrides = { ...current.projectSettingsOverrides };
+  for (const [id, value] of Object.entries(overridePatch ?? {})) {
+    if (value === null) delete overrides[id as keyof typeof overrides];
+    else overrides = { ...overrides, [id]: value };
+  }
+  const next = { ...deepMerge(current, rest), projectSettingsOverrides: overrides };
   const nextWithReplacements =
     patch.providerInstances !== undefined
       ? {

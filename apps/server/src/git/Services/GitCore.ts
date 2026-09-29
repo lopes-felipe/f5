@@ -113,6 +113,7 @@ export interface GitCoreShape {
 
   /** Recreate a missing linked worktree from its existing branch under lifecycle locks. */
   readonly ensureWorktree: (input: {
+    submodules?: import("@t3tools/contracts").WorktreeSubmodules;
     cwd: string;
     path: string;
     branch: string;
@@ -184,7 +185,9 @@ export interface GitCoreShape {
    * Create a worktree and branch from a base branch.
    */
   readonly createWorktree: (
-    input: GitCreateWorktreeInput,
+    input: GitCreateWorktreeInput & {
+      submodules?: import("@t3tools/contracts").WorktreeSubmodules;
+    },
   ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError>;
 
   /**

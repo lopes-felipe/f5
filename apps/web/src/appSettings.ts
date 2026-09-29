@@ -331,17 +331,11 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some([])),
     Schema.withDecodingDefault(() => []),
   ),
-  defaultThreadEnvMode: Schema.Literals(["local", "worktree"]).pipe(
-    Schema.withConstructorDefault(() => Option.some("local")),
-  ),
   tasksPanelAutoOpen: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(false))),
   expandWorkflowThreadsByDefault: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
-  enableAssistantStreaming: Schema.Boolean.pipe(
-    Schema.withConstructorDefault(() => Option.some(true)),
-  ),
   // Legacy persisted flag. The interval is the source of truth; normalizeAppSettings derives this.
   enableGitStatusAutoRefresh: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),

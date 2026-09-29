@@ -27,6 +27,9 @@ describe("settings routing", () => {
       defaultThreadEnvMode: "worktree" as const,
       enableAssistantStreaming: true,
     };
-    expect(splitSettingsPatch(patch)).toEqual({ serverPatch: {}, appPatch: patch });
+    expect(splitSettingsPatch(patch)).toEqual({
+      serverPatch: { defaultThreadEnvMode: "worktree", enableAssistantStreaming: true },
+      appPatch: { addProjectBaseDirectory: "/workspace" },
+    });
   });
 });

@@ -1,3 +1,4 @@
+import { emptyGitProjectRepositories } from "../../../src/git/testDoubles";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -257,6 +258,7 @@ describe.concurrent("real Git smoke", () => {
       Layer.succeed(TextGeneration, makeFakeTextGeneration()),
       Layer.succeed(ServerConfig, makeServerConfig(makeTempDirectory("f5-git-smoke-manager-"))),
       ServerSettingsService.layerTest(),
+      emptyGitProjectRepositories,
       NodeServices.layer,
     );
     const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(managerLayer)));

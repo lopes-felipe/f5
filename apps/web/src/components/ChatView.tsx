@@ -138,7 +138,6 @@ import {
 import { normalizeGeneratedThreadTitle } from "../threadTitle";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
@@ -196,8 +195,8 @@ import {
 } from "~/projectScripts";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
-import { readNativeApi } from "~/nativeApi";
-import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
+import { ensureNativeApi, readNativeApi } from "~/nativeApi";
+import { useAppSettings } from "../appSettings";
 import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
 import {
   type ComposerImageAttachment,
@@ -995,8 +994,9 @@ export default function ChatView({
     }
     return null;
   }, [activeThread, codeReviewWorkflows, investigationWorkflows, planningWorkflows]);
+  const projectSettings = useSettings(undefined, activeThread?.projectId);
   const runtimeMode =
-    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? projectSettings.defaultRuntimeMode;
   const interactionMode =
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isServerThread = serverThread !== undefined;
@@ -1129,7 +1129,9 @@ export default function ChatView({
       const nextThreadId = newThreadId();
       setProjectDraftThreadId(activeProject.id, nextThreadId, {
         createdAt: new Date().toISOString(),
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode: (
+          await ensureNativeApi().server.getProjectSettings({ projectId: activeProject.id })
+        ).settings.defaultRuntimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -1201,15 +1203,8 @@ export default function ChatView({
     : null;
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
-  const selectedThreadTitleModel = resolveThreadTitleModel(settings);
-  const selectedThreadTitleModelSelection = useMemo(
-    () =>
-      createModelSelection(
-        defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
-        selectedThreadTitleModel,
-      ),
-    [selectedThreadTitleModel],
-  );
+  const selectedThreadTitleModelSelection = projectSettings.textGenerationModelSelection;
+  const selectedThreadTitleModel = selectedThreadTitleModelSelection.model;
   const draftModelOptions = composerDraft.modelOptions;
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = useMemo(() => {
@@ -4574,7 +4569,7 @@ export default function ChatView({
           : {}),
         ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
         provider: selectedProvider,
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode: projectSettings.enableAssistantStreaming ? "streaming" : "buffered",
         runtimeMode,
         interactionMode,
         ...(bootstrap ? { bootstrap } : {}),
@@ -4922,7 +4917,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
           ...(nextInteractionMode === "default" && activeProposedPlan
@@ -5030,7 +5027,7 @@ export default function ChatView({
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       setThreadError,
-      settings.enableAssistantStreaming,
+      projectSettings.enableAssistantStreaming,
       tasksPanelAutoOpen,
       interactionMode,
     ],
@@ -5120,7 +5117,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: "default",
           createdAt,
@@ -5181,7 +5180,7 @@ export default function ChatView({
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
     selectedProvider,
-    settings.enableAssistantStreaming,
+    projectSettings.enableAssistantStreaming,
     syncStartupSnapshot,
     syncThreadTailDetails,
     tasksPanelAutoOpen,

@@ -1,3 +1,4 @@
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
@@ -1316,6 +1317,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     };
   }
   if (tag === WS_METHODS.projectsCloneList) return [];
+  if (tag === WS_METHODS.serverGetProjectSettings) {
+    const project = fixture.snapshot.projects.find((p) => p.id === body.projectId);
+    return resolveProjectSettings({
+      projectId: body.projectId as ProjectId,
+      global: fixture.serverConfig.settings,
+      legacyEnvMode: project?.defaultEnvMode ?? null,
+    });
+  }
+  if (tag === WS_METHODS.serverMigrateClientSetting)
+    return { applied: true, currentValue: body.value };
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }

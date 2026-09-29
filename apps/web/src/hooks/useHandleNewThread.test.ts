@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProjectId, ThreadId } from "@t3tools/contracts";
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useModelPreferencesStore } from "../modelPreferencesStore";
 import { useStore } from "../store";
 import { seedDraftThreadFromModelPreferences } from "./useHandleNewThread";
 import { createProjectBackedDraftThread } from "./useCreateProjectBackedDraftThread";
+
+vi.mock("../nativeApi", () => ({
+  ensureNativeApi: () => ({
+    server: { getProjectSettings: async () => ({ settings: DEFAULT_SERVER_SETTINGS }) },
+  }),
+}));
 
 const NOW_ISO = "2026-04-22T12:00:00.000Z";
 const PROJECT_ID = ProjectId.makeUnsafe("project-new-thread");
@@ -39,6 +45,24 @@ describe("seedDraftThreadFromModelPreferences", () => {
         },
       ],
       threads: [],
+    });
+  });
+
+  it("uses an explicit project default before remembered models", () => {
+    useStore.setState({
+      projects: useStore
+        .getState()
+        .projects.map((project) => ({ ...project, defaultModel: "gpt-5.4-mini" })),
+    });
+    useModelPreferencesStore.setState({
+      lastProvider: "claudeAgent",
+      lastModelByProvider: { claudeAgent: "claude-opus-4-6" },
+    });
+    const threadId = ThreadId.makeUnsafe("project-default");
+    seedDraftThreadFromModelPreferences(threadId, PROJECT_ID);
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4-mini",
     });
   });
 

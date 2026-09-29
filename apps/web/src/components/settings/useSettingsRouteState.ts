@@ -1,3 +1,5 @@
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useQuery } from "@tanstack/react-query";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -120,7 +122,10 @@ export interface UseSettingsRouteStateOptions {
 
 export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const { settings, defaults, updateSettings } = useAppSettings();
+  const { defaults: appDefaults } = useAppSettings();
+  const settings = useSettings();
+  const defaults = { ...DEFAULT_UNIFIED_SETTINGS, ...appDefaults };
+  const { updateSettings } = useUpdateSettings();
   const projects = useStore((state) => state.projects);
   const projectsHydrated = useStore((state) => state.threadsHydrated);
   const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);

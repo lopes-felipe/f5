@@ -109,7 +109,13 @@ export function usePrActions(
   } = {},
 ): UsePrActionsResult {
   const { settings, updateSettings } = useAppSettings();
-  const configuredMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
+  const globalMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
+  const [projectMergeMethod, setProjectMergeMethod] = useState<{
+    key: string;
+    method: typeof globalMergeMethod;
+  } | null>(null);
+  const configuredMergeMethod =
+    projectMergeMethod?.key === pr.key ? projectMergeMethod.method : globalMergeMethod;
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [reviewers, setReviewers] = useState("");
@@ -369,7 +375,37 @@ export function usePrActions(
       onApprove: () => setPendingAction("approve"),
       onComment: () => setPendingAction("comment"),
       onRequestChanges: () => setPendingAction("requestChanges"),
-      onMerge: () => setPendingAction("merge"),
+      onMerge: () => {
+        if (busy.current) return;
+        busy.current = true;
+        void (async () => {
+          try {
+            const candidates = await ensureNativeApi().prHub.resolveLocalCheckout({ key: pr.key });
+            const ids = [
+              ...new Set(
+                candidates.flatMap((candidate) =>
+                  candidate.projectId ? [candidate.projectId] : [],
+                ),
+              ),
+            ];
+            const method =
+              ids.length === 1
+                ? (await ensureNativeApi().server.getProjectSettings({ projectId: ids[0]! }))
+                    .settings.prHubDefaultMergeMethod
+                : globalMergeMethod;
+            setProjectMergeMethod({ key: pr.key, method });
+            setPendingAction("merge");
+          } catch (error) {
+            toastManager.add({
+              type: "error",
+              title: "Could not load merge preferences",
+              description: error instanceof Error ? error.message : String(error),
+            });
+          } finally {
+            busy.current = false;
+          }
+        })();
+      },
       onMarkReady: () => setPendingAction("markReady"),
       onReRequest: () => {
         setReviewers(pr.reviewRequestReviewers.join(", "));
