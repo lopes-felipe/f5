@@ -1,7 +1,7 @@
 import { Option, Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
-import { ChangeRequest } from "./sourceControl";
+import { ChangeRequest, SourceControlProviderIdentity } from "./sourceControl";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 
@@ -152,6 +152,7 @@ const GitStatusPr = Schema.Struct({
 });
 
 export const GitStatusResult = Schema.Struct({
+  sourceControl: Schema.optionalKey(SourceControlProviderIdentity),
   worktreeMissing: Schema.optionalKey(Schema.Boolean),
   branch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
   hasWorkingTreeChanges: Schema.Boolean,

@@ -33,6 +33,34 @@ export function GeneralSettings() {
 
   return (
     <>
+      {typeof window !== "undefined" && window.desktopBridge && (
+        <section className="rounded-2xl border border-border bg-card p-5">
+          <h2 className="text-sm font-medium">Quit shortcut</h2>
+          <Select
+            value={settings.quitShortcutMode}
+            onValueChange={(value) => {
+              if (value === "hold" || value === "double-click" || value === "direct")
+                updateSettings({ quitShortcutMode: value });
+            }}
+          >
+            <SelectTrigger aria-label="Quit shortcut">
+              <SelectValue>
+                {settings.quitShortcutMode === "hold"
+                  ? "Hold or press twice"
+                  : settings.quitShortcutMode === "double-click"
+                    ? "Press twice"
+                    : "Quit immediately"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="hold">Hold or press twice</SelectItem>
+              <SelectItem value="double-click">Press twice</SelectItem>
+              <SelectItem value="direct">Quit immediately</SelectItem>
+            </SelectPopup>
+          </Select>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-border bg-card p-5">
         <h2 className="text-sm font-medium">Pull requests</h2>
         <p className="my-2 text-xs text-muted-foreground">

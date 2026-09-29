@@ -127,10 +127,14 @@
     {
       "upstreamSha": "01eb4b9a8776e6057dfacf12e7366565e5eab934",
       "subject": "fix(web): align notification icons with titles (#12202)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): align notification icons with titles. Reimplement in f5; not yet delivered.",
+      "reason": "Align notification icons with the title row and share the full-width description layout between regular and anchored toasts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ui/toast.tsx:34",
+        "apps/web/src/components/ui/toast.browser.tsx:80"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "01f3e50eca5102ccd881de6f942a98fe6a518ad4",
@@ -761,10 +765,18 @@
     {
       "upstreamSha": "095d57552c4579ce33a6560a76b7c643b92f00f9",
       "subject": "fix(desktop): hold-to-quit no longer strands the quit (#11016)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): hold-to-quit no longer strands the quit. Reimplement in f5; not yet delivered.",
+      "reason": "Use the final pinned quit state machine, including failed or delayed settings reads that must not strand a quit request.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "098bf5329727fcd7d973bf842e6b4d50d6e7b924",
@@ -1101,10 +1113,19 @@
     {
       "upstreamSha": "0e0ddaeedf30698bec131caf040a8e8d7b2e3f37",
       "subject": "feat(web): add opt-in thread notifications and sounds (#11481)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): add opt-in thread notifications and sounds. Reimplement in f5; not yet delivered.",
+      "reason": "Add migrated off/system/sound/system-and-sound modes with opt-in WebAudio tones, preserving existing notification preferences and snooze suppression.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/appSettings.ts:367",
+        "apps/web/src/threadAttention.ts:13",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:363"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "0e1570bde5b64458449a45989f1b56d6fd651883",
@@ -1232,10 +1253,17 @@
     {
       "upstreamSha": "0ff87f251dafb32703d5f531e7b248ad0a581ee2",
       "subject": "fix(web): keep citation comment when popover is dismissed (#10831)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): keep citation comment when popover is dismissed. Reimplement in f5; not yet delivered.",
+      "reason": "In the approved quote-reply design, Back and Escape retain the comment until insertion or explicit cancellation; no server citation state is introduced.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:101",
+        "apps/web/src/components/ChatView.browser.tsx:6268"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "10421bcdc9a059e0a717250257769af92567b645",
@@ -2840,10 +2868,20 @@
     {
       "upstreamSha": "24c4ba68f536d56e8482a1e4d7070a6771da551d",
       "subject": "fix(desktop): close the window before quit cleanup (#6562)",
-      "reason": "Phase 5: fix(desktop): close the window before quit cleanup. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Close desktop windows after renderer unload checks and before bounded backend/preview cleanup; a veto reveals the app without stopping backends. Update handoff uses the same preflight and cleanup.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/main.ts:2940",
+        "apps/desktop/src/quitPreflight.test.ts:1",
+        "apps/desktop/scripts/smoke-test.mjs:90",
+        "apps/desktop/src/main.ts:1976"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "252df7742047af8a1b859dc652b2f40b639d16b3",
@@ -3435,10 +3473,17 @@
     {
       "upstreamSha": "2d377bfb1c8c85a61679fa6cdb6e8181cfb13626",
       "subject": "fix(web): dismiss selection actions when pressing buttons (#12950)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): dismiss selection actions when pressing buttons. Reimplement in f5; not yet delivered.",
+      "reason": "Dismiss quote selection actions when another button is pressed, even when that button preserves the DOM selection.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:25",
+        "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "2d5464afbc19058be8c125d5ee70481d721d14f4",
@@ -3721,10 +3766,15 @@
     {
       "upstreamSha": "30e3649c3281fe88b3d8d125293f1bb58132a3c2",
       "subject": "fix(web): match thread notification icons to sidebar status (#12806)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): match thread notification icons to sidebar status. Reimplement in f5; not yet delivered.",
+      "reason": "Use sidebar thread-status icons for in-app toasts and matching local SVG icons for system notifications.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/threadStatus.ts:192",
+        "apps/web/src/threadStatusNotifications.ts:224",
+        "apps/web/src/components/ui/toast.tsx:251"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "30e471530b3e2ddf59caf309636bed940b8b3776",
@@ -4991,18 +5041,33 @@
     {
       "upstreamSha": "42a8fd5103b4af57b16be721a9864ca3a5c18c5b",
       "subject": "feat(pull-requests): link GitHub references in markdown (#8812)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(pull-requests): link GitHub references in markdown. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved Phase 5 chat Markdown references using PR/remote repository context and forge-aware issue URLs, excluding code and existing links. PR-hub rich Markdown remains in Phase 12.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/lib/remarkIssueReferences.ts:34",
+        "apps/web/src/repositoryLinkContext.ts:6",
+        "apps/web/src/components/ChatMarkdown.test.tsx:89"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42b6bcc6f59bd0369377746b0f2ef370c275b624",
       "subject": "feat(web): add opt-in in-app thread notifications (#11570)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): add opt-in in-app thread notifications. Reimplement in f5; not yet delivered.",
+      "reason": "Add opt-in in-app thread-status toasts with a View action and suppress snoozed and archived threads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ThreadStatusNotificationController.tsx:164",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42bdea1c9c1d4b7c5c2e77cd23cf53fae68a6fd4",
@@ -6711,10 +6776,21 @@
     {
       "upstreamSha": "5a433244d0b827176df8b76a05959cd1a7a98ce2",
       "subject": "feat: add custom model names and option descriptors (#9807)",
-      "reason": "Phase 5 (independent desktop/chat features): feat: add custom model names and option descriptors. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved custom-model string/object schema, display-name editor and optional capability metadata while retaining F5 catalogs, aliases and version gates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "packages/contracts/src/settings.ts:107",
+        "apps/server/src/provider/providerSnapshot.ts:154",
+        "apps/web/src/components/settings/ProviderModelsSection.tsx:319",
+        "packages/shared/src/customModels.test.ts:1",
+        "apps/web/src/modelSelection.ts:49",
+        "apps/web/src/modelSelection.test.ts:503"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "5a61f50cce12685f70d530aa5fdf83d9c9b065d7",
@@ -7612,10 +7688,18 @@
     {
       "upstreamSha": "678f23a69943e3eef7171f452b44f2931d2ef21f",
       "subject": "fix(desktop): restore second-press quit fallback (#9485)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): restore second-press quit fallback. Reimplement in f5; not yet delivered.",
+      "reason": "Retain the second-press fallback in every quit shortcut mode, independently of repeat cadence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "67993623afb14c017bb0b959478dc892f9c427da",
@@ -8110,10 +8194,15 @@
     {
       "upstreamSha": "6e5e986f15b3cbec3588646ddf216f00b4301785",
       "subject": "feat: badge background thread notifications on desktop and web (#11569)",
-      "reason": "Phase 5 (independent desktop/chat features): feat: badge background thread notifications on desktop and web. Reimplement in f5; not yet delivered.",
+      "reason": "Add opt-in desktop and web attention badges, title fallback, and profile-aware aggregation that avoids double-counting multiple windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/threadAttention.ts:47",
+        "apps/desktop/src/desktopAttention.ts:6",
+        "apps/desktop/src/desktopAttention.test.ts:71"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "6e6d1b49412d064ccbde7daae2e287f9b62efd7d",
@@ -8800,10 +8889,19 @@
     {
       "upstreamSha": "77e35c561259733d880ab62a43aad0894d301d9b",
       "subject": "fix(web): send cited messages with Cmd+Enter (#9307)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): send cited messages with Cmd+Enter. Reimplement in f5; not yet delivered.",
+      "reason": "Cmd/Ctrl+Enter in a quote comment inserts portable Markdown and uses the ordinary send path; IME composition does not send.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:93",
+        "apps/web/src/components/ChatView.browser.tsx:6268",
+        "apps/web/src/components/ChatView.browser.tsx:6332"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "7810fb263f5a92b9d438d1eabf408d2ac705e944",
@@ -11440,10 +11538,18 @@
     {
       "upstreamSha": "9d1879b142a2f5d01383357646a4679d1a2bd202",
       "subject": "feat(desktop): add configurable quit shortcut confirmation (#9076)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(desktop): add configurable quit shortcut confirmation. Reimplement in f5; not yet delivered.",
+      "reason": "Add hold, double-click and direct quit settings over the owned renderer bridge, with hold as the default.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/appSettings.ts:364",
+        "apps/desktop/src/desktopAttention.ts:83",
+        "apps/web/src/components/QuitHoldOverlay.tsx:5"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "9d28c21a26aeef198cb064fe466e49cbeabfe09c",
@@ -13216,10 +13322,18 @@
     {
       "upstreamSha": "b7dbbbaf6c394621cba57cf58dfcc1845f445ef6",
       "subject": "feat(desktop): Chrome-style hold-to-quit (#5508)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(desktop): Chrome-style hold-to-quit. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the final upstream hold-to-quit behavior across all Electron webContents, with renderer hints and native fallback outside app windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b7fc81dea2b7c963c34a365b82644ce963df19a2",
@@ -13231,10 +13345,19 @@
     {
       "upstreamSha": "b8262b41228e03b2e1e14b701be449034349c8ba",
       "subject": "fix(desktop): hold-to-quit no longer gets stuck (#9141)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): hold-to-quit no longer gets stuck. Reimplement in f5; not yet delivered.",
+      "reason": "Handle modifier release, suppressed key-up and delayed mode reads without leaving hold-to-quit stuck; all webContents share one handler.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48",
+        "apps/desktop/src/desktopAttention.test.ts:96"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b84f63bb13f13b1d0ee8537c4d244d6f1efdb987",
@@ -14609,10 +14732,18 @@
     {
       "upstreamSha": "caa8a0db98f9d32e98a1645caa7f7dd37b14f187",
       "subject": "fix(desktop): quit immediately on a second shortcut press (#9657)",
-      "reason": "Phase 5: fix(desktop): quit immediately on a second shortcut press. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Quit immediately on the second shortcut press within 500 ms before awaiting settings, while repeat events remain a hold.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "caab2fdbac041ac2e851ad4fa3ac4a40a1d4a8f6",
@@ -16727,10 +16858,20 @@
     {
       "upstreamSha": "e7deb2aaf4d4d089618dc0c8f393fa0b8b6c77e9",
       "subject": "feat(web): cite assistant responses with inline citations (#9146)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): cite assistant responses with inline citations. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved F5 quote-reply variant: assistant selection toolbar, bounded local Lexical quote node and comment, serialized into durable Markdown. Upstream server citations and mobile changes are intentionally excluded by the review.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:9",
+        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.ts:14",
+        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.test.ts:17",
+        "apps/web/src/components/ChatView.browser.tsx:6332"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "e7f6a30caba5c390d5bbc9c300de89b68601c057",
@@ -17680,10 +17821,18 @@
     {
       "upstreamSha": "f3cb7f509595d304c6e2ccc7afe05c95ec45a7d8",
       "subject": "fix(desktop): prevent quit shortcut spillover (#7397)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): prevent quit shortcut spillover. Reimplement in f5; not yet delivered.",
+      "reason": "Wait for key release or the repeat-aware quiet grace period after a completed hold so shortcut repeats do not spill into the next app.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "f3d3fe4569274c5ee6f3c5435809330bef494a2d",
@@ -18340,10 +18489,17 @@
     {
       "upstreamSha": "fe07ffe7c0bf1858ba4d1cd1ce0a67b10802a747",
       "subject": "fix(web): remove inserted citations on cancel (#10518)",
-      "reason": "Phase 5: fix(web): remove inserted citations on cancel. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Cancellation inserts no quote or comment into the composer; tested together with selection dismissal and IME handling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:116",
+        "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "fe281c5408164250da6688de6fc71ac12d8a9d8f",

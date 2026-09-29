@@ -188,3 +188,7 @@ export function resolveThreadStatusPill(input: ResolveThreadStatusInput): Thread
   const status = resolveThreadStatus(input);
   return status === "none" ? null : THREAD_STATUS_PILL_BY_STATUS[status];
 }
+
+export function threadStatusIcon(status: ThreadStatus) {
+  return status === "none" ? null : THREAD_STATUS_PILL_BY_STATUS[status].icon;
+}

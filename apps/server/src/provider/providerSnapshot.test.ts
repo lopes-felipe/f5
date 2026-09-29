@@ -51,3 +51,29 @@ describe("parseGenericCliVersion", () => {
     ["no version", null],
   ])("parses %s", (input, expected) => expect(parseGenericCliVersion(input!)).toBe(expected));
 });
+
+it("publishes custom display names and explicit capabilities without changing the model slug", () => {
+  expect(
+    providerModelsFromSettings(
+      [],
+      "codex",
+      [{ slug: "private/model", name: "Reviewer", capabilities: { optionDescriptors: [] } }],
+      OPENCODE_CUSTOM_MODEL_CAPABILITIES,
+    ),
+  ).toEqual([
+    {
+      slug: "private/model",
+      name: "Reviewer",
+      isCustom: true,
+      capabilities: { optionDescriptors: [] },
+    },
+  ]);
+  expect(
+    providerModelsFromSettings(
+      [{ slug: "builtin", name: "Official", isCustom: false, capabilities: null }],
+      "codex",
+      [{ slug: "builtin", name: "Override" }],
+      {},
+    ),
+  ).toEqual([{ slug: "builtin", name: "Official", isCustom: false, capabilities: null }]);
+});

@@ -1,3 +1,4 @@
+import { RepositoryLinks } from "../repositoryLinkContext";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -82,4 +83,24 @@ describe("ChatMarkdown streaming vs settled rendering", () => {
     expect(markup).toContain("chat-markdown-codeblock");
     expect(markup).toContain('<pre><code class="language-ts">const x = 1;');
   });
+});
+
+it("links repository references in rendered chat without changing code or existing links", async () => {
+  const { default: ChatMarkdown } = await import("./ChatMarkdown");
+  const html = renderToStaticMarkup(
+    <RepositoryLinks.Provider
+      value={{ provider: "gitlab", webUrl: "https://gitlab.example/team/app" }}
+    >
+      <ChatMarkdown
+        text={
+          "Fix #123 and team/other#9, but `#456` and [#789](https://example.com) stay unchanged."
+        }
+        cwd="/tmp/project"
+      />
+    </RepositoryLinks.Provider>,
+  );
+  expect(html).toContain('href="https://gitlab.example/team/app/-/issues/123"');
+  expect(html).toContain('href="https://gitlab.example/team/other/-/issues/9"');
+  expect(html).not.toContain("/issues/456");
+  expect(html).not.toContain("/issues/789");
 });

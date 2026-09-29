@@ -1,3 +1,5 @@
+import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
+import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
@@ -67,7 +69,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate } from "@tanstack/react-router";
-import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
+import { gitBranchesQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
@@ -2255,6 +2257,27 @@ export default function ChatView({
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
+  const repositoryStatus = useQuery(
+    gitStatusQueryOptions({
+      cwd: gitCwd ?? null,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
+    }),
+  );
+  const repositoryLinks = useMemo(
+    () =>
+      repositoryLinksForThread(
+        repositoryStatus.data?.pr
+          ? {
+              url: repositoryStatus.data.pr.url,
+              provider: repositoryStatus.data.sourceControl?.kind ?? "github",
+            }
+          : undefined,
+        repositoryStatus.data?.sourceControl,
+      ),
+    [repositoryStatus.data?.pr, repositoryStatus.data?.sourceControl],
+  );
+
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: gitCwd,
@@ -4272,6 +4295,7 @@ export default function ChatView({
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(onAdmitted ? { onAdmitted } : {}),
       });
       return;
     }
@@ -4802,9 +4826,11 @@ export default function ChatView({
     async ({
       text,
       interactionMode: nextInteractionMode,
+      onAdmitted,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      onAdmitted?: () => void;
     }) => {
       const api = readNativeApi();
       if (
@@ -4918,6 +4944,7 @@ export default function ChatView({
           localDispatch,
           failureMessage: "Failed to send plan follow-up.",
           onStarted: () => {
+            onAdmitted?.();
             setOptimisticUserMessages((existing) => [
               ...existing,
               {
@@ -4931,6 +4958,7 @@ export default function ChatView({
             ]);
           },
           onQueued: () => {
+            onAdmitted?.();
             toastManager.add({ type: "success", title: "Plan follow-up added to the queue." });
           },
           onNonTransportFailure: (message, failureRollback) => {
@@ -5825,7 +5853,7 @@ export default function ChatView({
     );
   }
 
-  return (
+  const workspace = (
     <FileNavigationProvider value={handleFileNavigation}>
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
@@ -5834,6 +5862,46 @@ export default function ChatView({
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
+        <AssistantQuoteToolbar
+          key={activeThread.id}
+          currentLength={prompt.length}
+          maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
+          onInsert={async (quote, send) => {
+            if (activePendingProgress)
+              return {
+                inserted: false,
+                error: "Finish the pending question before quoting into chat.",
+              };
+            if (
+              isConnecting ||
+              sendInFlightRef.current ||
+              hasPendingTurnDispatch ||
+              pendingComposerImageImportCount > 0
+            )
+              return {
+                inserted: false,
+                error:
+                  "Wait for the connection, current send, or image import before adding this quote.",
+              };
+            const editor = composerEditorRef.current;
+            if (!editor) return { inserted: false };
+            editor.insertAssistantQuote(quote);
+            if (send) {
+              promptRef.current = editor.readSnapshot().value;
+              let admitted = false;
+              await onSend(undefined, "auto", () => {
+                admitted = true;
+              });
+              if (!admitted)
+                return {
+                  inserted: true,
+                  error:
+                    "Quote added to the composer, but sending was not confirmed. Review the draft or pending send before trying again.",
+                };
+            }
+            return { inserted: true };
+          }}
+        />
         {/* Top bar */}
         <header
           className={cn(
@@ -6238,4 +6306,5 @@ export default function ChatView({
       </div>
     </FileNavigationProvider>
   );
+  return <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>;
 }

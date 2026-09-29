@@ -361,6 +361,16 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(24)),
     Schema.withDecodingDefault(() => 24),
   ),
+  quitShortcutMode: Schema.Literals(["hold", "double-click", "direct"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("hold" as const)),
+  ),
+  notificationMode: Schema.Literals(["off", "system", "sound", "system-and-sound"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("system" as const)),
+  ),
+  inAppThreadNotifications: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+  ),
+  showAttentionBadge: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(false))),
   enableThreadStatusNotifications: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
@@ -673,6 +683,9 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
         : parsed;
     const migrated: PersistedAppSettingsValue = {
       ...runtimeMetadataMigrated,
+      notificationMode:
+        runtimeMetadataMigrated.notificationMode ??
+        (runtimeMetadataMigrated.enableThreadStatusNotifications === false ? "off" : "system"),
       composerRichTextEnabled: runtimeMetadataMigrated.composerRichTextEnabled ?? false,
       // The first palette release used `f5-default` for the blue palette.
       // Move that implicit default to the restored black palette exactly once;
@@ -1001,7 +1014,20 @@ export function useAppSettings() {
 
   const updateSettings = useCallback(
     (patch: Partial<AppSettings>) => {
-      setSettings((prev) => normalizeAppSettings({ ...prev, ...patch }));
+      setSettings((prev) =>
+        normalizeAppSettings({
+          ...prev,
+          ...patch,
+          ...(patch.notificationMode === undefined &&
+          patch.enableThreadStatusNotifications !== undefined
+            ? {
+                notificationMode: patch.enableThreadStatusNotifications
+                  ? ("system" as const)
+                  : ("off" as const),
+              }
+            : {}),
+        }),
+      );
     },
     [setSettings],
   );

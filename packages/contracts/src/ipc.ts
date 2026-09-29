@@ -395,7 +395,15 @@ export interface DesktopImageDownloadResult {
   savedPath: string;
 }
 
+export type QuitShortcutMode = "hold" | "double-click" | "direct";
+export type QuitShortcutHintEvent =
+  | { state: "up" }
+  | { state: "down"; mode: Exclude<QuitShortcutMode, "direct"> };
+
 export interface DesktopBridge {
+  setQuitShortcutMode?: (mode: QuitShortcutMode) => Promise<void>;
+  onQuitShortcut?: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
+  setAttentionBadge?: (count: number) => Promise<void>;
   getSystemLocale?: () => string | null;
   getProfileId?: () => string | null;
   switchProfile?: (profileId: string) => Promise<boolean>;

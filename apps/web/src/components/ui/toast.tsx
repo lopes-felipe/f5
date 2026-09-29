@@ -1,5 +1,6 @@
 "use client";
 
+import { threadStatusIcon, type ThreadStatus } from "../../threadStatus";
 import { Toast } from "@base-ui/react/toast";
 import { useEffect, type CSSProperties, type MouseEventHandler, type ReactNode } from "react";
 import { useParams } from "@tanstack/react-router";
@@ -11,6 +12,7 @@ import {
   LoaderCircleIcon,
   TriangleAlertIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -18,6 +20,7 @@ import { buttonVariants } from "~/components/ui/button";
 import { buildVisibleToastLayout, shouldHideCollapsedToastContent } from "./toast.logic";
 
 type ThreadToastData = {
+  threadStatus?: ThreadStatus;
   threadId?: ThreadId | null;
   tooltipStyle?: boolean;
   dismissAfterVisibleMs?: number;
@@ -27,6 +30,28 @@ const toastManager = Toast.createToastManager<ThreadToastData>();
 const anchoredToastManager = Toast.createToastManager<ThreadToastData>();
 type ToastId = ReturnType<typeof toastManager.add>;
 const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
+
+function ToastMessageContents({ Icon }: { Icon: LucideIcon | null | undefined }) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 gap-2">
+        {Icon && (
+          <div
+            className="flex h-lh w-4 shrink-0 items-center justify-center"
+            data-slot="toast-icon"
+          >
+            <Icon className="size-4 in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
+          </div>
+        )}
+        <Toast.Title className="min-w-0 break-words font-medium" data-slot="toast-title" />
+      </div>
+      <Toast.Description
+        className="min-w-0 break-words text-muted-foreground"
+        data-slot="toast-description"
+      />
+    </div>
+  );
+}
 
 const TOAST_ICONS = {
   error: CircleAlertIcon,
@@ -226,7 +251,11 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
         }
       >
         {visibleToastLayout.items.map(({ toast, visibleIndex, offsetY }) => {
-          const Icon = toast.type ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS] : null;
+          const Icon = toast.data?.threadStatus
+            ? threadStatusIcon(toast.data.threadStatus)
+            : toast.type
+              ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS]
+              : null;
           const hideCollapsedContent = shouldHideCollapsedToastContent(
             visibleIndex,
             visibleToastLayout.items.length,
@@ -308,27 +337,7 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                     "not-data-expanded:pointer-events-none not-data-expanded:opacity-0",
                 )}
               >
-                <div className="flex min-w-0 flex-1 gap-2">
-                  {Icon && (
-                    <div
-                      className="[&>svg]:h-lh [&>svg]:w-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
-                      data-slot="toast-icon"
-                    >
-                      <Icon className="in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
-                    </div>
-                  )}
-
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <Toast.Title
-                      className="min-w-0 break-words font-medium"
-                      data-slot="toast-title"
-                    />
-                    <Toast.Description
-                      className="min-w-0 break-words text-muted-foreground"
-                      data-slot="toast-description"
-                    />
-                  </div>
-                </div>
+                <ToastMessageContents Icon={Icon} />
                 {toast.actionProps && (
                   <ToastActionButton
                     actionProps={toast.actionProps}
@@ -370,7 +379,11 @@ function AnchoredToasts() {
         {toasts
           .filter((toast) => shouldRenderForActiveThread(toast.data, activeThreadId))
           .map((toast) => {
-            const Icon = toast.type ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS] : null;
+            const Icon = toast.data?.threadStatus
+              ? threadStatusIcon(toast.data.threadStatus)
+              : toast.type
+                ? TOAST_ICONS[toast.type as keyof typeof TOAST_ICONS]
+                : null;
             const tooltipStyle = toast.data?.tooltipStyle ?? false;
             const positionerProps = toast.positionerProps;
 
@@ -402,27 +415,7 @@ function AnchoredToasts() {
                     </Toast.Content>
                   ) : (
                     <Toast.Content className="pointer-events-auto flex items-center justify-between gap-1.5 overflow-hidden px-3.5 py-3 text-sm">
-                      <div className="flex min-w-0 flex-1 gap-2">
-                        {Icon && (
-                          <div
-                            className="[&>svg]:h-lh [&>svg]:w-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
-                            data-slot="toast-icon"
-                          >
-                            <Icon className="in-data-[type=loading]:animate-spin in-data-[type=error]:text-destructive in-data-[type=info]:text-info in-data-[type=success]:text-success in-data-[type=warning]:text-warning in-data-[type=loading]:opacity-80" />
-                          </div>
-                        )}
-
-                        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                          <Toast.Title
-                            className="min-w-0 break-words font-medium"
-                            data-slot="toast-title"
-                          />
-                          <Toast.Description
-                            className="min-w-0 break-words text-muted-foreground"
-                            data-slot="toast-description"
-                          />
-                        </div>
-                      </div>
+                      <ToastMessageContents Icon={Icon} />
                       {toast.actionProps && (
                         <ToastActionButton
                           actionProps={toast.actionProps}

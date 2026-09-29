@@ -1,0 +1,117 @@
+# Phase 5 desktop and chat features
+
+This PR implements the approved Phase 5 scope against the pinned upstream target
+`f5ef0ddb90a8c36584e181b1913e7b8a5df30ffc`. It does not advance ledger coverage.
+
+## Behavior and defaults
+
+- Desktop quit defaults to a 1,200 ms hold confirmed by key repeat, with a 600 ms
+  release grace period and a 500 ms double-press alternative. Settings also offer
+  double press and immediate quit. One handler covers app windows, preview guests,
+  OAuth windows and DevTools. App windows show the overlay; other windows use a
+  native notification when supported. The application menu still quits immediately.
+  Windows disappear before cleanup, which is bounded at six seconds. Existing
+  update-state reducers retain release notes through download progress.
+- Thread notifications offer off, system, sound and system-and-sound. Existing
+  `enableThreadStatusNotifications` choices migrate to off/system, including the
+  previous system-enabled default. WebAudio sounds, in-app toasts and attention
+  badges are opt-in. Sounds require a prior user gesture and play for background
+  transitions. Snoozed and archived threads never notify or contribute to badges.
+  Multiple desktop windows displaying one profile do not double its badge count.
+  Web badges fall back to a title prefix when the browser lacks the Badge API.
+- Selecting assistant text offers Quote reply, an optional comment and Add quote.
+  Cmd/Ctrl+Enter in the comment sends through the normal composer send path; IME
+  composition does not send. Back/Escape retain the comment, Cancel inserts nothing,
+  and pressing another action dismisses the selection toolbar. Quotes are capped at
+  4,000 characters and serialized as Markdown blockquotes followed by the comment.
+  Lexical retains local message metadata while editing; persisted drafts and sent
+  messages contain portable Markdown, without server-side citation references.
+- Custom models retain string compatibility and also accept `{slug, name?,
+capabilities?}`. Settings can rename custom models without changing their IDs or
+  capabilities. Existing built-in catalogs, version gates and aliases remain in
+  force; custom entries cannot rename or resurrect filtered built-in models.
+- Chat Markdown links `#N` and `owner/repo#N` using the current PR's repository or
+  the workspace's forge identity. Code and existing links are unchanged. URL rules
+  cover GitHub/Enterprise, GitLab, Bitbucket, Forgejo/Gitea and Azure work items.
+  Qualified Azure references remain plain text because a repository name cannot
+  identify a work-item project. This adds no forge account or write capability.
+
+Protocol **8** protects the custom-model union change. Existing open tabs use the
+exact-version reload gate. Bootstrap advertises `custom-model-metadata`,
+`assistant-quotes` and `repository-issue-links`; desktop functions are exposed through
+optional bridge methods. Web-local preferences remain in `appSettings.ts`.
+
+## Validation
+
+Coverage includes quit timing, repeat cadence, modifier release, delayed mode reads,
+popup hints, renderer IPC ownership, per-profile badge aggregation, notification
+migration and snooze suppression, quote serialization and selection behavior,
+custom-model metadata/aliases, and forge-aware rendered Markdown links.
+
+The full browser suite exercises quote insertion and Cmd+Enter through ChatView,
+model renaming, and notification/toast/badge behavior. The isolated built Electron
+smoke checks bundled renderer/server startup, draft persistence across reload, the
+native badge, a single quit tap that leaves the app open, and double-press quitting
+from a sandboxed popup. Native input is injected through Electron's
+`sendInputEvent`; CDP keyboard dispatch does not reliably reach `before-input-event`
+on this macOS host. The smoke uses temporary app data and no personal accounts.
+
+The local Electron dependency initially lacked its executable. Restoring the already
+installed matching 40.6.0 distribution repaired that environment issue. The smoke
+also exposed a test cleanup call into Playwright after the app had exited; the test
+now retains the child-process handle before shutdown.
+
+Passed checks: `bun fmt`, `bun lint` (10 existing warnings, no errors), `bun typecheck`, `bun run test:full` (including all 133 exhaustive real-Git tests),
+`F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`, the web browser suite (489 tests), the final toast/quote browser checks (3 tests), and
+`bun run test:desktop-smoke`. Native smoke coverage is macOS arm64; Linux and Windows
+runtime behavior is covered by unit cases, not a native run on this host.
+
+## PR review follow-up
+
+Structured custom models now pass through both instance and legacy option builders;
+renaming does not remove a model or select a replacement before the snapshot refreshes.
+Quote submission uses the advertised server text limit, waits for durable send admission,
+and leaves feedback visible on rejection or an uncertain send. A pending question must
+be completed before quoting into chat, so its previously selected answer cannot be sent
+by the quote shortcut. An inserted but unconfirmed quote cannot be inserted twice.
+
+Normal quit now runs backend and preview cleanup at `will-quit`, after renderer unload
+checks succeed. A renderer veto reveals the windows and resets quit flags without stopping
+the backend. Update installation first closes windows with the same veto protection,
+then runs shared bounded cleanup. A synchronous installer failure resets the flags,
+reinitializes preview resources and restarts only backends that were running before installation. The isolated desktop smoke
+now includes a real `beforeunload` veto and a successful renderer reload afterwards.
+
+The physical Q key works on non-Latin layouts. Preview guests route hints to their host
+renderer, while standalone popups retain the native hint. Duplicate non-macOS Quit menu
+items were removed. Notification reset visibility includes every notification key, the
+legacy notification boolean reflects system-notification mode for downgrade compatibility,
+and enabling sound unlocks controller-owned audio in the settings gesture. Unsupported
+forge kinds no longer receive invented issue URLs.
+
+The all-webContents quit shortcut remains intentional under the approved Phase 5 scope,
+including Ctrl+Q on Windows/Linux. Skipping terminals or preview guests would change that
+requirement. Bare `#N` and qualified repository names remain linked as requested; syntax
+alone cannot distinguish prose numbering or a repository named `foo.ts` from a file path.
+
+The original PR CI run failed to launch Electron on Linux and timed out in three existing
+Windows legacy-ledger migration tests. Turbo now preserves the Xvfb display environment
+for desktop smoke execution. Windows native execution remains unverified on this host;
+the legacy migration timeout thresholds are unchanged in this feature PR.
+
+Follow-up validation passed: all 493 browser tests, 150 desktop unit tests, the full
+workspace suite and 133 real-Git tests, formatting, lint and typecheck, online ledger
+validation, and the expanded isolated desktop smoke. The physical-key fallback also
+preserves Latin remappings such as AZERTY select-all.
+
+### Additional review follow-up
+
+Failed update recovery snapshots the active profiles before shutdown, preserving user-stopped
+profiles and the active-profile limit. Quote admission now propagates through both started
+and queued Plan follow-up submissions. The browser regression exercises quote-and-send
+from a completed plan and checks that the quote dialog closes and the draft clears.
+
+Validation passed: formatting, lint, typecheck, the full workspace suite and 133 real-Git
+tests, all 494 browser tests, isolated desktop smoke, and online ledger validation.
+The first parallel browser run failed the existing shared turn-diff-fetch assertion;
+all 34 timeline tests passed separately, followed by a clean full browser rerun.

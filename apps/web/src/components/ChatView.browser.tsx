@@ -6265,4 +6265,159 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it("does not submit a selected pending answer when sending a quote", async () => {
+    const snapshot = createSnapshotWithRichAssistantTarget();
+    const question = createThreadActivity({
+      id: "quote-question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "quote-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which choice?",
+            options: [{ label: "Original answer", description: "Keep it" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await page.getByText("Original answer", { exact: true }).click();
+      const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Quote comment" }).fill("Explain this quote");
+      page
+        .getByRole("textbox", { name: "Quote comment" })
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      await expect
+        .element(
+          page.getByText("Finish the pending question before quoting into chat.", { exact: true }),
+        )
+        .toBeVisible();
+      expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { shortcut: false, planFollowUp: false },
+    { shortcut: true, planFollowUp: false },
+    { shortcut: true, planFollowUp: true },
+  ])(
+    "quotes an assistant selection and sends portable Markdown ($shortcut, plan follow-up=$planFollowUp)",
+    async ({ shortcut, planFollowUp }) => {
+      let snapshot = createSnapshotWithRichAssistantTarget();
+      if (planFollowUp) {
+        const planThread = createPlanFollowUpSnapshot().threads.find(
+          (thread) => thread.id === THREAD_ID,
+        )!;
+        snapshot = {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  interactionMode: planThread.interactionMode,
+                  latestTurn: planThread.latestTurn,
+                  proposedPlans: planThread.proposedPlans,
+                }
+              : thread,
+          ),
+        };
+      }
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+      });
+      try {
+        const paragraph = await vi.waitFor(() => {
+          const node = document.querySelector('[data-message-role="assistant"] p');
+          expect(node).not.toBeNull();
+          return node!;
+        });
+        const text = paragraph.textContent!.trim().slice(0, 4000);
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await page.getByRole("textbox", { name: "Quote comment" }).fill("Please explain.");
+        await page.getByRole("button", { name: "Back", exact: true }).click();
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .toHaveValue("Please explain.");
+        if (shortcut) {
+          const comment = page.getByRole("textbox", { name: "Quote comment" }).element();
+          comment.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Enter",
+              metaKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        } else {
+          await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
+        }
+        if (!shortcut) {
+          await vi.waitFor(() => {
+            const prompt =
+              useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
+            expect(prompt).toContain("> " + text);
+            expect(prompt).toContain("Please explain.");
+          });
+          const send = await waitForSendButton();
+          await vi.waitFor(() => expect(send.disabled).toBe(false));
+          send.click();
+        }
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
+            expect.objectContaining({
+              command: expect.objectContaining({
+                message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
+              }),
+            }),
+          ),
+        );
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .not.toBeInTheDocument();
+        await vi.waitFor(() =>
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(
+            "",
+          ),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 });

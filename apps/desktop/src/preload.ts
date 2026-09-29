@@ -53,6 +53,14 @@ const systemLocale = argument("f5-system-locale");
 
 contextBridge.exposeInMainWorld("desktopBridge", {
   getSystemLocale: () => systemLocale,
+  setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
+  setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
+  onQuitShortcut: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, hint: Parameters<typeof listener>[0]) =>
+      listener(hint);
+    ipcRenderer.on("desktop:quit-hint", wrapped);
+    return () => ipcRenderer.removeListener("desktop:quit-hint", wrapped);
+  },
   getWsUrl: () => wsUrl,
   getProfileId: () => profileId,
   switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),

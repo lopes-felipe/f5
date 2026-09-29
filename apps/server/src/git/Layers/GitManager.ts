@@ -1046,6 +1046,7 @@ export const makeGitManager = Effect.gen(function* () {
     const changeRequest = latestPr ? toChangeRequest(latestPr, sourceControlProvider) : null;
 
     return {
+      sourceControl: sourceControlProvider,
       branch: details.branch,
       hasWorkingTreeChanges: details.hasWorkingTreeChanges,
       workingTree: details.workingTree,

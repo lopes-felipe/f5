@@ -16,7 +16,12 @@ const sendLimits = {
 
 export const SERVER_BOOTSTRAP: ServerBootstrap = {
   protocolVersion: F5_PROTOCOL_VERSION,
-  capabilities: ["image-attachments"],
+  capabilities: [
+    "image-attachments",
+    "custom-model-metadata",
+    "assistant-quotes",
+    "repository-issue-links",
+  ],
   // Generic uploads do not exist yet. Advertise only implemented functionality.
   uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
   sendLimits,

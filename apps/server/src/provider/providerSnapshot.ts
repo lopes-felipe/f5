@@ -1,3 +1,5 @@
+import type { CustomModelSetting } from "@t3tools/contracts";
+import { customModelSlug } from "@t3tools/shared/customModels";
 import type {
   ProviderKind,
   ModelCapabilities,
@@ -152,7 +154,7 @@ export function parseGenericCliVersion(output: string): string | null {
 export function providerModelsFromSettings(
   builtInModels: ReadonlyArray<ServerProviderModel>,
   provider: ProviderKind,
-  customModels: ReadonlyArray<string>,
+  customModels: ReadonlyArray<CustomModelSetting>,
   customModelCapabilities: ModelCapabilities,
 ): ReadonlyArray<ServerProviderModel> {
   const resolvedBuiltInModels = [...builtInModels];
@@ -160,16 +162,19 @@ export function providerModelsFromSettings(
   const customEntries: ServerProviderModel[] = [];
 
   for (const candidate of customModels) {
-    const normalized = normalizeModelSlug(candidate, provider);
+    const normalized = normalizeModelSlug(customModelSlug(candidate), provider);
     if (!normalized || seen.has(normalized)) {
       continue;
     }
     seen.add(normalized);
     customEntries.push({
       slug: normalized,
-      name: normalized,
+      name: typeof candidate === "string" ? normalized : candidate.name?.trim() || normalized,
       isCustom: true,
-      capabilities: customModelCapabilities,
+      capabilities:
+        typeof candidate === "string"
+          ? customModelCapabilities
+          : (candidate.capabilities ?? customModelCapabilities),
     });
   }
 

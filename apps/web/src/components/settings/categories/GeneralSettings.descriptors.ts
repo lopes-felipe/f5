@@ -2,6 +2,14 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GENERAL_SETTINGS_DESCRIPTORS = [
   {
+    id: "general.quit-shortcut",
+    category: "general",
+    label: "Quit shortcut",
+    description: "Hold the quit shortcut, press twice, or quit immediately.",
+    keywords: ["desktop", "preferences"],
+    targetSelector: '[aria-label="Quit shortcut"]',
+  },
+  {
     id: "general.composer-editor",
     category: "general",
     label: "Rich text editor",

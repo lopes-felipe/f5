@@ -1,3 +1,5 @@
+import { unlockThreadNotificationSound } from "../threadAttention";
+import { toastManager } from "./ui/toast";
 import "../index.css";
 
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
@@ -302,4 +304,83 @@ describe("ThreadStatusNotificationController", () => {
       await mounted.cleanup();
     }
   });
+  it("shows in-app attention without system permission and suppresses snoozed threads", async () => {
+    localStorage.setItem(
+      APP_SETTINGS_STORAGE_KEY,
+      JSON.stringify({
+        notificationMode: "off",
+        inAppThreadNotifications: true,
+        showAttentionBadge: true,
+      }),
+    );
+    MockNotification.permission = "denied";
+    const badge = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "setAppBadge", { configurable: true, value: badge });
+    const toast = vi.spyOn(toastManager, "add");
+    const mounted = await mountController();
+    try {
+      setStoreThread(createThread(), true);
+      await vi.waitFor(() => expect(useStore.getState().threadsHydrated).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const pending = createThread({
+        activities: [
+          {
+            id: "attention" as never,
+            tone: "approval",
+            kind: "approval.requested",
+            summary: "Approval",
+            payload: { requestId: "request", requestKind: "command" },
+            turnId: null,
+            createdAt: "2026-03-10T12:01:00.000Z",
+          },
+        ],
+      });
+      setStoreThread({ ...pending, snoozedUntil: "2099-01-01T00:00:00Z" }, true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(toast).not.toHaveBeenCalled();
+      expect(MockNotification.instances).toHaveLength(0);
+      setStoreThread(createThread(), true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      setStoreThread(pending, true);
+      await vi.waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: "Pending Approval",
+            data: { threadStatus: "pending-approval" },
+          }),
+        ),
+      );
+      expect(badge).toHaveBeenLastCalledWith(1);
+      expect(MockNotification.instances).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+      toast.mockRestore();
+      Object.defineProperty(navigator, "setAppBadge", { configurable: true, value: undefined });
+    }
+  });
+});
+
+it("unlocks controller audio synchronously in the sound settings gesture", async () => {
+  const resume = vi.fn().mockResolvedValue(undefined),
+    close = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal(
+    "AudioContext",
+    class {
+      resume = resume;
+      close = close;
+    },
+  );
+  const screen = await render(
+    <StoreProvider>
+      <ThreadStatusNotificationControllerContent navigateToThread={() => {}} />
+    </StoreProvider>,
+  );
+  try {
+    unlockThreadNotificationSound();
+    expect(resume).toHaveBeenCalledOnce();
+  } finally {
+    await screen.unmount();
+    vi.unstubAllGlobals();
+  }
+  expect(close).toHaveBeenCalled();
 });

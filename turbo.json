@@ -45,7 +45,11 @@
     "VOLTA_HOME",
     "FNM_DIR",
     "NVM_HOME",
-    "NVM_SYMLINK"
+    "NVM_SYMLINK",
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "XDG_RUNTIME_DIR"
   ],
   "tasks": {
     "build": {
