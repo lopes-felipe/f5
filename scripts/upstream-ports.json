@@ -2874,11 +2874,13 @@
       "evidence": [
         "apps/desktop/src/main.ts:2940",
         "apps/desktop/src/quitPreflight.test.ts:1",
-        "apps/desktop/scripts/smoke-test.mjs:90"
+        "apps/desktop/scripts/smoke-test.mjs:90",
+        "apps/desktop/src/main.ts:1976"
       ],
       "f5Shas": [
         "3ccb2023978310a5794915fb5191d9f1addb223f",
-        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
       ]
     },
     {
@@ -8893,11 +8895,12 @@
       "evidence": [
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:93",
         "apps/web/src/components/ChatView.browser.tsx:6268",
-        "apps/web/src/components/ChatView.browser.tsx:6268"
+        "apps/web/src/components/ChatView.browser.tsx:6332"
       ],
       "f5Shas": [
         "3ccb2023978310a5794915fb5191d9f1addb223f",
-        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
       ]
     },
     {
@@ -16861,11 +16864,13 @@
       "evidence": [
         "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:9",
         "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.ts:14",
-        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.test.ts:17"
+        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.test.ts:17",
+        "apps/web/src/components/ChatView.browser.tsx:6332"
       ],
       "f5Shas": [
         "3ccb2023978310a5794915fb5191d9f1addb223f",
-        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
       ]
     },
     {
