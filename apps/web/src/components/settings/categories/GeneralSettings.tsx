@@ -14,7 +14,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const THREAD_KEYS = ["defaultThreadEnvMode", "tasksPanelAutoOpen"] as const;
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
@@ -33,6 +32,56 @@ export function GeneralSettings() {
 
   return (
     <>
+      <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+        <label className="block">
+          Default permissions
+          <select
+            aria-label="Default permissions"
+            value={settings.defaultRuntimeMode}
+            onChange={(e) =>
+              void updateSettings({
+                defaultRuntimeMode: e.target.value as typeof settings.defaultRuntimeMode,
+              })
+            }
+          >
+            <option value="full-access">Full access</option>
+            <option value="approval-required">Ask for approval</option>
+            <option value="auto-accept-edits">Accept edits</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+        <label className="block">
+          Worktree submodules
+          <select
+            aria-label="Worktree submodules"
+            value={settings.worktreeSubmodules}
+            onChange={(e) =>
+              void updateSettings({
+                worktreeSubmodules: e.target.value as typeof settings.worktreeSubmodules,
+              })
+            }
+          >
+            <option value="none">None</option>
+            <option value="shallow">Top level</option>
+            <option value="recursive">Recursive</option>
+          </select>
+        </label>
+        {(settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
+          settings.worktreeSubmodules !== defaults.worktreeSubmodules) && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              updateSettings({
+                defaultRuntimeMode: defaults.defaultRuntimeMode,
+                worktreeSubmodules: defaults.worktreeSubmodules,
+              })
+            }
+          >
+            Restore default
+          </Button>
+        )}
+      </section>
       {typeof window !== "undefined" && window.desktopBridge && (
         <section className="rounded-2xl border border-border bg-card p-5">
           <h2 className="text-sm font-medium">Quit shortcut</h2>
@@ -237,7 +286,12 @@ export function GeneralSettings() {
             <Button
               size="xs"
               variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(THREAD_KEYS, defaults))}
+              onClick={() =>
+                updateSettings({
+                  defaultThreadEnvMode: defaults.defaultThreadEnvMode,
+                  tasksPanelAutoOpen: defaults.tasksPanelAutoOpen,
+                })
+              }
             >
               Restore default
             </Button>

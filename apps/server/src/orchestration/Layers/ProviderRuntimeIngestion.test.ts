@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings";
 import { RuntimeRequestId } from "@t3tools/contracts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
@@ -223,7 +224,10 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness(options?: { readonly startIngestion?: boolean }) {
+  async function createHarness(options?: {
+    readonly startIngestion?: boolean;
+    readonly settings?: Partial<import("@t3tools/contracts").ServerSettings>;
+  }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -241,6 +245,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
+      Layer.provide(ServerSettingsService.layerTest(options?.settings)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(
         ThreadCommandExecutionQueryLive.pipe(
@@ -2646,98 +2651,156 @@ describe("ProviderRuntimeIngestion", () => {
     expect(message?.streaming).toBe(false);
   });
 
-  it("streams assistant deltas when thread.turn.start requests streaming mode", async () => {
-    const harness = await createHarness();
-    const now = new Date().toISOString();
+  it.each([false, true])(
+    "streams per-thread deltas and respects project overrides (override=%s)",
+    async (projectOverride) => {
+      const harness = await createHarness(
+        projectOverride
+          ? {
+              settings: {
+                projectSettingsOverrides: {
+                  [asProjectId("project-1")]: { enableAssistantStreaming: true },
+                },
+              },
+            }
+          : undefined,
+      );
+      const now = new Date().toISOString();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-turn-start-streaming-mode"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        message: {
-          messageId: asMessageId("message-streaming-mode"),
-          role: "user",
-          text: "stream please",
-          attachments: [],
-        },
-        assistantDeliveryMode: "streaming",
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-turn-start-streaming-mode"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId("message-streaming-mode"),
+            role: "user",
+            text: "stream please",
+            attachments: [],
+          },
+          assistantDeliveryMode: projectOverride ? "buffered" : "streaming",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+      // Another project's buffered turn must not change thread-1's delivery mode.
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("other-project"),
+          projectId: asProjectId("project-2"),
+          title: "Other",
+          workspaceRoot: "/other-project",
+          defaultModel: "gpt-5",
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("other-thread"),
+          projectId: asProjectId("project-2"),
+          threadId: asThreadId("thread-2"),
+          title: "Other",
+          model: "gpt-5",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("other-start"),
+          threadId: asThreadId("thread-2"),
+          message: {
+            messageId: asMessageId("other-message"),
+            role: "user",
+            text: "Buffer this",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          assistantDeliveryMode: "buffered",
+          createdAt: now,
+        }),
+      );
+      await harness.drain();
+
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started-streaming-mode"),
+        provider: "codex",
         createdAt: now,
-      }),
-    );
-    await harness.drain();
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-mode"),
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) =>
+          thread.session?.status === "running" &&
+          thread.session?.activeTurnId === "turn-streaming-mode",
+      );
 
-    harness.emit({
-      type: "turn.started",
-      eventId: asEventId("evt-turn-started-streaming-mode"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-streaming-mode"),
-    });
-    await waitForThread(
-      harness.engine,
-      (thread) =>
-        thread.session?.status === "running" &&
-        thread.session?.activeTurnId === "turn-streaming-mode",
-    );
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("evt-message-delta-streaming-mode"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-mode"),
+        itemId: asItemId("item-streaming-mode"),
+        payload: {
+          streamKind: "assistant_text",
+          delta: "hello live",
+        },
+      });
 
-    harness.emit({
-      type: "content.delta",
-      eventId: asEventId("evt-message-delta-streaming-mode"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-streaming-mode"),
-      itemId: asItemId("item-streaming-mode"),
-      payload: {
-        streamKind: "assistant_text",
-        delta: "hello live",
-      },
-    });
+      const liveThread = await waitForThread(harness.engine, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-streaming-mode" &&
+            message.streaming &&
+            message.text === "hello live",
+        ),
+      );
+      const liveMessage = liveThread.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-mode",
+      );
+      expect(liveMessage?.streaming).toBe(true);
 
-    const liveThread = await waitForThread(harness.engine, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:item-streaming-mode" &&
-          message.streaming &&
-          message.text === "hello live",
-      ),
-    );
-    const liveMessage = liveThread.messages.find(
-      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-mode",
-    );
-    expect(liveMessage?.streaming).toBe(true);
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId("evt-message-completed-streaming-mode"),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-streaming-mode"),
+        itemId: asItemId("item-streaming-mode"),
+        payload: {
+          itemType: "assistant_message",
+          status: "completed",
+          detail: "hello live",
+        },
+      });
 
-    harness.emit({
-      type: "item.completed",
-      eventId: asEventId("evt-message-completed-streaming-mode"),
-      provider: "codex",
-      createdAt: now,
-      threadId: asThreadId("thread-1"),
-      turnId: asTurnId("turn-streaming-mode"),
-      itemId: asItemId("item-streaming-mode"),
-      payload: {
-        itemType: "assistant_message",
-        status: "completed",
-        detail: "hello live",
-      },
-    });
-
-    const finalThread = await waitForThread(harness.engine, (entry) =>
-      entry.messages.some(
-        (message: ProviderRuntimeTestMessage) =>
-          message.id === "assistant:item-streaming-mode" && !message.streaming,
-      ),
-    );
-    const finalMessage = finalThread.messages.find(
-      (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-mode",
-    );
-    expect(finalMessage?.text).toBe("hello live");
-    expect(finalMessage?.streaming).toBe(false);
-  });
+      const finalThread = await waitForThread(harness.engine, (entry) =>
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.id === "assistant:item-streaming-mode" && !message.streaming,
+        ),
+      );
+      const finalMessage = finalThread.messages.find(
+        (entry: ProviderRuntimeTestMessage) => entry.id === "assistant:item-streaming-mode",
+      );
+      expect(finalMessage?.text).toBe("hello live");
+      expect(finalMessage?.streaming).toBe(false);
+    },
+  );
 
   it("spills oversized buffered deltas and still finalizes full assistant text", async () => {
     const harness = await createHarness();

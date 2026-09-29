@@ -1137,6 +1137,7 @@ const makeGitCore = Effect.gen(function* () {
               ["worktree", "add", "--", input.path, input.branch],
               { timeoutMs: 300_000 },
             );
+            yield* initializeSubmodules(input.path, input.submodules);
           }),
         );
       }),
@@ -1649,6 +1650,34 @@ const makeGitCore = Effect.gen(function* () {
       return { branches, isRepo: true, hasOriginRemote: remoteNames.includes("origin") };
     });
 
+  const initializeSubmodules = (
+    worktreePath: string,
+    submodules?: import("@t3tools/contracts").WorktreeSubmodules,
+  ) =>
+    Effect.gen(function* () {
+      if (submodules !== "none") {
+        yield* executeGit(
+          "GitCore.createWorktree.submodules",
+          worktreePath,
+          [
+            "-c",
+            "protocol.file.allow=never",
+            "submodule",
+            "update",
+            "--init",
+            ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
+          ],
+          { timeoutMs: 300_000, fallbackErrorMessage: "Unable to initialize worktree submodules" },
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Worktree created, but submodule initialization failed", {
+              error: error.message,
+            }),
+          ),
+        );
+      }
+    });
+
   const createWorktree: GitCoreShape["createWorktree"] = (input) =>
     Effect.gen(function* () {
       const targetBranch = input.newBranch ?? input.branch;
@@ -1685,6 +1714,7 @@ const makeGitCore = Effect.gen(function* () {
         timeoutMs: 300_000,
         fallbackErrorMessage: "git worktree add failed",
       });
+      yield* initializeSubmodules(worktreePath, input.submodules);
 
       return {
         worktree: {

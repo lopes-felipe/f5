@@ -12,6 +12,7 @@ describe("parseCheckedInProjectFile", () => {
       }`),
     ).toEqual({
       defaultThreadEnvMode: "worktree",
+      settings: { defaultThreadEnvMode: "worktree" },
       iconPath: null,
       diagnostics: [
         {

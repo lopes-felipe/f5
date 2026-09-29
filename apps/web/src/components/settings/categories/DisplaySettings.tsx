@@ -21,7 +21,6 @@ import { Switch } from "../../ui/switch";
 export { DISPLAY_SETTINGS_DESCRIPTORS } from "./DisplaySettings.descriptors";
 
 const RESPONSE_AUXILIARY_KEYS = [
-  "enableAssistantStreaming",
   "openFileLinksInPanel",
   "diffWordWrap",
   "diffColorPalette",
@@ -510,6 +509,7 @@ export function DisplaySettings() {
                   updateSettings({
                     ...buildAppSettingsPatch(DISPLAY_PROFILE_KEYS, defaultDisplaySettings),
                     ...buildAppSettingsPatch(RESPONSE_AUXILIARY_KEYS, defaults),
+                    enableAssistantStreaming: defaults.enableAssistantStreaming,
                   })
                 }
               >

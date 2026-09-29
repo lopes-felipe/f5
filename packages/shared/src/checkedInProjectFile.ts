@@ -1,4 +1,5 @@
 import {
+  ProjectSettingsOverrides,
   CheckedInProjectIconPath,
   ThreadEnvMode,
   type CheckedInProjectConfigDiagnostic,
@@ -10,6 +11,7 @@ import { Exit, Schema } from "effect";
 import { fromLenientJson } from "./schemaJson";
 
 export interface ParsedCheckedInProjectFile {
+  readonly settings?: ProjectSettingsOverrides;
   readonly defaultThreadEnvMode: ThreadEnvModeType | null;
   readonly iconPath: CheckedInProjectIconPathType | null;
   readonly diagnostics: ReadonlyArray<CheckedInProjectConfigDiagnostic>;
@@ -95,5 +97,15 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
     });
   }
 
-  return { defaultThreadEnvMode, iconPath, diagnostics };
+  const settings: ProjectSettingsOverrides = {};
+  for (const [key, schema] of Object.entries(ProjectSettingsOverrides.fields)) {
+    if (decoded.value[key] === undefined) continue;
+    const field = Schema.decodeUnknownExit(Schema.Struct({ [key]: schema }))({
+      [key]: decoded.value[key],
+    });
+    if (Exit.isSuccess(field)) Object.assign(settings, field.value);
+    else if (key !== "defaultThreadEnvMode")
+      diagnostics.push({ field: "settings", message: `Invalid value for ${key}.` });
+  }
+  return { defaultThreadEnvMode, iconPath, diagnostics, settings };
 }

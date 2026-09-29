@@ -1,3 +1,14 @@
+import { PersistenceSqlError } from "../../persistence/Errors";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectId,
+  ProviderInstanceId,
+  type ServerSettings,
+} from "@t3tools/contracts";
+import type { ProjectionProject } from "../../persistence/Services/ProjectionProjects";
+import type { TextGenerationShape } from "../Services/TextGeneration";
+import { makeGitProjectRepositories } from "../testDoubles";
+import { emptyGitProjectRepositories } from "../testDoubles";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -74,6 +85,10 @@ function makeServerConfig(): ServerConfigShape {
 
 async function makeManager(options?: {
   readonly gitCore?: Partial<GitCoreShape>;
+  readonly settings?: Partial<ServerSettings>;
+  readonly projectLookup?: Parameters<typeof makeGitProjectRepositories>[1];
+  readonly projects?: readonly ProjectionProject[];
+  readonly textGeneration?: Partial<TextGenerationShape>;
   readonly gitHub?: FakeGitHubCliOptions;
 }) {
   const git = makeFakeGitCore(options?.gitCore);
@@ -81,9 +96,10 @@ async function makeManager(options?: {
   const layer = Layer.mergeAll(
     Layer.succeed(GitCore, git.service),
     Layer.succeed(GitHubCli, github.service),
-    Layer.succeed(TextGeneration, makeFakeTextGeneration()),
+    Layer.succeed(TextGeneration, makeFakeTextGeneration(options?.textGeneration)),
     Layer.succeed(ServerConfig, makeServerConfig()),
-    ServerSettingsService.layerTest(),
+    ServerSettingsService.layerTest(options?.settings),
+    makeGitProjectRepositories(options?.projects, options?.projectLookup),
     NodeServices.layer,
   );
   const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
@@ -91,6 +107,61 @@ async function makeManager(options?: {
 }
 
 describe("GitManager unit", () => {
+  it("fails before Git mutations when project settings cannot be resolved", async () => {
+    const { manager, git } = await makeManager({
+      projectLookup: () =>
+        Effect.fail(new PersistenceSqlError({ operation: "listAll", detail: "unavailable" })),
+    });
+    await expect(
+      Effect.runPromise(manager.runStackedAction({ cwd, action: "commit", featureBranch: true })),
+    ).rejects.toThrow("unavailable");
+    expect(Object.values(git.calls).flat()).toEqual([]);
+  });
+  it("uses the project's writing preferences and text generation account", async () => {
+    const projectId = ProjectId.makeUnsafe("git-project");
+    const selected = { instanceId: ProviderInstanceId.makeUnsafe("codex"), model: "project-model" };
+    let captured: Parameters<TextGenerationShape["generateCommitMessage"]>[0] | undefined;
+    const { manager } = await makeManager({
+      projects: [
+        {
+          projectId,
+          title: "Git project",
+          workspaceRoot: cwd,
+          defaultModel: null,
+          scripts: [],
+          createdAt: "2026-09-29T00:00:00Z",
+          updatedAt: "2026-09-29T00:00:00Z",
+          deletedAt: null,
+        },
+      ],
+      settings: {
+        projectSettingsOverrides: {
+          [projectId]: {
+            textGenerationModelSelection: selected,
+            sourceControlWriting: {
+              ...DEFAULT_SERVER_SETTINGS.sourceControlWriting,
+              customInstructions: "Project instructions",
+            },
+          },
+        },
+      },
+      gitCore: {
+        statusDetails: () => Effect.succeed(dirtyStatus),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "1 file changed", stagedPatch: "+change" }),
+      },
+      textGeneration: {
+        generateCommitMessage: (input) => {
+          captured = input;
+          return Effect.succeed({ subject: "Scoped commit", body: "" });
+        },
+      },
+    });
+    await Effect.runPromise(manager.runStackedAction({ cwd, action: "commit" }));
+    expect(captured?.modelSelection).toEqual(selected);
+    expect(captured?.writingPreferences?.customInstructions).toBe("Project instructions");
+  });
+
   it("returns missing worktree status without running git", async () => {
     const { manager, git, github } = await makeManager();
     const status = await Effect.runPromise(
@@ -170,6 +241,7 @@ describe("GitManager unit", () => {
       Layer.succeed(TextGeneration, makeFakeTextGeneration()),
       Layer.succeed(ServerConfig, makeServerConfig()),
       ServerSettingsService.layerTest(),
+      emptyGitProjectRepositories,
       NodeServices.layer,
     );
     const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));

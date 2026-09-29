@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import { ProjectId, TrimmedNonEmptyString } from "./baseSchemas";
+import { ProjectSettingsOverrides } from "./settings";
 import { ThreadEnvMode } from "./threadEnvMode";
 
 export const F5_PROJECT_FILE_NAME = "f5.json";
@@ -15,8 +16,8 @@ export type CheckedInProjectIconPath = typeof CheckedInProjectIconPath.Type;
 
 export const CheckedInProjectFile = Schema.Struct({
   $schema: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2_048))),
-  defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   iconPath: Schema.optionalKey(CheckedInProjectIconPath),
+  ...ProjectSettingsOverrides.fields,
 });
 export type CheckedInProjectFile = typeof CheckedInProjectFile.Type;
 
@@ -30,6 +31,8 @@ export const CheckedInProjectConfigDiagnosticField = Schema.Literals([
   "file",
   "$schema",
   "defaultThreadEnvMode",
+  "settings",
+  "worktreeSubmodules",
   "iconPath",
   "scripts",
   "mcpServers",
@@ -50,6 +53,7 @@ export type ProjectGetCheckedInConfigInput = typeof ProjectGetCheckedInConfigInp
 
 export const ProjectCheckedInConfig = Schema.Struct({
   projectId: ProjectId,
+  settings: Schema.optionalKey(ProjectSettingsOverrides),
   sourceFile: Schema.NullOr(CheckedInProjectFileName),
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   iconPath: Schema.NullOr(CheckedInProjectIconPath),

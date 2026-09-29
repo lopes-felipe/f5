@@ -1,3 +1,4 @@
+import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
@@ -138,7 +139,6 @@ import {
 import { normalizeGeneratedThreadTitle } from "../threadTitle";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
@@ -196,7 +196,7 @@ import {
 } from "~/projectScripts";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
-import { readNativeApi } from "~/nativeApi";
+import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
 import {
@@ -995,8 +995,9 @@ export default function ChatView({
     }
     return null;
   }, [activeThread, codeReviewWorkflows, investigationWorkflows, planningWorkflows]);
+  const projectSettings = useSettings(undefined, activeThread?.projectId);
   const runtimeMode =
-    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? projectSettings.defaultRuntimeMode;
   const interactionMode =
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isServerThread = serverThread !== undefined;
@@ -1101,6 +1102,10 @@ export default function ChatView({
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
+      const runtimeMode = await ensureNativeApi()
+        .server.getProjectSettings({ projectId: activeProject.id })
+        .then((result) => result.settings.defaultRuntimeMode)
+        .catch(() => defaultDraftRuntimeMode(activeProject.id));
       const storedDraftThread = getDraftThreadByProjectId(activeProject.id, input);
       if (storedDraftThread) {
         setDraftThreadContext(storedDraftThread.threadId, input);
@@ -1129,7 +1134,7 @@ export default function ChatView({
       const nextThreadId = newThreadId();
       setProjectDraftThreadId(activeProject.id, nextThreadId, {
         createdAt: new Date().toISOString(),
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -4574,7 +4579,7 @@ export default function ChatView({
           : {}),
         ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
         provider: selectedProvider,
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode: projectSettings.enableAssistantStreaming ? "streaming" : "buffered",
         runtimeMode,
         interactionMode,
         ...(bootstrap ? { bootstrap } : {}),
@@ -4922,7 +4927,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
           ...(nextInteractionMode === "default" && activeProposedPlan
@@ -5030,7 +5037,7 @@ export default function ChatView({
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       setThreadError,
-      settings.enableAssistantStreaming,
+      projectSettings.enableAssistantStreaming,
       tasksPanelAutoOpen,
       interactionMode,
     ],
@@ -5120,7 +5127,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: "default",
           createdAt,
@@ -5181,7 +5190,7 @@ export default function ChatView({
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
     selectedProvider,
-    settings.enableAssistantStreaming,
+    projectSettings.enableAssistantStreaming,
     syncStartupSnapshot,
     syncThreadTailDetails,
     tasksPanelAutoOpen,

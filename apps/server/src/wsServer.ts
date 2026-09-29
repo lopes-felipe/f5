@@ -1,3 +1,5 @@
+import { GitCommandError } from "./git/Errors";
+import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
 import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
@@ -1638,6 +1640,35 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     },
   });
+  const settingsForWorkspace = (workspace: string) =>
+    Effect.gen(function* () {
+      const global = yield* serverSettings.getSettings;
+      const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+      const model = yield* orchestrationEngine.getReadModel();
+      const linked = model.threads.find((t) => t.worktreePath === workspace && !t.deletedAt);
+      const project = linked
+        ? model.projects.find((p) => p.id === linked.projectId && p.deletedAt === null)
+        : model.projects
+            .filter((p) => !p.deletedAt && isInsideProjectWorkspace(p.workspaceRoot, workspace))
+            .sort((a, b) => b.workspaceRoot.length - a.workspaceRoot.length)[0];
+      return project ? (yield* readProjectSettings(global, project)).settings : global;
+    });
+  const createConfiguredWorktree: typeof git.createWorktree = (input) =>
+    Effect.gen(function* () {
+      const settings = yield* settingsForWorkspace(input.cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "createWorktree",
+              cwd: input.cwd,
+              command: "resolve project settings",
+              detail: cause.message,
+            }),
+        ),
+      );
+      return yield* git.createWorktree({ ...input, submodules: settings.worktreeSubmodules });
+    });
+
   const checkedInProjectFileService = makeCheckedInProjectFileService(workspaceAssetAuthorizer);
   const projectContentSearchManager = makeProjectContentSearchManager();
   const unregisterWorkspaceContentInvalidator = registerWorkspaceContentIndexInvalidator(
@@ -1811,6 +1842,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
+          if (
+            event.type === "project.deleted" &&
+            Object.hasOwn(
+              (yield* serverSettings.getSettings).projectSettingsOverrides,
+              event.aggregateId,
+            )
+          ) {
+            yield* serverSettings
+              .updateSettings({ projectSettingsOverrides: { [event.aggregateId]: null } })
+              .pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("Failed to prune deleted project settings", { error }),
+                ),
+              );
+          }
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
@@ -2399,7 +2445,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return yield* dispatchBootstrapTurnStart({
             command: prepared.command,
             orchestrationEngine,
-            git,
+            git: { ...git, createWorktree: createConfiguredWorktree },
             ...(prepared.attachmentIngress.attachments.length > 0
               ? {
                   persistAttachments: persistPreparedAttachmentIngress(
@@ -3173,7 +3219,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.gitCreateWorktree: {
         const body = stripRequestTag(request.body);
         const targetBranch = body.newBranch ?? body.branch;
-        return yield* git.createWorktree({
+        return yield* createConfiguredWorktree({
           ...body,
           path:
             body.path ??
@@ -3593,8 +3639,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           settings,
         };
 
+      case WS_METHODS.serverGetProjectSettings: {
+        const { projectId } = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const model = yield* orchestrationEngine.getReadModel();
+        const project = model.projects.find((p) => p.id === projectId && p.deletedAt === null);
+        if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+        const global = yield* serverSettings.getSettings.pipe(
+          Effect.map(redactServerSettingsForClient),
+        );
+        return yield* readProjectSettings(global, project);
+      }
+      case WS_METHODS.serverMigrateClientSetting:
+        return yield* serverSettings.migrateClientSetting(request.body);
       case WS_METHODS.serverUpdateSettings: {
         const body = stripRequestTag(request.body);
+        if (body.projectSettingsOverrides) {
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          for (const [id, value] of Object.entries(body.projectSettingsOverrides)) {
+            if (value !== null && !model.projects.some((p) => p.id === id && !p.deletedAt)) {
+              return yield* new RouteRequestError({
+                message: "Cannot override settings for a missing project.",
+              });
+            }
+          }
+        }
         return yield* serverSettings.updateSettings(body).pipe(
           Effect.map(redactServerSettingsForClient),
           Effect.mapError(

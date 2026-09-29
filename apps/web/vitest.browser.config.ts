@@ -16,6 +16,7 @@ export default mergeConfig(
     },
     test: {
       include: [
+        "src/hooks/useMigrateClientSettings.browser.ts",
         "src/components/FileViewPanel.browser.tsx",
         "src/hooks/inputSafety.browser.tsx",
         "src/components/ProfileSwitcher.browser.tsx",

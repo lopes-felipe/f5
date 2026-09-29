@@ -287,6 +287,8 @@ export function makeServerRuntimeServicesLayer() {
   const terminalLayer = TerminalManagerLive.pipe(Layer.provide(makeRuntimePtyAdapterLayer()));
 
   const gitManagerLayer = GitManagerLive.pipe(
+    Layer.provideMerge(ProjectionProjectRepositoryLive),
+    Layer.provideMerge(ProjectionThreadRepositoryLive),
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(githubCliLayer),
     Layer.provideMerge(textGenerationLayer),

@@ -1,3 +1,5 @@
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { DEFAULT_SERVER_SETTINGS, type ProjectId as SettingsProjectId } from "@t3tools/contracts";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
 import "../index.css";
 
@@ -357,7 +359,13 @@ function buildFixture(
   };
 }
 
-function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
+function resolveWsRpc(body: {
+  _tag: string;
+  threadId?: string;
+  projectId?: string;
+  value?: string | boolean;
+  key?: string;
+}): unknown {
   const tag = body._tag;
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
@@ -463,6 +471,24 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
     };
   }
   if (tag === WS_METHODS.projectsCloneList) return [];
+  if (tag === WS_METHODS.serverGetProjectSettings) {
+    const project = fixture.snapshot.projects.find((p) => p.id === body.projectId);
+    return resolveProjectSettings({
+      projectId: body.projectId as SettingsProjectId,
+      global: fixture.serverConfig.settings ?? DEFAULT_SERVER_SETTINGS,
+      legacyEnvMode: project?.defaultEnvMode ?? null,
+    });
+  }
+  if (tag === WS_METHODS.serverMigrateClientSetting) {
+    fixture.serverConfig = {
+      ...fixture.serverConfig,
+      settings: {
+        ...(fixture.serverConfig.settings ?? DEFAULT_SERVER_SETTINGS),
+        [body.key as string]: body.value,
+      },
+    };
+    return { applied: true, currentValue: body.value };
+  }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
@@ -504,11 +530,14 @@ const worker = setupWorker(
     client.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
 
-      let request: { id: string; body: { _tag: string; threadId?: string } };
+      let request: {
+        id: string;
+        body: { _tag: string; threadId?: string; projectId?: string; value?: string };
+      };
       try {
         request = JSON.parse(event.data) as {
           id: string;
-          body: { _tag: string; threadId?: string };
+          body: { _tag: string; threadId?: string; projectId?: string; value?: string };
         };
       } catch {
         return;

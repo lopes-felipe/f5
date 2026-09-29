@@ -1,3 +1,4 @@
+import type { ProjectId } from "./baseSchemas";
 import type {
   ProfileId,
   ProfileSummary,
@@ -64,7 +65,13 @@ import type {
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server";
-import type { ServerSettings, ServerSettingsPatch } from "./settings";
+import type {
+  MigrateClientSettingInput,
+  MigrateClientSettingResult,
+  ProjectSettingsResult,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type {
   UsageGetAccountsInput,
@@ -586,6 +593,8 @@ export interface NativeApi {
   server: {
     getConfig: () => Promise<ServerConfig>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
+    getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
+    migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
     refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
     validateHarnesses: (input?: {
       providerOptions?: ProviderStartOptions;

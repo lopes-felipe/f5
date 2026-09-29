@@ -1,3 +1,6 @@
+import { readProjectSettings, isInsideProjectWorkspace } from "../../project/projectSettings";
+import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads";
 import { GitCommandError } from "../Errors.ts";
 import {
   isSshRemoteUrl,
@@ -14,7 +17,7 @@ import {
   sanitizeFeatureBranchName,
 } from "@t3tools/shared/git";
 import {
-  DEFAULT_SERVER_SETTINGS,
+  type ServerSettings,
   type ChangeRequest,
   type SourceControlProviderIdentity,
 } from "@t3tools/contracts";
@@ -427,14 +430,21 @@ export const makeGitManager = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
 
-  const getWritingPreferences = serverSettings.getSettings.pipe(
-    Effect.map((settings) => settings.sourceControlWriting),
-    Effect.catch((error) =>
-      Effect.logWarning("failed to read source-control writing settings; using defaults", {
-        reason: error.message,
-      }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
-    ),
-  );
+  const projects = yield* ProjectionProjectRepository;
+  const threads = yield* ProjectionThreadRepository;
+  const getProjectSettings = (cwd: string) =>
+    Effect.gen(function* () {
+      const settings = yield* serverSettings.getSettings;
+      const candidates = (yield* projects.listAll())
+        .filter((p) => p.deletedAt === null)
+        .sort((a, b) => b.workspaceRoot.length - a.workspaceRoot.length);
+      const root = candidates.find((p) => isInsideProjectWorkspace(p.workspaceRoot, cwd));
+      const ids = root ? [] : yield* threads.listProjectIdsByWorktreePath(cwd);
+      const project = root ?? candidates.find((p) => ids.includes(p.projectId));
+      return project
+        ? (yield* readProjectSettings(settings, { ...project, id: project.projectId })).settings
+        : settings;
+    }).pipe(Effect.mapError((cause) => gitManagerError("projectSettings", cause.message)));
 
   const configurePullRequestHeadUpstream = (
     cwd: string,
@@ -787,6 +797,7 @@ export const makeGitManager = Effect.gen(function* () {
     });
 
   const resolveCommitAndBranchSuggestion = (input: {
+    settings: ServerSettings;
     cwd: string;
     branch: string | null;
     commitMessage?: string;
@@ -813,7 +824,7 @@ export const makeGitManager = Effect.gen(function* () {
         };
       }
 
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = input.settings.sourceControlWriting;
       if (!writingPreferences.generateCommitMessages) {
         const deterministic = buildDeterministicCommitMessage(
           context.stagedSummary,
@@ -831,6 +842,7 @@ export const makeGitManager = Effect.gen(function* () {
 
       const generated = yield* textGeneration
         .generateCommitMessage({
+          modelSelection: input.settings.textGenerationModelSelection,
           cwd: input.cwd,
           branch: input.branch,
           stagedSummary: limitContext(context.stagedSummary, 8_000),
@@ -853,6 +865,7 @@ export const makeGitManager = Effect.gen(function* () {
     });
 
   const runCommitStep = (
+    settings: ServerSettings,
     cwd: string,
     branch: string | null,
     commitMessage?: string,
@@ -864,6 +877,7 @@ export const makeGitManager = Effect.gen(function* () {
       const suggestion =
         preResolvedSuggestion ??
         (yield* resolveCommitAndBranchSuggestion({
+          settings,
           cwd,
           branch,
           ...(commitMessage ? { commitMessage } : {}),
@@ -887,7 +901,12 @@ export const makeGitManager = Effect.gen(function* () {
       };
     });
 
-  const runPrStep = (cwd: string, fallbackBranch: string | null, model?: string) =>
+  const runPrStep = (
+    settings: ServerSettings,
+    cwd: string,
+    fallbackBranch: string | null,
+    model?: string,
+  ) =>
     Effect.gen(function* () {
       const sourceControlIdentity = yield* resolveSourceControlProviderIdentity(cwd);
       const sourceControlProvider = yield* sourceControlProviderForIdentity(sourceControlIdentity);
@@ -931,9 +950,10 @@ export const makeGitManager = Effect.gen(function* () {
         sourceControlProvider,
       );
       const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = settings.sourceControlWriting;
       const generated = writingPreferences.generatePrContent
         ? yield* textGeneration.generatePrContent({
+            modelSelection: settings.textGenerationModelSelection,
             cwd,
             baseBranch,
             headBranch: headContext.headBranch,
@@ -1217,6 +1237,7 @@ export const makeGitManager = Effect.gen(function* () {
       }
 
       const worktree = yield* gitCore.createWorktree({
+        submodules: (yield* getProjectSettings(input.cwd)).worktreeSubmodules,
         cwd: input.cwd,
         branch: localPullRequestBranch,
         path: resolveDefaultWorktreePath({
@@ -1237,6 +1258,7 @@ export const makeGitManager = Effect.gen(function* () {
   );
 
   const runFeatureBranchStep = (
+    settings: ServerSettings,
     cwd: string,
     branch: string | null,
     commitMessage?: string,
@@ -1245,6 +1267,7 @@ export const makeGitManager = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const suggestion = yield* resolveCommitAndBranchSuggestion({
+        settings,
         cwd,
         branch,
         ...(commitMessage ? { commitMessage } : {}),
@@ -1259,7 +1282,7 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      const writingPreferences = yield* getWritingPreferences;
+      const writingPreferences = settings.sourceControlWriting;
       const generatedBranch = suggestion.branch ?? sanitizeFeatureBranchName(suggestion.subject);
       const preferredBranch = sanitizeFeatureBranchName(
         prefixGeneratedBranchName(generatedBranch, writingPreferences),
@@ -1279,6 +1302,7 @@ export const makeGitManager = Effect.gen(function* () {
 
   const runStackedAction: GitManagerShape["runStackedAction"] = Effect.fnUntraced(
     function* (input, _options) {
+      const settings = yield* getProjectSettings(input.cwd);
       const wantsPush = input.action !== "commit";
       const wantsPr = input.action === "commit_push_pr";
 
@@ -1299,6 +1323,7 @@ export const makeGitManager = Effect.gen(function* () {
 
       if (input.featureBranch) {
         const result = yield* runFeatureBranchStep(
+          settings,
           input.cwd,
           initialStatus.branch,
           input.commitMessage,
@@ -1315,6 +1340,7 @@ export const makeGitManager = Effect.gen(function* () {
       const currentBranch = branchStep.name ?? initialStatus.branch;
 
       const commit = yield* runCommitStep(
+        settings,
         input.cwd,
         currentBranch,
         commitMessageForStep,
@@ -1328,7 +1354,7 @@ export const makeGitManager = Effect.gen(function* () {
         : { status: "skipped_not_requested" as const };
 
       const pr = wantsPr
-        ? yield* runPrStep(input.cwd, currentBranch, input.textGenerationModel)
+        ? yield* runPrStep(settings, input.cwd, currentBranch, input.textGenerationModel)
         : { status: "skipped_not_requested" as const };
 
       return {

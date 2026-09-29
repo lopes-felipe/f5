@@ -1,3 +1,4 @@
+import { type ServerSettings } from "@t3tools/contracts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -174,6 +175,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   async function createHarness(input?: {
+    readonly settings?: Partial<ServerSettings>;
     readonly stateDir?: string;
     readonly threadTitle?: string;
     readonly threadModel?: string;
@@ -403,6 +405,11 @@ describe("ProviderCommandReactor", () => {
         }
       }),
     );
+    const ensureWorktree = vi.fn<GitCoreShape["ensureWorktree"]>((input) =>
+      Effect.sync(() => {
+        fs.mkdirSync(input.path, { recursive: true });
+      }),
+    );
     const renameBranch = vi.fn((input: unknown) =>
       Effect.succeed({
         branch:
@@ -414,7 +421,7 @@ describe("ProviderCommandReactor", () => {
             : "renamed-branch",
       }),
     );
-    const generateBranchName = vi.fn(() =>
+    const generateBranchName = vi.fn<TextGenerationShape["generateBranchName"]>(() =>
       Effect.fail(
         new TextGenerationError({
           operation: "generateBranchName",
@@ -506,7 +513,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(ServerSettingsService.layerTest(input?.settings)),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(
         Layer.succeed(ProjectMcpConfigService, {
@@ -571,7 +578,9 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
       Layer.provideMerge(Layer.succeed(ProviderSessionDirectory, providerSessionDirectory)),
-      Layer.provideMerge(Layer.succeed(GitCore, { renameBranch } as unknown as GitCoreShape)),
+      Layer.provideMerge(
+        Layer.succeed(GitCore, { renameBranch, ensureWorktree } as unknown as GitCoreShape),
+      ),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, {
           generateBranchName,
@@ -678,6 +687,7 @@ describe("ProviderCommandReactor", () => {
       respondToUserInput,
       stopSession,
       renameBranch,
+      ensureWorktree,
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
@@ -2587,6 +2597,59 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  it.each(["none", "shallow"] as const)(
+    "recreates a missing worktree with root submodule policy %s and the selected branch account",
+    async (submodules) => {
+      const harness = await createHarness();
+      fs.writeFileSync(
+        path.join(harness.workspaceRoot, "f5.json"),
+        JSON.stringify({
+          worktreeSubmodules: submodules,
+          textGenerationModelSelection: { instanceId: "claudeAgent", model: "claude-haiku-4-5" },
+        }),
+      );
+      const worktreePath = path.join(harness.workspaceRoot, "missing-worktree");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe(`meta-${submodules}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          branch: "t3code/abcdef12",
+          worktreePath,
+        }),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(`turn-${submodules}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId(`message-${submodules}`),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          provider: "codex",
+          model: "gpt-5.4",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await waitFor(() => harness.ensureWorktree.mock.calls.length > 0);
+      expect(harness.ensureWorktree.mock.calls[0]?.[0]).toMatchObject({
+        cwd: harness.workspaceRoot,
+        path: worktreePath,
+        submodules,
+      });
+      await waitFor(() => harness.generateBranchName.mock.calls.length > 0);
+      expect(harness.generateBranchName.mock.calls[0]?.[0].modelSelection).toMatchObject({
+        instanceId: "claudeAgent",
+        model: "claude-haiku-4-5",
+      });
+    },
+  );
 
   it("restarts claude sessions when thread cwd metadata changes", async () => {
     const harness = await createHarness({ threadModel: "claude-opus-4-6" });
