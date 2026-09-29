@@ -89,9 +89,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/server/src/git/Layers/GitCore.ts:1653",
-        "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1005"
+        "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1005",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "0150c6a53b409ba3bcb45645709b649cf8708354",
@@ -1433,9 +1437,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "packages/contracts/src/settings.ts:203",
-        "apps/server/src/git/Layers/GitCore.ts:1653"
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "126afb56fca56c663f4f40acd46f123ab27eee2b",
@@ -2831,8 +2839,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "6",
-      "evidence": ["apps/web/src/components/settings/ProjectSettingsScope.tsx:23"],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "2433f4c1c01cf9e9eca983c9aeec375524e29273",
@@ -3375,9 +3389,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "packages/shared/src/projectSettings.ts:12",
-        "apps/server/src/wsServer.test.ts:1897"
+        "apps/server/src/wsServer.test.ts:1897",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "2c16c1d264173d86fc354e9a4c0c78cd42e514b7",
@@ -8659,9 +8677,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/server/src/project/projectSettings.ts:10",
-        "packages/shared/src/checkedInProjectFile.ts:103"
+        "packages/shared/src/checkedInProjectFile.ts:103",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "7441b36926eb111a193183f98c06aced4f4c3acf",
@@ -9809,9 +9831,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:38",
-        "apps/web/src/hooks/useHandleNewThread.test.ts:51"
+        "apps/web/src/hooks/useHandleNewThread.test.ts:51",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "850e4582e4c828b1533a400bf56a532721239198",
@@ -10247,9 +10273,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
-        "apps/web/src/routes/_chat.settings.tsx:1"
+        "apps/web/src/routes/_chat.settings.tsx:1",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
@@ -11791,9 +11821,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "packages/contracts/src/settings.ts:203",
-        "packages/shared/src/projectSettings.test.ts:41"
+        "packages/shared/src/projectSettings.test.ts:41",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "9f73ca3677faa975be00f0ac55460279671df726",
@@ -13882,9 +13916,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/server/src/git/Layers/GitCore.ts:1653",
-        "apps/server/src/git/Layers/GitCore.test.ts:1"
+        "apps/server/src/git/Layers/GitCore.test.ts:1",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "be53bbd85044e937c359a89b6004c3d3c38ffcf1",
@@ -14708,9 +14746,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
-        "apps/web/src/routes/-_chat.settings.browser.tsx:408"
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "c8f77e0d441264efb0acfac312e852c81ae3da83",
@@ -15101,9 +15143,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:1",
-        "apps/web/src/composerDraftStore.ts:1094"
+        "apps/web/src/composerDraftStore.ts:1094",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "cf251c3bd00ff0e0cc90a78b20c043cf58f330ad",
@@ -16029,8 +16075,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "6",
-      "evidence": ["apps/web/src/components/settings/ProjectSettingsScope.tsx:23"],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "dbc7bfa3f36cc61a3f1a2015e47d71ae9dee5421",
@@ -16544,9 +16596,13 @@
       "plannedWorkstream": "6",
       "evidence": [
         "apps/web/src/components/settings/ProjectSettingsScope.tsx:80",
-        "apps/web/src/routes/-_chat.settings.browser.tsx:408"
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
       ],
-      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "e25021af767b10c560862fcec714cf67fb22cfae",
