@@ -1,3 +1,4 @@
+import { resolveTextGenerationProvider } from "./serverSettings";
 import {
   DEFAULT_SERVER_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
@@ -26,7 +27,10 @@ export function resolveProjectSettings(input: {
     let value: unknown = global[key];
     let source: ProjectSettingsResult["sources"][typeof key] = input.global ? "global" : "default";
     if (input.checkedIn?.[key] !== undefined) {
-      value = input.checkedIn[key];
+      value =
+        key === "sourceControlWriting"
+          ? { ...global.sourceControlWriting, ...input.checkedIn.sourceControlWriting }
+          : input.checkedIn[key];
       source = input.sourceFile ?? "f5.json";
     }
     if (key === "defaultThreadEnvMode" && input.legacyEnvMode != null) {
@@ -34,11 +38,17 @@ export function resolveProjectSettings(input: {
       source = "legacy-project";
     }
     if (overrides[key] !== undefined) {
-      value = overrides[key];
+      value =
+        key === "sourceControlWriting"
+          ? {
+              ...(value as ServerSettings["sourceControlWriting"]),
+              ...overrides.sourceControlWriting,
+            }
+          : overrides[key];
       source = "project";
     }
     Object.assign(settings, { [key]: value });
     Object.assign(sources, { [key]: source });
   }
-  return { settings, sources, overrides };
+  return { settings: resolveTextGenerationProvider(settings), sources, overrides };
 }

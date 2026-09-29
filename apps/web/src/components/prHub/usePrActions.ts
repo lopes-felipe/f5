@@ -109,6 +109,9 @@ export function usePrActions(
   } = {},
 ): UsePrActionsResult {
   const { settings, updateSettings } = useAppSettings();
+  const mergeLookup = useRef(false);
+  const currentPrKey = useRef(pr.key);
+  currentPrKey.current = pr.key;
   const globalMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
   const [projectMergeMethod, setProjectMergeMethod] = useState<{
     key: string;
@@ -376,8 +379,12 @@ export function usePrActions(
       onComment: () => setPendingAction("comment"),
       onRequestChanges: () => setPendingAction("requestChanges"),
       onMerge: () => {
-        if (busy.current) return;
-        busy.current = true;
+        if (busy.current) {
+          toastManager.add({ type: "info", title: "Wait for the current PR action to finish" });
+          return;
+        }
+        if (mergeLookup.current) return;
+        mergeLookup.current = true;
         void (async () => {
           try {
             const candidates = await ensureNativeApi().prHub.resolveLocalCheckout({ key: pr.key });
@@ -393,16 +400,21 @@ export function usePrActions(
                 ? (await ensureNativeApi().server.getProjectSettings({ projectId: ids[0]! }))
                     .settings.prHubDefaultMergeMethod
                 : globalMergeMethod;
+            if (currentPrKey.current !== pr.key) return;
             setProjectMergeMethod({ key: pr.key, method });
             setPendingAction("merge");
-          } catch (error) {
+          } catch {
+            if (currentPrKey.current !== pr.key) return;
+            setProjectMergeMethod({ key: pr.key, method: globalMergeMethod });
+            setPendingAction("merge");
             toastManager.add({
-              type: "error",
-              title: "Could not load merge preferences",
-              description: error instanceof Error ? error.message : String(error),
+              type: "info",
+              title: "Using global merge preferences",
+              description:
+                "Project preferences could not be loaded. You can choose the merge method below.",
             });
           } finally {
-            busy.current = false;
+            mergeLookup.current = false;
           }
         })();
       },

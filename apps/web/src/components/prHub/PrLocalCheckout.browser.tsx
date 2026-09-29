@@ -15,6 +15,7 @@ import { usePrActions } from "./usePrActions";
 import { PrActionDialogs } from "./PrActionDialogs";
 const api = vi.hoisted(() => ({
   resolve: vi.fn(),
+  projectSettings: vi.fn(),
   dispatch: vi.fn(),
   start: vi.fn(),
   pick: vi.fn(),
@@ -22,9 +23,9 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
-    prHub: { resolveLocalCheckout: api.resolve },
+    prHub: { resolveLocalCheckout: api.resolve, getFiles: async () => ({ comparison: null }) },
     dialogs: { pickFolder: api.pick },
-    server: { getConfig: async () => ({ providers: [] }) },
+    server: { getConfig: async () => ({ providers: [] }), getProjectSettings: api.projectSettings },
     orchestration: { dispatchCommand: api.dispatch },
   }),
 }));
@@ -99,6 +100,7 @@ function Harness() {
   const actions = usePrActions(pr);
   return (
     <>
+      <button onClick={actions.handlers.onMerge}>Choose merge</button>
       <button onClick={actions.handlers.onOpenInF5}>Open in F5</button>
       <button onClick={actions.handlers.onRunInF5}>Address comments</button>
       <PrActionDialogs {...actions.dialogProps} />
@@ -268,3 +270,19 @@ it("fails immediately when a registered project disappeared from the store", asy
     "no longer exists",
   );
 });
+
+it.each(["checkout", "settings"])(
+  "opens merge with global preferences after a failed %s lookup",
+  async (failure) => {
+    if (failure === "checkout") api.resolve.mockRejectedValueOnce(new Error("offline"));
+    else {
+      api.resolve.mockResolvedValueOnce([
+        { ...candidate, projectId: ProjectId.makeUnsafe("project") },
+      ]);
+      api.projectSettings.mockRejectedValueOnce(new Error("offline"));
+    }
+    active = await render(<Harness />);
+    await page.getByRole("button", { name: "Choose merge" }).click();
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+  },
+);

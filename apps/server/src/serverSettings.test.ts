@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Schema, Stream } from "effect";
+import { Exit, Effect, FileSystem, Layer, Schema, Stream } from "effect";
 import { ServerConfig } from "./config.ts";
 import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 import {
@@ -29,6 +29,61 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "keeps the old browser streaming default until a client or global edit records a choice",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          config.settingsPath!,
+          JSON.stringify({ enableAssistantStreaming: false }),
+        );
+        assert.equal((yield* service.getSettings).enableAssistantStreaming, true);
+        yield* service.updateSettings({ enableAssistantStreaming: false });
+        assert.equal((yield* service.getSettings).enableAssistantStreaming, false);
+        assert.equal(
+          (yield* service.migrateClientSetting({ key: "enableAssistantStreaming", value: true }))
+            .applied,
+          false,
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect(
+    "preserves global settings with a malformed project override and leaves the file untouched",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const config = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const raw = JSON.stringify({
+          defaultRuntimeMode: "approval-required",
+          gitAuthorName: "Keep me",
+          projectSettingsOverrides: {
+            broken: { worktreeSubmodules: "future-mode" },
+            good: { worktreeSubmodules: "shallow" },
+          },
+        });
+        yield* fs.writeFileString(config.settingsPath!, raw);
+        const settings = yield* service.getSettings;
+        assert.equal(settings.gitAuthorName, "Keep me");
+        assert.equal(settings.defaultRuntimeMode, "approval-required");
+        assert.equal(
+          settings.projectSettingsOverrides["good" as never]?.worktreeSubmodules,
+          "shallow",
+        );
+        assert.equal(
+          settings.projectSettingsOverrides["broken" as never]?.defaultRuntimeMode,
+          "approval-required",
+        );
+        const result = yield* Effect.exit(
+          service.updateSettings({ gitAuthorName: "Must not overwrite" }),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        assert.equal(yield* fs.readFileString(config.settingsPath!), raw);
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect(
     "migrates a browser default once under concurrent clients and persists the winner",
     () =>

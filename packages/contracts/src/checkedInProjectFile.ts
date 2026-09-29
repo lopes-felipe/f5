@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 
 import { ProjectId, TrimmedNonEmptyString } from "./baseSchemas";
-import { ProjectSettingsOverrides, WorktreeSubmodules } from "./settings";
+import { ProjectSettingsOverrides } from "./settings";
 import { ThreadEnvMode } from "./threadEnvMode";
 
 export const F5_PROJECT_FILE_NAME = "f5.json";
@@ -54,7 +54,6 @@ export type ProjectGetCheckedInConfigInput = typeof ProjectGetCheckedInConfigInp
 export const ProjectCheckedInConfig = Schema.Struct({
   projectId: ProjectId,
   settings: Schema.optionalKey(ProjectSettingsOverrides),
-  worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   sourceFile: Schema.NullOr(CheckedInProjectFileName),
   defaultThreadEnvMode: Schema.NullOr(ThreadEnvMode),
   iconPath: Schema.NullOr(CheckedInProjectIconPath),

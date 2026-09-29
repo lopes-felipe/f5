@@ -1,12 +1,13 @@
-import { constants } from "node:fs";
-import * as Fs from "node:fs/promises";
 import Path from "node:path";
 import { Effect } from "effect";
 import { type ProjectId, type ServerSettings, type ThreadEnvMode } from "@t3tools/contracts";
-import { parseCheckedInProjectFile } from "@t3tools/shared/checkedInProjectFile";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { makeWorkspaceAssetAuthorizer } from "../WorkspaceAssetAuthorizer";
+import { makeCheckedInProjectFileService } from "./CheckedInProjectFileService";
 
-/** Read only bounded regular project files; never execute repository configuration. */
+/** Use the same bounded, symlink-safe reader as the checked-in configuration API.
+ * Only the registered root supplies defaults, including while a worktree is missing.
+ */
 export function readProjectSettings(
   global: ServerSettings,
   project: {
@@ -14,40 +15,21 @@ export function readProjectSettings(
     workspaceRoot: string;
     defaultEnvMode?: ThreadEnvMode | null | undefined;
   },
-  cwd = project.workspaceRoot,
 ) {
   return Effect.promise(async () => {
-    for (const sourceFile of ["f5.json", "t3.json"] as const) {
-      let handle: Fs.FileHandle | undefined;
-      try {
-        const file = Path.join(cwd, sourceFile);
-        const before = await Fs.lstat(file);
-        if (!before.isFile() || before.size > 65536) break;
-        handle = await Fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-        const stat = await handle.stat();
-        if (stat.ino !== before.ino || stat.dev !== before.dev || stat.size > 65536) break;
-        const buffer = Buffer.alloc(65537);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-        if (bytesRead > 65536) break;
-        const parsed = parseCheckedInProjectFile(buffer.subarray(0, bytesRead).toString("utf8"));
-        return resolveProjectSettings({
-          global,
-          projectId: project.id,
-          legacyEnvMode: project.defaultEnvMode ?? null,
-          checkedIn: parsed.settings ?? {},
-          sourceFile,
-        });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        break;
-      } finally {
-        await handle?.close();
-      }
-    }
+    const files = makeCheckedInProjectFileService(
+      makeWorkspaceAssetAuthorizer({
+        resolveProjectWorkspaceRoot: async (id) =>
+          id === project.id ? project.workspaceRoot : null,
+      }),
+    );
+    const config = await files.load(project.id);
     return resolveProjectSettings({
       global,
       projectId: project.id,
       legacyEnvMode: project.defaultEnvMode ?? null,
+      checkedIn: config.settings ?? {},
+      sourceFile: config.sourceFile,
     });
   });
 }

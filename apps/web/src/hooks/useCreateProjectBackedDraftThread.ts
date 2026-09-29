@@ -1,5 +1,17 @@
+import { providerSelectionsToModelOptions } from "../providerModelOptions";
+import { inferProviderForModel } from "@t3tools/shared/model";
+import {
+  cachedGlobalDraftSettings,
+  defaultDraftRuntimeMode,
+  rememberDraftSettings,
+} from "../lib/draftSettingsDefaults";
 import { ensureNativeApi } from "../nativeApi";
-import { type ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  isKnownProviderKind,
+  type ProjectId,
+  type ServerSettings,
+  ThreadId,
+} from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 
@@ -38,11 +50,26 @@ export interface CreateProjectBackedDraftThreadResult {
 export function seedDraftThreadFromModelPreferences(
   threadId: ThreadId,
   projectId?: ProjectId,
+  serverSettings = cachedGlobalDraftSettings(),
 ): void {
   const project = useStore.getState().projects.find((entry) => entry.id === projectId);
+  if (project?.defaultModelSelection) {
+    const selection = project.defaultModelSelection;
+    const driver =
+      serverSettings.providerInstances[selection.instanceId]?.driver ?? selection.instanceId;
+    const provider = isKnownProviderKind(driver)
+      ? driver
+      : inferProviderForModel(selection.model, "codex");
+    const draft = useComposerDraftStore.getState();
+    draft.setProvider(threadId, provider);
+    draft.setProviderInstance(threadId, selection.instanceId);
+    draft.setModel(threadId, selection.model);
+    draft.setModelOptions(threadId, providerSelectionsToModelOptions(provider, selection.options));
+    return;
+  }
   if (project?.defaultModel) {
     const draft = useComposerDraftStore.getState();
-    draft.setProvider(threadId, "codex");
+    draft.setProvider(threadId, inferProviderForModel(project.defaultModel, "codex"));
     draft.setModel(threadId, project.defaultModel);
     return;
   }
@@ -91,6 +118,16 @@ export async function createProjectBackedDraftThread({
   routeThreadId,
   updateSettings,
 }: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult> {
+  let resolvedSettings: ServerSettings | undefined;
+  let runtimeMode = defaultDraftRuntimeMode(projectId);
+  try {
+    resolvedSettings = (await ensureNativeApi().server.getProjectSettings({ projectId })).settings;
+    rememberDraftSettings(resolvedSettings, projectId);
+    runtimeMode = resolvedSettings.defaultRuntimeMode;
+  } catch {
+    // Local draft creation remains available while reconnecting.
+  }
+  // Re-read drafts after the await: concurrent clicks must reuse the first draft.
   const {
     getDraftThread,
     getDraftThreadByProjectId,
@@ -176,10 +213,9 @@ export async function createProjectBackedDraftThread({
     branch: options?.branch ?? null,
     worktreePath: options?.worktreePath ?? null,
     envMode: requestedEnvMode,
-    runtimeMode: (await ensureNativeApi().server.getProjectSettings({ projectId })).settings
-      .defaultRuntimeMode,
+    runtimeMode,
   });
-  seedDraftThreadFromModelPreferences(threadId, projectId);
+  seedDraftThreadFromModelPreferences(threadId, projectId, resolvedSettings);
   maybeMarkOnboardingLiteCompleted(projectId, threadId, onboardingLiteStatus, updateSettings);
 
   await navigate({

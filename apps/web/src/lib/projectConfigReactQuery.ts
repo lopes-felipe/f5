@@ -1,7 +1,9 @@
+import { cachedGlobalDraftSettings } from "./draftSettingsDefaults";
+import { useStore } from "../store";
 import type { ProjectId, ThreadEnvMode } from "@t3tools/contracts";
 import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { nonDefaultThreadEnvMode, resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
+import { nonDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 
 import { projectSettingsQueryOptions } from "./projectSettingsQuery";
 import { migrateLegacyClientSetting } from "../hooks/useMigrateClientSettings";
@@ -21,24 +23,14 @@ export interface ResolveProjectThreadEnvModeOptions {
   readonly forceNonDefault?: boolean;
 }
 
-export function resolveProjectThreadEnvModeImmediately(input: {
-  readonly options: ResolveProjectThreadEnvModeOptions;
-  readonly projectDefault: ThreadEnvMode | null;
-  readonly cachedConfigDefault: ThreadEnvMode | null;
-  readonly globalDefault: ThreadEnvMode;
-  readonly prefetchConfig: () => void;
-}): ThreadEnvMode {
-  let configDefault: ThreadEnvMode | null = null;
-  if (input.options.requested === undefined && input.projectDefault === null) {
-    configDefault = input.cachedConfigDefault;
-    if (configDefault === null) input.prefetchConfig();
-  }
-  const resolved = resolveThreadEnvMode({
-    requested: input.options.requested,
-    projectDefault: input.projectDefault,
-    globalDefault: configDefault ?? input.globalDefault,
-  });
-  return input.options.forceNonDefault ? nonDefaultThreadEnvMode(resolved) : resolved;
+export function resolveCachedProjectThreadEnvMode(projectId: ProjectId): ThreadEnvMode {
+  const global = cachedGlobalDraftSettings();
+  const project = useStore.getState().projects.find((p) => p.id === projectId);
+  return (
+    global.projectSettingsOverrides[projectId]?.defaultThreadEnvMode ??
+    project?.defaultEnvMode ??
+    global.defaultThreadEnvMode
+  );
 }
 
 export function useProjectThreadEnvModeResolver() {
@@ -52,8 +44,20 @@ export function useProjectThreadEnvModeResolver() {
         return options.forceNonDefault
           ? nonDefaultThreadEnvMode(options.requested)
           : options.requested;
-      await migrateLegacyClientSetting();
-      const { settings } = await queryClient.fetchQuery(projectSettingsQueryOptions(projectId));
+      await migrateLegacyClientSetting().catch(() => undefined);
+      const { settings } = await queryClient
+        .fetchQuery(projectSettingsQueryOptions(projectId))
+        .catch(() => {
+          const cached = queryClient.getQueryData(projectSettingsQueryOptions(projectId).queryKey);
+          if (cached) return cached;
+          const global = cachedGlobalDraftSettings();
+          return {
+            settings: {
+              ...global,
+              defaultThreadEnvMode: resolveCachedProjectThreadEnvMode(projectId),
+            },
+          };
+        });
       return options.forceNonDefault
         ? nonDefaultThreadEnvMode(settings.defaultThreadEnvMode)
         : settings.defaultThreadEnvMode;

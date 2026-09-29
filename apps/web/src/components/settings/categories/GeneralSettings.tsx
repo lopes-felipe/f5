@@ -66,6 +66,21 @@ export function GeneralSettings() {
             <option value="recursive">Recursive</option>
           </select>
         </label>
+        {(settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
+          settings.worktreeSubmodules !== defaults.worktreeSubmodules) && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              updateSettings({
+                defaultRuntimeMode: defaults.defaultRuntimeMode,
+                worktreeSubmodules: defaults.worktreeSubmodules,
+              })
+            }
+          >
+            Restore default
+          </Button>
+        )}
       </section>
       {typeof window !== "undefined" && window.desktopBridge && (
         <section className="rounded-2xl border border-border bg-card p-5">

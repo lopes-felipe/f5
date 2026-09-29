@@ -4476,10 +4476,10 @@ const make = Effect.gen(function* () {
       const global = yield* serverSettings.getSettings;
       const model = yield* orchestrationEngine.getReadModel();
       const thread = model.threads.find((t) => t.id === event.payload.threadId);
-      const project = model.projects.find((p) => p.id === thread?.projectId);
-      const resolved = project
-        ? yield* readProjectSettings(global, project, thread?.worktreePath ?? project.workspaceRoot)
-        : null;
+      const project = model.projects.find(
+        (p) => p.id === thread?.projectId && p.deletedAt === null,
+      );
+      const resolved = project ? yield* readProjectSettings(global, project) : null;
       const projectControlsStreaming =
         resolved &&
         ["project", "f5.json", "t3.json"].includes(resolved.sources.enableAssistantStreaming);

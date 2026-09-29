@@ -197,6 +197,17 @@ export const SourceControlWritingSettings = Schema.Struct({
 });
 export type SourceControlWritingSettings = typeof SourceControlWritingSettings.Type;
 
+const SourceControlWritingSettingsPatch = Schema.Struct({
+  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
+  commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
+  commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
+  prBodyTemplate: Schema.optionalKey(Schema.String),
+  branchNamePrefix: Schema.optionalKey(Schema.String),
+  customInstructions: Schema.optionalKey(Schema.String),
+  generateCommitMessages: Schema.optionalKey(Schema.Boolean),
+  generatePrContent: Schema.optionalKey(Schema.Boolean),
+});
+
 export const WorktreeSubmodules = Schema.Literals(["none", "shallow", "recursive"]);
 export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
 
@@ -205,7 +216,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
-  sourceControlWriting: Schema.optionalKey(SourceControlWritingSettings),
+  sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   prHubDefaultMergeMethod: Schema.optionalKey(
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
@@ -226,7 +237,7 @@ export const ServerSettings = Schema.Struct({
   ),
   gitAuthorName: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   gitAuthorEmail: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
@@ -349,17 +360,6 @@ const GrokSettingsPatch = Schema.Struct({
 const PrHubSettingsPatch = Schema.Struct({
   pollIntervalSeconds: Schema.optionalKey(PrHubPollIntervalSeconds),
   excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
-});
-
-const SourceControlWritingSettingsPatch = Schema.Struct({
-  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
-  commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
-  commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
-  prBodyTemplate: Schema.optionalKey(Schema.String),
-  branchNamePrefix: Schema.optionalKey(Schema.String),
-  customInstructions: Schema.optionalKey(Schema.String),
-  generateCommitMessages: Schema.optionalKey(Schema.Boolean),
-  generatePrContent: Schema.optionalKey(Schema.Boolean),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

@@ -221,6 +221,7 @@ function mapProjectsFromReadModel(
       id: project.id,
       name: project.title,
       defaultModel: project.defaultModel,
+      defaultModelSelection: project.defaultModelSelection,
       cwd: project.workspaceRoot,
       model:
         existing?.model ??

@@ -84,6 +84,10 @@ export type ListProjectionThreadsByProjectInput = typeof ListProjectionThreadsBy
  * ProjectionThreadRepositoryShape - Service API for projected thread records.
  */
 export interface ProjectionThreadRepositoryShape {
+  /** Active project references for one exact worktree path, without loading transcripts. */
+  readonly listProjectIdsByWorktreePath: (
+    worktreePath: string,
+  ) => Effect.Effect<ReadonlyArray<ProjectId>, ProjectionRepositoryError>;
   /**
    * Insert or replace a projected thread row.
    *

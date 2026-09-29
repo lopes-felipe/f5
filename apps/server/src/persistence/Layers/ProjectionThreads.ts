@@ -1,3 +1,4 @@
+import { ProjectId } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { Effect, Layer, Schema, Struct } from "effect";
@@ -250,7 +251,19 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("ProjectionThreadRepository.deleteById:query")),
     );
 
+  const listProjectIdsByWorktreePath: ProjectionThreadRepositoryShape["listProjectIdsByWorktreePath"] =
+    (worktreePath) =>
+      sql<{
+        projectId: string;
+      }>`SELECT DISTINCT project_id AS "projectId" FROM projection_threads WHERE worktree_path = ${worktreePath} AND deleted_at IS NULL`.pipe(
+        Effect.map((rows) => rows.map((row) => ProjectId.makeUnsafe(row.projectId))),
+        Effect.mapError(
+          toPersistenceSqlError("ProjectionThreadRepository.listProjectIdsByWorktreePath:query"),
+        ),
+      );
+
   return {
+    listProjectIdsByWorktreePath,
     upsert,
     getById,
     listByProjectId,

@@ -1647,33 +1647,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       const model = yield* orchestrationEngine.getReadModel();
       const linked = model.threads.find((t) => t.worktreePath === workspace && !t.deletedAt);
       const project = linked
-        ? model.projects.find((p) => p.id === linked.projectId)
+        ? model.projects.find((p) => p.id === linked.projectId && p.deletedAt === null)
         : model.projects
             .filter((p) => !p.deletedAt && isInsideProjectWorkspace(p.workspaceRoot, workspace))
             .sort((a, b) => b.workspaceRoot.length - a.workspaceRoot.length)[0];
-      return project
-        ? (yield* readProjectSettings(
-            global,
-            project,
-            linked?.worktreePath ?? project.workspaceRoot,
-          )).settings
-        : global;
+      return project ? (yield* readProjectSettings(global, project)).settings : global;
     });
   const createConfiguredWorktree: typeof git.createWorktree = (input) =>
     Effect.gen(function* () {
-      const settings = yield* settingsForWorkspace(input.cwd);
+      const settings = yield* settingsForWorkspace(input.cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "createWorktree",
+              cwd: input.cwd,
+              command: "resolve project settings",
+              detail: cause.message,
+            }),
+        ),
+      );
       return yield* git.createWorktree({ ...input, submodules: settings.worktreeSubmodules });
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new GitCommandError({
-            operation: "createWorktree",
-            cwd: input.cwd,
-            command: "git worktree add",
-            detail: cause.message,
-          }),
-      ),
-    );
+    });
+
   const checkedInProjectFileService = makeCheckedInProjectFileService(workspaceAssetAuthorizer);
   const projectContentSearchManager = makeProjectContentSearchManager();
   const unregisterWorkspaceContentInvalidator = registerWorkspaceContentIndexInvalidator(
@@ -1847,7 +1842,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           if (event.type.startsWith("project.")) profileReadCache = undefined;
-          if (event.type === "project.deleted") {
+          if (
+            event.type === "project.deleted" &&
+            Object.hasOwn(
+              (yield* serverSettings.getSettings).projectSettingsOverrides,
+              event.aggregateId,
+            )
+          ) {
             yield* serverSettings
               .updateSettings({ projectSettingsOverrides: { [event.aggregateId]: null } })
               .pipe(

@@ -405,6 +405,45 @@ describe("settings route", () => {
     });
   });
 
+  it("lists runtime providers and resets model options when switching the project text-generation account", async () => {
+    const { screen } = await renderSettingsRoute(`/settings?project=${PROJECT_ONE}`, {
+      serverConfig: {
+        providers: [createTestServerProvider("codex"), createTestServerProvider("claudeAgent")],
+        settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          projectSettingsOverrides: {
+            [PROJECT_ONE]: {
+              textGenerationModelSelection: {
+                instanceId: "codex" as never,
+                model: "gpt-5.4",
+                options: [{ id: "reasoningEffort", value: "high" }],
+              },
+            },
+          },
+        },
+      },
+    });
+    try {
+      await page
+        .getByRole("combobox", { name: "Text generation provider" })
+        .selectOptions("claudeAgent");
+      await vi.waitFor(() =>
+        expect(nativeApiRef.current!.server.updateSettings).toHaveBeenCalledWith({
+          projectSettingsOverrides: {
+            [PROJECT_ONE]: {
+              textGenerationModelSelection: {
+                instanceId: "claudeAgent",
+                model: "claude-haiku-4-5",
+              },
+            },
+          },
+        }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("searches project scopes and keeps the selected scope in the URL", async () => {
     const { screen, router } = await renderSettingsRoute("/settings");
     try {

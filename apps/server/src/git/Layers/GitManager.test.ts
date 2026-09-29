@@ -1,3 +1,4 @@
+import { PersistenceSqlError } from "../../persistence/Errors";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
@@ -85,6 +86,7 @@ function makeServerConfig(): ServerConfigShape {
 async function makeManager(options?: {
   readonly gitCore?: Partial<GitCoreShape>;
   readonly settings?: Partial<ServerSettings>;
+  readonly projectLookup?: Parameters<typeof makeGitProjectRepositories>[1];
   readonly projects?: readonly ProjectionProject[];
   readonly textGeneration?: Partial<TextGenerationShape>;
   readonly gitHub?: FakeGitHubCliOptions;
@@ -97,7 +99,7 @@ async function makeManager(options?: {
     Layer.succeed(TextGeneration, makeFakeTextGeneration(options?.textGeneration)),
     Layer.succeed(ServerConfig, makeServerConfig()),
     ServerSettingsService.layerTest(options?.settings),
-    makeGitProjectRepositories(options?.projects),
+    makeGitProjectRepositories(options?.projects, options?.projectLookup),
     NodeServices.layer,
   );
   const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
@@ -105,6 +107,16 @@ async function makeManager(options?: {
 }
 
 describe("GitManager unit", () => {
+  it("fails before Git mutations when project settings cannot be resolved", async () => {
+    const { manager, git } = await makeManager({
+      projectLookup: () =>
+        Effect.fail(new PersistenceSqlError({ operation: "listAll", detail: "unavailable" })),
+    });
+    await expect(
+      Effect.runPromise(manager.runStackedAction({ cwd, action: "commit", featureBranch: true })),
+    ).rejects.toThrow("unavailable");
+    expect(Object.values(git.calls).flat()).toEqual([]);
+  });
   it("uses the project's writing preferences and text generation account", async () => {
     const projectId = ProjectId.makeUnsafe("git-project");
     const selected = { instanceId: ProviderInstanceId.makeUnsafe("codex"), model: "project-model" };

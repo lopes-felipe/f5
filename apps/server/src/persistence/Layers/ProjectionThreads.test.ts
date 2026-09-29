@@ -25,7 +25,7 @@ layer("ProjectionThreadRepository", (it) => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
-        worktreePath: null,
+        worktreePath: "/managed/worktree",
         latestTurnId: null,
         tasks: [
           {
@@ -60,6 +60,13 @@ layer("ProjectionThreadRepository", (it) => {
 
       const row = yield* repository.getById({ threadId });
       const rows = yield* repository.listByProjectId({ projectId });
+      assert.deepEqual(yield* repository.listProjectIdsByWorktreePath("/managed/worktree"), [
+        projectId,
+      ]);
+      assert.deepEqual(
+        yield* repository.listProjectIdsByWorktreePath("/managed/worktree/other"),
+        [],
+      );
 
       assert.equal(row._tag, "Some");
       if (row._tag !== "Some") {

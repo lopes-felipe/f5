@@ -1,3 +1,9 @@
+import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  isKnownProviderKind,
+  type ProviderKind,
+} from "@t3tools/contracts";
 import {
   Combobox,
   ComboboxInput,
@@ -11,14 +17,12 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ProjectId,
-  ProviderInstanceId,
   type ProjectSettingsOverrides,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
 import { projectSettingsQueryOptions } from "../../lib/projectSettingsQuery";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { useSettings } from "../../hooks/useSettings";
 
 export function SettingsScopePicker({
   projectId,
@@ -82,7 +86,8 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
   const query = useQuery(projectSettingsQueryOptions(projectId));
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
-  const global = useSettings();
+  const providerQuery = useQuery(serverConfigQueryOptions());
+  const providers = (providerQuery.data?.providers ?? []).filter((provider) => provider.enabled);
   if (query.isPending) return <p className="p-6">Loading project settings…</p>;
   if (!query.data)
     return (
@@ -218,21 +223,26 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
             className="mt-2 rounded-md border border-input bg-background px-3 py-2 text-sm"
             aria-label="Text generation provider"
             value={settings.textGenerationModelSelection.instanceId}
-            onChange={(e) =>
-              set("textGenerationModelSelection", {
-                ...settings.textGenerationModelSelection,
-                instanceId: ProviderInstanceId.makeUnsafe(e.target.value),
-              })
-            }
+            onChange={(e) => {
+              const provider = providers.find((entry) => entry.instanceId === e.target.value);
+              if (!provider) return;
+              const model =
+                provider.models[0]?.slug ??
+                (isKnownProviderKind(provider.driver)
+                  ? DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver as ProviderKind]
+                  : undefined);
+              if (model)
+                set("textGenerationModelSelection", { instanceId: provider.instanceId, model });
+            }}
           >
-            {Object.entries(global.providerInstances).map(([id, instance]) => (
-              <option key={id} value={id}>
-                {instance.displayName ?? id}
+            {providers.map((provider) => (
+              <option key={provider.instanceId} value={provider.instanceId}>
+                {provider.displayName ?? provider.instanceId}
               </option>
             ))}
-            {!Object.hasOwn(
-              global.providerInstances,
-              settings.textGenerationModelSelection.instanceId,
+            {!providers.some(
+              (provider) =>
+                provider.instanceId === settings.textGenerationModelSelection.instanceId,
             ) && (
               <option value={settings.textGenerationModelSelection.instanceId}>
                 {settings.textGenerationModelSelection.instanceId}
@@ -270,7 +280,7 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
                 checked={settings.sourceControlWriting[key] ?? false}
                 onChange={(e) =>
                   set("sourceControlWriting", {
-                    ...settings.sourceControlWriting,
+                    ...overrides.sourceControlWriting,
                     [key]: e.target.checked,
                   })
                 }
@@ -292,7 +302,7 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
               value={settings.sourceControlWriting.commitMessageStyle}
               onChange={(e) =>
                 set("sourceControlWriting", {
-                  ...settings.sourceControlWriting,
+                  ...overrides.sourceControlWriting,
                   commitMessageStyle: e.target.value as "plain" | "conventional",
                 })
               }
@@ -317,7 +327,7 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
                 onBlur={(e) => {
                   if (e.target.value !== settings.sourceControlWriting[key])
                     set("sourceControlWriting", {
-                      ...settings.sourceControlWriting,
+                      ...overrides.sourceControlWriting,
                       [key]: e.target.value,
                     });
                 }}

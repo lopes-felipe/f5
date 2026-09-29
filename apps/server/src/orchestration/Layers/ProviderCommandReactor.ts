@@ -6,8 +6,6 @@ import {
   CommandId,
   DEFAULT_RUNTIME_MODE,
   DEFAULT_NEW_THREAD_TITLE,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL,
-  DEFAULT_SERVER_SETTINGS,
   defaultInstanceIdForDriver,
   EventId,
   type ModelSelection,
@@ -303,14 +301,8 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const global = yield* serverSettings.getSettings;
       const model = yield* orchestrationEngine.getReadModel();
-      const project = model.projects.find((p) => p.id === thread.projectId);
-      return project
-        ? (yield* readProjectSettings(
-            global,
-            project,
-            thread.worktreePath ?? project.workspaceRoot,
-          )).settings
-        : global;
+      const project = model.projects.find((p) => p.id === thread.projectId && p.deletedAt === null);
+      return project ? (yield* readProjectSettings(global, project)).settings : global;
     });
   const threadModelOptions = new Map<string, ProviderModelOptions>();
 
@@ -1133,20 +1125,14 @@ const make = Effect.gen(function* () {
     const oldBranch = input.branch;
     const cwd = input.worktreePath;
     const attachments = input.attachments ?? [];
-    const writingPreferences = yield* settingsForThread(thread).pipe(
-      Effect.map((settings) => settings.sourceControlWriting),
-      Effect.catch((error) =>
-        Effect.logWarning("failed to read branch writing settings; using defaults", {
-          reason: error.message,
-        }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
-      ),
-    );
+    const settings = yield* settingsForThread(thread);
+    const writingPreferences = settings.sourceControlWriting;
     yield* textGeneration
       .generateBranchName({
         cwd,
         message: input.messageText,
         ...(attachments.length > 0 ? { attachments } : {}),
-        model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        modelSelection: settings.textGenerationModelSelection,
         writingPreferences,
       })
       .pipe(

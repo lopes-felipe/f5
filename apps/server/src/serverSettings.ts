@@ -13,14 +13,10 @@ import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
  * @module ServerSettings
  */
 import {
-  DEFAULT_GIT_TEXT_GENERATION_MODEL,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_SERVER_SETTINGS,
-  isKnownProviderKind,
+  ProjectSettingsOverrides,
   type MigrateClientSettingInput,
   type MigrateClientSettingResult,
-  type ModelSelection,
-  type ProviderKind,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
   ProviderInstanceId,
@@ -52,7 +48,10 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig } from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
-import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import {
+  applyServerSettingsPatch,
+  resolveTextGenerationProvider,
+} from "@t3tools/shared/serverSettings";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore.ts";
 import { ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
 
@@ -209,61 +208,6 @@ export class ServerSettingsService extends ServiceMap.Service<
 
 const ServerSettingsJson = fromLenientJson(ServerSettings);
 
-type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
-
-const getLegacyProviderSettings = (
-  settings: ServerSettings,
-  provider: ProviderKind,
-): LegacyProviderSettings | undefined =>
-  (settings.providers as Record<string, LegacyProviderSettings | undefined>)[provider];
-
-/**
- * Ensure the `textGenerationModelSelection` points to an enabled provider.
- * If the selected provider is disabled, fall back to the first enabled
- * provider with its default model.  This is applied at read-time so the
- * persisted preference is preserved for when a provider is re-enabled.
- */
-function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const selection = settings.textGenerationModelSelection;
-  const instanceConfig = settings.providerInstances[selection.instanceId];
-  if (instanceConfig !== undefined) {
-    return (instanceConfig.enabled ?? true) ? settings : fallbackTextGenerationProvider(settings);
-  }
-
-  if (
-    isKnownProviderKind(selection.instanceId) &&
-    getLegacyProviderSettings(settings, selection.instanceId)?.enabled
-  ) {
-    return settings;
-  }
-
-  return fallbackTextGenerationProvider(settings);
-}
-
-function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
-    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-    return instance === undefined ? provider.enabled : (instance.enabled ?? true);
-  });
-  const fallback =
-    fallbackEntry && isKnownProviderKind(fallbackEntry[0])
-      ? (fallbackEntry[0] as ProviderKind)
-      : undefined;
-  if (!fallback) {
-    return settings;
-  }
-
-  return {
-    ...settings,
-    textGenerationModelSelection: {
-      instanceId: ProviderInstanceId.make(fallback),
-      model:
-        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_GIT_TEXT_GENERATION_MODEL,
-    } satisfies ModelSelection,
-  };
-}
-
 // Values under these keys are compared as a whole — never stripped field-by-field.
 const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
   "textGenerationModelSelection",
@@ -358,10 +302,40 @@ const makeServerSettings = Effect.gen(function* () {
     if (decoded._tag === "Failure") {
       const issues = Cause.pretty(decoded.cause);
       yield* Ref.set(decodeFailureRef, issues);
-      yield* Effect.logWarning("failed to parse settings.json, using defaults", {
+      yield* Effect.logWarning("failed to parse settings.json; writes blocked until repaired", {
         path: settingsPath,
         issues,
       });
+      // Keep writes blocked and the original file intact, but do not discard
+      // valid global settings because one project was written by a newer version.
+      const parsed = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown))(raw);
+      if (
+        Exit.isSuccess(parsed) &&
+        parsed.value &&
+        typeof parsed.value === "object" &&
+        !Array.isArray(parsed.value)
+      ) {
+        const document = parsed.value as Record<string, unknown>;
+        const overrides = document.projectSettingsOverrides;
+        if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
+          const safe = Object.fromEntries(
+            Object.entries(overrides).map(([id, entry]) => {
+              const value = Schema.decodeUnknownExit(ProjectSettingsOverrides)(entry);
+              return [
+                id,
+                Exit.isSuccess(value)
+                  ? value.value
+                  : { defaultRuntimeMode: "approval-required", worktreeSubmodules: "none" },
+              ];
+            }),
+          );
+          const recovered = Schema.decodeUnknownExit(ServerSettings)({
+            ...document,
+            projectSettingsOverrides: safe,
+          });
+          if (Exit.isSuccess(recovered)) return recovered.value;
+        }
+      }
       return DEFAULT_SERVER_SETTINGS;
     }
     const rawJson = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown))(raw);
@@ -375,7 +349,11 @@ const makeServerSettings = Effect.gen(function* () {
         : {};
     yield* Ref.set(decodeFailureRef, null);
     yield* Ref.set(unknownFieldsRef, unknownFields);
-    return decoded.value;
+    // Before Phase 6 the browser owned streaming and defaulted to true;
+    // an unmarked server false was an unused default, not the browser choice.
+    return decoded.value.clientSettingMigrations.enableAssistantStreaming
+      ? decoded.value
+      : { ...decoded.value, enableAssistantStreaming: true };
   });
 
   const settingsCache = yield* Cache.make<typeof cacheKey, ServerSettings, ServerSettingsError>({
@@ -643,6 +621,13 @@ const makeServerSettings = Effect.gen(function* () {
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
+          const migratedKeys = ["defaultThreadEnvMode", "enableAssistantStreaming"] as const;
+          const markers = Object.fromEntries(
+            migratedKeys
+              .filter((key) => patch[key] !== undefined)
+              .map((key) => [key, new Date().toISOString()]),
+          );
+
           yield* Effect.try({
             try: () => {
               for (const instance of Object.values(patch.providerInstances ?? {})) {
@@ -686,7 +671,10 @@ const makeServerSettings = Effect.gen(function* () {
             current,
             applyServerSettingsPatch(current, patch),
           );
-          const next = yield* Schema.decodeEffect(ServerSettings)(prepared.settings).pipe(
+          const next = yield* Schema.decodeEffect(ServerSettings)({
+            ...prepared.settings,
+            clientSettingMigrations: { ...prepared.settings.clientSettingMigrations, ...markers },
+          }).pipe(
             Effect.mapError(
               (cause) =>
                 new ServerSettingsError({

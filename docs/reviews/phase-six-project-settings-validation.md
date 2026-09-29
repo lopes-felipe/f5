@@ -20,3 +20,11 @@ Validation commands:
 The test command removes the host agent's injected profile/Git configuration so disposable repository fixtures use their own configuration. Real Git mutation tests use temporary repositories. Browser tests use synthetic server fixtures; the WebSocket integration test exercises the real server's project resolution, updates and pruning.
 
 No benchmark threshold is changed by this PR. It does not claim a performance improvement or implement the remaining Phase 2 work.
+
+## PR review follow-up
+
+Re-ran every required gate after the review fixes: formatting, lint (10 existing warnings, no errors), typecheck, the full workspace/integration suite and 133-test real-Git matrix, all **503 browser tests**, and mandatory online ledger validation passed. An initial concurrent run hit the known checkpoint replay-test timeout; the final full run passed without another gate running alongside it.
+
+Added regression coverage for root-based worktree recreation policies, branch-generation account selection, partial writing inheritance, disabled-provider fallback, provider/model reset in the UI, concurrent draft creation, failed settings lookups, preserved cached permissions, PR-dialog lookup failures, streaming migration/defaults, targeted worktree membership reads, and malformed override recovery. Restored the existing thread-title preference.
+
+Retained the explicitly approved checked-in precedence and recursive submodule default. See the user guide's trust/failure-handling section. Unknown offline draft permissions are conservative; no permissive default is substituted on lookup failure.

@@ -138,6 +138,7 @@ export interface TurnDiffSummary {
 
 export interface Project {
   defaultModel?: string | null;
+  defaultModelSelection?: ModelSelection | null | undefined;
   id: ProjectId;
   name: string;
   cwd: string;

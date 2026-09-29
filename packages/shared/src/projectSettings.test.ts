@@ -2,6 +2,7 @@ import legacySettings from "./fixtures/server-settings-290d261c9.json";
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import { DEFAULT_SERVER_SETTINGS, ProjectId, ServerSettings } from "@t3tools/contracts";
+import { parseCheckedInProjectFile } from "./checkedInProjectFile";
 import { resolveProjectSettings } from "./projectSettings";
 import { applyServerSettingsPatch } from "./serverSettings";
 const id = ProjectId.makeUnsafe("project-test");
@@ -37,6 +38,55 @@ describe("project settings", () => {
     expect(result.settings.prHubDefaultMergeMethod).toBeNull();
     expect(result.settings.enableAssistantStreaming).toBe(false);
     expect(result.sources.defaultRuntimeMode).toBe("global");
+  });
+  it("inherits unspecified writing fields across file and project patches", () => {
+    const global = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriting: {
+        ...DEFAULT_SERVER_SETTINGS.sourceControlWriting,
+        customInstructions: "Keep my instructions",
+        branchNamePrefix: "team/",
+        generatePrContent: false,
+      },
+    };
+    const file = parseCheckedInProjectFile(
+      JSON.stringify({ sourceControlWriting: { commitMessageStyle: "conventional" } }),
+    );
+    const settings = applyServerSettingsPatch(global, {
+      projectSettingsOverrides: {
+        [id]: { sourceControlWriting: { commitMessageIncludeBody: false } },
+      },
+    });
+    expect(
+      resolveProjectSettings({
+        projectId: id,
+        global: settings,
+        checkedIn: file.settings ?? {},
+        sourceFile: "f5.json",
+      }).settings.sourceControlWriting,
+    ).toMatchObject({
+      customInstructions: "Keep my instructions",
+      branchNamePrefix: "team/",
+      generatePrContent: false,
+      commitMessageStyle: "conventional",
+      commitMessageIncludeBody: false,
+    });
+  });
+  it("falls back from a disabled project text-generation account without changing its stored choice", () => {
+    const global = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      providers: { claudeAgent: { enabled: false } },
+      projectSettingsOverrides: {
+        [id]: {
+          textGenerationModelSelection: {
+            instanceId: "claudeAgent" as never,
+            model: "claude-haiku-4-5",
+          },
+        },
+      },
+    });
+    const resolved = resolveProjectSettings({ global, projectId: id });
+    expect(resolved.settings.textGenerationModelSelection.instanceId).toBe("codex");
+    expect(resolved.overrides.textGenerationModelSelection?.instanceId).toBe("claudeAgent");
   });
   it("replaces one project entry and resets without altering other projects", () => {
     const other = ProjectId.makeUnsafe("other");

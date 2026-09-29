@@ -342,16 +342,23 @@ export function makeFakeTextGeneration(
   };
 }
 
-export const makeGitProjectRepositories = (projects: readonly ProjectionProject[] = []) =>
+export const makeGitProjectRepositories = (
+  projects: readonly ProjectionProject[] = [],
+  listAll: () => Effect.Effect<
+    readonly ProjectionProject[],
+    import("../persistence/Errors").ProjectionRepositoryError
+  > = () => Effect.succeed(projects),
+) =>
   Layer.mergeAll(
     Layer.succeed(ProjectionProjectRepository, {
-      listAll: () => Effect.succeed(projects),
+      listAll,
       getById: () => Effect.succeed(Option.none()),
       upsert: () => Effect.void,
       deleteById: () => Effect.void,
     }),
     Layer.succeed(ProjectionThreadRepository, {
       listByProjectId: () => Effect.succeed([]),
+      listProjectIdsByWorktreePath: () => Effect.succeed([]),
       getById: () => Effect.succeed(Option.none()),
       upsert: () => Effect.void,
       deleteById: () => Effect.void,

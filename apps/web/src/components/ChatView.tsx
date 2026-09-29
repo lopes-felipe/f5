@@ -1,3 +1,4 @@
+import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
@@ -196,7 +197,7 @@ import {
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
-import { useAppSettings } from "../appSettings";
+import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
 import {
   type ComposerImageAttachment,
@@ -1101,6 +1102,10 @@ export default function ChatView({
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
+      const runtimeMode = await ensureNativeApi()
+        .server.getProjectSettings({ projectId: activeProject.id })
+        .then((result) => result.settings.defaultRuntimeMode)
+        .catch(() => defaultDraftRuntimeMode(activeProject.id));
       const storedDraftThread = getDraftThreadByProjectId(activeProject.id, input);
       if (storedDraftThread) {
         setDraftThreadContext(storedDraftThread.threadId, input);
@@ -1129,9 +1134,7 @@ export default function ChatView({
       const nextThreadId = newThreadId();
       setProjectDraftThreadId(activeProject.id, nextThreadId, {
         createdAt: new Date().toISOString(),
-        runtimeMode: (
-          await ensureNativeApi().server.getProjectSettings({ projectId: activeProject.id })
-        ).settings.defaultRuntimeMode,
+        runtimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -1203,8 +1206,15 @@ export default function ChatView({
     : null;
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
-  const selectedThreadTitleModelSelection = projectSettings.textGenerationModelSelection;
-  const selectedThreadTitleModel = selectedThreadTitleModelSelection.model;
+  const selectedThreadTitleModel = resolveThreadTitleModel(settings);
+  const selectedThreadTitleModelSelection = useMemo(
+    () =>
+      createModelSelection(
+        defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
+        selectedThreadTitleModel,
+      ),
+    [selectedThreadTitleModel],
+  );
   const draftModelOptions = composerDraft.modelOptions;
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = useMemo(() => {
