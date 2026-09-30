@@ -254,14 +254,17 @@ export const ProjectIssueAssetUrlInput = Schema.Struct({
   ).check(Schema.isMaxLength(100)),
 });
 export type ProjectIssueAssetUrlInput = typeof ProjectIssueAssetUrlInput.Type;
+/** One entry per requested file, in order; `null` when that file cannot be read. */
 export const ProjectIssueAssetUrlResult = Schema.Array(
-  Schema.Struct({
-    relativePath: Schema.String,
-    url: Schema.String,
-    expiresAt: Schema.Number,
-    width: Schema.optional(Schema.Number),
-    height: Schema.optional(Schema.Number),
-  }),
+  Schema.NullOr(
+    Schema.Struct({
+      relativePath: Schema.String,
+      url: Schema.String,
+      expiresAt: Schema.Number,
+      width: Schema.optional(Schema.Number),
+      height: Schema.optional(Schema.Number),
+    }),
+  ),
 );
 export type ProjectIssueAssetUrlResult = typeof ProjectIssueAssetUrlResult.Type;
 

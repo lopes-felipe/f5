@@ -169,7 +169,7 @@ import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
-import { openContainedFile, serveAsset } from "./assetHttp";
+import { IMMUTABLE_PRIVATE_CACHE_CONTROL, openContainedFile, serveAsset } from "./assetHttp";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
@@ -262,12 +262,19 @@ export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServ
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
-const PRIVATE_CORS_HEADERS = new Set([
-  "authorization",
-  "content-type",
-  "x-f5-backup-password",
-  F5_PROTOCOL_HEADER.toLowerCase(),
-]);
+/** One list drives both preflight validation and `Access-Control-Allow-Headers`. */
+const PRIVATE_CORS_HEADER_NAMES = [
+  "Authorization",
+  "Content-Type",
+  "X-F5-Backup-Password",
+  F5_PROTOCOL_HEADER,
+  "X-F5-File-Name",
+  "X-F5-Upload-Client",
+] as const;
+const PRIVATE_CORS_HEADERS = new Set(
+  PRIVATE_CORS_HEADER_NAMES.map((header) => header.toLowerCase()),
+);
+const PRIVATE_CORS_ALLOW_HEADERS = PRIVATE_CORS_HEADER_NAMES.join(", ");
 
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;
@@ -1093,6 +1100,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       attachmentsDir: serverConfig.attachmentsDir,
       commandId: turnStartCommand.commandId,
       threadId: turnStartCommand.threadId,
+      uploads: attachmentUploads,
     });
     const command = {
       ...turnStartCommand,
@@ -1164,6 +1172,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     return yield* persistPreparedTurnStartCommand(prepared);
   });
 
+  /**
+   * Once a turn's attachments are committed as independent message/queue copies,
+   * the draft's upload staging is no longer needed. Release it so sent bytes stop
+   * counting against the draft and profile quotas. Call only after the send has
+   * committed: failures before that keep the uploads so the restored draft can retry.
+   */
+  const releaseSentUploads = (
+    threadId: ThreadId,
+    attachments: ReadonlyArray<{ readonly type: string; readonly uploadId?: string }>,
+  ) => {
+    const uploadIds = attachments.flatMap((attachment) =>
+      attachment.type === "upload" && attachment.uploadId ? [attachment.uploadId] : [],
+    );
+    return uploadIds.length === 0
+      ? Effect.void
+      : attachmentUploads
+          .releaseUploads(threadId, uploadIds)
+          .pipe(
+            Effect.catch(() =>
+              Effect.logWarning(
+                "Releasing sent attachment uploads failed; they will expire on their own.",
+              ),
+            ),
+          );
+  };
+
   const removePersistedTurnAttachments = (
     command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
   ) =>
@@ -1187,18 +1221,30 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
-        const isPrivatePath =
-          isPrivateHttpPath(url.pathname) && !url.pathname.startsWith("/api/workspace-assets/");
+        // Workspace asset handles are capabilities: the URL is the credential, so
+        // they skip session auth but still need CORS for the renderer's fetch().
+        const isCapabilityAssetPath = url.pathname.startsWith("/api/workspace-assets/");
+        const isPrivatePath = isPrivateHttpPath(url.pathname) && !isCapabilityAssetPath;
         const requestOrigin = req.headers.origin;
         // Attachment URLs are also loaded by <img>, whose requests do not
         // carry an Origin header. Keep those cache entries separate from
         // authenticated CORS fetches used by copy and download actions.
-        if (isPrivatePath) {
+        if (isPrivatePath || isCapabilityAssetPath) {
           res.setHeader("Vary", "Origin");
         }
         const isExplicitPrivateCorsOrigin =
           requestOrigin === devUrl?.origin ||
           (mode === "desktop" && requestOrigin === DESKTOP_RENDERER_ORIGIN);
+        if (
+          isCapabilityAssetPath &&
+          typeof requestOrigin === "string" &&
+          isExplicitPrivateCorsOrigin &&
+          (req.method === "GET" || req.method === "HEAD")
+        ) {
+          // No credentials: the handle alone authorizes the read.
+          res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+          res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range");
+        }
         const isAllowedPrivateCorsRequest =
           isPrivatePath &&
           typeof requestOrigin === "string" &&
@@ -1252,8 +1298,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
           );
           respond(204, {
-            "Access-Control-Allow-Headers":
-              "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol, X-F5-File-Name, X-F5-Upload-Client",
+            "Access-Control-Allow-Headers": PRIVATE_CORS_ALLOW_HEADERS,
             "Access-Control-Allow-Methods": "GET, POST",
             "Cache-Control": "no-store",
             "Content-Length": "0",
@@ -1552,7 +1597,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 serverConfig.attachmentsDir,
                 path.relative(serverConfig.attachmentsDir, filePath),
               );
-              await serveAsset(req, res, file, filePath);
+              await serveAsset(req, res, file, filePath, {
+                cacheControl: IMMUTABLE_PRIVATE_CACHE_CONTROL,
+              });
             } catch {
               if (res.headersSent) res.destroy();
               else respond(404, { "Content-Type": "text/plain" }, "Not Found");
@@ -2526,7 +2573,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { command } = request.body;
         if (command.type === "thread.turn.start" && command.bootstrap) {
           const prepared = yield* prepareTurnStartCommand({ command });
-          return yield* dispatchBootstrapTurnStart({
+          const dispatched = yield* dispatchBootstrapTurnStart({
             command: prepared.command,
             orchestrationEngine,
             git: { ...git, createWorktree: createConfiguredWorktree },
@@ -2551,6 +2598,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             projectSetupScriptRunner,
             worktreesDir: serverConfig.worktreesDir,
           });
+          yield* releaseSentUploads(command.threadId, command.message.attachments);
+          return dispatched;
         }
         const normalizedCommand = yield* normalizeDispatchCommand({ command });
         if (normalizedCommand.type === "thread.turn.start") {
@@ -3161,7 +3210,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 : body.identity.kind === "thread"
                   ? await workspaceAssetAuthorizer.forThread(body.identity.threadId)
                   : await workspaceAssetAuthorizer.forAttachments();
-            return Promise.all(
+            // One unreadable path (missing, symlinked, or invented by an agent) must
+            // not make the rest of the batch unavailable, so each file settles alone.
+            const settled = await Promise.allSettled(
               body.files.map(async (entry) => {
                 // Check readability and containment before handing out the capability.
                 const stored =
@@ -3189,6 +3240,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 };
               }),
             );
+            return settled.map((result) => (result.status === "fulfilled" ? result.value : null));
           },
           catch: () => new RouteRequestError({ message: "Unable to authorize workspace asset." }),
         });
@@ -4114,6 +4166,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* nextTurnQueueStore
           .settleSubmission({ submissionId: body.submissionId, result })
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        // The queue item now owns its attachment copies; retries replay by submissionId.
+        yield* releaseSentUploads(command.threadId, body.command.message.attachments);
         yield* nextTurnQueueDispatcher.notify(command.threadId);
         return result;
       }

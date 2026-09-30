@@ -1,5 +1,6 @@
 import http from "node:http";
 import { serveAsset } from "./assetHttp";
+import { externalRequestOrigin } from "./serverAuth";
 
 import { ProjectId } from "@t3tools/contracts";
 
@@ -208,15 +209,15 @@ export async function tryHandleProjectFaviconRequest(
             throw error;
           });
         if (opened) {
-          await serveAsset(
-            req,
-            res,
-            opened.file,
-            opened.name,
-            opened.grant === "html-document"
-              ? `${url.origin}${WORKSPACE_ASSET_ROUTE_PREFIX}${handle}/`
-              : undefined,
-          );
+          // CSP must name the origin the browser actually used; `url` carries a
+          // synthetic localhost base. An unusable Host leaves passive loads at 'none'.
+          const origin = externalRequestOrigin(req);
+          await serveAsset(req, res, opened.file, opened.name, {
+            htmlPrefix:
+              opened.grant === "html-document" && origin
+                ? `${origin}${WORKSPACE_ASSET_ROUTE_PREFIX}${handle}/`
+                : undefined,
+          });
           return true;
         }
       }

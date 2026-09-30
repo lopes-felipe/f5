@@ -47,12 +47,18 @@ const validUpload = (
 });
 
 const prepare = (attachments: ReadonlyArray<UploadChatAttachment>, attachmentsDir: string) =>
-  prepareAttachmentIngress({
-    attachments,
-    attachmentsDir,
-    commandId: CommandId.makeUnsafe(`command-${crypto.randomUUID()}`),
-    threadId: ThreadId.makeUnsafe("thread-1"),
-  }).pipe(Effect.provide(testLayer));
+  makeAttachmentUploads(attachmentsDir).pipe(
+    Effect.flatMap((uploads) =>
+      prepareAttachmentIngress({
+        attachments,
+        attachmentsDir,
+        commandId: CommandId.makeUnsafe(`command-${crypto.randomUUID()}`),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        uploads,
+      }),
+    ),
+    Effect.provide(testLayer),
+  );
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
@@ -239,6 +245,7 @@ it("claims a generic upload through the durable registry and releases its lease 
         attachmentsDir,
         commandId: CommandId.makeUnsafe("generic-command"),
         threadId: ThreadId.makeUnsafe("thread-1"),
+        uploads,
       });
       expect(prepared.attachments[0]).toMatchObject({
         type: "file",

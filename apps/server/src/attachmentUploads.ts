@@ -40,6 +40,9 @@ interface UploadRow {
   source: "pasted-text" | "snapshot" | null;
 }
 const HOUR = 60 * 60 * 1000;
+/** Both mirror the attachment schema so an accepted upload cannot fail validation at send. */
+const UPLOAD_NAME_MAX_LENGTH = 255;
+const UPLOAD_MIME_MAX_LENGTH = 100;
 export function sanitizeUploadName(value: string): string {
   let decoded: string;
   try {
@@ -47,19 +50,21 @@ export function sanitizeUploadName(value: string): string {
   } catch {
     throw new Error("Invalid file name encoding");
   }
-  return (
-    [...decoded]
-      .filter(
-        (character) =>
-          character.codePointAt(0)! >= 32 &&
-          character !== "\u007f" &&
-          character !== "/" &&
-          character !== "\\",
-      )
-      .slice(0, 255)
-      .join("")
-      .trim() || "attachment.bin"
-  );
+  // The attachment schema caps names at 255 UTF-16 units, so measure in those
+  // units (an emoji is two) while never splitting a surrogate pair.
+  let name = "";
+  for (const character of decoded) {
+    if (
+      character.codePointAt(0)! < 32 ||
+      character === "\u007f" ||
+      character === "/" ||
+      character === "\\"
+    )
+      continue;
+    if (name.length + character.length > UPLOAD_NAME_MAX_LENGTH) break;
+    name += character;
+  }
+  return name.trim() || "attachment.bin";
 }
 export function sniffUploadImage(bytes: Uint8Array): string | null {
   const b = Buffer.from(bytes);
@@ -86,6 +91,14 @@ const dto = (row: UploadRow): AttachmentUpload => ({
 });
 
 /** Reservations and leases share SQLite transactions with ownership checks. Bytes never enter WS. */
+export type AttachmentUploads = Effect.Success<ReturnType<typeof makeAttachmentUploads>>;
+
+/**
+ * Create once per server: upload concurrency counters are per instance.
+ * Authorization: one authenticated operator owns every draft, and upload ids are
+ * random UUIDs, so `claim` and `cloneToUpload` do not check which draft owns an
+ * upload. A multi-user mode must add an owner check there.
+ */
 export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir: string) {
   const sql = yield* SqlClient.SqlClient;
   const directory = path.join(attachmentsDir, ".uploads");
@@ -218,6 +231,7 @@ export const makeAttachmentUploads = Effect.fnUntraced(function* (attachmentsDir
         mime:
           imageMime ??
           (declared &&
+          declared.length <= UPLOAD_MIME_MAX_LENGTH &&
           /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/iu.test(declared) &&
           !declared.startsWith("image/")
             ? declared

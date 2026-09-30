@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { makeAttachmentUploads } from "./attachmentUploads";
+import type { AttachmentUploads } from "./attachmentUploads";
 
 import {
   type ChatAttachment,
@@ -54,6 +54,8 @@ export const prepareAttachmentIngress = Effect.fnUntraced(function* (input: {
   readonly attachmentsDir: string;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
+  /** The server's shared upload service (its concurrency counters are per instance). */
+  readonly uploads: AttachmentUploads;
 }) {
   if (input.attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
     return yield* new AttachmentIngressError({
@@ -84,7 +86,7 @@ export const prepareAttachmentIngress = Effect.fnUntraced(function* (input: {
           const attachmentId = createAttachmentId(input.threadId);
           if (!attachmentId)
             return yield* new AttachmentIngressError({ message: "Invalid thread attachment id." });
-          const uploads = yield* makeAttachmentUploads(input.attachmentsDir);
+          const uploads = input.uploads;
           const stagedFile = path.join(stagingDirectory, attachmentId);
           const claimed = yield* uploads
             .claim(upload.uploadId, stagedFile, {

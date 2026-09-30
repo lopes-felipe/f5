@@ -48,6 +48,24 @@ it("sniffs image content and sanitizes UTF-8 filenames", () => {
   expect(sniffUploadImage(Buffer.from("not an image"))).toBeNull();
   expect(sniffUploadImage(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))).toBe("image/png");
 });
+it("keeps accepted names and MIME types within the attachment schema limits", async () => {
+  // 200 emoji are 200 code points but 400 UTF-16 units; the schema counts the latter.
+  const emojiName = sanitizeUploadName(encodeURIComponent(`${"😀".repeat(200)}.txt`));
+  expect(emojiName.length).toBeLessThanOrEqual(255);
+  expect(emojiName).toBe("😀".repeat(127));
+  expect(sanitizeUploadName(encodeURIComponent(`${"a".repeat(254)}😀`))).toBe("a".repeat(254));
+  await run((store) =>
+    Effect.gen(function* () {
+      const longMime = `application/${"x".repeat(120)}`;
+      const result = yield* store.upload({
+        req: request(Buffer.from("data"), "data.bin", longMime),
+        threadId,
+        clientId: "client",
+      });
+      expect(result.mimeType).toBe("application/octet-stream");
+    }),
+  );
+});
 it("finalizes, renews and expires uploads", async () => {
   await run((store) =>
     Effect.gen(function* () {

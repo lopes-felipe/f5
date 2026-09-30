@@ -11,18 +11,14 @@ import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { expect, it, vi } from "vitest";
-import {
-  CommandId,
-  ThreadId,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-} from "@t3tools/contracts";
+import { CommandId, ThreadId, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES } from "@t3tools/contracts";
 import {
   prepareAttachmentIngress,
   persistPreparedAttachmentIngress,
   discardAttachmentIngress,
 } from "../../src/attachmentIngress.ts";
 import { ensureAttachmentSchema } from "../../src/persistence/Migrations/AttachmentSchema.ts";
+import { makeAttachmentUploads } from "../../src/attachmentUploads.ts";
 import * as NodeSqlite from "../../src/persistence/NodeSqliteClient.ts";
 import { ServerConfig } from "../../src/config.ts";
 import { GitCoreLive } from "../../src/git/Layers/GitCore.ts";
@@ -295,7 +291,10 @@ it("records server component performance with deterministic workloads", async ()
     const uploadBytes = Buffer.alloc(1024 * 1024, 1);
     // PNG signature; ingestion validates MIME/size, it does not decode pixels.
     uploadBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
-    const attachments = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, i) => ({
+    // Eight 1 MiB inline images keep this measurement comparable across the
+    // attachment-count limit change; the WebSocket payload cap bounds inline sends.
+    const inlineFixtureCount = 8;
+    const attachments = Array.from({ length: inlineFixtureCount }, (_, i) => ({
       type: "image" as const,
       name: `fixture-${i}.png`,
       mimeType: "image/png",
@@ -313,6 +312,7 @@ it("records server component performance with deterministic workloads", async ()
             attachmentsDir: path.join(directory, "uploads"),
             commandId,
             threadId: ThreadId.makeUnsafe("perf-upload"),
+            uploads: yield* makeAttachmentUploads(path.join(directory, "uploads")),
           });
           uploadPeakBytes = Math.max(
             uploadPeakBytes,
@@ -332,7 +332,7 @@ it("records server component performance with deterministic workloads", async ()
       maximumObservation(
         "upload.decodedBuffersBytes",
         uploadPeakBytes,
-        PROVIDER_SEND_TURN_MAX_ATTACHMENTS * PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+        inlineFixtureCount * PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
       ),
     );
     const writer = fork(

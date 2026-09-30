@@ -80,6 +80,26 @@ const MIME: Readonly<Record<string, string>> = {
 export const assetMimeType = (name: string): string =>
   MIME[path.extname(name).toLowerCase()] ?? "application/octet-stream";
 
+/**
+ * Explicit "Open in preview browser" pages may run their own scripts, but every
+ * subresource, fetch, worker, frame and form stays on the preview origin, so a
+ * page cannot post files it reads to another host. Top-level navigation is not
+ * governed by CSP; the user guide documents that residual channel.
+ */
+export const ACTIVE_PREVIEW_CSP = [
+  "default-src 'self' data: blob:",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "media-src 'self' data: blob:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "frame-src 'self'",
+  "form-action 'self'",
+  "base-uri 'self'",
+].join("; ");
+
 export function assetHeaders(name: string, htmlPrefix?: string): Record<string, string> {
   const mime = assetMimeType(name);
   const inline =
@@ -133,23 +153,35 @@ export function parseAssetRange(
   return { start, end };
 }
 
+/** Stored attachments never change once written, so their bytes may be cached privately. */
+export const IMMUTABLE_PRIVATE_CACHE_CONTROL = "private, max-age=31536000, immutable";
+
+export interface ServeAssetOptions {
+  /** Handle prefix whose passive siblings an HTML document may load. */
+  readonly htmlPrefix?: string | undefined;
+  /** Explicit active preview: scripts run under ACTIVE_PREVIEW_CSP. */
+  readonly activePreview?: boolean;
+  /** Defaults to `private, no-store` for content that can change on disk. */
+  readonly cacheControl?: string;
+}
+
 /** Takes ownership of file, including on disconnect, HEAD, and invalid Range. */
 export async function serveAsset(
   req: IncomingMessage,
   res: ServerResponse,
   file: FileHandle,
   name: string,
-  htmlPrefix?: string,
-  activePreview = false,
+  options: ServeAssetOptions = {},
 ): Promise<void> {
   try {
     const { size } = await file.stat();
     const headers: Record<string, string> = {
-      ...assetHeaders(name, htmlPrefix),
+      ...assetHeaders(name, options.htmlPrefix),
       "Accept-Ranges": "bytes",
+      ...(options.cacheControl ? { "Cache-Control": options.cacheControl } : {}),
     };
-    if (activePreview) {
-      delete headers["Content-Security-Policy"];
+    if (options.activePreview) {
+      headers["Content-Security-Policy"] = ACTIVE_PREVIEW_CSP;
       headers["Content-Disposition"] = "inline";
     }
     const range = parseAssetRange(req.headers.range, size);

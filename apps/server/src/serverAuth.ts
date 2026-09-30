@@ -68,7 +68,18 @@ function secretsEqual(expected: string, provided: string): boolean {
   );
 }
 
-function requestUsesTls(request: Http.IncomingMessage): boolean {
+/**
+ * The origin the browser used for this request (Host plus TLS/forwarded scheme).
+ * Unlike `new URL(req.url, base)`, this matches what CSP sees in real deployments.
+ */
+export function externalRequestOrigin(request: Http.IncomingMessage): string | null {
+  const host = request.headers.host?.trim();
+  if (!host || !/^[A-Za-z0-9.-]+(?::\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](?::\d{1,5})?$/u.test(host))
+    return null;
+  return `${requestUsesTls(request) ? "https" : "http"}://${host.toLowerCase()}`;
+}
+
+export function requestUsesTls(request: Http.IncomingMessage): boolean {
   if ((request.socket as { encrypted?: boolean }).encrypted === true) return true;
   const forwardedProto = request.headers["x-forwarded-proto"];
   const firstProto = (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)

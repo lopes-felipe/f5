@@ -1150,6 +1150,8 @@ describe("WebSocket Server", () => {
     const response = await fetch(`http://127.0.0.1:${port}/attachments/thread-a/message-a/0.png`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("image/png");
+    // Stored attachments are write-once, so remounts and gallery views reuse the cache.
+    expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
     const bytes = Buffer.from(await response.arrayBuffer());
     expect(bytes).toEqual(Buffer.from("hello-attachment"));
   });
@@ -4318,6 +4320,64 @@ describe("WebSocket Server", () => {
     expect(current.status).toBe(400);
   });
 
+  it("serves capability assets with the real request origin in CSP and renderer CORS", async () => {
+    const stateDir = makeTempDir("f5-asset-origin-");
+    const attachments = path.join(stateDir, "attachments");
+    fs.mkdirSync(attachments, { recursive: true });
+    fs.writeFileSync(
+      path.join(attachments, "page.html"),
+      '<link rel="stylesheet" href="page.css">',
+    );
+    fs.writeFileSync(path.join(attachments, "page.css"), "body { color: red }");
+    fs.writeFileSync(path.join(attachments, "notes.md"), "# Notes");
+    server = await createTestServer({
+      mode: "desktop",
+      cwd: "/test",
+      stateDir,
+      authToken: "secret-token",
+    });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const base = `http://127.0.0.1:${port}`;
+    const [ws] = await connectAndAwaitWelcome(port, "secret-token", { Origin: "t3://app" });
+    connections.push(ws);
+    const response = await sendRequest(ws, WS_METHODS.projectsIssueAssetUrl, {
+      identity: { kind: "attachments" },
+      files: [
+        { relativePath: "page.html", grant: "html-document" },
+        { relativePath: "missing.png", grant: "file" },
+        { relativePath: "notes.md", grant: "file" },
+      ],
+    });
+    expect(response.error).toBeUndefined();
+    // An unreadable entry is reported alone instead of failing the whole batch.
+    const [html, missing, notes] = response.result as Array<{ url: string } | null>;
+    expect(missing).toBeNull();
+
+    const document = await fetch(`${base}${html!.url}`);
+    await document.text();
+    const handlePrefix = `${base}${html!.url.slice(0, html!.url.lastIndexOf("/") + 1)}`;
+    const csp = document.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain(`style-src ${handlePrefix};`);
+    expect(csp).not.toContain("localhost");
+    // The sibling the CSP allows is actually served under that prefix.
+    const stylesheet = await fetch(`${handlePrefix}page.css`);
+    expect(stylesheet.status).toBe(200);
+    expect(await stylesheet.text()).toBe("body { color: red }");
+
+    // The renderer reads text previews with fetch(), which needs CORS but no credentials.
+    const text = await fetch(`${base}${notes!.url}`, { headers: { Origin: "t3://app" } });
+    expect(text.status).toBe(200);
+    expect(text.headers.get("access-control-allow-origin")).toBe("t3://app");
+    expect(text.headers.get("access-control-allow-credentials")).toBeNull();
+    expect(await text.text()).toBe("# Notes");
+    const foreign = await fetch(`${base}${notes!.url}`, {
+      headers: { Origin: "https://attacker.example" },
+    });
+    await foreign.text();
+    expect(foreign.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("opens an extensionless persisted attachment through a restricted capability URL", async () => {
     const stateDir = makeTempDir("f5-attachment-viewer-");
     fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
@@ -4379,6 +4439,92 @@ describe("WebSocket Server", () => {
     expect((await fetch(fileUrl, { headers: { ...auth, Range: "bytes=99-" } })).status).toBe(416);
   });
 
+  it("releases a draft's upload staging once the queued turn owns its copy", async () => {
+    const stateDir = makeTempDir("f5-upload-release-");
+    server = await createTestServer({ cwd: "/test", stateDir, authToken: "secret-token" });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const base = `http://127.0.0.1:${port}`;
+    const [ws] = await connectAndAwaitWelcome(port, "secret-token");
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "cmd-upload-release-project",
+          projectId: "project-upload-release",
+          title: "Uploads",
+          workspaceRoot: makeTempDir("f5-upload-release-project-"),
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.create",
+          commandId: "cmd-upload-release-thread",
+          threadId: "thread-upload-release",
+          projectId: "project-upload-release",
+          title: "Uploads",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const uploaded = await fetch(`${base}/api/attachments/uploads?threadId=thread-upload-release`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        [F5_PROTOCOL_HEADER]: String(F5_PROTOCOL_VERSION),
+        "X-F5-File-Name": "notes.txt",
+        "Content-Type": "text/plain",
+      },
+      body: "sent once",
+    });
+    expect(uploaded.status).toBe(201);
+    const { uploadId } = (await uploaded.json()) as { uploadId: string };
+    const uploadsDir = path.join(stateDir, "attachments", ".uploads");
+    const stagedBefore = fs.readdirSync(uploadsDir);
+    expect(stagedBefore.length).toBeGreaterThan(0);
+
+    const submitted = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      submissionId: "submission-upload-release",
+      intent: "queue-tail",
+      command: {
+        type: "thread.turn.start",
+        commandId: "cmd-upload-release-turn",
+        threadId: "thread-upload-release",
+        message: {
+          messageId: "msg-upload-release",
+          role: "user",
+          text: "see attached",
+          attachments: [{ type: "upload", uploadId }],
+        },
+        assistantDeliveryMode: "streaming",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt,
+      },
+    });
+    expect(submitted.error).toBeUndefined();
+
+    // The upload row and its staged bytes are gone; the queued copy is unaffected.
+    const renewed = await sendRequest(ws, WS_METHODS.attachmentsGetUploads, {
+      threadId: "thread-upload-release",
+      uploadIds: [uploadId],
+    });
+    expect(renewed.result).toEqual([null]);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
   it("rejects websocket connections without a valid auth token", async () => {
     server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
     const addr = server.address();
@@ -4432,6 +4578,19 @@ describe("WebSocket Server", () => {
     expect(preflightResponse.headers.get("access-control-allow-headers")).toBe(
       "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol, X-F5-File-Name, X-F5-Upload-Client",
     );
+
+    // The exact headers `uploadAttachment` sends must survive the preflight.
+    const uploadPreflight = await fetch(`${origin}/api/attachments/uploads?threadId=draft-cors`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "t3://app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers":
+          "authorization, content-type, x-f5-file-name, x-f5-protocol, x-f5-upload-client",
+      },
+    });
+    expect(uploadPreflight.status).toBe(204);
+    expect(uploadPreflight.headers.get("access-control-allow-origin")).toBe("t3://app");
 
     const unauthenticatedResponse = await fetch(`${origin}/api/storage/backup`, {
       headers: { Origin: "t3://app" },

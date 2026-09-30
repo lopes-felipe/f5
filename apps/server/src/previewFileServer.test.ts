@@ -20,7 +20,13 @@ it("serves an explicit active document on its own origin and contains sibling ac
     expect(new URL(url).hostname).toBe("127.0.0.1");
     const response = await fetch(url);
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-security-policy")).toBeNull();
+    // Scripts run, but network access is confined to the preview origin.
+    const csp = response.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("img-src 'self' data: blob:");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).not.toContain("sandbox");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect((await fetch(new URL("app.js", url))).status).toBe(200);
     expect((await fetch(new URL(".env", url))).status).toBe(403);

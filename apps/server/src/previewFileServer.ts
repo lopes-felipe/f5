@@ -55,7 +55,7 @@ export function makePreviewFileServer(authorizer: WorkspaceAssetAuthorizer) {
             : await authorizer.forAttachments();
       const name = path.join(grant.directory, ...segments);
       const file = await reader.openFile(name);
-      await serveAsset(req, res, file, name, undefined, true);
+      await serveAsset(req, res, file, name, { activePreview: true });
     })().catch(() => {
       if (res.headersSent) res.destroy();
       else {
