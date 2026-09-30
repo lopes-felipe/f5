@@ -211,7 +211,14 @@ export function toOpenCodeFileParts(input: {
 
   for (const attachment of input.attachments ?? []) {
     switch (attachment.type) {
+      case "file":
       case "image": {
+        if (
+          attachment.type === "file" &&
+          !attachment.mimeType.startsWith("text/") &&
+          attachment.mimeType !== "application/pdf"
+        )
+          continue;
         const attachmentPath = input.resolveAttachmentPath(attachment);
         if (!attachmentPath) {
           continue;

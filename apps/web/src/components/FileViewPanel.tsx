@@ -1,3 +1,6 @@
+import { FileBreadcrumbs } from "./FileBreadcrumbs";
+import { WorkspaceMediaView, workspaceMediaKind } from "./WorkspaceMediaView";
+import ChatMarkdown from "./ChatMarkdown";
 import { File as FileViewer } from "@pierre/diffs/react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
@@ -123,10 +126,15 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     () => (fileLine ? { start: fileLine, end: fileEndLine ?? fileLine } : null),
     [fileEndLine, fileLine],
   );
+  const [showSource, setShowSource] = useState(false);
+  const mediaKind = filePath ? workspaceMediaKind(filePath) : null;
+  const renderedMarkdown = Boolean(
+    filePath && /\.(?:md|mdown|markdown)$/iu.test(filePath) && !showSource,
+  );
   const fileQuery = useQuery(
     fileContentQueryOptions({
       cwd: workspaceRoot,
-      relativePath: canDisplayFileInPanel ? filePath : undefined,
+      relativePath: canDisplayFileInPanel && (!mediaKind || showSource) ? filePath : undefined,
     }),
   );
   const [editing, setEditing] = useState(false);
@@ -413,10 +421,25 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           ) : null}
         </div>
         {filePath ? (
-          <p className="truncate text-[11px] text-muted-foreground/70">{filePath}</p>
+          <FileBreadcrumbs
+            path={filePath}
+            {...(activeThreadId ? { threadId: activeThreadId } : {})}
+          />
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {(mediaKind === "html" || /\.(?:md|mdown|markdown)$/iu.test(filePath ?? "")) && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => {
+              setEditing(false);
+              setShowSource(!showSource);
+            }}
+          >
+            {showSource ? "Rendered" : "Source"}
+          </Button>
+        )}
         {fileQuery.data?.truncated ? (
           <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
             Read-only preview
@@ -482,6 +505,28 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
               </Button>
             </div>
           </div>
+        </div>
+      ) : (mediaKind ||
+          (fileQuery.isError &&
+            /Binary file cannot be displayed/iu.test(String(fileQuery.error)))) &&
+        !showSource &&
+        activeProjectId &&
+        filePath ? (
+        <WorkspaceMediaView
+          name={filePath}
+          projectId={activeProjectId}
+          {...(activeThread ? { threadId: activeThread.id } : {})}
+        />
+      ) : renderedMarkdown && fileQuery.data && !editing ? (
+        <div className="overflow-auto p-4">
+          <ChatMarkdown
+            text={fileQuery.data.contents}
+            cwd={
+              workspaceRoot && filePath?.includes("/")
+                ? `${workspaceRoot}/${filePath.slice(0, filePath.lastIndexOf("/"))}`
+                : workspaceRoot
+            }
+          />
         </div>
       ) : fileQuery.isLoading ? (
         <DiffPanelLoadingState label="Loading file..." />

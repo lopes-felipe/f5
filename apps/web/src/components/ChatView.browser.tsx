@@ -1207,8 +1207,12 @@ function createThreadTailDetailsResult(threadId: ThreadId) {
   };
 }
 
+const uploadedFiles = new Map<string, import("@t3tools/contracts").AttachmentUpload>();
+
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
+  if (tag === WS_METHODS.attachmentsGetUploads)
+    return (body.uploadIds as string[]).map((id) => uploadedFiles.get(id) ?? null);
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
   }
@@ -1471,6 +1475,21 @@ const worker = setupWorker(
 
       sendResolution(resolution);
     });
+  }),
+  http.post("*/api/attachments/uploads", async ({ request }) => {
+    const bytes = await request.arrayBuffer();
+    const upload = {
+      uploadId: crypto.randomUUID(),
+      draftThreadId: ThreadId.makeUnsafe(new URL(request.url).searchParams.get("threadId")!),
+      kind: "file" as const,
+      name: decodeURIComponent(request.headers.get("X-F5-File-Name")!),
+      mimeType: request.headers.get("Content-Type") || "application/octet-stream",
+      sizeBytes: bytes.byteLength,
+      contentHash: "fixture-sha256",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    uploadedFiles.set(upload.uploadId, upload);
+    return HttpResponse.json(upload, { status: 201 });
   }),
   http.get("*/attachments/:attachmentId", () =>
     HttpResponse.text(ATTACHMENT_SVG, {
@@ -3775,6 +3794,46 @@ describe("ChatView timeline (full app)", () => {
             relativePath: "src/index.ts",
           }),
         );
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("uploads a picked PDF before sending and persists only its upload reference", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "picked-file" as MessageId,
+        targetText: "existing",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      }),
+    });
+    try {
+      await waitForComposerShell();
+      const input = document.querySelector<HTMLInputElement>('input[aria-label="Attach files"]');
+      expect(input).not.toBeNull();
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["%PDF-1.7\nfixture"], "notes.pdf", { type: "application/pdf" }));
+      input!.files = transfer.files;
+      input!.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => {
+        const saved =
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.persistedAttachments;
+        expect(saved).toEqual([
+          expect.objectContaining({ name: "notes.pdf", dataUrl: "", uploadId: expect.any(String) }),
+        ]);
+      });
+      const send = await waitForSendButton();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      send.click();
+      await vi.waitFor(() => {
+        const dispatch = getDispatchCommandRequests("thread.turn.start");
+        expect(dispatch).toHaveLength(1);
+        expect(dispatch[0]?.command).toMatchObject({
+          message: { attachments: [{ type: "upload", uploadId: expect.any(String) }] },
+        });
       });
     } finally {
       await mounted.cleanup();

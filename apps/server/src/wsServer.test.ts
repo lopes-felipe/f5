@@ -4318,6 +4318,67 @@ describe("WebSocket Server", () => {
     expect(current.status).toBe(400);
   });
 
+  it("opens an extensionless persisted attachment through a restricted capability URL", async () => {
+    const stateDir = makeTempDir("f5-attachment-viewer-");
+    fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, "attachments", "saved-document.pdf"), "%PDF-test");
+    server = await createTestServer({ cwd: "/test", stateDir, authToken: "secret-token" });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port, "secret-token");
+    connections.push(ws);
+    const response = await sendRequest(ws, WS_METHODS.projectsIssueAssetUrl, {
+      identity: { kind: "attachments" },
+      files: [{ relativePath: "saved-document", grant: "file" }],
+    });
+    expect(response.error).toBeUndefined();
+    const grants = response.result as Array<{ url: string }>;
+    expect(grants).toHaveLength(1);
+    const url = `http://127.0.0.1:${port}${grants[0]!.url}`;
+    const document = await fetch(url);
+    expect(document.status).toBe(200);
+    expect(document.headers.get("content-type")).toBe("application/pdf");
+    expect(await document.text()).toBe("%PDF-test");
+    expect((await fetch(url, { method: "POST" })).status).toBe(405);
+    expect((await fetch(url.replace("saved-document.pdf", "other.pdf"))).status).toBe(400);
+  });
+
+  it("streams generic uploads with protocol, origin, filename, and range checks", async () => {
+    server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
+    const address = server.address();
+    const base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    const url = `${base}/api/attachments/uploads?threadId=draft-files`;
+    const auth = { Authorization: "Bearer secret-token" };
+    expect((await fetch(url, { method: "POST", headers: auth, body: "file" })).status).toBe(426);
+    const headers = {
+      ...auth,
+      [F5_PROTOCOL_HEADER]: String(F5_PROTOCOL_VERSION),
+      "X-F5-File-Name": encodeURIComponent("世界.pdf"),
+      "Content-Type": "application/pdf",
+    };
+    expect(
+      (
+        await fetch(url, {
+          method: "POST",
+          headers: { ...headers, Origin: "https://untrusted.example" },
+          body: "file",
+        })
+      ).status,
+    ).toBe(403);
+    const response = await fetch(url, { method: "POST", headers, body: "%PDF-test" });
+    expect(response.status).toBe(201);
+    const upload = (await response.json()) as { uploadId: string; name: string; kind: string };
+    expect(upload).toMatchObject({ name: "世界.pdf", kind: "file" });
+    const fileUrl = `${base}/api/attachments/uploads/${upload.uploadId}`;
+    expect((await fetch(fileUrl)).status).toBe(401);
+    const range = await fetch(fileUrl, { headers: { ...auth, Range: "bytes=0-3" } });
+    expect(range.status).toBe(206);
+    expect(range.headers.get("content-range")).toBe("bytes 0-3/9");
+    expect(range.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await range.text()).toBe("%PDF");
+    expect((await fetch(fileUrl, { headers: { ...auth, Range: "bytes=99-" } })).status).toBe(416);
+  });
+
   it("rejects websocket connections without a valid auth token", async () => {
     server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
     const addr = server.address();
@@ -4369,7 +4430,7 @@ describe("WebSocket Server", () => {
     expect(preflightResponse.headers.get("access-control-allow-credentials")).toBe("true");
     expect(preflightResponse.headers.get("access-control-allow-methods")).toBe("GET, POST");
     expect(preflightResponse.headers.get("access-control-allow-headers")).toBe(
-      "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol",
+      "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol, X-F5-File-Name, X-F5-Upload-Client",
     );
 
     const unauthenticatedResponse = await fetch(`${origin}/api/storage/backup`, {

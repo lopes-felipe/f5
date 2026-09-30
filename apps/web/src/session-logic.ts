@@ -78,6 +78,7 @@ export const PROVIDER_OPTIONS: Array<{
 ];
 
 export interface WorkLogEntry {
+  imagePath?: string;
   id: string;
   createdAt: string;
   label: string;
@@ -1231,6 +1232,7 @@ export function deriveWorkLogEntries(
       if (toolPayload?.changedFiles && toolPayload.changedFiles.length > 0) {
         entry.changedFiles = toolPayload.changedFiles;
       }
+      if (toolPayload?.imagePath) entry.imagePath = toolPayload.imagePath;
       if (toolPayload?.title) {
         entry.toolTitle = toolPayload.title;
       }

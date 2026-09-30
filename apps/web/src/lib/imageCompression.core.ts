@@ -12,6 +12,7 @@ const PROVIDER_SUPPORTED_IMAGE_MIME_TYPES = new Set([
 ]);
 
 export type ImageCompressionFailureReason =
+  | "busy"
   | "not-ready"
   | "animated"
   | "cancelled"

@@ -72,6 +72,7 @@ import {
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { isImagePreviewPath } from "@t3tools/shared/filePreview";
 import { translateMcpForClaudeAgent } from "@t3tools/shared/mcpTranslation";
 import {
   Cause,
@@ -703,12 +704,29 @@ function toPermissionMode(value: unknown): PermissionMode | undefined {
   }
 }
 
+/** A Claude `Read` of an image renders as a viewed image rather than a text read. */
+function readToolImagePath(toolName: string, input: Record<string, unknown>): string | undefined {
+  const normalized = toolName.trim().toLowerCase();
+  if (normalized !== "read" && normalized !== "read file") {
+    return undefined;
+  }
+  const pathValue = input.file_path ?? input.path;
+  if (typeof pathValue !== "string") {
+    return undefined;
+  }
+  const path = pathValue.trim();
+  return path.length > 0 && isImagePreviewPath(path) ? path : undefined;
+}
+
 function classifyToolItemType(
   toolName: string,
-  options?: { readonly blockType?: string },
+  options?: { readonly blockType?: string; readonly input?: Record<string, unknown> },
 ): CanonicalItemType {
   if (options?.blockType?.toLowerCase() === "mcp_tool_use") {
     return "mcp_tool_call";
+  }
+  if (options?.input && readToolImagePath(toolName, options.input)) {
+    return "image_view";
   }
 
   const normalized = toolName.toLowerCase();
@@ -1504,6 +1522,8 @@ function buildUserMessageEffect(
           );
           break;
         }
+        case "file":
+          break;
         default:
           throw new Error(
             `Unsupported Claude attachment type '${String((attachment as { type?: unknown }).type)}'.`,
@@ -3133,9 +3153,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             const detail = parsedInput
               ? summarizeToolRequest(tool.toolName, parsedInput)
               : tool.detail;
-            const title = parsedInput ? titleForTool(tool.itemType, parsedInput) : tool.title;
+            const itemType =
+              parsedInput && tool.itemType !== "mcp_tool_call"
+                ? classifyToolItemType(tool.toolName, { input: parsedInput })
+                : tool.itemType;
+            const title = parsedInput ? titleForTool(itemType, parsedInput) : tool.title;
             let nextTool: ToolInFlight = {
               ...tool,
+              itemType,
               partialInputJson,
               title,
               ...(parsedInput ? { input: parsedInput } : {}),
@@ -3210,12 +3235,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
 
           const toolName = block.name;
-          const itemType = classifyToolItemType(toolName, { blockType: block.type });
           const requestKind = classifyToolRequestKind(toolName, { blockType: block.type });
           const toolInput =
             typeof block.input === "object" && block.input !== null
               ? (block.input as Record<string, unknown>)
               : {};
+          const itemType = classifyToolItemType(toolName, {
+            blockType: block.type,
+            input: toolInput,
+          });
           const itemId = block.id;
           const detail = summarizeToolRequest(toolName, toolInput);
           const inputFingerprint =

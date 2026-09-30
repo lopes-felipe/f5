@@ -259,6 +259,8 @@ export function formatKeybindingCommandLabel(
       return "Pick model 8";
     case "modelPicker.jump.9":
       return "Pick model 9";
+    case "composer.pasteAsText":
+      return "Paste as text without folding";
     case "commandPalette.toggle":
       return "Toggle command palette";
     default: {

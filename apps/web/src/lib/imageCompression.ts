@@ -39,6 +39,8 @@ export function imageCompressionFailureMessage(
 ): string {
   const displayName = fileName.trim() || "image";
   switch (reason) {
+    case "busy":
+      return "Image preparation is busy. Try attaching the file again shortly.";
     case "not-ready":
       return "Waiting for server capabilities. Reconnect before attaching images.";
     case "animated":
@@ -147,3 +149,43 @@ export const compressImageForComposer: ComposerImageProcessor = async (file, opt
     }
   });
 };
+
+const conversionQueue: Array<() => void> = [];
+let activeConversions = 0;
+/** Bound both worker count and waiting work across all composers. */
+export function processComposerImageBounded(
+  processor: ComposerImageProcessor,
+  file: File,
+  signal: AbortSignal,
+): Promise<CompressComposerImageResult> {
+  if (signal.aborted) return Promise.resolve({ ok: false, reason: "cancelled" });
+  if (conversionQueue.length >= 100) return Promise.resolve({ ok: false, reason: "busy" });
+  return new Promise((resolve) => {
+    const run = () => {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) {
+        resolve({ ok: false, reason: "cancelled" });
+        return;
+      }
+      activeConversions++;
+      void processor(file, { signal })
+        .then(resolve, () => resolve({ ok: false, reason: "unreadable" }))
+        .finally(() => {
+          activeConversions--;
+          while (activeConversions < 2 && conversionQueue.length) conversionQueue.shift()!();
+        });
+    };
+    const abort = () => {
+      const index = conversionQueue.indexOf(run);
+      if (index >= 0) {
+        conversionQueue.splice(index, 1);
+        resolve({ ok: false, reason: "cancelled" });
+      }
+    };
+    if (activeConversions < 2) run();
+    else {
+      conversionQueue.push(run);
+      signal.addEventListener("abort", abort, { once: true });
+    }
+  });
+}

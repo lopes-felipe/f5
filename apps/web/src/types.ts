@@ -94,7 +94,10 @@ export interface ChatImageAttachment {
   sourceBlob?: Blob;
 }
 
-export type ChatAttachment = ChatImageAttachment;
+export type ChatAttachment = Omit<ChatImageAttachment, "type"> & {
+  type: "image" | "file";
+  source?: "pasted-text" | "snapshot" | undefined;
+};
 
 export interface ChatMessage {
   id: MessageId;

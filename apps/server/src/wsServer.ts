@@ -1,3 +1,6 @@
+import { readAssetImageDimensions } from "./imageDimensions";
+import { makePreviewFileServer } from "./previewFileServer";
+import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
 import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
@@ -166,6 +169,7 @@ import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { openContainedFile, serveAsset } from "./assetHttp";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
@@ -807,6 +811,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sql = yield* SqlClient.SqlClient;
+  const attachmentUploads = yield* makeAttachmentUploads(serverConfig.attachmentsDir);
   const nextTurnQueueStore = yield* NextTurnQueueStore;
   const globalSearch = yield* makeGlobalSearch;
   const backupService = yield* makeBackupService;
@@ -1182,7 +1187,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
-        const isPrivatePath = isPrivateHttpPath(url.pathname);
+        const isPrivatePath =
+          isPrivateHttpPath(url.pathname) && !url.pathname.startsWith("/api/workspace-assets/");
         const requestOrigin = req.headers.origin;
         // Attachment URLs are also loaded by <img>, whose requests do not
         // carry an Origin header. Keep those cache entries separate from
@@ -1247,7 +1253,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
           respond(204, {
             "Access-Control-Allow-Headers":
-              "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol",
+              "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol, X-F5-File-Name, X-F5-Upload-Client",
             "Access-Control-Allow-Methods": "GET, POST",
             "Cache-Control": "no-store",
             "Content-Length": "0",
@@ -1272,7 +1278,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
           return;
         }
-        if (url.pathname.startsWith("/api/storage/") && !serverAuth.isWebSocketOriginAllowed(req)) {
+        if (
+          (url.pathname.startsWith("/api/storage/") ||
+            url.pathname.startsWith("/api/attachments/")) &&
+          !serverAuth.isWebSocketOriginAllowed(req)
+        ) {
           respond(
             403,
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
@@ -1417,12 +1427,79 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return;
         }
         if (
+          url.pathname.startsWith("/api/attachments/uploads/") &&
+          (req.method === "GET" || req.method === "HEAD")
+        ) {
+          const id = url.pathname.slice("/api/attachments/uploads/".length);
+          const opened = yield* Effect.exit(attachmentUploads.openUpload(id));
+          if (Exit.isFailure(opened))
+            respond(410, { "Cache-Control": "no-store" }, "Upload expired. Re-attach the file.");
+          else
+            yield* Effect.promise(() =>
+              serveAsset(req, res, opened.value.file, opened.value.name).catch(() => {
+                if (!res.destroyed) res.destroy();
+              }),
+            );
+          return;
+        }
+        if (url.pathname === "/api/attachments/uploads" && req.method === "POST") {
+          const threadId = url.searchParams.get("threadId");
+          const client = req.headers["x-f5-upload-client"];
+          if (!threadId || threadId.length > 128 || !/^[a-zA-Z0-9_-]+$/u.test(threadId)) {
+            respond(
+              400,
+              { "Content-Type": "application/json" },
+              JSON.stringify({ error: "Invalid draft thread ID." }),
+            );
+            return;
+          }
+          const result = yield* Effect.exit(
+            attachmentUploads.upload({
+              req,
+              threadId: ThreadId.makeUnsafe(threadId),
+              ...(url.searchParams.get("source") === "pasted-text" ||
+              url.searchParams.get("source") === "snapshot"
+                ? { source: url.searchParams.get("source") as "pasted-text" | "snapshot" }
+                : {}),
+              clientId:
+                typeof client === "string" && client.length <= 128
+                  ? client
+                  : (req.socket.remoteAddress ?? "unknown"),
+            }),
+          );
+          if (Exit.isFailure(result)) {
+            const failure = Cause.squash(result.cause);
+            const status = Schema.is(AttachmentUploadError)(failure) ? failure.status : 500;
+            respond(
+              status,
+              {
+                "Content-Type": "application/json",
+                "Cache-Control": "no-store",
+                ...(status === 429 || status === 507 ? { "Retry-After": "2" } : {}),
+              },
+              JSON.stringify({
+                error: Schema.is(AttachmentUploadError)(failure)
+                  ? failure.message
+                  : "Attachment upload failed.",
+              }),
+            );
+          } else {
+            respond(
+              201,
+              { "Content-Type": "application/json", "Cache-Control": "no-store" },
+              JSON.stringify(result.value),
+            );
+          }
+          return;
+        }
+        if (
           yield* Effect.promise(() =>
             tryHandleProjectFaviconRequest(
               url,
               res,
               workspaceAssetAuthorizer,
               checkedInProjectFileService,
+              req,
             ),
           )
         ) {
@@ -1430,6 +1507,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }
 
         if (url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
+          if (req.method !== "GET" && req.method !== "HEAD") {
+            respond(405, { Allow: "GET, HEAD" }, "Method not allowed");
+            return;
+          }
           const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
           const normalizedRelativePath = normalizeAttachmentRelativePath(rawRelativePath);
           if (!normalizedRelativePath) {
@@ -1465,27 +1546,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             return;
           }
 
-          const contentType = Mime.getType(filePath) ?? "application/octet-stream";
-          res.writeHead(200, {
-            "Content-Type": contentType,
-            "Cache-Control": "public, max-age=31536000, immutable",
-          });
-          const streamExit = yield* Stream.runForEach(fileSystem.stream(filePath), (chunk) =>
-            Effect.sync(() => {
-              if (!res.destroyed) {
-                res.write(chunk);
-              }
-            }),
-          ).pipe(Effect.exit);
-          if (Exit.isFailure(streamExit)) {
-            if (!res.destroyed) {
-              res.destroy();
+          yield* Effect.promise(async () => {
+            try {
+              const file = await openContainedFile(
+                serverConfig.attachmentsDir,
+                path.relative(serverConfig.attachmentsDir, filePath),
+              );
+              await serveAsset(req, res, file, filePath);
+            } catch {
+              if (res.headersSent) res.destroy();
+              else respond(404, { "Content-Type": "text/plain" }, "Not Found");
             }
-            return;
-          }
-          if (!res.writableEnded) {
-            res.end();
-          }
+          });
           return;
         }
 
@@ -1621,6 +1693,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
   const projectionWorkspaceQuery = yield* ProjectionWorkspaceQuery;
   const workspaceAssetAuthorizer = makeWorkspaceAssetAuthorizer({
+    attachmentsRoot: serverConfig.attachmentsDir,
     resolveProjectWorkspaceRoot: async (projectId) => {
       const workspace = await Effect.runPromise(
         projectionWorkspaceQuery.getProjectWorkspace(ProjectId.makeUnsafe(projectId)),
@@ -1692,6 +1765,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   >();
   const nextTurnQueueDispatcherRef = yield* Ref.make<NextTurnQueueDispatcherShape | null>(null);
 
+  yield* Effect.gen(function* () {
+    while (true) {
+      yield* attachmentUploads.sweep.pipe(
+        Effect.catch(() => Effect.logWarning("Attachment upload cleanup failed; will retry.")),
+      );
+      yield* Effect.sleep("1 hour");
+    }
+  }).pipe(Effect.forkScoped);
+
+  const previewFileServer = makePreviewFileServer(workspaceAssetAuthorizer);
+  yield* Effect.addFinalizer(() => Effect.promise(previewFileServer.close));
   const subscriptionsScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
@@ -3010,6 +3094,104 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           byteLength: writtenBytes.byteLength,
           contentSha256: sha256Hex(writtenBytes),
         };
+      }
+
+      case WS_METHODS.attachmentsCloneToUpload: {
+        const body = stripRequestTag(request.body);
+        return yield* attachmentUploads
+          .cloneToUpload(body.threadId, body.source)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to copy attachment to draft." }),
+            ),
+          );
+      }
+      case WS_METHODS.attachmentsGetUploads: {
+        const body = stripRequestTag(request.body);
+        return yield* attachmentUploads
+          .getUploads(body.threadId, body.uploadIds)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to renew draft uploads." }),
+            ),
+          );
+      }
+      case WS_METHODS.attachmentsReleaseUploads: {
+        const body = stripRequestTag(request.body);
+        yield* attachmentUploads
+          .releaseUploads(body.threadId, body.uploadIds)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to release draft uploads." }),
+            ),
+          );
+        return {};
+      }
+      case WS_METHODS.projectsOpenHtmlPreview: {
+        if (mode !== "desktop")
+          return yield* new RouteRequestError({
+            message: "Active file previews require the desktop app.",
+          });
+        const body = stripRequestTag(request.body);
+        const url = yield* Effect.tryPromise({
+          try: () => {
+            const stored =
+              body.identity.kind === "attachments"
+                ? resolveAttachmentPathById({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachmentId: body.relativePath,
+                  })
+                : null;
+            return previewFileServer.issue(
+              body.identity,
+              stored ? path.basename(stored) : body.relativePath,
+            );
+          },
+          catch: () => new RouteRequestError({ message: "Unable to open HTML preview." }),
+        });
+        return { url };
+      }
+      case WS_METHODS.projectsIssueAssetUrl: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: async () => {
+            const reader =
+              body.identity.kind === "project"
+                ? await workspaceAssetAuthorizer.forProject(body.identity.projectId)
+                : body.identity.kind === "thread"
+                  ? await workspaceAssetAuthorizer.forThread(body.identity.threadId)
+                  : await workspaceAssetAuthorizer.forAttachments();
+            return Promise.all(
+              body.files.map(async (entry) => {
+                // Check readability and containment before handing out the capability.
+                const stored =
+                  body.identity.kind === "attachments"
+                    ? resolveAttachmentPathById({
+                        attachmentsDir: serverConfig.attachmentsDir,
+                        attachmentId: entry.relativePath,
+                      })
+                    : null;
+                const relativePath = stored ? path.basename(stored) : entry.relativePath;
+                const file = await reader.openFile(relativePath);
+                let dimensions;
+                try {
+                  dimensions = await readAssetImageDimensions(file);
+                } finally {
+                  await file.close();
+                }
+                const issued = reader.issueFileHandle({ ...entry, relativePath });
+                const name = path.basename(relativePath);
+                return {
+                  relativePath: entry.relativePath,
+                  url: `/api/workspace-assets/${issued.handle}/${encodeURIComponent(name)}`,
+                  expiresAt: issued.expiresAt,
+                  ...dimensions,
+                };
+              }),
+            );
+          },
+          catch: () => new RouteRequestError({ message: "Unable to authorize workspace asset." }),
+        });
       }
 
       case WS_METHODS.projectsReadFile: {

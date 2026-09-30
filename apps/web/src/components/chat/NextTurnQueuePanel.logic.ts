@@ -7,14 +7,20 @@ export function buildQueueRowDisplay(item: NextTurnQueueItem) {
   const imageCount = item.command.message.attachments.filter(
     (attachment) => attachment.type === "image",
   ).length;
+  const fileCount = item.command.message.attachments.filter(
+    (attachment) => attachment.type === "file",
+  ).length;
   return {
     ...displayed,
     imageCount,
+    fileCount,
     label:
       displayed.visibleText.trim().length === 0 &&
       displayed.attachedFilePaths.length === 0 &&
-      imageCount > 0
-        ? "Image-only turn"
+      imageCount + fileCount > 0
+        ? fileCount > 0
+          ? "Attachment-only turn"
+          : "Image-only turn"
         : displayed.visibleText,
   };
 }

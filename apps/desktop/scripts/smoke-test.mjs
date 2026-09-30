@@ -57,12 +57,145 @@ try {
   }
   const page = await application.firstWindow({ timeout: 60_000 });
   const errors = [];
+  page.on("requestfailed", (request) =>
+    console.error(
+      "Smoke request failure:",
+      new URL(request.url()).pathname,
+      request.failure()?.errorText,
+    ),
+  );
+  page.on("console", (message) => {
+    if (message.type() === "error")
+      console.error(
+        "Smoke renderer error:",
+        message.text().replace(/token=[^&\s']+/gu, "token=REDACTED"),
+      );
+  });
   page.on("pageerror", (error) => errors.push(error.message));
   // Positive evidence: bundled renderer and its authenticated server connection both work.
   await page
     .getByRole("button", { name: "Add your first project", exact: true })
     .waitFor({ timeout: 60_000 });
   await page.screenshot({ path: join(directory, "welcome.png") });
+  const backendOrigin = await page.evaluate(() => {
+    const url = new URL(window.desktopBridge.getWsUrl());
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    return url.origin;
+  });
+  const authorizedStatus = await page.evaluate(
+    async (origin) => (await fetch(`${origin}/api/bootstrap`)).status,
+    backendOrigin,
+  );
+  if (authorizedStatus !== 200) throw new Error("Main renderer backend authentication failed");
+  const iframeStatus = await page.evaluate(async (origin) => {
+    const frame = document.createElement("iframe");
+    frame.srcdoc = "<!doctype html><title>untrusted subframe</title>";
+    const loaded = new Promise((resolve) => {
+      frame.onload = resolve;
+    });
+    document.body.append(frame);
+    await loaded;
+    try {
+      return (await frame.contentWindow.fetch(`${origin}/api/bootstrap?smoke=iframe`)).status;
+    } finally {
+      frame.remove();
+    }
+  }, backendOrigin);
+  if (iframeStatus !== 401)
+    throw new Error(`Subframe received backend authorization (${iframeStatus})`);
+  await application.evaluate(({ BrowserWindow }, origin) => {
+    const session = BrowserWindow.getAllWindows()[0].webContents.session;
+    globalThis.__smokeImageResponse = new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(-1), 10000);
+      session.webRequest.onSendHeaders({ urls: [`${origin}/*`] }, (details) => {
+        if (details.url === `${origin}/attachments/smoke-missing.png?smoke=iframe-image`) {
+          clearTimeout(timer);
+          resolve(
+            Object.keys(details.requestHeaders).some((key) => key.toLowerCase() === "authorization")
+              ? 200
+              : 401,
+          );
+        }
+      });
+    });
+  }, backendOrigin);
+  await page.evaluate((origin) => {
+    const frame = document.createElement("iframe");
+    frame.srcdoc = `<img src="${origin}/attachments/smoke-missing.png?smoke=iframe-image">`;
+    frame.id = "smoke-image-frame";
+    document.body.append(frame);
+  }, backendOrigin);
+  const imageStatus = await application.evaluate(async ({ BrowserWindow }) => {
+    const status = await globalThis.__smokeImageResponse;
+    BrowserWindow.getAllWindows()[0].webContents.session.webRequest.onSendHeaders(null);
+    return status;
+  });
+  if (imageStatus !== 401)
+    throw new Error(`Subframe image authorization check returned ${imageStatus}`);
+  await page.evaluate(() => document.getElementById("smoke-image-frame")?.remove());
+  const popupStatus = await application.evaluate(async ({ BrowserWindow }, origin) => {
+    const owner = BrowserWindow.getAllWindows()[0];
+    const session = owner.webContents.session;
+    const popup = new BrowserWindow({
+      show: false,
+      webPreferences: { session, sandbox: true, contextIsolation: true, nodeIntegration: false },
+    });
+    const target = `${origin}/api/bootstrap?smoke=popup`;
+    const response = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Popup request timed out")), 10000);
+      session.webRequest.onCompleted({ urls: [`${origin}/*`] }, (details) => {
+        if (details.url === target) {
+          clearTimeout(timer);
+          resolve(details.statusCode);
+        }
+      });
+    });
+    try {
+      await popup.loadURL(target);
+      return await response;
+    } finally {
+      session.webRequest.onCompleted(null);
+      popup.destroy();
+    }
+  }, backendOrigin);
+  if (popupStatus !== 401) throw new Error("Popup received backend authorization");
+  const previewConfig = await page.evaluate(() => window.desktopBridge.preview.getPreviewConfig());
+  await application.evaluate(
+    ({ session }, { origin, partition }) => {
+      const guestSession = session.fromPartition(partition);
+      globalThis.__smokeGuestResponse = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Guest request timed out")), 10000);
+        guestSession.webRequest.onCompleted({ urls: [`${origin}/*`] }, (details) => {
+          if (details.url === `${origin}/api/bootstrap?smoke=guest`) {
+            clearTimeout(timer);
+            resolve(details.statusCode);
+          }
+        });
+      });
+    },
+    { origin: backendOrigin, partition: previewConfig.partition },
+  );
+  await page.evaluate(
+    ({ origin, partition }) => {
+      const guest = document.createElement("webview");
+      guest.id = "smoke-untrusted-guest";
+      guest.setAttribute("partition", partition);
+      guest.setAttribute("src", `${origin}/api/bootstrap?smoke=guest`);
+      guest.style.height = "100px";
+      document.body.append(guest);
+    },
+    { origin: backendOrigin, partition: previewConfig.partition },
+  );
+  const guestStatus = await application.evaluate(async ({ session }, partition) => {
+    try {
+      return await globalThis.__smokeGuestResponse;
+    } finally {
+      session.fromPartition(partition).webRequest.onCompleted(null);
+    }
+  }, previewConfig.partition);
+  await page.evaluate(() => document.getElementById("smoke-untrusted-guest")?.remove());
+  if (guestStatus !== 401) throw new Error(`Guest received backend authorization (${guestStatus})`);
+
   const workspace = join(directory, "workspace");
   mkdirSync(workspace);
   writeFileSync(join(workspace, "README.md"), "Desktop smoke fixture\n");
@@ -126,6 +259,8 @@ try {
         (window) => window.getTitle() === "Quit smoke popup",
       );
       if (!popup) throw new Error("Missing quit smoke popup");
+      popup.focus();
+      popup.webContents.focus();
       const modifiers = process.platform === "darwin" ? ["meta"] : ["control"];
       popup.webContents.sendInputEvent({ type: "keyDown", keyCode: "Q", modifiers });
       await new Promise((resolve) => setTimeout(resolve, 40));

@@ -223,6 +223,14 @@
     "./projectSettings": {
       "types": "./src/projectSettings.ts",
       "import": "./src/projectSettings.ts"
+    },
+    "./attachmentLimits": {
+      "types": "./src/attachmentLimits.ts",
+      "import": "./src/attachmentLimits.ts"
+    },
+    "./filePreview": {
+      "types": "./src/filePreview.ts",
+      "import": "./src/filePreview.ts"
     }
   },
   "scripts": {

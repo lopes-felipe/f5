@@ -1,3 +1,5 @@
+import { AttachmentFileChip } from "./AttachmentFileChip";
+import { getServerHttpOrigin } from "../../lib/serverHttpOrigin";
 import type {
   CommandId,
   NextTurnQueueItem,
@@ -239,12 +241,28 @@ export function NextTurnQueueRow({
                   {filePath.split(/[\\/]/).at(-1)}
                 </span>
               ))}
+              {display.fileCount > 0 && (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                  {display.fileCount} file{display.fileCount === 1 ? "" : "s"}
+                </span>
+              )}
               {display.imageCount > 0 ? (
                 <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
                   {display.imageCount} image{display.imageCount === 1 ? "" : "s"}
                 </span>
               ) : null}
             </div>
+            {item.command.message.attachments
+              .filter((file) => file.type === "file")
+              .map((file) => (
+                <AttachmentFileChip
+                  key={file.id}
+                  file={{
+                    ...file,
+                    sourceUrl: `${getServerHttpOrigin()}/attachments/${encodeURIComponent(file.id)}`,
+                  }}
+                />
+              ))}
             <p
               className={`mt-1 truncate text-[11px] ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
             >

@@ -1,3 +1,4 @@
+import { setAttachmentSource } from "../lib/attachmentUploadQueue";
 import { notifyPreviewFocused } from "../lib/previewFocus";
 import {
   type DesktopPreviewBridge,
@@ -171,7 +172,7 @@ async function appendAnnotationToComposer(
   }
 
   const file = dataUrlToFile(screenshot.dataUrl, `preview-annotation-${Date.now()}.png`);
-  const result = await store.importImages(threadId, [file]);
+  const result = await store.importImages(threadId, [setAttachmentSource(file, "snapshot")]);
   if (result.cancelled) return;
   if (result.imported.length === 0) {
     toastManager.add({

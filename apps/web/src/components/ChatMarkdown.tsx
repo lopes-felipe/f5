@@ -1,3 +1,4 @@
+import { ChatAssetImage } from "./ChatAssetImage";
 import { useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
 import { remarkIssueReferences } from "../lib/remarkIssueReferences";
@@ -351,6 +352,11 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   );
   const markdownComponents = useMemo<Components>(
     () => ({
+      img({ src, alt }) {
+        return typeof src === "string" ? (
+          <ChatAssetImage src={src} alt={alt ?? ""} cwd={cwd} />
+        ) : null;
+      },
       a({ node: _node, href, children, ...props }) {
         // Resolve meta directly from the href so reference-style links and
         // balanced-paren hrefs (which the regex pre-scan misses) still

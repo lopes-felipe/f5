@@ -206,6 +206,7 @@ const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
 const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
 const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
 const profileByWebContentsId = new Map<number, string>();
+const appRendererWebContentsIds = new Set<number>();
 const authenticatedSessions = new Set<Electron.Session>();
 const registeredDesktopSessions = new Set<Electron.Session>();
 function runtimeForRenderer(id: number): BackendRuntime {
@@ -2143,6 +2144,20 @@ function configureBackendRequestAuthentication(runtime: BackendRuntime = default
           backendPort: runtime.backendPort,
           authToken: runtime.backendAuthToken,
           requestHeaders: details.requestHeaders,
+          ...(details.webContents && details.frame
+            ? {
+                initiator: {
+                  registeredRenderer:
+                    appRendererWebContentsIds.has(details.webContents.id) &&
+                    profileByWebContentsId.get(details.webContents.id) === runtime.profile.id,
+                  mainFrame: details.frame === details.webContents.mainFrame,
+                  frameOrigin: details.frame.origin,
+                  appOrigin: isDevelopment
+                    ? new URL(mainRendererUrl()).origin
+                    : `${DESKTOP_SCHEME}://app`,
+                },
+              }
+            : {}),
         }),
       });
     },
@@ -2741,7 +2756,11 @@ function createWindow(
     },
   });
 
+  appRendererWebContentsIds.add(window.webContents.id);
   profileByWebContentsId.set(window.webContents.id, runtime.profile.id);
+  window.webContents.once("destroyed", () =>
+    appRendererWebContentsIds.delete(rendererWebContentsId),
+  );
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
     if (partition !== profilePreviewPartition(runtime.profile)) {

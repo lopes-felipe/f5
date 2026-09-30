@@ -1,15 +1,18 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { makeAttachmentUploads } from "./attachmentUploads";
 
 import {
   type ChatAttachment,
   type CommandId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  ATTACHMENT_MAX_TURN_BYTES,
+  ATTACHMENT_MAX_IMAGES_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ThreadId,
   type UploadChatAttachment,
 } from "@t3tools/contracts";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, Exit, FileSystem, Schema } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { writeFileBytesAtomically } from "./atomicWrite.ts";
@@ -31,6 +34,9 @@ interface AttachmentIngressPaths {
 
 interface PreparedAttachmentIngressEntry extends AttachmentIngressPaths {
   bytes: Buffer | undefined;
+  readonly stagedFile?: string;
+  readonly uploadId?: string;
+  readonly finishClaim?: Effect.Effect<unknown, unknown>;
   readonly finalPath: string;
   readonly stagingPath: string;
   readonly contentHash: string;
@@ -60,10 +66,65 @@ export const prepareAttachmentIngress = Effect.fnUntraced(function* (input: {
     ".staging",
     createHash("sha256").update(input.commandId).digest("hex"),
   );
+  const preparedEntries: PreparedAttachmentIngressEntry[] = [];
+  let preparedBytes = 0;
+  let preparedImageBytes = 0;
+  const cleanupPrepared = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    for (const entry of preparedEntries) {
+      yield* fs.remove(entry.stagingPath, { force: true }).pipe(Effect.ignore);
+      yield* entry.finishClaim?.pipe(Effect.ignore) ?? Effect.void;
+    }
+  });
   const entries = yield* Effect.forEach(
     input.attachments,
     (upload) =>
       Effect.gen(function* () {
+        if (upload.type === "upload") {
+          const attachmentId = createAttachmentId(input.threadId);
+          if (!attachmentId)
+            return yield* new AttachmentIngressError({ message: "Invalid thread attachment id." });
+          const uploads = yield* makeAttachmentUploads(input.attachmentsDir);
+          const stagedFile = path.join(stagingDirectory, attachmentId);
+          const claimed = yield* uploads
+            .claim(upload.uploadId, stagedFile, {
+              total: ATTACHMENT_MAX_TURN_BYTES - preparedBytes,
+              images: ATTACHMENT_MAX_IMAGES_BYTES - preparedImageBytes,
+            })
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new AttachmentIngressError({
+                    message: "Upload unavailable. Re-attach the file.",
+                  }),
+              ),
+            );
+          const meta = claimed.attachment;
+          const attachment: ChatAttachment = {
+            type: meta.kind,
+            id: attachmentId,
+            name: meta.name,
+            mimeType: meta.mimeType,
+            sizeBytes: meta.sizeBytes,
+            ...(meta.source ? { source: meta.source } : {}),
+          };
+          const finalPath = resolveAttachmentPath({
+            attachmentsDir: input.attachmentsDir,
+            attachment,
+          });
+          if (!finalPath)
+            return yield* new AttachmentIngressError({ message: "Invalid attachment path." });
+          return {
+            attachment,
+            bytes: undefined,
+            stagedFile,
+            uploadId: upload.uploadId,
+            finishClaim: uploads.finishClaim(upload.uploadId, stagedFile),
+            contentHash: meta.contentHash,
+            finalPath,
+            stagingPath: stagedFile,
+          } satisfies PreparedAttachmentIngressEntry;
+        }
         const parsed = parseBase64DataUrl(upload.dataUrl);
         if (!parsed || !parsed.mimeType.startsWith("image/")) {
           return yield* new AttachmentIngressError({
@@ -109,10 +170,29 @@ export const prepareAttachmentIngress = Effect.fnUntraced(function* (input: {
           finalPath,
           stagingPath: path.join(stagingDirectory, path.basename(finalPath)),
         } satisfies PreparedAttachmentIngressEntry;
-      }),
+      }).pipe(
+        Effect.tap((entry) =>
+          Effect.sync(() => {
+            preparedEntries.push(entry);
+            preparedBytes += entry.attachment.sizeBytes;
+            if (entry.attachment.type === "image") preparedImageBytes += entry.attachment.sizeBytes;
+          }),
+        ),
+      ),
     { concurrency: 1 },
-  );
+  ).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? cleanupPrepared : Effect.void)));
 
+  const total = entries.reduce((sum, entry) => sum + entry.attachment.sizeBytes, 0);
+  const images = entries.reduce(
+    (sum, entry) => sum + (entry.attachment.type === "image" ? entry.attachment.sizeBytes : 0),
+    0,
+  );
+  if (total > ATTACHMENT_MAX_TURN_BYTES || images > ATTACHMENT_MAX_IMAGES_BYTES) {
+    yield* cleanupPrepared;
+    return yield* new AttachmentIngressError({
+      message: "Attachments exceed the 256 MiB turn limit or 80 MiB image limit.",
+    });
+  }
   return {
     attachments: entries.map((entry) => entry.attachment),
     commandId: input.commandId,
@@ -167,6 +247,11 @@ const discardAttachmentEntries = Effect.fnUntraced(function* (input: {
 export const discardPreparedAttachmentIngress = Effect.fnUntraced(function* (
   prepared: PreparedAttachmentIngress,
 ) {
+  yield* Effect.forEach(
+    prepared.entries,
+    (entry) => entry.finishClaim?.pipe(Effect.ignore) ?? Effect.void,
+    { discard: true },
+  );
   yield* discardAttachmentEntries({
     commandId: prepared.commandId,
     entries: prepared.entries,
@@ -207,7 +292,7 @@ export const persistPreparedAttachmentIngress = Effect.fnUntraced(function* (
   const sql = yield* SqlClient.SqlClient;
   const entriesWithBytes = yield* Effect.forEach(prepared.entries, (entry) => {
     const bytes = entry.bytes;
-    return bytes
+    return bytes || entry.stagedFile
       ? Effect.succeed({ ...entry, bytes })
       : Effect.fail(
           new AttachmentIngressError({
@@ -220,7 +305,10 @@ export const persistPreparedAttachmentIngress = Effect.fnUntraced(function* (
     yield* Effect.forEach(
       entriesWithBytes,
       (entry) =>
-        writeFileBytesAtomically({ filePath: entry.stagingPath, contents: entry.bytes }).pipe(
+        (entry.bytes
+          ? writeFileBytesAtomically({ filePath: entry.stagingPath, contents: entry.bytes })
+          : Effect.void
+        ).pipe(
           Effect.mapError(
             () =>
               new AttachmentIngressError({
@@ -291,6 +379,11 @@ export const persistPreparedAttachmentIngress = Effect.fnUntraced(function* (
       { concurrency: 1, discard: true },
     );
 
+    yield* Effect.forEach(
+      prepared.entries,
+      (entry) => entry.finishClaim?.pipe(Effect.ignore) ?? Effect.void,
+      { discard: true },
+    );
     return prepared.attachments;
   }).pipe(
     Effect.tapError(() => discardPreparedAttachmentIngress(prepared)),

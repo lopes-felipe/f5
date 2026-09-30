@@ -9,6 +9,7 @@ export interface AttachmentMetadataInput {
 // attachment type before the provider attachment pipeline is updated.
 const SUPPORTED_ATTACHMENT_TYPES = {
   image: true,
+  file: true,
 } satisfies Record<ChatAttachment["type"], true>;
 
 /**
@@ -19,6 +20,7 @@ export function formatAttachmentMetadataLine(input: AttachmentMetadataInput): st
   const { attachment } = input;
   switch (attachment.type) {
     case "image":
+    case "file":
       return [
         `- ${JSON.stringify(attachment.name)}`,
         `(${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,

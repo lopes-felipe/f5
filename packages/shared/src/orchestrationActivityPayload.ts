@@ -730,6 +730,7 @@ function readMcpToolPayload(payload: UnknownRecord): Partial<CompactToolActivity
 function compactToolPayload(payload: CompactToolActivityPayload): Record<string, unknown> {
   return {
     itemType: payload.itemType,
+    ...(payload.imagePath ? { imagePath: payload.imagePath } : {}),
     ...(payload.providerItemId ? { providerItemId: payload.providerItemId } : {}),
     ...(payload.status ? { status: payload.status } : {}),
     ...(payload.title ? { title: payload.title } : {}),
@@ -876,11 +877,25 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
           return value ? OrchestrationFileChangeId.makeUnsafe(value) : undefined;
         })()
       : undefined;
+  const imageData = asRecord(record.data);
+  const imageInput = asRecord(imageData?.input);
+  // Codex item lifecycle events carry `{ item: { type: "imageView", path } }`;
+  // Claude's image tools carry `{ input: { file_path } }`.
+  const imageItem = asRecord(imageData?.item);
+  const imagePath =
+    record.itemType === "image_view"
+      ? (asTrimmedString(record.imagePath) ??
+        asTrimmedString(imageData?.path) ??
+        asTrimmedString(imageItem?.path) ??
+        asTrimmedString(imageInput?.file_path) ??
+        asTrimmedString(imageInput?.path))
+      : undefined;
   const subagentPayload = readSubagentPayload(record);
   const mcpPayload = readMcpToolPayload(record);
 
   return {
     itemType: record.itemType,
+    ...(imagePath ? { imagePath } : {}),
     ...(providerItemId ? { providerItemId } : {}),
     ...(status ? { status } : {}),
     ...(title ? { title } : {}),

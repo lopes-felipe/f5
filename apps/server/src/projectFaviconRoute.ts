@@ -1,4 +1,5 @@
 import http from "node:http";
+import { serveAsset } from "./assetHttp";
 
 import { ProjectId } from "@t3tools/contracts";
 
@@ -180,14 +181,45 @@ export async function tryHandleProjectFaviconRequest(
   res: http.ServerResponse,
   authorizer: WorkspaceAssetAuthorizer,
   checkedInProjectFileService: CheckedInProjectFileService,
+  req?: http.IncomingMessage,
 ): Promise<boolean> {
   if (url.pathname.startsWith(WORKSPACE_ASSET_ROUTE_PREFIX)) {
-    const handle = url.pathname.slice(WORKSPACE_ASSET_ROUTE_PREFIX.length);
-    if (!handle || handle.includes("/")) {
+    if (req && req.method !== "GET" && req.method !== "HEAD") {
+      res.writeHead(405, { Allow: "GET, HEAD" });
+      res.end();
+      return true;
+    }
+    const [handle, ...subpath] = url.pathname.slice(WORKSPACE_ASSET_ROUTE_PREFIX.length).split("/");
+    if (!handle || !/^[a-zA-Z0-9_-]+$/u.test(handle)) {
       sendAssetError(res, new Error("Invalid handle"));
       return true;
     }
     try {
+      if (req) {
+        const opened = await authorizer
+          .openHandle(handle, subpath.length ? decodeURIComponent(subpath.join("/")) : undefined)
+          .catch((error: unknown) => {
+            if (
+              error instanceof WorkspaceAssetAuthorizationError &&
+              error.failure === "expired_handle" &&
+              subpath.length === 0
+            )
+              return null;
+            throw error;
+          });
+        if (opened) {
+          await serveAsset(
+            req,
+            res,
+            opened.file,
+            opened.name,
+            opened.grant === "html-document"
+              ? `${url.origin}${WORKSPACE_ASSET_ROUTE_PREFIX}${handle}/`
+              : undefined,
+          );
+          return true;
+        }
+      }
       const asset = await authorizer.readHandle(handle);
       res.writeHead(200, {
         "Cache-Control": "private, max-age=300",
@@ -196,9 +228,14 @@ export async function tryHandleProjectFaviconRequest(
         "Content-Type": asset.mimeType,
         ETag: `"${asset.contentSha256}"`,
         "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
       });
       res.end(asset.bytes);
     } catch (error) {
+      if (res.headersSent) {
+        res.destroy();
+        return true;
+      }
       sendAssetError(res, error);
     }
     return true;

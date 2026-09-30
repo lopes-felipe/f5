@@ -1,3 +1,8 @@
+import type {
+  AttachmentUpload,
+  AttachmentUploadsInput,
+  AttachmentCloneToUploadInput,
+} from "./attachmentUpload";
 import type { ProjectId } from "./baseSchemas";
 import type {
   ProfileId,
@@ -40,6 +45,9 @@ import type {
   ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
+  ProjectIssueAssetUrlInput,
+  ProjectOpenHtmlPreviewInput,
+  ProjectIssueAssetUrlResult,
   ProjectReadFileResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -476,6 +484,11 @@ export interface DesktopPreviewBridge {
 }
 
 export interface NativeApi {
+  attachments: {
+    getUploads: (input: AttachmentUploadsInput) => Promise<Array<AttachmentUpload | null>>;
+    releaseUploads: (input: AttachmentUploadsInput) => Promise<{}>;
+    cloneToUpload: (input: AttachmentCloneToUploadInput) => Promise<AttachmentUpload>;
+  };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;
     githubLoginStatus: (input: {
@@ -552,6 +565,8 @@ export interface NativeApi {
       input: ProjectCancelContentSearchInput,
     ) => Promise<ProjectCancelContentSearchResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
+    openHtmlPreview: (input: ProjectOpenHtmlPreviewInput) => Promise<{ url: string }>;
+    issueAssetUrl: (input: ProjectIssueAssetUrlInput) => Promise<ProjectIssueAssetUrlResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
   };
   filesystem: {

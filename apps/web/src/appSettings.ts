@@ -337,6 +337,10 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
   // Legacy persisted flag. The interval is the source of truth; normalizeAppSettings derives this.
+  loadRemoteImagesInChat: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
   enableGitStatusAutoRefresh: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),

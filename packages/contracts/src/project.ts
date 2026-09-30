@@ -239,3 +239,34 @@ export const ProjectCloneJob = Schema.Struct({
   createdAt: Schema.String,
 });
 export type ProjectCloneJob = typeof ProjectCloneJob.Type;
+
+export const ProjectIssueAssetUrlInput = Schema.Struct({
+  identity: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("project"), projectId: ProjectId }),
+    Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
+    Schema.Struct({ kind: Schema.Literal("attachments") }),
+  ]),
+  files: Schema.Array(
+    Schema.Struct({
+      relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+      grant: Schema.Literals(["file", "html-document"]),
+    }),
+  ).check(Schema.isMaxLength(100)),
+});
+export type ProjectIssueAssetUrlInput = typeof ProjectIssueAssetUrlInput.Type;
+export const ProjectIssueAssetUrlResult = Schema.Array(
+  Schema.Struct({
+    relativePath: Schema.String,
+    url: Schema.String,
+    expiresAt: Schema.Number,
+    width: Schema.optional(Schema.Number),
+    height: Schema.optional(Schema.Number),
+  }),
+);
+export type ProjectIssueAssetUrlResult = typeof ProjectIssueAssetUrlResult.Type;
+
+export const ProjectOpenHtmlPreviewInput = Schema.Struct({
+  identity: ProjectIssueAssetUrlInput.fields.identity,
+  relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+});
+export type ProjectOpenHtmlPreviewInput = typeof ProjectOpenHtmlPreviewInput.Type;
