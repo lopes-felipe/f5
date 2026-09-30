@@ -3338,10 +3338,16 @@
     {
       "upstreamSha": "2b178231ebfa597947efb4ec31bf60e0bb9e3128",
       "subject": "fix: allow more attachments without raising the image payload budget (#12620)",
-      "reason": "Phase 7b (generic attachments and uploads): fix: allow more attachments without raising the image payload budget. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: attachment count (100) is independent of per-provider inline image caps; overflow images are delivered by path instead of raising the image payload budget.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/shared/src/attachmentLimits.ts:14",
+        "packages/contracts/src/attachmentUpload.ts:4",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
@@ -3476,10 +3482,16 @@
     {
       "upstreamSha": "2cb1a26f061fa9029ccbe2a614f02bb14b22dd45",
       "subject": "fix(web): open the file a bare filename reference names (#6297)",
-      "reason": "Phase 7c: fix(web): open the file a bare filename reference names. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 7c: a bare filename in an agent file link opens the unique workspace match (exact, then case-folded) and never picks between ambiguous matches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/lib/workspaceBasename.ts:2",
+        "apps/web/src/components/ChatView.tsx:5849",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "2d156a83b96ebf2e4a9c6017251baad357ae6ab1",
@@ -4081,10 +4093,16 @@
     {
       "upstreamSha": "34a12bc33f5fba02b0b398e7dff35ca041a87dc7",
       "subject": "fix(web): reject unsupported composer image types at attach time (#6574)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): reject unsupported composer image types at attach time. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: images are classified by magic bytes on upload; unsupported image types are attached as generic files rather than failing at send.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/attachmentUploads.ts:119",
+        "apps/web/src/lib/attachmentValidation.ts:5",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "34b15a9acec5519425c81bdd2a10f11e9ba3d23d",
@@ -4903,10 +4921,15 @@
     {
       "upstreamSha": "3fd21df62da3191f1abf12a0cd74df6de9ed30a2",
       "subject": "fix(server): pass Codex image attachments by path to avoid oversized requests (#11050)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(server): pass Codex image attachments by path to avoid oversized requests. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: Codex receives image attachments as localImage paths instead of inline data URLs.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/codexAppServerManager.ts:1104",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "3fd50643311d0b0e702628f906f7cb6bbe84e1ba",
@@ -5386,10 +5409,15 @@
     {
       "upstreamSha": "47a95332a2b8fe47da9fb0af97fd6f0b542a18ee",
       "subject": "fix(web): browse folders from file breadcrumbs (#8910)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): browse folders from file breadcrumbs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: file viewer breadcrumbs browse parent folders.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/FileViewPanel.tsx:424",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "47ace94962a714a561d7cfbdbaa4c721ef6b0598",
@@ -6043,10 +6071,15 @@
     {
       "upstreamSha": "4fed6cfb3517ef9af9b2a361142152c079504530",
       "subject": "feat: add inline file previews and attachment chips across surfaces (#11265)",
-      "reason": "Phase 7b (generic attachments and uploads): feat: add inline file previews and attachment chips across surfaces. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: generic attachments render as file chips in the timeline and open in the shared media viewer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:9",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "50027bb3ad2912f9127304392a2c85ad5ab9a4ba",
@@ -7160,10 +7193,15 @@
     {
       "upstreamSha": "5f4c7161fa7782ea93b63fe934d43229742e7ec8",
       "subject": "fix(server): canonicalise media paths the same way their callers do (#9575)",
-      "reason": "Phase 7c (rich file/media viewing): fix(server): canonicalise media paths the same way their callers do. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent (extended in Phase 7): asset grants canonicalise both the root and the requested path with realpath before containment checks, the same way callers resolve them.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/WorkspaceAssetAuthorizer.ts:280",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "5f84efa1ec2fb3cd6f6c54545cc34bb77ac1ddb8",
@@ -7332,10 +7370,15 @@
     {
       "upstreamSha": "61a91b6ef1bd45424169c6650362b358d49bbe34",
       "subject": "fix(web): group image views like other tool calls (#9597)",
-      "reason": "Phase 7c: fix(web): group image views like other tool calls. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: f5's work-log grouping never special-cased image views, so image_view entries already group like other tool calls; Phase 7 only adds a collapsed thumbnail to the row.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/chat/MessagesTimeline.tsx:2676",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "61b25b88d7922a480790066341867f3f8ae42fcb",
@@ -7607,10 +7650,15 @@
     {
       "upstreamSha": "652515a349741d234111b85f27597be3265d1ffc",
       "subject": "fix(web): render assistant images inline in chat (#9126)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): render assistant images inline in chat. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: assistant markdown images render inline through asset grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatMarkdown.tsx:357",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "659986ce384d29123269820ccb8340ab4d824cdd",
@@ -7833,10 +7881,15 @@
     {
       "upstreamSha": "68c2277f500bbbb299396bcdcd0aec60dcb5db9d",
       "subject": "feat(composer): fold large pastes into text attachments (#11442)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(composer): fold large pastes into text attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: pastes of at least 32 KiB UTF-8, or over the input limit, fold into numbered pasted-text attachments.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/textPaste.ts:9",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "68d569138b0a2ac250004df69e4d5a663f11574b",
@@ -8191,10 +8244,15 @@
     {
       "upstreamSha": "6df0add6e65b7c0040b5774635f794e4ff802ddd",
       "subject": "fix(web): navigate markdown images as galleries (#10625)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): navigate markdown images as galleries. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat images open a keyboard-navigable gallery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/AssetImageGallery.tsx:8",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "6e324b9bbfc72e694c3c16abeb59716c37fc02d5",
@@ -8498,10 +8556,19 @@
     {
       "upstreamSha": "716069f40f000887cb01685099a16e19d9194307",
       "subject": "fix(server): keep attachments until the command commits (#7941)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(server): keep attachments until the command commits. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: attachment ingress persists ownership transactionally with the owning command, and Phase 7 upload claims reuse that path with a lease so bytes are kept until the command commits.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/attachmentIngress.ts:341",
+        "apps/server/src/attachmentUploads.ts:287",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": [
+        "b4bec80827a1888003d44f8ee83872b97db4e067",
+        "d4d6991e764631bc825a3e4061651d6ff1ab484f"
+      ]
     },
     {
       "upstreamSha": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
@@ -8889,10 +8956,15 @@
     {
       "upstreamSha": "77512998485718eb1b6c336e20f196eb40a6a32f",
       "subject": "feat(web): preview document attachments in the file viewer (#9292)",
-      "reason": "Phase 7c (rich file/media viewing): feat(web): preview document attachments in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: document attachments (Markdown, HTML, PDF) preview in the file viewer through attachment grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:110",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "777f5bb2e11fe30e7fdcb5741b0b1d9bb20924d6",
@@ -8918,10 +8990,15 @@
     {
       "upstreamSha": "77c9d1eb5b6a48d38f6f0a2bb4a8cff8e4752ade",
       "subject": "fix: render workspace images in chat markdown (#6433)",
-      "reason": "Phase 7c (rich file/media viewing): fix: render workspace images in chat markdown. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: workspace image paths in chat markdown receive batched, re-issued asset grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:100",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "77d9ffc822ac4c1f3600dc6c97e92fc94e9e12a3",
@@ -9585,10 +9662,15 @@
     {
       "upstreamSha": "820e5639c30be83a9433f696613760f8ee42075a",
       "subject": "fix(server): serve html assets with utf-8 charset (#6409)",
-      "reason": "Phase 7a: fix(server): serve html assets with utf-8 charset. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 7a: text and JSON assets are served with a UTF-8 charset by the shared assetHttp headers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7a"
+      "disposition": "ported",
+      "plannedWorkstream": "7a",
+      "evidence": [
+        "apps/server/src/assetHttp.ts:100",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "823119350ee29cca434b1295aa5c560f4c9ef98a",
@@ -10326,10 +10408,15 @@
     {
       "upstreamSha": "8bd544cdfd22aa38ab82bc1adc0b851755a299ef",
       "subject": "fix(web): keep agent images collapsed (#9460)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): keep agent images collapsed. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: viewed agent images start collapsed in the work log and expand on demand.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/chat/MessagesTimeline.tsx:2725",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8c18b5bb21a5349fbadba8c77456ea34c41b7339",
@@ -10606,18 +10693,29 @@
     {
       "upstreamSha": "8f49132214a40c85cf46bf5e3d8ea11c04a9610a",
       "subject": "feat(server): accept PDF, ZIP, and other file uploads up to 50MB (#8235)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(server): accept PDF, ZIP, and other file uploads up to 50MB. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: HTTP uploads accept any file type up to 50 MiB (images 10 MiB) with a 256 MiB per-turn aggregate and staging quotas.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/contracts/src/attachmentUpload.ts:7",
+        "apps/server/src/attachmentUploads.ts:154",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8f525af5afa93dff58775030d9b503d3bda36b7b",
       "subject": "fix(web): open agent images in expanded preview (#8807)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): open agent images in expanded preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: clicking an agent image opens it in the expanded gallery preview.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:150",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8f7da3b99e48ffb678d3426a1b5fb602ecdd50f7",
@@ -10828,10 +10926,15 @@
     {
       "upstreamSha": "922bd692251bc803c12a3fab159efe83c957bb70",
       "subject": "refactor(media): unify file and media previews across clients (#9253)",
-      "reason": "Phase 7c (rich file/media viewing): refactor(media): unify file and media previews across clients. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: one WorkspaceMediaView renders files and attachments for the file panel and attachment chips.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:12",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "9235c83eb7f16c321ad02aa4cc502fbe0be252c1",
@@ -11215,10 +11318,15 @@
     {
       "upstreamSha": "96bddf81258090690bfcf4e6a6414aa0dcf1910a",
       "subject": "fix(desktop): paste as text no longer doubles the pasted text (#11958)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(desktop): paste as text no longer doubles the pasted text. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: desktop Paste as text (composer.pasteAsText) bypasses folding once and inserts the text a single time.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/ChatView.tsx:3772",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "96bfa67b3d05d8adb2fb23d1017bd10fe4b9a338",
@@ -11368,10 +11476,15 @@
     {
       "upstreamSha": "99960383d094b850f0001d3067fa604aa3adf7d6",
       "subject": "fix: open agent file links in the file viewer (#8098)",
-      "reason": "Phase 7c (rich file/media viewing): fix: open agent file links in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: agent file links open in the file viewer panel.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatView.tsx:5838",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
@@ -12174,10 +12287,15 @@
     {
       "upstreamSha": "a5ac766596bdf6c7d6852ecda453e2a85a7b08d4",
       "subject": "fix(media): preserve playback during fullscreen transitions (#11113)",
-      "reason": "Phase 7c (rich file/media viewing): fix(media): preserve playback during fullscreen transitions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: the video element is keyed by file so playback survives re-renders and fullscreen transitions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:184",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "a5bbad910f78cc14eef8baa94fe6f46676f78d5a",
@@ -12266,10 +12384,15 @@
     {
       "upstreamSha": "a7028f1399911e8ddfd8013914b100ee49b95595",
       "subject": "fix: use Pierre icons consistently for attachments (#10475)",
-      "reason": "Phase 7b (generic attachments and uploads): fix: use Pierre icons consistently for attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: attachment chips use the same VS Code entry icons as the file tree and composer, so icons are already consistent; f5 does not use Pierre icons for files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:23",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "a76b898b3aa4fd4081104b06a3b2c942bd4fecb7",
@@ -12570,10 +12693,15 @@
     {
       "upstreamSha": "ac4aae101d060b5355a5de58e23c7387886d9021",
       "subject": "feat(web): play video attachments in chat (#8688)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): play video attachments in chat. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: video attachments play inline in chat through capability URLs with Range support.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:41",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ac4f1a2b6d52b082edcc06d866892f8dcfdc033f",
@@ -12795,10 +12923,15 @@
     {
       "upstreamSha": "aff9318bf46beaf05cc7155b428d3f0b8711efd2",
       "subject": "fix(web): retry failed attachment uploads after reconnect (#10338)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): retry failed attachment uploads after reconnect. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: the upload queue retries failed uploads with back-off (including 429 Retry-After) and exposes Retry after reconnect.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/attachmentUploadQueue.ts:142",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "b01771c2383bbcdf154b8c4e9f1a7d5e3867e2d0",
@@ -13230,10 +13363,15 @@
     {
       "upstreamSha": "b5d89038ae72142038dfa8cf69d49b7a607fe98e",
       "subject": "feat(web): accept file drops into sidebar threads (#7892)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): accept file drops into sidebar threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: files dropped onto a sidebar thread are uploaded into that thread's draft through the shared attachment path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "b5f4e8137b3cbd657fbe2b698f9db4e321acbc3d",
@@ -13756,10 +13894,15 @@
     {
       "upstreamSha": "bcb855a633566c2dc70239155ddcd28f0fa736c4",
       "subject": "feat(web): attach PDFs, ZIPs, and other files to a turn (#8236)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): attach PDFs, ZIPs, and other files to a turn. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: PDFs, archives and other files attach to a turn as generic file attachments; archives are never extracted.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/contracts/src/attachmentUpload.ts:15",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bcc20249cc0a888430f2006d61c11de176d531cd",
@@ -13862,18 +14005,27 @@
     {
       "upstreamSha": "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c",
       "subject": "feat(web): safely attach HEIC photos as JPEG images (#8161)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): safely attach HEIC photos as JPEG images. Reimplement in f5; not yet delivered.",
+      "reason": "Declined in Phase 7b: the libheif (LGPL) licensing gate for heic-to was not cleared, so HEIC/HEIF photos are attached and delivered as plain files without conversion.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "declined",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "docs/user/attachments-and-media.md:3",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ]
     },
     {
       "upstreamSha": "bde39d4d7977ce85d6ea396a983d6b6a25bf7e07",
       "subject": "feat(web): accept file drops into sidebar threads (#7892)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): accept file drops into sidebar threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: files dropped onto a sidebar thread are uploaded into that thread's draft through the shared attachment path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bdf99c17bf7ae634728481677cf1bca8db65d00e",
@@ -13967,10 +14119,15 @@
     {
       "upstreamSha": "beae2147a9487ec47ac992319f2216914b4cb62d",
       "subject": "fix(media): preview host files and stream videos across clients (#9023)",
-      "reason": "Phase 7c (rich file/media viewing): fix(media): preview host files and stream videos across clients. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: host files are previewed and videos stream through single-range responses.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/assetHttp.ts:161",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bed0b4cdad41408bb09b445a0a8f8ea0e5b62d1b",
@@ -14146,18 +14303,28 @@
     {
       "upstreamSha": "c0e09f323ac9f6bf4b9119cbad841db3379588d6",
       "subject": "fix(web): render nested markdown images correctly (#8501)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): render nested markdown images correctly. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: rendered Markdown resolves relative images from the file's own directory, so nested documents' images render.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/FileViewPanel.tsx:526",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "c0ebc882b88dbcffd5a712e403b3c3c517ba4ea6",
       "subject": "fix(web): return focus to the composer after closing a media preview (#9513)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): return focus to the composer after closing a media preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: closing the image gallery returns focus to the element that opened it.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/AssetImageGallery.tsx:30",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "c0f9d917c1ab08d30f2b3715dd25d2175a6d2ecf",
@@ -15077,10 +15244,15 @@
     {
       "upstreamSha": "ce71c04f0aa9d2e5cd340e2a04cb1b0d5e24419d",
       "subject": "feat(client): render viewed images in work logs (#8936)",
-      "reason": "Phase 7c (rich file/media viewing): feat(client): render viewed images in work logs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: image_view work-log entries render the viewed image; the path survives compaction and replay.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "packages/shared/src/orchestrationActivityPayload.ts:885",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ce8ca5bb3d005d8653d1b09c1e7c9e02d3ef8ae4",
@@ -15241,10 +15413,15 @@
     {
       "upstreamSha": "d0b19b32e01d7abc8829c01353d759fed3d304ed",
       "subject": "fix(claude): preview images read from the workspace (#9119)",
-      "reason": "Phase 7c (rich file/media viewing): fix(claude): preview images read from the workspace. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: Claude Read calls on image files (including streamed input) are classified as image_view and carry the path to the work log.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:708",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d0b4acbd13b2b602710e4a7d60c42f4799a409be",
@@ -15263,10 +15440,15 @@
     {
       "upstreamSha": "d0f855bfa91b1d961a17a02ec3e383f9671caba1",
       "subject": "fix(web): size the chat image slot from server-reported dimensions (#10200)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): size the chat image slot from server-reported dimensions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat image slots use server-reported dimensions as their aspect ratio.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:131",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d115a96763b76d00f06b06272688cf68eebe8206",
@@ -15303,10 +15485,15 @@
     {
       "upstreamSha": "d1a644897119300688cbd8bf26e0b64aeb92c382",
       "subject": "fix(web): dropped folders become path chips on the local environment and are refused on remote ones (#12001)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): dropped folders become path chips on the local environment and are refused on remote ones. Reimplement in f5; not yet delivered. Port local folder path references only; multi-machine environments remain excluded.",
+      "reason": "Phase 7b: dropped local folders become path references rather than uploads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/droppedAttachments.ts:2",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d1d15c67f4a5fb82fd8d5e01e5e3b288296789c3",
@@ -15879,10 +16066,15 @@
     {
       "upstreamSha": "d937e30759ceae421bf3cc1b84414de4b67df76c",
       "subject": "feat(web): render HTML and PDF files in the file viewer (#9143)",
-      "reason": "Phase 7c (rich file/media viewing): feat(web): render HTML and PDF files in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: HTML renders in a sandboxed iframe with an html-document grant, and PDF in a native viewer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:178",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d94fbda344398bd266b9f6645e531eb17d3c9e4e",
@@ -16663,10 +16855,15 @@
     {
       "upstreamSha": "e2e6ce6a29451e9fac612ab83f7a104b6d6475a3",
       "subject": "feat(server): report image dimensions with signed asset URLs (#10198)",
-      "reason": "Phase 7c (rich file/media viewing): feat(server): report image dimensions with signed asset URLs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: asset URL issuance reports image dimensions read from file headers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/imageDimensions.ts:4",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "e31e568bdb2fac30a3c785190201750c6d7dd61c",
@@ -17097,10 +17294,15 @@
     {
       "upstreamSha": "e9f50c3efcb02a199042364ead292e164274e716",
       "subject": "feat(web): upload image attachments before sending (#8048)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): upload image attachments before sending. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: attachments upload over HTTP before sending; drafts persist upload ids and sending waits for uploads to finish.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/attachmentUploadQueue.ts:21",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ea0487cc9adf9f51c865fe39128102afc532bcfc",
@@ -17331,10 +17533,15 @@
     {
       "upstreamSha": "ec5ede5e6a1f2f9d564a5834462f47d1b7e5f0ec",
       "subject": "fix(web): open video attachment thumbnails in the viewer (#11734)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): open video attachment thumbnails in the viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: video attachment chips open in the shared viewer and also play inline.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:30",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ec8b2119c377f5c1dbe6235b221ef98eca31a96e",
@@ -17354,10 +17561,15 @@
     {
       "upstreamSha": "eced382b451abc35137e7047b010c6ae5f6e9353",
       "subject": "fix(web): keep chat media at a stable size while it loads (#9938)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): keep chat media at a stable size while it loads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat media keeps a stable slot size while loading via reported dimensions and placeholders.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:131",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ecf3716fd190005b1552957b3c7880ab849a0a65",
@@ -17996,10 +18208,14 @@
     {
       "upstreamSha": "f46a709ee487e1e6e04423fcb7032a26eb103129",
       "subject": "feat(files): open markdown, HTML, and PDF files outside the workspace (#9140)",
-      "reason": "Phase 7c (rich file/media viewing): feat(files): open markdown, HTML, and PDF files outside the workspace. Reimplement in f5; not yet delivered.",
+      "reason": "Declined in Phase 7c: the approved plan restricts viewing to registered projects, worktrees and the profile's attachments directory; files outside the workspace remain editor-only.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "declined",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "docs/user/attachments-and-media.md:26",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ]
     },
     {
       "upstreamSha": "f47a3fe90354a3dfa14276e3699541d552426276",

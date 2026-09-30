@@ -38,16 +38,22 @@ Validation commands (macOS, Bun 1.3.11):
 - `bun run test:desktop-smoke`
 - `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`
 
+Results: the full workspace suite passed, and the exhaustive real-Git matrix passed **133 tests**. The browser suite passed **507 tests across 54 files**.
+
+One full-load browser run hit a known render race in `GithubAccountPanel.browser.tsx` ("Disconnect" detached mid-click). That area is outside Phase 7; it passed 3/3 in isolation and in the next full run.
+
+`test:desktop-smoke` passed on its final consecutive runs. Two earlier runs, made while other heavy suites had just finished, timed out waiting for the app to close after the double-tap quit step. An instrumented run showed both taps landing within 160 ms and the app closing normally. The authorization checks passed in every run.
+
 ## Performance
 
 Interactive fixture, 5 warm-ups and 30 measured repetitions, merged Phase 6 (`e4d42fba36`) versus this branch:
 
-| Measurement | Phase 6 p95 | Phase 7 p95 | Gate |
-| --- | --- | --- | --- |
-| Composer input-to-paint | 21.4 ms | 19.0 ms | ≤ 100 ms |
-| Composer input while streaming | 16.2 ms | 16.1 ms | ≤ 100 ms |
-| Warm switch to the large thread | 205.4 ms | 190.4 ms | ≤ 500 ms |
-| Small-thread startup (wall) | 166.5 ms | 152.3 ms | no regression > 10% and 20 ms |
-| Small-thread startup (process CPU) | 440.3 ms | 610.5 ms | informational |
+| Measurement                        | Phase 6 p95 | Phase 7 p95 | Gate                          |
+| ---------------------------------- | ----------- | ----------- | ----------------------------- |
+| Composer input-to-paint            | 21.4 ms     | 19.0 ms     | ≤ 100 ms                      |
+| Composer input while streaming     | 16.2 ms     | 16.1 ms     | ≤ 100 ms                      |
+| Warm switch to the large thread    | 205.4 ms    | 190.4 ms    | ≤ 500 ms                      |
+| Small-thread startup (wall)        | 166.5 ms    | 152.3 ms    | no regression > 10% and 20 ms |
+| Small-thread startup (process CPU) | 440.3 ms    | 610.5 ms    | informational                 |
 
 Two gates fail on **both** builds and are not introduced by this PR: `transport.pendingFrames` (4,148 / 2,000) and browser retained-heap growth ratio (9.3% baseline, 9.5% candidate, gate 5%; absolute growth passes at ~5 MiB / 10 MiB). Startup process CPU p95 rose while wall time fell; it has no stated gate, and this PR does not claim a performance improvement. No threshold is changed.
