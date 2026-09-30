@@ -3,6 +3,7 @@ import {
   MessageId,
   ProjectId,
   ThreadId,
+  TurnId,
   type ThreadTurnStartCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -78,6 +79,36 @@ const insert = (store: NextTurnQueueStoreShape, index: number, threadId: ThreadI
   });
 
 layer("NextTurnQueueStore", (it) => {
+  it.effect("returns a rejected steer to the head with the same durable identifiers", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-steer-fallback");
+      yield* seedThread(threadId);
+      yield* insert(store, 801, threadId);
+      const submitted = yield* insert(store, 802, threadId);
+      if (submitted.kind !== "created") throw new Error("expected a new item");
+      const original = submitted.item;
+      const state = yield* store.listByThread(threadId);
+      yield* store.setSteer(original.itemId, state.state.revision, TurnId.makeUnsafe("busy-turn"));
+      yield* store.claim({
+        itemId: original.itemId,
+        leaseOwner: "steer-owner",
+        now: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      yield* store.fallbackSteer(original.command.commandId);
+      const result = yield* store.listByThread(threadId);
+      const item = result.items[0]!;
+      assert.equal(item.itemId, original.itemId);
+      assert.equal(item.submissionId, original.submissionId);
+      assert.equal(item.command.commandId, original.command.commandId);
+      assert.equal(item.command.message.messageId, original.command.message.messageId);
+      assert.equal(item.command.expectedTurnId, undefined);
+      assert.equal(item.status, "queued");
+      assert.equal(item.lastErrorCode, "steer_queued");
+    }),
+  );
+
   it.effect("uses CAS claims and rejects edits or cancellation while dispatching", () =>
     Effect.gen(function* () {
       const store = yield* NextTurnQueueStore;

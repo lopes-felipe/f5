@@ -218,6 +218,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       recordTerminalEvent: providerTerminalEventRepository.record,
     }).pipe(
       Layer.provide(adapterRegistryLayer),
+      Layer.provide(serverSettingsLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
     );
@@ -346,6 +347,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(CheckpointStoreLive),
   );
   const orchestrationLayer = OrchestrationEngineLive.pipe(
+    Layer.provide(NextTurnQueueStoreLive),
     Layer.provide(projectionSnapshotQueryLayer),
     Layer.provide(OrchestrationProjectionPipelineLive),
     Layer.provide(OrchestrationEventStoreLive),

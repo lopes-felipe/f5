@@ -6528,6 +6528,47 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("steers a live Claude prompt without replacing or completing its turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const first = yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "first",
+        attachments: [],
+      });
+      const rejected = yield* Effect.exit(
+        adapter.sendTurn({ threadId: THREAD_ID, input: "another start", attachments: [] }),
+      );
+      assert.equal(rejected._tag, "Failure");
+      const steered = yield* adapter.steerTurn!({
+        threadId: THREAD_ID,
+        input: "follow up",
+        attachments: [],
+        expectedTurnId: first.turnId,
+      });
+      assert.equal(steered.turnId, first.turnId);
+      assert.equal(harness.getCreateQueryInputs().length, 1);
+      const prompts = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+      assert.deepEqual((yield* Effect.promise(() => prompts.next())).value?.message.content, [
+        { type: "text", text: "first" },
+      ]);
+      assert.deepEqual((yield* Effect.promise(() => prompts.next())).value?.message.content, [
+        { type: "text", text: "follow up" },
+      ]);
+      const session = (yield* adapter.listSessions())[0]!;
+      assert.equal(session.activeTurnId, first.turnId);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect(
     "supports rollbackThread by trimming in-memory turns and preserving earlier turns",
     () => {
@@ -6553,11 +6594,19 @@ describe("ClaudeAdapterLive", () => {
         ).pipe(Stream.runHead, Effect.forkChild);
 
         harness.query.emit({
+          type: "assistant",
+          session_id: "123e4567-e89b-42d3-a456-426614174000",
+          uuid: "123e4567-e89b-42d3-a456-426614174001",
+          parent_tool_use_id: null,
+          message: { id: "first-message", content: [{ type: "text", text: "first" }] },
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
           type: "result",
           subtype: "success",
           is_error: false,
           errors: [],
-          session_id: "sdk-session-rollback",
+          session_id: "123e4567-e89b-42d3-a456-426614174000",
           uuid: "result-first",
         } as unknown as SDKMessage);
 
@@ -6579,11 +6628,19 @@ describe("ClaudeAdapterLive", () => {
         ).pipe(Stream.runHead, Effect.forkChild);
 
         harness.query.emit({
+          type: "assistant",
+          session_id: "123e4567-e89b-42d3-a456-426614174000",
+          uuid: "123e4567-e89b-42d3-a456-426614174002",
+          parent_tool_use_id: null,
+          message: { id: "second-message", content: [{ type: "text", text: "second" }] },
+        } as unknown as SDKMessage);
+
+        harness.query.emit({
           type: "result",
           subtype: "success",
           is_error: false,
           errors: [],
-          session_id: "sdk-session-rollback",
+          session_id: "123e4567-e89b-42d3-a456-426614174000",
           uuid: "result-second",
         } as unknown as SDKMessage);
 
@@ -6600,6 +6657,10 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(rolledBack.turns.length, 1);
         assert.equal(rolledBack.turns[0]?.id, firstTurn.turnId);
 
+        assert.equal(
+          harness.getLastCreateQueryInput()?.options.resumeSessionAt,
+          "123e4567-e89b-42d3-a456-426614174001",
+        );
         const threadAfterRollback = yield* adapter.readThread(session.threadId);
         assert.equal(threadAfterRollback.turns.length, 1);
         assert.equal(threadAfterRollback.turns[0]?.id, firstTurn.turnId);

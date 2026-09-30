@@ -404,23 +404,29 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     );
 
   const rejectAcceptedMutation = (item: NextTurnQueueItem) =>
-    item.attemptCount === 0
-      ? Effect.void
-      : sql<{ readonly status: string }>`
+    item.command.presentation === "continuation"
+      ? Effect.fail(
+          new NextTurnQueueItemAlreadyRanError({
+            message: "Restart continuations are managed by recovery.",
+          }),
+        )
+      : item.attemptCount === 0
+        ? Effect.void
+        : sql<{ readonly status: string }>`
           SELECT status FROM orchestration_command_receipts
           WHERE command_id = ${item.command.commandId} LIMIT 1
         `.pipe(
-          Effect.flatMap((rows) =>
-            rows[0]?.status === "accepted"
-              ? Effect.fail(
-                  new NextTurnQueueItemAlreadyRanError({
-                    message:
-                      "That queued turn was already admitted and its provider delivery must be recovered instead.",
-                  }),
-                )
-              : Effect.void,
-          ),
-        );
+            Effect.flatMap((rows) =>
+              rows[0]?.status === "accepted"
+                ? Effect.fail(
+                    new NextTurnQueueItemAlreadyRanError({
+                      message:
+                        "That queued turn was already admitted and its provider delivery must be recovered instead.",
+                    }),
+                  )
+                : Effect.void,
+            ),
+          );
 
   const listByThread = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -554,8 +560,44 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         )
         .pipe(Effect.mapError(normalizeError)),
 
+    setSteer: (itemId, expectedRevision, expectedTurnId) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const item = yield* requireItem(itemId);
+            yield* rejectAcceptedMutation(item);
+            const state = yield* readState(item.threadId);
+            if (state.revision !== expectedRevision || item.status !== "queued")
+              return yield* new NextTurnQueueConflictError({
+                message: "The queue changed before steering.",
+              });
+            const at = now();
+            const command = { ...item.command, expectedTurnId };
+            yield* sql`UPDATE next_turn_queue SET position = position + 1 WHERE thread_id = ${item.threadId} AND deleted_at IS NULL`;
+            yield* sql`UPDATE next_turn_queue SET command_json = ${JSON.stringify(command)}, position = 0, updated_at = ${at} WHERE item_id = ${itemId}`;
+            yield* bumpRevision(item.threadId, at);
+            return yield* requireItem(itemId);
+          }),
+        )
+        .pipe(Effect.mapError(normalizeError)),
+
+    fallbackSteer: (commandId) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const item = yield* readItemByCommandId(commandId);
+            if (!item || !item.command.expectedTurnId) return;
+            const { expectedTurnId: _expected, ...command } = item.command;
+            const at = now();
+            yield* sql`UPDATE next_turn_queue SET position = position + 1 WHERE thread_id = ${item.threadId} AND deleted_at IS NULL`;
+            yield* sql`UPDATE next_turn_queue SET command_json = ${JSON.stringify(command)}, position = 0, status = 'queued', lease_owner = NULL, lease_expires_at = NULL, dispatch_started_at = NULL, not_before = NULL, last_error_code = 'steer_queued', last_error_detail = 'Steer not accepted; queued', updated_at = ${at} WHERE item_id = ${item.itemId}`;
+            yield* bumpRevision(item.threadId, at);
+          }),
+        )
+        .pipe(Effect.mapError(normalizeError)),
+
     settleSubmission: ({ submissionId, result }) =>
-      (result.disposition === "started"
+      (result.disposition === "started" || result.disposition === "steered"
         ? sql`
             UPDATE turn_submissions
             SET disposition = 'started', result_sequence = ${result.sequence},

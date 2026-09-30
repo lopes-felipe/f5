@@ -40,6 +40,8 @@ export function NextTurnQueueRow({
   onDuplicate,
   onMoveToTop,
   onRunNow,
+  onSteer,
+  canSteer,
 }: {
   readonly item: NextTurnQueueItem;
   readonly index: number;
@@ -59,6 +61,8 @@ export function NextTurnQueueRow({
   readonly onRetry: (item: NextTurnQueueItem) => Promise<void>;
   readonly onDuplicate: (item: NextTurnQueueItem) => Promise<void>;
   readonly onMoveToTop: (item: NextTurnQueueItem) => Promise<void>;
+  readonly onSteer?: ((item: NextTurnQueueItem) => Promise<void>) | undefined;
+  readonly canSteer?: boolean | undefined;
   readonly onRunNow: (item: NextTurnQueueItem) => Promise<void>;
 }) {
   const disabled = busy || item.status === "dispatching";
@@ -67,6 +71,7 @@ export function NextTurnQueueRow({
   const [editText, setEditText] = useState(display.visibleText);
   const [editModel, setEditModel] = useState(item.command.model ?? "");
   const [editRuntimeMode, setEditRuntimeMode] = useState(item.command.runtimeMode);
+  const continuation = item.command.presentation === "continuation";
   const [editInteractionMode, setEditInteractionMode] = useState(item.command.interactionMode);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -109,7 +114,7 @@ export function NextTurnQueueRow({
       }}
       className={`rounded-lg border border-border/55 bg-background/55 p-2 ${sortable.isDragging ? "z-20 opacity-70" : ""}`}
       tabIndex={0}
-      aria-label={`Queued turn ${index + 1}: ${display.label || "Empty turn"}`}
+      aria-label={`Queued turn ${index + 1}: ${continuation ? "Resuming after restart" : display.label || "Empty turn"}`}
       aria-describedby="next-turn-queue-reorder-help"
       onKeyDown={(event) => {
         if (!event.altKey || disabled) return;
@@ -209,7 +214,7 @@ export function NextTurnQueueRow({
             type="button"
             className="mt-0.5 cursor-grab text-muted-foreground disabled:cursor-not-allowed"
             aria-label="Drag to reorder queued turn"
-            disabled={disabled}
+            disabled={disabled || continuation}
             {...sortable.attributes}
             {...sortable.listeners}
           >
@@ -280,7 +285,7 @@ export function NextTurnQueueRow({
                 type="button"
                 variant="ghost"
                 size="icon-xs"
-                disabled={disabled}
+                disabled={disabled || continuation}
                 aria-label="Retry queued turn"
                 onClick={() => void onRetry(item)}
               >
@@ -291,7 +296,7 @@ export function NextTurnQueueRow({
               type="button"
               variant="ghost"
               size="icon-xs"
-              disabled={disabled || index === 0}
+              disabled={disabled || continuation || index === 0}
               aria-label="Move queued turn to top"
               onClick={() => void onMoveToTop(item)}
             >
@@ -311,11 +316,22 @@ export function NextTurnQueueRow({
             >
               <PlayIcon />
             </Button>
+            {onSteer ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={disabled || continuation || !canSteer}
+                onClick={() => void onSteer(item)}
+              >
+                Steer now
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
               size="icon-xs"
-              disabled={disabled}
+              disabled={disabled || continuation}
               aria-label="Edit queued turn"
               onClick={() => {
                 setEditText(display.visibleText);
@@ -331,7 +347,7 @@ export function NextTurnQueueRow({
               type="button"
               variant="ghost"
               size="icon-xs"
-              disabled={disabled || snapshot.items.length >= snapshot.maxItems}
+              disabled={disabled || continuation || snapshot.items.length >= snapshot.maxItems}
               aria-label="Duplicate queued turn"
               onClick={() => void onDuplicate(item)}
             >
@@ -341,7 +357,7 @@ export function NextTurnQueueRow({
               type="button"
               variant="ghost"
               size="icon-xs"
-              disabled={disabled}
+              disabled={disabled || continuation}
               aria-label="Cancel queued turn"
               onClick={() => void onCancel(item)}
             >

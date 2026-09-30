@@ -624,6 +624,7 @@ export function createWsNativeApi(): NativeApi {
       reorder: (input) => transport.request(WS_METHODS.nextTurnQueueReorder, input),
       retry: (input) => transport.request(WS_METHODS.nextTurnQueueRetry, input),
       promote: (input) => transport.request(WS_METHODS.nextTurnQueuePromote, input),
+      steer: (input) => transport.request(WS_METHODS.nextTurnQueueSteer, input),
       setPaused: (input) => transport.request(WS_METHODS.nextTurnQueueSetPaused, input),
       duplicate: (input) => transport.request(WS_METHODS.nextTurnQueueDuplicate, input),
       refreshGate: (input) => transport.request(WS_METHODS.nextTurnQueueRefreshGate, input),

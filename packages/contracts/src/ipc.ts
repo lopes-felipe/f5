@@ -171,6 +171,7 @@ import type {
   NextTurnQueueListInput,
   NextTurnQueueMutationResult,
   NextTurnQueuePromoteInput,
+  NextTurnQueueSteerInput,
   NextTurnQueueRefreshGateInput,
   NextTurnQueueReorderInput,
   NextTurnQueueRestoreInput,
@@ -663,6 +664,7 @@ export interface NativeApi {
     reorder: (input: NextTurnQueueReorderInput) => Promise<NextTurnQueueSnapshot>;
     retry: (input: NextTurnQueueRetryInput) => Promise<NextTurnQueueSnapshot>;
     promote: (input: NextTurnQueuePromoteInput) => Promise<NextTurnQueueSnapshot>;
+    steer: (input: NextTurnQueueSteerInput) => Promise<NextTurnQueueSnapshot>;
     setPaused: (input: NextTurnQueueSetPausedInput) => Promise<NextTurnQueueSnapshot>;
     duplicate: (input: NextTurnQueueDuplicateInput) => Promise<NextTurnQueueSnapshot>;
     refreshGate: (input: NextTurnQueueRefreshGateInput) => Promise<NextTurnQueueSnapshot>;

@@ -1095,6 +1095,21 @@ describe("applyDomainEvent", () => {
       completedAt: "2026-04-01T09:01:40.000Z",
       assistantMessageId: MessageId.makeUnsafe("assistant-1"),
     });
+    const noGit = applyDomainEvent(
+      {
+        ...initialState,
+        threads: initialState.threads.map((thread) => ({ ...thread, turnDiffSummaries: [] })),
+      },
+      makeEvent("thread.reverted", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnCount: 1,
+        retainedTurnIds: [turn1],
+      }),
+    );
+    expect(noGit.threads[0]?.messages).toEqual(next.threads[0]?.messages);
+    expect(noGit.threads[0]?.activities).toEqual(next.threads[0]?.activities);
+    expect(noGit.threads[0]?.proposedPlans).toEqual(next.threads[0]?.proposedPlans);
+    expect(noGit.threads[0]?.commandExecutions).toEqual(next.threads[0]?.commandExecutions);
   });
 
   it("ignores stale command execution recorded events", () => {

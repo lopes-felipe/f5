@@ -190,6 +190,7 @@ interface CodexAccountSnapshot {
 }
 
 export interface CodexAppServerSendTurnInput {
+  readonly expectedTurnId?: TurnId;
   readonly threadId: ThreadId;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<
@@ -1179,6 +1180,26 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
     turnStartParams.collaborationMode = collaborationMode;
 
+    if (input.expectedTurnId !== undefined) {
+      if (context.session.activeTurnId !== input.expectedTurnId) {
+        throw new CodexJsonRpcError(
+          "turn/steer",
+          -32602,
+          "The active turn changed before steering.",
+        );
+      }
+      const response = this.readObject(
+        await this.sendRequest(context, "turn/steer", {
+          threadId: providerThreadId,
+          input: turnInput,
+          expectedTurnId: input.expectedTurnId,
+        }),
+      );
+      const id = this.readString(response, "turnId");
+      if (id !== input.expectedTurnId)
+        throw new Error("turn/steer returned an unexpected turn id.");
+      return { threadId: input.threadId, turnId: input.expectedTurnId };
+    }
     const response = await this.sendRequest(context, "turn/start", turnStartParams);
 
     const turn = this.readObject(this.readObject(response), "turn");

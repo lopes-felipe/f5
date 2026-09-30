@@ -1,3 +1,4 @@
+import { RewindDraft, PendingUserInput } from "@t3tools/contracts";
 import {
   ChatAttachment,
   CodeReviewWorkflow,
@@ -2464,6 +2465,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const planningWorkflows = planningWorkflowRows.map((row) => row.workflow);
       const codeReviewWorkflows = codeReviewWorkflowRows.map((row) => row.workflow);
       const investigationWorkflows = investigationWorkflowRows.map((row) => row.workflow);
+      const inputRows = yield* sql<{
+        readonly threadId: string;
+        readonly payload: string;
+      }>`SELECT thread_id AS "threadId", payload_json AS payload FROM projection_pending_user_inputs WHERE resolution IS NULL`;
+      const inputsByThread = new Map<string, PendingUserInput[]>();
+      for (const row of inputRows)
+        inputsByThread.set(row.threadId, [
+          ...(inputsByThread.get(row.threadId) ?? []),
+          Schema.decodeUnknownSync(Schema.fromJsonString(PendingUserInput))(row.payload),
+        ]);
       const threads = threadRows.map((row) =>
         buildThreadSnapshot({
           row,
@@ -2476,6 +2487,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           includeDetailFields: params.includeDetailFields,
         }),
       );
+      const draftRows = yield* sql<{
+        readonly threadId: string;
+        readonly operationId: string;
+        readonly state: string;
+        readonly draft: string;
+        readonly targetMessageId: string;
+        readonly mode: string;
+        readonly error: string | null;
+      }>`SELECT thread_id AS "threadId", operation_id AS "operationId", state, draft_json AS draft, target_message_id AS "targetMessageId", mode, error FROM rewind_operations WHERE draft_resolved_at IS NULL`;
+      const draftsByThread = new Map<string, RewindDraft[]>();
+      for (const row of draftRows)
+        draftsByThread.set(row.threadId, [
+          ...(draftsByThread.get(row.threadId) ?? []),
+          Schema.decodeUnknownSync(RewindDraft)({
+            ...JSON.parse(row.draft),
+            operationId: row.operationId,
+            state: row.state,
+            targetMessageId: row.targetMessageId,
+            restoreFiles: row.mode === "conversation-and-files",
+            error: row.error,
+          }),
+        ]);
+      const threadsWithInputs = threads.map((thread) => ({
+        ...thread,
+        pendingUserInputs: inputsByThread.get(thread.id) ?? [],
+        rewindDrafts: draftsByThread.get(thread.id) ?? [],
+      }));
       const unsortedProjects: Array<OrchestrationProject> = projectRows.map((row) => ({
         id: row.projectId,
         title: row.title,
@@ -2495,7 +2533,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       }));
       const projects = sortProjectsByVisibleThreadActivity(
         unsortedProjects,
-        threads,
+        threadsWithInputs,
         planningWorkflows,
         codeReviewWorkflows,
         investigationWorkflows,
@@ -2508,7 +2546,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         planningWorkflows,
         codeReviewWorkflows,
         investigationWorkflows,
-        threads,
+        threads: threadsWithInputs,
         updatedAt: updatedAt ?? new Date(0).toISOString(),
       }).pipe(
         Effect.mapError(

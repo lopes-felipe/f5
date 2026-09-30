@@ -1,4 +1,6 @@
 import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
+import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import { canonicalRequestHash } from "../../nextTurnQueue/canonicalRequestHash.ts";
 import { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
 import {
   Cause,
@@ -87,6 +89,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const queueStore = yield* Effect.serviceOption(NextTurnQueueStore);
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -138,7 +141,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const existingReceipt = yield* commandReceiptRepository.getByCommandId({
           commandId: envelope.command.commandId,
         });
-        if (Option.isSome(existingReceipt)) {
+        const fallbackRows =
+          envelope.command.type === "thread.turn.start" && Option.isSome(existingReceipt)
+            ? yield* sql<{
+                readonly event: string;
+              }>`SELECT d.event_json AS event FROM provider_turn_deliveries d JOIN next_turn_queue q ON q.command_id = d.command_id WHERE d.command_id = ${envelope.command.commandId} AND d.thread_id = ${envelope.command.threadId} AND d.state = 'rejected' AND d.certainty = 'not_sent' AND q.last_error_code = 'steer_queued' AND q.deleted_at IS NULL`
+            : [];
+        const steerFallback = fallbackRows.some(
+          (row) =>
+            Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationEvent))(row.event).type ===
+            "thread.turn-steer-requested",
+        );
+        if (Option.isSome(existingReceipt) && !steerFallback) {
           const receipt = existingReceipt.value;
           let matchesAggregate =
             receipt.aggregateKind === aggregateRef.aggregateKind &&
@@ -187,6 +201,57 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
+        if (
+          envelope.command.type === "thread.turn.start" ||
+          envelope.command.type === "thread.turn.steer" ||
+          envelope.command.type === "thread.conversation.revert"
+        ) {
+          const active = yield* sql<{
+            readonly operationId: string;
+          }>`SELECT operation_id AS "operationId" FROM rewind_requests WHERE thread_id = ${envelope.command.threadId}`;
+          if (
+            active.length &&
+            !(
+              envelope.command.type === "thread.conversation.revert" &&
+              active[0]?.operationId === envelope.command.operationId
+            )
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: envelope.command.type,
+              detail: "A conversation rewind is awaiting completion or reconciliation.",
+            });
+        }
+        if (envelope.command.type === "thread.conversation.revert") {
+          const command = envelope.command;
+          const operations = yield* sql<{
+            threadId: string;
+            targetMessageId: string;
+            mode: string;
+          }>`SELECT thread_id AS "threadId", target_message_id AS "targetMessageId", mode FROM rewind_operations WHERE operation_id = ${command.operationId}`;
+          const requests = yield* sql<{
+            payload: string;
+          }>`SELECT payload_json AS payload FROM rewind_requests WHERE operation_id = ${command.operationId}`;
+          if (
+            operations.some(
+              (operation) =>
+                operation.threadId !== command.threadId ||
+                operation.targetMessageId !== command.targetMessageId ||
+                (operation.mode === "conversation-and-files") !== command.restoreFiles,
+            ) ||
+            requests.some((row) => {
+              const request = JSON.parse(row.payload);
+              return (
+                request.threadId !== command.threadId ||
+                request.targetMessageId !== command.targetMessageId ||
+                request.restoreFiles !== command.restoreFiles
+              );
+            })
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "That rewind identifier belongs to a different request.",
+            });
+        }
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,
           readModel,
@@ -227,10 +292,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     { concurrency: 1, discard: true },
                   );
                 }
-                if (savedEvent.type === "thread.turn-start-requested") {
+                if (
+                  savedEvent.type === "thread.turn-start-requested" ||
+                  savedEvent.type === "thread.turn-steer-requested"
+                ) {
                   const eventJson = Schema.encodeSync(Schema.fromJsonString(OrchestrationEvent))(
                     savedEvent,
                   );
+                  if (steerFallback && savedEvent.type === "thread.turn-start-requested")
+                    yield* sql`UPDATE provider_turn_deliveries SET event_json = ${eventJson}, state = 'pending', provider_turn_id = NULL, attempt = 0, error_code = NULL, error_detail = NULL, certainty = NULL, not_before = NULL, outcome_projected_at = NULL WHERE command_id = ${savedEvent.commandId} AND state = 'rejected' AND certainty = 'not_sent'`;
                   yield* sql`
                     INSERT OR IGNORE INTO provider_turn_deliveries (
                       delivery_id, thread_id, command_id, message_id, state, attempt,
@@ -241,6 +311,66 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                       '[]', ${eventJson}, ${savedEvent.occurredAt}, ${savedEvent.occurredAt}
                     )
                   `;
+                }
+                if (savedEvent.type === "thread.user-input-resolved") {
+                  const command = savedEvent.payload.command;
+                  if (command) {
+                    if (Option.isNone(queueStore))
+                      return yield* new OrchestrationCommandInvariantError({
+                        commandType: envelope.command.type,
+                        detail: "The durable answer queue is unavailable.",
+                      });
+                    yield* queueStore.value
+                      .insertSubmission({
+                        submissionId: command.commandId,
+                        itemId: command.commandId,
+                        requestHash: canonicalRequestHash(command),
+                        command,
+                        atHead: command.expectedTurnId !== undefined,
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (error) =>
+                            new OrchestrationCommandInvariantError({
+                              commandType: envelope.command.type,
+                              detail: error.message,
+                            }),
+                        ),
+                      );
+                    for (const attachment of savedEvent.payload.attachments ?? [])
+                      yield* sql`DELETE FROM attachment_owners WHERE attachment_id = ${attachment.id} AND owner_kind = 'ingress' AND owner_id = ${savedEvent.commandId}`;
+                  } else
+                    for (const attachment of savedEvent.payload.attachments ?? []) {
+                      yield* sql`DELETE FROM attachment_owners WHERE attachment_id = ${attachment.id} AND owner_kind = 'ingress' AND owner_id = ${savedEvent.commandId}`;
+                      yield* sql`INSERT OR IGNORE INTO attachment_owners VALUES (${attachment.id}, 'user_input', ${savedEvent.payload.requestId}, ${savedEvent.occurredAt})`;
+                    }
+                }
+                if (savedEvent.type === "thread.rewind-draft-resolved") {
+                  const draft =
+                    yield* sql`SELECT operation_id FROM rewind_operations WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'completed'`;
+                  if (!draft.length)
+                    return yield* new OrchestrationCommandInvariantError({
+                      commandType: envelope.command.type,
+                      detail: "This rewind draft is not ready.",
+                    });
+                  yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${savedEvent.payload.operationId} AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${savedEvent.payload.threadId})`;
+                  yield* sql`UPDATE rewind_operations SET draft_resolved_at = ${savedEvent.occurredAt} WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'completed'`;
+                }
+                if (savedEvent.type === "thread.reverted" && savedEvent.payload.operationId) {
+                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${savedEvent.payload.threadId}`;
+                  yield* sql`UPDATE next_turn_queue_state SET pause_reason_code = 'thread_reverted', revision = revision + 1 WHERE thread_id = ${savedEvent.payload.threadId}`;
+                  yield* sql`UPDATE rewind_operations SET state = 'completed', updated_at = ${savedEvent.occurredAt} WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'files-confirmed'`;
+                  yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${savedEvent.payload.operationId}`;
+                }
+                if (savedEvent.type === "thread.conversation-revert-requested") {
+                  const priorQueueState =
+                    (yield* sql`SELECT paused, pause_reason_code, pause_detail FROM next_turn_queue_state WHERE thread_id = ${savedEvent.payload.threadId}`)[0] ?? {
+                      paused: 0,
+                      pause_reason_code: null,
+                      pause_detail: null,
+                    };
+                  yield* sql`INSERT OR IGNORE INTO rewind_requests(operation_id, thread_id, payload_json, created_at, queue_state_json) VALUES (${savedEvent.payload.operationId}, ${savedEvent.payload.threadId}, ${JSON.stringify(savedEvent.payload)}, ${savedEvent.occurredAt}, ${JSON.stringify(priorQueueState)})`;
+                  yield* sql`INSERT INTO next_turn_queue_state(thread_id, paused, pause_reason_code, revision, updated_at) VALUES (${savedEvent.payload.threadId}, 1, 'rewind_in_progress', 1, ${savedEvent.occurredAt}) ON CONFLICT(thread_id) DO UPDATE SET paused = 1, pause_reason_code = 'rewind_in_progress', revision = revision + 1`;
                 }
                 committedEvents.push(savedEvent);
               }
@@ -346,7 +476,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
 
-          if (Schema.is(OrchestrationCommandInvariantError)(error)) {
+          if (
+            Schema.is(OrchestrationCommandInvariantError)(error) &&
+            envelope.command.type !== "thread.turn.steer"
+          ) {
             yield* commandReceiptRepository
               .upsert({
                 commandId: envelope.command.commandId,

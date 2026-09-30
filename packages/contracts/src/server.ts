@@ -135,7 +135,18 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
 });
 export type ServerProviderVersionAdvisory = typeof ServerProviderVersionAdvisory.Type;
 
+export const ProviderRuntimeCapabilities = Schema.Struct({
+  turnSteering: Schema.Boolean,
+  conversationRollback: Schema.Boolean,
+  rollbackAffectsFiles: Schema.Boolean,
+  rollbackReadback: Schema.Boolean,
+  asyncQuestions: Schema.Boolean,
+  maxImagesPerTurn: Schema.Int,
+});
+export type ProviderRuntimeCapabilities = typeof ProviderRuntimeCapabilities.Type;
+
 export const ServerProvider = Schema.Struct({
+  runtimeCapabilities: Schema.optional(ProviderRuntimeCapabilities),
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),

@@ -73,6 +73,12 @@ export interface NextTurnQueueStoreShape {
     | { readonly kind: "replay"; readonly submission: NextTurnQueueSubmissionRecord },
     NextTurnQueueError
   >;
+  readonly fallbackSteer: (commandId: CommandId) => Effect.Effect<void, NextTurnQueueError>;
+  readonly setSteer: (
+    itemId: CommandId,
+    expectedRevision: number,
+    expectedTurnId: import("@t3tools/contracts").TurnId,
+  ) => Effect.Effect<NextTurnQueueItem, NextTurnQueueError>;
   readonly settleSubmission: (input: {
     readonly submissionId: CommandId;
     readonly result: TurnSubmissionResult;

@@ -20,6 +20,7 @@ import { useComposerDraft } from "./chat/composer/useComposerDraft";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import { getServerSendLimits, useProtocolState } from "../protocolState";
 import {
+  type AttachmentUpload,
   type ApprovalRequestId,
   type CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -268,6 +269,9 @@ import { type ImageAttachmentActionItem } from "./chat/imageAttachmentActions";
 import { type ImageAttachmentAction } from "./chat/useImageAttachmentActions";
 import { useImageAttachmentActions } from "./chat/useImageAttachmentActions";
 
+import { RewindDraftPanel } from "./chat/RewindDraftPanel";
+import { UserInputAttachments } from "./chat/UserInputAttachments";
+import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueueStore";
 
@@ -331,7 +335,7 @@ const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
-type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
+type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now" | "steer";
 const SCRIPT_TERMINAL_ROWS = 30;
 
 const WorkflowImplementDialog = lazy(() =>
@@ -793,6 +797,9 @@ export default function ChatView({
   const isConnecting = !useProtocolState().ready;
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
+  const [answerAttachments, setAnswerAttachments] = useState<Record<string, AttachmentUpload[]>>(
+    {},
+  );
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
@@ -1533,6 +1540,27 @@ export default function ChatView({
   }, [alwaysExpandAgentCommandTranscripts, threadId]);
 
   useEffect(() => {
+    const api = readNativeApi();
+    if (!api) return;
+    return api.orchestration.onDomainEvent((event) => {
+      const affectsDraft =
+        (event.type === "thread.reverted" && event.payload.operationId) ||
+        event.type === "thread.rewind-draft-resolved" ||
+        (event.type === "thread.activity-appended" &&
+          event.payload.activity.kind === "conversation.rewind.failed");
+      if (affectsDraft && "threadId" in event.payload && event.payload.threadId === threadId)
+        void api.orchestration
+          .getSnapshot()
+          .then((snapshot) => useStore.getState().syncServerReadModel(snapshot))
+          .catch((error) =>
+            setStoreThreadError(
+              threadId,
+              error instanceof Error ? error.message : "Could not refresh the rewind draft.",
+            ),
+          );
+    });
+  }, [threadId, setStoreThreadError]);
+  useEffect(() => {
     if (!showFileChangeDiffsInline) {
       return;
     }
@@ -1716,10 +1744,15 @@ export default function ChatView({
     [threadActivities],
   );
   const pendingUserInputs = useMemo(
-    () => derivePendingUserInputs(threadActivities),
-    [threadActivities],
+    () =>
+      activeThread?.pendingUserInputs
+        ? activeThread.pendingUserInputs.map((input) => ({ ...input }))
+        : derivePendingUserInputs(threadActivities),
+    [threadActivities, activeThread?.pendingUserInputs],
   );
-  const activePendingUserInput = pendingUserInputs[0] ?? null;
+  const blockingUserInputs = pendingUserInputs.filter((input) => input.responseMode !== "message");
+  const activePendingUserInput =
+    pendingUserInputs.find((input) => input.responseMode !== "message") ?? null;
   const preservedDismissedAnswers = useRef(new Set<string>());
   useEffect(() => {
     for (const activity of threadActivities) {
@@ -1841,7 +1874,7 @@ export default function ChatView({
     previousThreadTaskCountRef.current = trackedTaskCount;
   }, [activeThread?.id, effectiveThreadTasks.length, hasIncompleteThreadTasks]);
   const showPlanFollowUpPrompt =
-    pendingUserInputs.length === 0 &&
+    blockingUserInputs.length === 0 &&
     interactionMode === "plan" &&
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
@@ -1898,7 +1931,7 @@ export default function ChatView({
   const isComposerApprovalState = activePendingApproval !== null;
   const hasComposerHeader =
     isComposerApprovalState ||
-    pendingUserInputs.length > 0 ||
+    blockingUserInputs.length > 0 ||
     (showPlanFollowUpPrompt && activeProposedPlan !== null);
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const lastSyncedPendingInputRef = useRef<{
@@ -2214,39 +2247,6 @@ export default function ChatView({
     }
     return pathsByTurnId;
   }, [turnDiffSummaries]);
-  const revertTurnCountByUserMessageId = useMemo(() => {
-    const byUserMessageId = new Map<MessageId, number>();
-    for (let index = 0; index < timelineEntries.length; index += 1) {
-      const entry = timelineEntries[index];
-      if (!entry || entry.kind !== "message" || entry.message.role !== "user") {
-        continue;
-      }
-
-      for (let nextIndex = index + 1; nextIndex < timelineEntries.length; nextIndex += 1) {
-        const nextEntry = timelineEntries[nextIndex];
-        if (!nextEntry || nextEntry.kind !== "message") {
-          continue;
-        }
-        if (nextEntry.message.role === "user") {
-          break;
-        }
-        const summary = turnDiffSummaryByAssistantMessageId.get(nextEntry.message.id);
-        if (!summary) {
-          continue;
-        }
-        const turnCount =
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId];
-        if (typeof turnCount !== "number") {
-          break;
-        }
-        byUserMessageId.set(entry.message.id, Math.max(0, turnCount - 1));
-        break;
-      }
-    }
-
-    return byUserMessageId;
-  }, [inferredCheckpointTurnCountByTurnId, timelineEntries, turnDiffSummaryByAssistantMessageId]);
-
   const completionSummary = useMemo(() => {
     if (!latestTurnSettled) return null;
     if (!activeLatestTurn?.startedAt) return null;
@@ -3532,7 +3532,15 @@ export default function ChatView({
               .submit({
                 submissionId: input.command.commandId,
                 command: input.command,
-                intent: input.intent === "send-now" ? "queue-head" : (input.intent ?? "auto"),
+                intent:
+                  input.intent === "send-now"
+                    ? "queue-head"
+                    : input.intent === "steer" ||
+                        ((input.intent === undefined || input.intent === "auto") &&
+                          phase === "running" &&
+                          settings.followUpBehavior === "steer")
+                      ? "steer"
+                      : (input.intent ?? "auto"),
               })
               .then(async (submission) => {
                 if (submission.disposition === "queued") {
@@ -3550,7 +3558,7 @@ export default function ChatView({
                   input.onQueued?.();
                   return null;
                 }
-                if (submission.disposition !== "started") {
+                if (submission.disposition !== "started" && submission.disposition !== "steered") {
                   throw new Error(submission.detail ?? "The turn was not accepted.");
                 }
                 return { sequence: submission.sequence };
@@ -3854,12 +3862,20 @@ export default function ChatView({
         });
         return;
       }
-      if (command === "chat.queueTurn" || command === "chat.queueTurnNext") {
+      if (
+        command === "chat.queueTurn" ||
+        command === "chat.queueTurnNext" ||
+        command === "chat.steerTurn"
+      ) {
         event.preventDefault();
         event.stopPropagation();
         void onSendRef.current?.(
           undefined,
-          command === "chat.queueTurn" ? "queue-tail" : "queue-head",
+          command === "chat.steerTurn"
+            ? "steer"
+            : command === "chat.queueTurn"
+              ? "queue-tail"
+              : "queue-head",
         );
         return;
       }
@@ -3999,7 +4015,7 @@ export default function ChatView({
     if (!activeThreadId || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
-    if (pendingUserInputs.length > 0) {
+    if (blockingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
         title: "Attach images after answering plan questions.",
@@ -4028,7 +4044,7 @@ export default function ChatView({
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
-    if (pendingUserInputs.length > 0) {
+    if (blockingUserInputs.length > 0) {
       toastManager.add({
         type: "error",
         title: "Attach files after answering plan questions.",
@@ -4213,7 +4229,7 @@ export default function ChatView({
   };
 
   const onRevertToTurnCount = useCallback(
-    async (turnCount: number) => {
+    async (turnCount: number, restoreFiles = false, targetMessageId?: MessageId) => {
       const api = readNativeApi();
       if (!api || !activeThread || isRevertingCheckpoint) return;
 
@@ -4227,7 +4243,9 @@ export default function ChatView({
       }
       const confirmed = await api.dialogs.confirm(
         [
-          `Revert this thread to checkpoint ${turnCount}?`,
+          restoreFiles
+            ? "Revert this conversation and restore its files?"
+            : "Revert this conversation and keep file changes?",
           "This will discard newer messages and turn diffs in this thread.",
           "This action cannot be undone.",
         ].join("\n"),
@@ -4239,11 +4257,17 @@ export default function ChatView({
       setIsRevertingCheckpoint(true);
       setThreadError(activeThread.id, null);
       try {
+        const snapshot = await api.orchestration.getSnapshot();
         await api.orchestration.dispatchCommand({
-          type: "thread.checkpoint.revert",
+          type: "thread.conversation.revert",
+          expectedRevision: snapshot.snapshotSequence,
+          operationId: newCommandId(),
           commandId: newCommandId(),
           threadId: activeThread.id,
-          turnCount,
+          targetMessageId:
+            targetMessageId ??
+            activeThread.messages.filter((message) => message.role === "user")[turnCount]!.id,
+          restoreFiles,
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -4749,7 +4773,7 @@ export default function ChatView({
   );
 
   const onRespondToUserInput = useCallback(
-    async (requestId: ApprovalRequestId, answers: Record<string, unknown>) => {
+    async (requestId: ApprovalRequestId, answers: Record<string, unknown>, dismissed = false) => {
       const api = readNativeApi();
       if (!api || !activeThreadId) return;
 
@@ -4758,12 +4782,28 @@ export default function ChatView({
       );
       await api.orchestration
         .dispatchCommand({
-          type: "thread.user-input.respond",
+          type: dismissed ? "thread.user-input.dismiss" : "thread.user-input.respond",
           commandId: newCommandId(),
           threadId: activeThreadId,
           requestId,
           answers,
+          attachments: (answerAttachments[requestId] ?? []).map((attachment) => ({
+            type: "upload" as const,
+            uploadId: attachment.uploadId,
+          })),
           createdAt: new Date().toISOString(),
+        })
+        .then(async () => {
+          if (dismissed && answerAttachments[requestId]?.length)
+            await api.attachments.releaseUploads({
+              threadId: activeThreadId,
+              uploadIds: answerAttachments[requestId]!.map((attachment) => attachment.uploadId),
+            });
+          setAnswerAttachments((current) => {
+            const next = { ...current };
+            delete next[requestId];
+            return next;
+          });
         })
         .catch((err: unknown) => {
           setStoreThreadError(
@@ -4773,7 +4813,7 @@ export default function ChatView({
         });
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
     },
-    [activeThreadId, setStoreThreadError],
+    [activeThreadId, setStoreThreadError, answerAttachments],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -5487,7 +5527,7 @@ export default function ChatView({
         isConnecting ||
         isComposerApprovalState ||
         isPendingTurnDispatchBlocked ||
-        pendingUserInputs.length > 0 ||
+        blockingUserInputs.length > 0 ||
         !activeProject
       ) {
         return false;
@@ -5509,7 +5549,7 @@ export default function ChatView({
       isComposerApprovalState,
       isConnecting,
       isPendingTurnDispatchBlocked,
-      pendingUserInputs.length,
+      blockingUserInputs.length,
     ],
   );
   composerFileMentionInserterRef.current = insertComposerFileMention;
@@ -5949,12 +5989,14 @@ export default function ChatView({
       workspaceRoot,
     ],
   );
-  const onRevertUserMessage = (messageId: MessageId) => {
-    const targetTurnCount = revertTurnCountByUserMessageId.get(messageId);
-    if (typeof targetTurnCount !== "number") {
+  const onRevertUserMessage = (messageId: MessageId, restoreFiles = false) => {
+    const targetTurnCount = activeThread?.messages
+      .filter((message) => message.role === "user")
+      .findIndex((message) => message.id === messageId);
+    if (typeof targetTurnCount !== "number" || targetTurnCount < 0) {
       return;
     }
-    void onRevertToTurnCount(targetTurnCount);
+    void onRevertToTurnCount(targetTurnCount, restoreFiles, messageId);
   };
   const headerThreadActionItems = useMemo(
     () => (activeThread ? threadActionController.menuItemsForThread(activeThread) : []),
@@ -6210,7 +6252,18 @@ export default function ChatView({
                   expandedWorkGroups={expandedWorkGroups}
                   onToggleWorkGroup={onToggleWorkGroup}
                   onOpenTurnDiff={onOpenTurnDiff}
-                  revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
+                  revertTurnCountByUserMessageId={
+                    new Map(
+                      (activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
+                      activeProviderStatus.runtimeCapabilities.rollbackReadback
+                        ? activeThread.messages
+                        : []
+                      )
+                        .filter((message) => message.role === "user")
+                        .map((message, index) => [message.id, index]),
+                    )
+                  }
+                  canRestoreFiles={Boolean(activeThread.worktreePath)}
                   onRevertUserMessage={onRevertUserMessage}
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   onImageExpand={onExpandTimelineImage}
@@ -6283,12 +6336,53 @@ export default function ChatView({
               >
                 {isServerThread ? (
                   <NextTurnQueuePanel
+                    turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
                     threadId={activeThread.id}
                     provider={selectedProvider}
                     runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
                     projectSkills={activeProject?.skills}
                   />
                 ) : null}
+                {activeThread?.pendingUserInputs
+                  ?.filter((input) => input.responseMode === "message")
+                  .map((input) => (
+                    <AsyncUserInputPanel
+                      key={input.requestId}
+                      threadId={activeThread.id}
+                      input={input}
+                    />
+                  ))}
+                {activePendingUserInput && activeThread ? (
+                  <UserInputAttachments
+                    key={activePendingUserInput.requestId}
+                    threadId={activeThread.id}
+                    attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
+                    onChange={(attachments) =>
+                      setAnswerAttachments((current) => ({
+                        ...current,
+                        [activePendingUserInput.requestId]: attachments,
+                      }))
+                    }
+                    onUploadBusyChange={(busy) =>
+                      setRespondingUserInputRequestIds((current) =>
+                        busy
+                          ? [...new Set([...current, activePendingUserInput.requestId])]
+                          : current.filter((id) => id !== activePendingUserInput.requestId),
+                      )
+                    }
+                    disabled={activePendingIsResponding}
+                    onDismiss={() =>
+                      void onRespondToUserInput(activePendingUserInput.requestId, {}, true)
+                    }
+                  />
+                ) : null}
+                {activeThread?.rewindDrafts?.map((draft) => (
+                  <RewindDraftPanel
+                    key={draft.operationId}
+                    threadId={activeThread.id}
+                    draft={draft}
+                  />
+                ))}
                 <ChatComposer
                   composerFormRef={composerFormRef}
                   onSend={onSend}
@@ -6300,7 +6394,9 @@ export default function ChatView({
                   onComposerFileMentionDropCapture={onComposerFileMentionDropCapture}
                   activePendingApproval={activePendingApproval}
                   pendingApprovals={pendingApprovals}
-                  pendingUserInputs={pendingUserInputs}
+                  pendingUserInputs={pendingUserInputs.filter(
+                    (input) => input.responseMode !== "message",
+                  )}
                   respondingRequestIds={respondingRequestIds}
                   activePendingDraftAnswers={activePendingDraftAnswers}
                   activePendingQuestionIndex={activePendingQuestionIndex}

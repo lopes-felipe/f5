@@ -198,6 +198,15 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
           Stream assistant replies
         </label>
         {badge("enableAssistantStreaming")}
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>Resume active turns after restart</span>
+          <input
+            type="checkbox"
+            checked={settings.resumeActiveTurnsAfterRestart}
+            onChange={(event) => set("resumeActiveTurnsAfterRestart", event.target.checked)}
+          />
+        </label>
+        {badge("resumeActiveTurnsAfterRestart")}
         <div className="block">
           Default merge method {badge("prHubDefaultMergeMethod")}
           <select

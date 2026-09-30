@@ -83,6 +83,10 @@ export function resolveNextTurnQueueGate(input: {
   if (input.automaticCompaction) {
     return { kind: "wait", reasonCode: "thread_compacting" };
   }
+  if (input.item.command.expectedTurnId !== undefined) {
+    // A mismatch is dispatched to the decider so it can return to the queue.
+    return { kind: "ready" };
+  }
   if (input.pendingTurnStart !== null) {
     return { kind: "wait", reasonCode: "turn_starting" };
   }

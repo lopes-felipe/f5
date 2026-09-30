@@ -1,4 +1,5 @@
 export * from "./baseSchemas";
+export { PendingUserInput } from "./userInput";
 export * from "./ipc";
 export * from "./prHub";
 export * from "./terminal";

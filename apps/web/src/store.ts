@@ -1109,6 +1109,8 @@ function buildThreadFromReadModel(
     existingCompaction === compaction &&
     existing.turnDiffSummaries === nextDetailFields.turnDiffSummaries &&
     existing.activities === activities &&
+    areUnknownEqual(existing.pendingUserInputs, thread.pendingUserInputs) &&
+    areUnknownEqual(existing.rewindDrafts, thread.rewindDrafts) &&
     existing.detailsLoaded === nextDetailFields.detailsLoaded &&
     existing.tasks === nextDetailFields.tasks &&
     existing.tasksTurnId === nextDetailFields.tasksTurnId &&
@@ -1128,6 +1130,8 @@ function buildThreadFromReadModel(
     model,
     ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,
+    pendingUserInputs: thread.pendingUserInputs,
+    rewindDrafts: thread.rewindDrafts,
     interactionMode: thread.interactionMode,
     session,
     messages: nextDetailFields.messages,

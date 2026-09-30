@@ -1,5 +1,6 @@
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
+import { MessageId } from "@t3tools/contracts";
 import { makeAttachmentUploads, AttachmentUploadError } from "./attachmentUploads";
 import { GitCommandError } from "./git/Errors";
 import { readProjectSettings, isInsideProjectWorkspace } from "./project/projectSettings";
@@ -1165,6 +1166,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       } satisfies OrchestrationCommand;
     }
 
+    if (input.command.type === "thread.turn.steer")
+      return yield* new RouteRequestError({
+        message: "Steers must be submitted through the durable queue.",
+      });
+    if (input.command.type === "thread.user-input.respond" && input.command.attachments?.length) {
+      const command = input.command;
+      const prepared = yield* prepareTurnStartCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          message: {
+            messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+            role: "user",
+            text: JSON.stringify(command.answers),
+            attachments: command.attachments ?? [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          createdAt: command.createdAt,
+        },
+      });
+      const persisted = yield* persistPreparedTurnStartCommand(prepared);
+      return {
+        ...command,
+        attachments: persisted.message.attachments,
+      } satisfies OrchestrationCommand;
+    }
     if (input.command.type !== "thread.turn.start") {
       return input.command as OrchestrationCommand;
     }
@@ -2610,7 +2639,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               "Established-thread turns must be submitted through nextTurnQueue.submit so ordering is enforced by the server.",
           });
         }
-        const result = yield* orchestrationEngine.dispatch(normalizedCommand);
+        const result = yield* orchestrationEngine.dispatch(normalizedCommand).pipe(
+          Effect.tapError(() =>
+            normalizedCommand.type === "thread.user-input.respond"
+              ? discardAttachmentIngress({
+                  attachments: normalizedCommand.attachments ?? [],
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  commandId: normalizedCommand.commandId,
+                })
+              : Effect.void,
+          ),
+        );
+        if (command.type === "thread.user-input.respond")
+          yield* releaseSentUploads(command.threadId, command.attachments ?? []);
         if (
           normalizedCommand.type === "thread.checkpoint.revert" ||
           normalizedCommand.type === "thread.compact.request"
@@ -4084,7 +4125,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             };
           }
           if (existingSubmission.itemId !== null) {
-            if (existingSubmission.disposition === "pending" && body.intent === "auto") {
+            if (
+              existingSubmission.disposition === "pending" &&
+              (body.intent === "auto" || body.intent === "steer")
+            ) {
               return yield* nextTurnQueueDispatcher
                 .submitAndSettle({
                   threadId: existingSubmission.threadId,
@@ -4110,13 +4154,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           });
         }
         const itemId = CommandId.makeUnsafe(crypto.randomUUID());
+        const steeringThread =
+          body.intent === "steer"
+            ? (yield* (yield* awaitOrchestrationRuntimeForRoute).orchestrationEngine.getReadModel()).threads.find(
+                (thread) => thread.id === command.threadId,
+              )
+            : undefined;
+        const queuedCommand = steeringThread?.session?.activeTurnId
+          ? { ...command, expectedTurnId: steeringThread.session.activeTurnId }
+          : command;
         const inserted = yield* nextTurnQueueStore
           .insertSubmission({
             submissionId: body.submissionId,
             requestHash,
             itemId,
-            command,
-            atHead: body.intent === "queue-head",
+            command: queuedCommand,
+            atHead: body.intent === "queue-head" || body.intent === "steer",
           })
           .pipe(
             Effect.tapError(() => removePersistedTurnAttachments(command)),
@@ -4128,7 +4181,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           // The ledger result is authoritative; discard this request's ingress files.
           yield* removePersistedTurnAttachments(command);
           const replayItemId = inserted.submission.itemId ?? itemId;
-          if (body.intent === "auto") {
+          if (body.intent === "auto" || body.intent === "steer") {
             return yield* nextTurnQueueDispatcher
               .submitAndSettle({
                 threadId: inserted.submission.threadId,
@@ -4147,7 +4200,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           };
         }
         const result =
-          body.intent === "auto"
+          body.intent === "auto" || body.intent === "steer"
             ? yield* nextTurnQueueDispatcher
                 .submitAndSettle({
                   threadId: command.threadId,
@@ -4254,6 +4307,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
       }
 
+      case WS_METHODS.nextTurnQueueSteer: {
+        const body = stripRequestTag(request.body);
+        const item = yield* nextTurnQueueStore
+          .getItem(body.itemId)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        if (!item)
+          return yield* new RouteRequestError({ message: "That queued turn no longer exists." });
+        const runtime = yield* awaitOrchestrationRuntimeForRoute;
+        const thread = (yield* runtime.orchestrationEngine.getReadModel()).threads.find(
+          (entry) => entry.id === item.threadId,
+        );
+        if (
+          !thread?.session?.activeTurnId ||
+          thread.runtimeMode !== item.command.runtimeMode ||
+          thread.interactionMode !== item.command.interactionMode
+        )
+          return yield* new RouteRequestError({
+            message:
+              "Steering requires an active turn with the same Build/Plan and permission modes.",
+          });
+        yield* nextTurnQueueStore
+          .setSteer(item.itemId, body.expectedRevision, thread.session.activeTurnId)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        yield* runtime.nextTurnQueueDispatcher.notify(item.threadId);
+        return yield* runtime.nextTurnQueueDispatcher
+          .getSnapshot(item.threadId)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
       case WS_METHODS.nextTurnQueuePromote: {
         const body = stripRequestTag(request.body);
         const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;

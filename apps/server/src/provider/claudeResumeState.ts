@@ -1,6 +1,12 @@
 import { ThreadId } from "@t3tools/contracts";
 
+export interface ClaudeTurnBoundary {
+  readonly turnId: string;
+  readonly assistantUuid: string;
+}
+
 export interface ClaudeResumeState {
+  readonly turnBoundaries?: ReadonlyArray<ClaudeTurnBoundary>;
   readonly threadId?: ThreadId;
   readonly resume?: string;
   readonly resumeSessionAt?: string;
@@ -32,6 +38,7 @@ export function readClaudeResumeCandidate(resumeCursor: unknown): string | undef
 export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object") return undefined;
   const cursor = resumeCursor as {
+    turnBoundaries?: unknown;
     threadId?: unknown;
     resumeSessionAt?: unknown;
     turnCount?: unknown;
@@ -77,7 +84,19 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     typeof cursor.compactionRecommendationEmitted === "boolean"
       ? cursor.compactionRecommendationEmitted
       : undefined;
+  const turnBoundaries = Array.isArray(cursor.turnBoundaries)
+    ? cursor.turnBoundaries
+        .filter(
+          (entry): entry is ClaudeTurnBoundary =>
+            entry !== null &&
+            typeof entry === "object" &&
+            typeof entry.turnId === "string" &&
+            isUuid(entry.assistantUuid),
+        )
+        .slice(-200)
+    : undefined;
   return {
+    ...(turnBoundaries ? { turnBoundaries } : {}),
     ...(threadId ? { threadId } : {}),
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),

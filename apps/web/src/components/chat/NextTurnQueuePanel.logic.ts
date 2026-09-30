@@ -59,6 +59,10 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
       return "Queue paused because the active turn was interrupted.";
     case "thread_archived":
       return "Queue paused because this thread is archived.";
+    case "rewind_in_progress":
+      return "Rewinding the conversation.";
+    case "reconciliation_required":
+      return "The provider rewind needs reconciliation.";
     case "thread_reverted":
       return "Queue paused because this thread was reverted.";
     case "thread_compacting":

@@ -1,3 +1,6 @@
+import { recoverRestartTurnMarkers } from "../restartTurns.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { EventId as importEventIdFactory } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import {
   CommandId,
@@ -80,6 +83,7 @@ function storageError(cause: unknown): NextTurnQueueStorageError {
 
 export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
   const threads = yield* ProjectionThreadRepository;
   const sessions = yield* ProjectionThreadSessionRepository;
   const turns = yield* ProjectionTurnRepository;
@@ -354,7 +358,15 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         const receipt = yield* receipts
           .getByCommandId({ commandId: item.command.commandId })
           .pipe(Effect.mapError(storageError));
-        if (Option.isSome(receipt) && receipt.value.status === "accepted") {
+        const savedDelivery = yield* deliveries
+          .getByCommandId(item.command.commandId)
+          .pipe(Effect.mapError(storageError));
+        const steerFallback =
+          savedDelivery?.state === "rejected" &&
+          savedDelivery.certainty === "not_sent" &&
+          savedDelivery.event.type === "thread.turn-steer-requested" &&
+          item.lastErrorCode === "steer_queued";
+        if (Option.isSome(receipt) && receipt.value.status === "accepted" && !steerFallback) {
           const delivery = yield* deliveries
             .getByCommandId(item.command.commandId)
             .pipe(Effect.mapError(storageError));
@@ -372,7 +384,11 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           }
           yield* publishSnapshotIfChanged(threadId);
           yield* settleWaiter(item.itemId, {
-            disposition: "started",
+            disposition:
+              delivery?.event.type === "thread.turn-steer-requested" &&
+              delivery.state === "accepted"
+                ? "steered"
+                : "started",
             submissionId: item.submissionId,
             sequence: receipt.value.resultSequence,
           });
@@ -407,10 +423,26 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
       const command = {
         ...claimed.item.command,
+        ...(claimed.item.command.expectedTurnId
+          ? {
+              type: "thread.turn.steer" as const,
+              expectedTurnId: claimed.item.command.expectedTurnId,
+            }
+          : {}),
         dispatchSource: "next-turn-queue" as const,
         createdAt: claimed.item.dispatchStartedAt ?? claimed.item.command.createdAt,
       };
-      const exit = yield* Effect.exit(engine.dispatch(command));
+      const exit = yield* Effect.exit(
+        engine.dispatch(
+          claimed.item.command.expectedTurnId
+            ? {
+                ...command,
+                type: "thread.turn.steer",
+                expectedTurnId: claimed.item.command.expectedTurnId,
+              }
+            : { ...command, type: "thread.turn.start" },
+        ),
+      );
       yield* finishDispatch(item.itemId);
       if (exit._tag === "Success") {
         yield* store.markAwaitingDelivery({
@@ -419,15 +451,51 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           sequence: exit.value.sequence,
         });
         yield* publishSnapshotIfChanged(threadId);
-        yield* settleWaiter(item.itemId, {
-          disposition: "started",
-          submissionId: item.submissionId,
-          sequence: exit.value.sequence,
-        });
+        if (!claimed.item.command.expectedTurnId)
+          yield* settleWaiter(item.itemId, {
+            disposition: claimed.item.command.expectedTurnId ? "steered" : "started",
+            submissionId: item.submissionId,
+            sequence: exit.value.sequence,
+          });
         return;
       }
 
       const error = Cause.squash(exit.cause);
+      if (
+        claimed.item.command.expectedTurnId &&
+        error &&
+        typeof error === "object" &&
+        "_tag" in error &&
+        error._tag === "OrchestrationCommandInvariantError"
+      ) {
+        yield* store.fallbackSteer(claimed.item.command.commandId);
+        yield* engine
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.makeUnsafe(`steer-queued:${claimed.item.command.commandId}`),
+            threadId,
+            activity: {
+              id: importEventIdFactory.makeUnsafe(`steer-queued:${claimed.item.command.commandId}`),
+              kind: "turn.steer.queued",
+              tone: "info",
+              summary: "Steer not accepted; queued",
+              payload: { messageId: claimed.item.command.message.messageId },
+              turnId: null,
+              createdAt: new Date().toISOString(),
+            },
+            createdAt: new Date().toISOString(),
+          })
+          .pipe(Effect.mapError(storageError));
+        yield* notify(threadId);
+        yield* publishChanged(threadId);
+        yield* settleWaiter(item.itemId, {
+          disposition: "queued",
+          submissionId: item.submissionId,
+          itemId: item.itemId,
+          snapshot: yield* getSnapshot(threadId),
+        });
+        return;
+      }
       const outcome = classifyNextTurnDispatchFailure({
         error,
         postClaimAttempt: claimed.item.attemptCount,
@@ -512,6 +580,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             "Queue paused because the thread was archived.",
           );
           return;
+        case "thread.conversation-revert-requested":
         case "thread.checkpoint-revert-requested":
           yield* pauseForEvent(
             threadId,
@@ -560,6 +629,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           }
           return;
         }
+        case "thread.user-input-resolved":
         case "thread.session-set":
         case "thread.unarchived":
         case "thread.reverted":
@@ -577,7 +647,19 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     );
 
+  const recoverRestartTurns = Effect.gen(function* () {
+    if (Option.isNone(sqlOption)) return;
+    const resumed = yield* recoverRestartTurnMarkers.pipe(
+      Effect.provideService(SqlClient.SqlClient, sqlOption.value),
+      Effect.provideService(OrchestrationEngineService, engine),
+      Effect.provideService(NextTurnQueueStore, store),
+      Effect.mapError(storageError),
+    );
+    for (const threadId of resumed) yield* notify(threadId);
+  });
+
   const safetySweep = Effect.gen(function* () {
+    yield* recoverRestartTurns;
     yield* Ref.update(automaticCompacting, (current) => {
       const next = new Map(current);
       const cutoff = Date.now() - 5 * 60_000;
@@ -708,33 +790,75 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         return yield* getSnapshot(threadId);
       }),
     handleDeliveryOutcome: (outcome) =>
-      (outcome.state === "accepted"
-        ? store
-            .completeDelivery({ commandId: outcome.commandId })
-            .pipe(
-              Effect.andThen(publishChanged(outcome.threadId)),
-              Effect.andThen(notify(outcome.threadId)),
-            )
-        : store
-            .markDeliveryFailed({
-              commandId: outcome.commandId,
-              errorCode: outcome.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
-              errorDetail: outcome.detail ?? "The provider did not confirm the queued turn.",
+      Effect.gen(function* () {
+        const item = yield* store.getByCommandId(outcome.commandId);
+        if (outcome.state === "rejected" && item?.command.expectedTurnId) {
+          yield* store.fallbackSteer(outcome.commandId);
+          yield* engine
+            .dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.makeUnsafe(`steer-queued:${outcome.commandId}`),
+              threadId: item.threadId,
+              activity: {
+                id: importEventIdFactory.makeUnsafe(`steer-queued:${outcome.commandId}`),
+                kind: "turn.steer.queued",
+                tone: "info",
+                summary: "Steer not accepted; queued",
+                payload: { messageId: item.command.message.messageId },
+                turnId: null,
+                createdAt: new Date().toISOString(),
+              },
+              createdAt: new Date().toISOString(),
             })
-            .pipe(
-              Effect.andThen(
-                store.setPaused({
-                  threadId: outcome.threadId,
-                  paused: true,
-                  reasonCode:
-                    outcome.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
-                  detail: outcome.detail ?? "The provider did not confirm the queued turn.",
-                }),
-              ),
-              Effect.andThen(publishChanged(outcome.threadId)),
-              Effect.andThen(notify(outcome.threadId)),
-            )
-      ).pipe(Effect.mapError(storageError)),
+            .pipe(Effect.mapError(storageError));
+          yield* settleWaiter(item.itemId, {
+            disposition: "queued",
+            submissionId: item.submissionId,
+            itemId: item.itemId,
+            snapshot: yield* getSnapshot(item.threadId),
+          });
+          yield* publishChanged(outcome.threadId);
+          yield* notify(outcome.threadId);
+          return;
+        }
+        if (outcome.state === "accepted" && item?.command.expectedTurnId) {
+          const receipt = yield* receipts
+            .getByCommandId({ commandId: outcome.commandId })
+            .pipe(Effect.mapError(storageError));
+          yield* settleWaiter(item.itemId, {
+            disposition: "steered",
+            submissionId: item.submissionId,
+            sequence: Option.isSome(receipt) ? receipt.value.resultSequence : 0,
+          });
+        }
+        yield* outcome.state === "accepted"
+          ? store
+              .completeDelivery({ commandId: outcome.commandId })
+              .pipe(
+                Effect.andThen(publishChanged(outcome.threadId)),
+                Effect.andThen(notify(outcome.threadId)),
+              )
+          : store
+              .markDeliveryFailed({
+                commandId: outcome.commandId,
+                errorCode:
+                  outcome.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
+                errorDetail: outcome.detail ?? "The provider did not confirm the queued turn.",
+              })
+              .pipe(
+                Effect.andThen(
+                  store.setPaused({
+                    threadId: outcome.threadId,
+                    paused: true,
+                    reasonCode:
+                      outcome.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
+                    detail: outcome.detail ?? "The provider did not confirm the queued turn.",
+                  }),
+                ),
+                Effect.andThen(publishChanged(outcome.threadId)),
+                Effect.andThen(notify(outcome.threadId)),
+              );
+      }).pipe(Effect.mapError(storageError)),
     changes: Stream.fromPubSub(changesPubSub),
     summaryChanges: Stream.fromPubSub(summaryChangesPubSub),
     start: Effect.gen(function* () {
@@ -743,6 +867,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* store.reclaimStaleLeases(live);
         yield* store.deleteOrphans;
         yield* store.drainOrphanedAttachments;
+        yield* recoverRestartTurns;
         const actionable = yield* store.listActionableThreadIds;
         yield* Effect.forEach(actionable, notify, { concurrency: 4, discard: true });
       }).pipe(

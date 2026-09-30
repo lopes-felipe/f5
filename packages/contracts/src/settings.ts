@@ -212,6 +212,7 @@ export const WorktreeSubmodules = Schema.Literals(["none", "shallow", "recursive
 export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
 
 export const ProjectSettingsOverrides = Schema.Struct({
+  resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
@@ -225,6 +226,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 export const ServerSettings = Schema.Struct({
+  resumeActiveTurnsAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
   worktreeSubmodules: WorktreeSubmodules.pipe(
     Schema.withDecodingDefault(() => "recursive" as const),
@@ -363,6 +365,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   projectSettingsOverrides: Schema.optionalKey(
@@ -413,6 +416,7 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "resumeActiveTurnsAfterRestart",
   "defaultRuntimeMode",
   "defaultThreadEnvMode",
   "worktreeSubmodules",

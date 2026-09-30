@@ -1,3 +1,4 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 /**
  * CursorAdapterLive — Cursor CLI (`agent acp`) via ACP.
@@ -128,6 +129,7 @@ interface PendingUserInput {
 }
 
 interface CursorSessionContext {
+  promptsInFlight: number;
   readonly threadId: ThreadId;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
@@ -881,6 +883,7 @@ export function makeCursorAdapter(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            promptsInFlight: 0,
             assistantReply: new CursorTransportFailure(),
             nativeCommands: [],
             skillCommands: cursorSkillCommands(
@@ -1051,7 +1054,20 @@ export function makeCursorAdapter(
     const sendTurnUnlocked: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
-        const turnId = TurnId.make(crypto.randomUUID());
+        const steering = input.expectedTurnId !== undefined;
+        if (steering && (ctx.activeTurnId !== input.expectedTurnId || ctx.promptsInFlight === 0))
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/steer",
+            detail: "The active turn ended or changed before steering.",
+          });
+        if (!steering && ctx.promptsInFlight > 0)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "A Cursor turn is already running.",
+          });
+        const turnId = input.expectedTurnId ?? TurnId.make(crypto.randomUUID());
         const turnModelSelection = resolveCursorModelSelection({
           boundInstanceId,
           model: input.model ?? ctx.session.model,
@@ -1075,23 +1091,26 @@ export function makeCursorAdapter(
             });
           }
         }
-        yield* applyRequestedSessionConfiguration({
-          runtime: ctx.acp,
-          runtimeMode: ctx.session.runtimeMode,
-          interactionMode: input.workflowExecutionProfile ? "plan" : input.interactionMode,
-          modelSelection:
-            model === undefined
-              ? undefined
-              : {
-                  model,
-                  options: turnModelSelection?.options,
-                },
-          mapError: ({ cause, method }) =>
-            mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
-        });
+        if (!steering)
+          yield* applyRequestedSessionConfiguration({
+            runtime: ctx.acp,
+            runtimeMode: ctx.session.runtimeMode,
+            interactionMode: input.workflowExecutionProfile ? "plan" : input.interactionMode,
+            modelSelection:
+              model === undefined
+                ? undefined
+                : {
+                    model,
+                    options: turnModelSelection?.options,
+                  },
+            mapError: ({ cause, method }) =>
+              mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
+          });
         ctx.activeTurnId = turnId;
-        ctx.assistantReply = new CursorTransportFailure();
-        ctx.lastPlanFingerprint = undefined;
+        if (!steering) {
+          ctx.assistantReply = new CursorTransportFailure();
+          ctx.lastPlanFingerprint = undefined;
+        }
         ctx.session = {
           ...ctx.session,
           activeTurnId: turnId,
@@ -1118,14 +1137,15 @@ export function makeCursorAdapter(
           },
         });
 
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: input.threadId,
-          turnId,
-          payload: { model: resolvedModel },
-        });
+        if (!steering)
+          yield* offerRuntimeEvent({
+            type: "turn.started",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: input.threadId,
+            turnId,
+            payload: { model: resolvedModel },
+          });
 
         const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
         if (input.input?.trim()) {
@@ -1186,6 +1206,13 @@ export function makeCursorAdapter(
           });
         }
 
+        if (steering && (ctx.activeTurnId !== turnId || ctx.promptsInFlight === 0))
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/steer",
+            detail: "The active turn ended while preparing the steer.",
+          });
+        ctx.promptsInFlight += 1;
         const result = yield* ctx.acp
           .prompt({
             prompt: promptParts,
@@ -1194,9 +1221,16 @@ export function makeCursorAdapter(
             Effect.mapError((error) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
             ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
+              }),
+            ),
           );
 
         yield* ctx.acp.awaitEventBarrier;
+        if (ctx.promptsInFlight > 0)
+          return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         const failure = ctx.assistantReply.failure;
         if (result.stopReason !== "cancelled" && failure) {
           ctx.activeTurnId = undefined;
@@ -1380,9 +1414,13 @@ export function makeCursorAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+      },
       startSession,
       sendTurn,
+      steerTurn: sendTurnUnlocked,
       interruptTurn,
       readThread,
       rollbackThread,

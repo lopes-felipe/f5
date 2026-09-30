@@ -1,3 +1,4 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { loadOpenCodeCommands } from "../opencodeRuntime.ts";
 import {
   EventId,
@@ -1793,6 +1794,7 @@ export function makeOpenCodeAdapter(
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
       startSession,
       sendTurn,

@@ -1,3 +1,5 @@
+import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { makeConversationRewind } from "../rewind.ts";
 import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
 import { GitService } from "../../git/Services/GitService.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
@@ -71,6 +73,12 @@ const make = Effect.gen(function* () {
   const git = yield* GitService;
   const receiptBus = yield* RuntimeReceiptBus;
   const turns = yield* ProjectionTurnRepository;
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const conversationRewind = Option.isSome(sqlOption)
+    ? yield* makeConversationRewind.pipe(
+        Effect.provideService(SqlClient.SqlClient, sqlOption.value),
+      )
+    : { run: () => Effect.void, recover: Effect.void };
 
   const markTurnProcessingQuiesced = (input: {
     readonly threadId: ThreadId;
@@ -767,6 +775,10 @@ const make = Effect.gen(function* () {
   });
 
   const processDomainEvent = Effect.fnUntraced(function* (event: OrchestrationEvent) {
+    if (event.type === "thread.conversation-revert-requested") {
+      yield* conversationRewind.run(event.payload);
+      return;
+    }
     if (event.type === "thread.turn-start-requested" || event.type === "thread.message-sent") {
       yield* ensurePreTurnBaselineFromDomainTurnStart(event);
       return;
@@ -909,12 +921,18 @@ const make = Effect.gen(function* () {
   });
 
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
+    yield* conversationRewind.recover.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("rewind startup recovery failed", { cause: Cause.pretty(cause) }),
+      ),
+    );
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (
           event.type !== "thread.turn-start-requested" &&
           event.type !== "thread.message-sent" &&
           event.type !== "thread.checkpoint-revert-requested" &&
+          event.type !== "thread.conversation-revert-requested" &&
           event.type !== "thread.turn-diff-completed" &&
           event.type !== "thread.session-set"
         ) {

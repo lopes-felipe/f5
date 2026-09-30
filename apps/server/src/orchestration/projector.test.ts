@@ -3,6 +3,7 @@ import {
   EventId,
   ProjectId,
   ThreadId,
+  TurnId,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -2522,6 +2523,29 @@ describe("orchestration projector", () => {
     ).toEqual([{ id: "activity-1", turnId: "turn-1" }]);
     expect(thread?.checkpoints.map((checkpoint) => checkpoint.checkpointTurnCount)).toEqual([1]);
     expect(thread?.latestTurn?.turnId).toBe("turn-1");
+
+    const withoutCheckpoints = await events
+      .filter((event) => event.type !== "thread.turn-diff-completed")
+      .reduce<Promise<ReturnType<typeof createEmptyReadModel>>>(
+        (statePromise, event) =>
+          statePromise.then((state) =>
+            Effect.runPromise(
+              projectEvent(
+                state,
+                event.type === "thread.reverted"
+                  ? {
+                      ...event,
+                      payload: { ...event.payload, retainedTurnIds: [TurnId.makeUnsafe("turn-1")] },
+                    }
+                  : event,
+              ),
+            ),
+          ),
+        Promise.resolve(afterCreate),
+      );
+    expect(withoutCheckpoints.threads[0]?.messages).toEqual(thread?.messages);
+    expect(withoutCheckpoints.threads[0]?.activities).toEqual(thread?.activities);
+    expect(withoutCheckpoints.threads[0]?.checkpoints).toEqual([]);
   });
 
   it("does not fallback-retain messages tied to removed turn IDs", async () => {

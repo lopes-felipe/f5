@@ -17,7 +17,7 @@ import type {
 
 export type ProviderTurnStartRequestedEvent = Extract<
   OrchestrationEvent,
-  { type: "thread.turn-start-requested" }
+  { type: "thread.turn-start-requested" | "thread.turn-steer-requested" }
 >;
 
 /**
