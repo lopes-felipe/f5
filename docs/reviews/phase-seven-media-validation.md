@@ -76,4 +76,15 @@ Applied the review's eight findings and three notes. Each fix has regression cov
   - The inline-upload performance fixture is back to 8 × 1 MiB. It had grown to 100 MiB with the new attachment count.
   - The 20 MiB WebSocket cap already bounds inline data-URL sends before decoding, so that path needed no change.
 
-After the fixes, format, lint, typecheck, the full suite and 133 real-Git tests all passed again. The server performance smoke run passed its upload gate (8 MiB decoded against a 80 MiB limit). It also reported `replay.pageEvents` 500 / 200; replay code is untouched by this PR.
+CodeRabbit round: applied five inline comments and two nitpicks.
+
+- Paste as text now takes precedence over file import.
+- Sidebar drops show the same path-reference warnings as the composer.
+- The upload queue survives a missing bootstrap.
+- Synchronously throwing image conversions release their slot.
+- Dropped folders are classified per transfer item.
+- `imagePath` is part of the work-log dedupe signature.
+
+The Markdown image comment was declined. It asked to restrict relative images to the document's own directory, which would break the common `../images/…` pattern. The identity root the server enforces is already the security boundary, and images load only from F5's own server.
+
+After the fixes, format, lint, typecheck, the full suite and 133 real-Git tests all passed again. A run made during heavy unrelated machine load (load average about 280) timed out in 32 real-Git tests and two `MessagesTimeline` timing assertions. Both suites passed in full when rerun on their own. The server performance smoke run passed its upload gate (8 MiB decoded against a 80 MiB limit). It also reported `replay.pageEvents` 500 / 200; replay code is untouched by this PR.

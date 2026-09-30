@@ -3488,7 +3488,7 @@
       "plannedWorkstream": "7c",
       "evidence": [
         "apps/web/src/lib/workspaceBasename.ts:2",
-        "apps/web/src/components/ChatView.tsx:5849",
+        "apps/web/src/components/ChatView.tsx:5845",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -11323,7 +11323,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/web/src/components/ChatView.tsx:3772",
+        "apps/web/src/components/ChatView.tsx:3773",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -11481,7 +11481,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7c",
       "evidence": [
-        "apps/web/src/components/ChatView.tsx:5838",
+        "apps/web/src/components/ChatView.tsx:5834",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -12928,7 +12928,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/web/src/lib/attachmentUploadQueue.ts:142",
+        "apps/web/src/lib/attachmentUploadQueue.ts:155",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -15490,7 +15490,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/web/src/lib/droppedAttachments.ts:2",
+        "apps/web/src/lib/droppedAttachments.ts:14",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -17299,7 +17299,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/web/src/lib/attachmentUploadQueue.ts:21",
+        "apps/web/src/lib/attachmentUploadQueue.ts:22",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
