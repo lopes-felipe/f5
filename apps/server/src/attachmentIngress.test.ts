@@ -1,3 +1,6 @@
+import { Readable } from "node:stream";
+import { makeAttachmentUploads } from "./attachmentUploads";
+import uploadMigration from "./persistence/Migrations/093_AttachmentUploads";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -32,7 +35,9 @@ const makeTempAttachmentsDir = () => {
   return path.join(directory, "attachments");
 };
 
-const validUpload = (overrides: Partial<UploadChatAttachment> = {}): UploadChatAttachment => ({
+const validUpload = (
+  overrides: Partial<Extract<UploadChatAttachment, { type: "image" }>> = {},
+): UploadChatAttachment => ({
   type: "image",
   name: "image.png",
   mimeType: "image/png",
@@ -42,12 +47,18 @@ const validUpload = (overrides: Partial<UploadChatAttachment> = {}): UploadChatA
 });
 
 const prepare = (attachments: ReadonlyArray<UploadChatAttachment>, attachmentsDir: string) =>
-  prepareAttachmentIngress({
-    attachments,
-    attachmentsDir,
-    commandId: CommandId.makeUnsafe(`command-${crypto.randomUUID()}`),
-    threadId: ThreadId.makeUnsafe("thread-1"),
-  });
+  makeAttachmentUploads(attachmentsDir).pipe(
+    Effect.flatMap((uploads) =>
+      prepareAttachmentIngress({
+        attachments,
+        attachmentsDir,
+        commandId: CommandId.makeUnsafe(`command-${crypto.randomUUID()}`),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        uploads,
+      }),
+    ),
+    Effect.provide(testLayer),
+  );
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) {
@@ -205,4 +216,50 @@ describe("attachment ingress", () => {
       }).pipe(Effect.provide(testLayer)),
     );
   });
+});
+
+it("claims a generic upload through the durable registry and releases its lease after commit", async () => {
+  const attachmentsDir = makeTempAttachmentsDir();
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE projection_threads(thread_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT INTO projection_threads(thread_id) VALUES('thread-1')`;
+      yield* ensureAttachmentSchema;
+      yield* uploadMigration;
+      const uploads = yield* makeAttachmentUploads(attachmentsDir);
+      const upload = yield* uploads.upload({
+        threadId: ThreadId.makeUnsafe("draft-source"),
+        clientId: "client",
+        source: "pasted-text",
+        req: Object.assign(Readable.from([Buffer.from("text")]), {
+          headers: {
+            "content-length": "4",
+            "x-f5-file-name": "pasted-text.txt",
+            "content-type": "text/plain",
+          },
+        }),
+      });
+      const prepared = yield* prepareAttachmentIngress({
+        attachments: [{ type: "upload", uploadId: upload.uploadId }],
+        attachmentsDir,
+        commandId: CommandId.makeUnsafe("generic-command"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        uploads,
+      });
+      expect(prepared.attachments[0]).toMatchObject({
+        type: "file",
+        source: "pasted-text",
+        sizeBytes: 4,
+      });
+      expect(yield* sql`SELECT * FROM attachment_upload_claims`).toHaveLength(1);
+      yield* persistPreparedAttachmentIngress(prepared);
+      expect(yield* sql`SELECT * FROM attachment_upload_claims`).toHaveLength(0);
+      expect(yield* sql`SELECT type,lifecycle FROM attachments`).toEqual([
+        { type: "file", lifecycle: "ready" },
+      ]);
+      const owners = yield* sql`SELECT owner_kind FROM attachment_owners`;
+      expect(owners).toEqual([{ owner_kind: "ingress" }]);
+    }).pipe(Effect.provide(testLayer)),
+  );
 });

@@ -1,3 +1,4 @@
+import { AttachmentUploadsInput, AttachmentCloneToUploadInput } from "./attachmentUpload";
 import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
@@ -117,6 +118,8 @@ import {
   ProjectCloneCancelInput,
   ProjectListDirectoryInput,
   ProjectReadFileInput,
+  ProjectIssueAssetUrlInput,
+  ProjectOpenHtmlPreviewInput,
   ProjectSearchEntriesInput,
   ProjectSearchContentsInput,
   ProjectWriteFileInput,
@@ -261,7 +264,12 @@ export const WS_METHODS = {
   projectsSearchContents: "projects.searchContents",
   projectsCancelContentSearch: "projects.cancelContentSearch",
   projectsWriteFile: "projects.writeFile",
+  attachmentsCloneToUpload: "attachments.cloneToUpload",
+  attachmentsGetUploads: "attachments.getUploads",
+  attachmentsReleaseUploads: "attachments.releaseUploads",
   projectsReadFile: "projects.readFile",
+  projectsOpenHtmlPreview: "projects.openHtmlPreview",
+  projectsIssueAssetUrl: "projects.issueAssetUrl",
   projectsAuthorizeEntry: "projects.authorizeEntry",
   projectsGetCheckedInConfig: "projects.getCheckedInConfig",
 
@@ -547,7 +555,12 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsSearchContents, ProjectSearchContentsInput),
   tagRequestBody(WS_METHODS.projectsCancelContentSearch, ProjectCancelContentSearchInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
+  tagRequestBody(WS_METHODS.attachmentsCloneToUpload, AttachmentCloneToUploadInput),
+  tagRequestBody(WS_METHODS.attachmentsGetUploads, AttachmentUploadsInput),
+  tagRequestBody(WS_METHODS.attachmentsReleaseUploads, AttachmentUploadsInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
+  tagRequestBody(WS_METHODS.projectsOpenHtmlPreview, ProjectOpenHtmlPreviewInput),
+  tagRequestBody(WS_METHODS.projectsIssueAssetUrl, ProjectIssueAssetUrlInput),
   tagRequestBody(WS_METHODS.projectsAuthorizeEntry, ProjectAuthorizeEntryInput),
 
   // Filesystem methods

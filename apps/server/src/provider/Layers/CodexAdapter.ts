@@ -42,7 +42,7 @@ import {
   codexNotificationDisposition,
   codexThreadItemDisposition,
 } from "@t3tools/shared/codexProtocolManifest";
-import { Effect, FileSystem, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
+import { Effect, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
 
 import {
   ProviderAdapterProcessError,
@@ -2155,7 +2155,6 @@ function mapToRuntimeEvents(
 
 export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* Effect.service(ServerConfig);
     const nativeEventLogger =
       options?.nativeEventLogger ??
@@ -2316,7 +2315,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const codexAttachments = yield* Effect.forEach(
-          input.attachments ?? [],
+          (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
           (attachment) =>
             Effect.gen(function* () {
               switch (attachment.type) {
@@ -2332,21 +2331,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                       new Error(`Invalid attachment id '${attachment.id}'.`),
                     );
                   }
-                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderAdapterRequestError({
-                          provider: PROVIDER,
-                          method: "turn/start",
-                          detail: toMessage(cause, "Failed to read attachment file."),
-                          cause,
-                        }),
-                    ),
-                  );
-                  return {
-                    type: "image" as const,
-                    url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-                  };
+                  return { type: "localImage" as const, path: attachmentPath };
                 }
                 default:
                   throw new Error(

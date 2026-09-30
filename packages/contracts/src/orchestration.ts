@@ -1,3 +1,4 @@
+import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
@@ -185,7 +186,7 @@ export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unkn
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
-export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
+export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 100;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const ProviderTurnInputText = Schema.String.check(
@@ -229,9 +230,18 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(ATTACHMENT_MAX_FILE_BYTES)),
+  source: Schema.optional(Schema.Literals(["pasted-text", "snapshot"])),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadedAttachmentRef]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -635,6 +645,7 @@ export const CompactSubagentState = Schema.Struct({
 export type CompactSubagentState = typeof CompactSubagentState.Type;
 
 export const CompactToolActivityPayload = Schema.Struct({
+  imagePath: Schema.optional(TrimmedNonEmptyString),
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),
   status: Schema.optional(CompactToolActivityStatus),

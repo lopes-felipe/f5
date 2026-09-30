@@ -5,6 +5,7 @@ import {
   DESKTOP_BACKEND_REQUEST_FILTER,
   getDesktopBackendHttpOrigin,
   getDesktopBackendWebSocketUrl,
+  shouldAuthorizeDesktopBackendRequest,
 } from "./backendRequestAuth";
 
 const backendPort = 3773;
@@ -16,6 +17,12 @@ function authorize(url: string, requestHeaders: Record<string, string> = {}) {
     backendPort,
     authToken,
     requestHeaders,
+    initiator: {
+      registeredRenderer: true,
+      mainFrame: true,
+      frameOrigin: "t3://app",
+      appOrigin: "t3://app",
+    },
   });
 }
 
@@ -70,5 +77,43 @@ describe("authorizeDesktopBackendRequestHeaders", () => {
         requestHeaders,
       }),
     ).toBe(requestHeaders);
+  });
+});
+
+describe("desktop backend initiator authorization", () => {
+  const app = {
+    registeredRenderer: true,
+    mainFrame: true,
+    frameOrigin: "t3://app",
+    appOrigin: "t3://app",
+  };
+  it.each([
+    undefined,
+    { ...app, registeredRenderer: false },
+    { ...app, mainFrame: false },
+    { ...app, frameOrigin: "https://example.com" },
+    { ...app, frameOrigin: "null", appOrigin: "null" },
+  ])("refuses missing identity, guests, popups, subframes and foreign origins: %j", (initiator) => {
+    expect(shouldAuthorizeDesktopBackendRequest(initiator)).toBe(false);
+    const headers = { Accept: "*/*" };
+    expect(
+      authorizeDesktopBackendRequestHeaders({
+        url: `http://127.0.0.1:${backendPort}/api/bootstrap`,
+        backendPort,
+        authToken,
+        requestHeaders: headers,
+        ...(initiator ? { initiator } : {}),
+      }),
+    ).toBe(headers);
+  });
+  it("accepts registered main frames for packaged and development origins", () => {
+    expect(shouldAuthorizeDesktopBackendRequest(app)).toBe(true);
+    expect(
+      shouldAuthorizeDesktopBackendRequest({
+        ...app,
+        frameOrigin: "http://localhost:5173",
+        appOrigin: "http://localhost:5173",
+      }),
+    ).toBe(true);
   });
 });

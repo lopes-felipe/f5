@@ -14,3 +14,11 @@ it("uses the tested build's protocol without changing the benchmark workload", (
 it("answers background clone polling without adding fixture work", () => {
   expect(createBrowserFixture().rpc({ _tag: "projects.cloneList" })).toEqual([]);
 });
+
+it("answers project settings polling without silently skipping a renderer query", () => {
+  const fixture = createBrowserFixture();
+  expect(
+    fixture.rpc({ _tag: "server.getProjectSettings", projectId: "perf-project" }),
+  ).toMatchObject({ settings: { defaultThreadEnvMode: "local" }, overrides: {} });
+  expect([...fixture.unknownMethods]).toEqual([]);
+});

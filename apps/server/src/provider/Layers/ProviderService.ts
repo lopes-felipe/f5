@@ -1,3 +1,7 @@
+import {
+  getProviderAttachmentLimitError,
+  nativeProviderAttachments,
+} from "@t3tools/shared/attachmentLimits";
 import { withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
 /**
@@ -11,10 +15,12 @@ import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
  *
  * @module ProviderServiceLive
  */
-import { access } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 
 import {
   DEFAULT_RUNTIME_MODE,
+  EventId,
   ModelSelection,
   isKnownProviderKind,
   type TurnId,
@@ -1092,8 +1098,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             ...(input.model ? { "provider.model": input.model } : {}),
           });
+          const limitError = getProviderAttachmentLimitError(
+            input.attachments,
+            routed.adapter.provider,
+          );
+          if (limitError) return yield* toValidationError("ProviderService.sendTurn", limitError);
           const attachmentPaths = input.attachments.map((attachment) => {
             switch (attachment.type) {
+              case "file":
               case "image": {
                 const localPath = resolveAttachmentPath({
                   attachmentsDir: serverConfig.attachmentsDir,
@@ -1112,8 +1124,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               attachmentPaths.map(async ({ attachment, localPath }) => {
                 if (localPath === null) return attachment.id;
                 try {
-                  await access(localPath);
-                  return null;
+                  const current = await lstat(localPath);
+                  return current.isFile() && current.size === attachment.sizeBytes
+                    ? null
+                    : attachment.id;
                 } catch {
                   return attachment.id;
                 }
@@ -1123,17 +1137,40 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           if (missingAttachmentIds.length > 0) {
             return yield* toValidationError(
               "ProviderService.sendTurn",
-              `The following attachments are no longer available: ${missingAttachmentIds.join(", ")}`,
+              `The following attachments changed or are no longer available: ${missingAttachmentIds.join(", ")}`,
             );
           }
           const resolvedAttachments = attachmentPaths.map(({ attachment, localPath }) => ({
             ...attachment,
             localPath: localPath!,
           }));
+          const nativeAttachments = nativeProviderAttachments(
+            input.attachments,
+            routed.adapter.provider,
+          );
           const turn = yield* routed.adapter.sendTurn({
             ...input,
+            attachments: nativeAttachments,
             resolvedAttachments,
           });
+          const inlineIds = new Set(nativeAttachments.map((attachment) => attachment.id));
+          const overflowImages = input.attachments.filter(
+            (attachment) => attachment.type === "image" && !inlineIds.has(attachment.id),
+          );
+          if (overflowImages.length)
+            yield* publishRuntimeEvent({
+              type: "runtime.warning",
+              eventId: EventId.makeUnsafe(randomUUID()),
+              provider: routed.adapter.provider,
+              threadId: input.threadId,
+              turnId: turn.turnId,
+              createdAt: new Date().toISOString(),
+              payload: {
+                category: "provider",
+                message: `${overflowImages.length} image(s) delivered as files because this provider's inline image limit was reached. Saved paths remain available to the agent.`,
+                actionable: false,
+              },
+            });
           const persistedBinding = yield* directory.getBinding(input.threadId);
           const persistedRuntimePayload = Option.match(persistedBinding, {
             onNone: () => undefined,

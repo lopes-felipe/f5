@@ -1,3 +1,5 @@
+import { AttachmentFileChip } from "./AttachmentFileChip";
+import { ChatAssetImage } from "../ChatAssetImage";
 import { readTimelineScrollAnchor, timelineScrollAnchors } from "./timelineScrollAnchors";
 import {
   type MessageId,
@@ -918,13 +920,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       {row.kind === "message" &&
         row.message.role === "user" &&
         (() => {
-          const userImages = row.message.attachments ?? [];
+          const userImages = (row.message.attachments ?? []).filter(
+            (attachment) => attachment.type === "image",
+          );
+          const userFiles = (row.message.attachments ?? []).filter(
+            (attachment) => attachment.type === "file",
+          );
           const displayedUserMessage = deriveDisplayedUserMessageState(row.message.text);
           const terminalContexts = displayedUserMessage.contexts;
           const canRevertAgentWork = revertTurnCountByUserMessageId.has(row.message.id);
           return (
             <div className="flex justify-end">
               <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+                {userFiles.map((file) => (
+                  <AttachmentFileChip key={file.id} file={file} />
+                ))}
                 {userImages.length > 0 && (
                   <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
                     {userImages.map(
@@ -2553,6 +2563,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
     chatDiffContext,
     onOpenTurnDiff,
   } = props;
+  const [imageExpanded, setImageExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
@@ -2662,7 +2673,15 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             )}
             title={displayText}
           >
-            {canRenderInlineDiff ? (
+            {workEntry.itemType === "image_view" && workEntry.imagePath ? (
+              <button
+                type="button"
+                aria-expanded={imageExpanded}
+                onClick={() => setImageExpanded(!imageExpanded)}
+              >
+                {heading}
+              </button>
+            ) : canRenderInlineDiff ? (
               <button
                 type="button"
                 aria-expanded={inlineDiffExpanded}
@@ -2703,6 +2722,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               <span className="text-muted-foreground/55"> - {preview}</span>
             ) : null}
           </p>
+          {imageExpanded && workEntry.imagePath && (
+            <div className="mt-1 max-w-48">
+              <ChatAssetImage src={workEntry.imagePath} alt="Viewed image" cwd={workspaceRoot} />
+            </div>
+          )}
         </div>
       </div>
       {hasChangedFiles && !previewIsChangedFiles && (

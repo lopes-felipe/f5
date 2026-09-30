@@ -89,3 +89,13 @@ export function reloadForProtocolUpgrade(): void {
   }
   window.location.reload();
 }
+
+export function getServerAttachmentLimits() {
+  if (!bootstrap?.attachmentLimits || !bootstrap.uploadLimits.attachments.enabled)
+    throw new Error("Waiting for server upload capabilities. Reconnect before attaching files.");
+  return bootstrap.attachmentLimits;
+}
+export function getServerProviderSendLimits(provider: string) {
+  if (!bootstrap) throw new Error("Waiting for server capabilities.");
+  return bootstrap.providerSendLimits?.[provider] ?? bootstrap.sendLimits;
+}

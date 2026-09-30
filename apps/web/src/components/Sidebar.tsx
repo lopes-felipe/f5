@@ -1,3 +1,10 @@
+import { partitionDroppedAttachments } from "../lib/droppedAttachments";
+import {
+  attachedFileReferenceWarnings,
+  resolveAttachedFileReferencePaths,
+  createCachedAbsolutePathComparisonNormalizer,
+  identityAbsolutePathNormalizer,
+} from "./ChatView.logic";
 import { FileTextIcon } from "lucide-react";
 import { workflowDisplayType } from "../lib/workflowType";
 import { applyBulkThreadAction } from "../bulkThreadActions";
@@ -770,6 +777,40 @@ const ThreadSelectionState = memo(function ThreadSelectionState(props: {
 
 export default function Sidebar() {
   const projects = useStore((store) => store.projects);
+  const attachDropToThread = (event: React.DragEvent, thread: Thread) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const { files, folders } = partitionDroppedAttachments(event.dataTransfer);
+    const store = useComposerDraftStore.getState();
+    if (folders.length) {
+      const result = resolveAttachedFileReferencePaths({
+        files: folders,
+        isElectron,
+        desktopBridge: window.desktopBridge,
+        workspaceRoots: [
+          thread.worktreePath,
+          projects.find((project) => project.id === thread.projectId)?.cwd,
+        ],
+        normalizeAbsolutePathForComparison: createCachedAbsolutePathComparisonNormalizer(
+          window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
+        ),
+      });
+      store.addFilePaths(thread.id, result.filePaths);
+      for (const warning of attachedFileReferenceWarnings(result))
+        toastManager.add({ type: "warning", title: warning });
+    }
+    void store.importImages(thread.id, files).then((result) => {
+      if (result.failures.length)
+        toastManager.add({
+          type: "warning",
+          title: "Some files could not be attached",
+          description: result.failures.map((failure) => failure.message).join("\n"),
+        });
+      else if (result.imported.length)
+        toastManager.add({ type: "success", title: `Files added to ${thread.title}` });
+    });
+  };
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
@@ -2698,6 +2739,18 @@ export default function Sidebar() {
                                                   {(isSelected) => (
                                                     <SidebarMenuSubItem
                                                       className="group/thread-row w-full"
+                                                      onDragOver={(event) => {
+                                                        if (
+                                                          event.dataTransfer.types.includes("Files")
+                                                        ) {
+                                                          event.preventDefault();
+                                                          event.stopPropagation();
+                                                          event.dataTransfer.dropEffect = "copy";
+                                                        }
+                                                      }}
+                                                      onDrop={(event) =>
+                                                        attachDropToThread(event, thread)
+                                                      }
                                                       data-thread-item
                                                     >
                                                       <SidebarMenuSubButton
@@ -2873,6 +2926,14 @@ export default function Sidebar() {
                                           return (
                                             <SidebarMenuSubItem
                                               className="group/thread-row w-full"
+                                              onDragOver={(event) => {
+                                                if (event.dataTransfer.types.includes("Files")) {
+                                                  event.preventDefault();
+                                                  event.stopPropagation();
+                                                  event.dataTransfer.dropEffect = "copy";
+                                                }
+                                              }}
+                                              onDrop={(event) => attachDropToThread(event, thread)}
                                               data-thread-item
                                             >
                                               <SidebarMenuSubButton
@@ -3075,6 +3136,14 @@ export default function Sidebar() {
                                           <SidebarMenuSubItem
                                             key={`snoozed:${thread.id}`}
                                             className="group/thread-row w-full"
+                                            onDragOver={(event) => {
+                                              if (event.dataTransfer.types.includes("Files")) {
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                event.dataTransfer.dropEffect = "copy";
+                                              }
+                                            }}
+                                            onDrop={(event) => attachDropToThread(event, thread)}
                                             data-thread-item
                                           >
                                             <SidebarMenuSubButton
@@ -3273,6 +3342,16 @@ export default function Sidebar() {
                                             return (
                                               <SidebarMenuSubItem
                                                 className="group/thread-row w-full"
+                                                onDragOver={(event) => {
+                                                  if (event.dataTransfer.types.includes("Files")) {
+                                                    event.preventDefault();
+                                                    event.stopPropagation();
+                                                    event.dataTransfer.dropEffect = "copy";
+                                                  }
+                                                }}
+                                                onDrop={(event) =>
+                                                  attachDropToThread(event, thread)
+                                                }
                                                 data-thread-item
                                               >
                                                 <SidebarMenuSubButton

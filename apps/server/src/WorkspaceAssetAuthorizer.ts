@@ -2,10 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
+import { openContainedFile } from "./assetHttp";
 
 export const WORKSPACE_IMAGE_ASSET_MAX_BYTES = 10 * 1024 * 1024;
 export const WORKSPACE_FAVICON_MAX_BYTES = 1024 * 1024;
-export const WORKSPACE_ASSET_HANDLE_TTL_MS = 5 * 60 * 1_000;
+export const WORKSPACE_ASSET_HANDLE_TTL_MS = 30 * 60 * 1_000;
 
 const MAX_ACTIVE_HANDLES = 2_048;
 
@@ -48,7 +49,8 @@ export interface AuthorizedWorkspaceImageAsset {
 
 export type WorkspaceAssetIdentity =
   | { readonly kind: "project"; readonly projectId: string }
-  | { readonly kind: "thread"; readonly threadId: string };
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly kind: "attachments" };
 
 export interface WorkspaceAssetHandle {
   readonly handle: string;
@@ -57,6 +59,7 @@ export interface WorkspaceAssetHandle {
 
 interface HandleRecord {
   readonly identity: WorkspaceAssetIdentity;
+  readonly grant?: "file" | "html-document";
   readonly relativePath: string;
   readonly maxBytes: number;
   readonly rejectSymlink: boolean;
@@ -64,6 +67,11 @@ interface HandleRecord {
 }
 
 export interface WorkspaceAssetReader {
+  readonly issueFileHandle: (input: {
+    relativePath: string;
+    grant: "file" | "html-document";
+  }) => WorkspaceAssetHandle;
+  readonly openFile: (relativePath: string) => ReturnType<typeof openContainedFile>;
   readonly identity: WorkspaceAssetIdentity;
   readonly readImage: (input: {
     relativePath: string;
@@ -83,7 +91,16 @@ export interface WorkspaceAssetReader {
 }
 
 export interface WorkspaceAssetAuthorizer {
+  readonly openHandle: (
+    handle: string,
+    subpath?: string,
+  ) => Promise<{
+    file: Awaited<ReturnType<typeof openContainedFile>>;
+    name: string;
+    grant: "file" | "html-document";
+  }>;
   readonly forProject: (projectId: string) => Promise<WorkspaceAssetReader>;
+  readonly forAttachments: () => Promise<WorkspaceAssetReader>;
   readonly forThread: (threadId: string) => Promise<WorkspaceAssetReader>;
   readonly readHandle: (handle: string) => Promise<AuthorizedWorkspaceImageAsset>;
 }
@@ -299,6 +316,7 @@ async function readContainedFile(input: {
 
 export function makeWorkspaceAssetAuthorizer(input: {
   resolveProjectWorkspaceRoot: (projectId: string) => Promise<string | null>;
+  attachmentsRoot?: string;
   resolveThreadWorkspaceRoot?: (threadId: string) => Promise<string | null>;
   now?: () => number;
   handleTtlMs?: number;
@@ -375,6 +393,23 @@ export function makeWorkspaceAssetAuthorizer(input: {
 
     return {
       identity,
+      openFile: (relativePath) => openContainedFile(rootPath, relativePath),
+      issueFileHandle: ({ relativePath, grant }) => {
+        resolveRequestedPath(rootRealPath, relativePath);
+        pruneHandles();
+        let handle = createHandle();
+        while (handles.has(handle)) handle = createHandle();
+        const expiresAt = now() + handleTtlMs;
+        handles.set(handle, {
+          identity,
+          relativePath,
+          grant,
+          maxBytes: 0,
+          rejectSymlink: true,
+          expiresAt,
+        });
+        return { handle, expiresAt };
+      },
       readImage,
       readText: async ({ relativePath, maxBytes, rejectSymlink }) => {
         const result = await readContainedFile({
@@ -419,9 +454,53 @@ export function makeWorkspaceAssetAuthorizer(input: {
       input.resolveThreadWorkspaceRoot ? await input.resolveThreadWorkspaceRoot(threadId) : null,
     );
 
+  const forAttachments = () => forIdentity({ kind: "attachments" }, input.attachmentsRoot ?? null);
   return {
     forProject,
     forThread,
+    forAttachments,
+    openHandle: async (handle, subpath) => {
+      const record = handles.get(handle);
+      if (!record?.grant || record.expiresAt <= now()) {
+        if (record?.expiresAt && record.expiresAt <= now()) handles.delete(handle);
+        throw new WorkspaceAssetAuthorizationError(
+          "expired_handle",
+          "File grant is invalid or expired.",
+        );
+      }
+      let relativePath = record.relativePath;
+      if (subpath !== undefined) {
+        const segments = subpath.split("/");
+        // The document basename is included in its URL so relative subresources stay under the handle.
+        const isDocument = subpath === path.basename(record.relativePath);
+        if (!isDocument) {
+          if (
+            record.grant !== "html-document" ||
+            segments.length > 5 ||
+            segments.some(
+              (segment) => !segment || segment.startsWith(".") || segment.includes("\\"),
+            ) ||
+            !/\.(css|png|jpg|jpeg|gif|webp|avif|svg|woff|woff2|ttf|otf)$/iu.test(subpath)
+          ) {
+            throw new WorkspaceAssetAuthorizationError(
+              "invalid_path",
+              "Subresource is outside this grant.",
+            );
+          }
+          relativePath = path.join(path.dirname(record.relativePath), ...segments);
+        }
+      }
+      const reader =
+        record.identity.kind === "project"
+          ? await forProject(record.identity.projectId)
+          : record.identity.kind === "thread"
+            ? await forThread(record.identity.threadId)
+            : await forAttachments();
+      const file = await reader.openFile(relativePath);
+      handles.delete(handle);
+      handles.set(handle, record);
+      return { file, name: relativePath, grant: record.grant };
+    },
     readHandle: async (handle) => {
       const record = handles.get(handle);
       if (!record || record.expiresAt <= now()) {
@@ -431,10 +510,16 @@ export function makeWorkspaceAssetAuthorizer(input: {
           "Workspace asset handle is invalid or expired.",
         );
       }
+      if (record.grant)
+        throw new WorkspaceAssetAuthorizationError("mime_mismatch", "Not an image grant");
+      handles.delete(handle);
+      handles.set(handle, record);
       const reader =
         record.identity.kind === "project"
           ? await forProject(record.identity.projectId)
-          : await forThread(record.identity.threadId);
+          : record.identity.kind === "thread"
+            ? await forThread(record.identity.threadId)
+            : await forAttachments();
       return reader.readImage({
         relativePath: record.relativePath,
         maxBytes: record.maxBytes,

@@ -149,6 +149,19 @@ export function GeneralSettings() {
             onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
           />
         </label>
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>
+            Load remote images in chat
+            <span className="block text-xs text-muted-foreground">
+              Allow HTTPS images from external websites.
+            </span>
+          </span>
+          <Switch
+            aria-label="Load remote images in chat"
+            checked={settings.loadRemoteImagesInChat}
+            onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
+          />
+        </label>
         <p className="my-2 text-xs text-muted-foreground">Shift+Enter always inserts a new line.</p>
         <Select
           value={settings.sendShortcut}

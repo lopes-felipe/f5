@@ -22,8 +22,8 @@ export function buildProviderAttachmentRuntimeContext(
 
   return [
     "<f5-attachment-context>",
-    "Saved local copies of the inline attachments are listed below for best-effort access.",
-    "The active sandbox may prevent opening these paths; use the inline image content when a path is inaccessible.",
+    "Attachments are saved at the local paths listed below for best-effort access.",
+    "Some images are also supplied inline; files and images beyond the inline limit are available by path. The active sandbox may prevent opening a path.",
     ...lines.map(escapeRuntimeContextLine),
     "</f5-attachment-context>",
   ].join("\n");

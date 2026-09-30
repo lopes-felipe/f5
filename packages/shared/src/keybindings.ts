@@ -87,6 +87,11 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+enter", command: "chat.scrollToBottom", when: "!dialogFocus" },
   { key: "mod+shift+enter", command: "chat.queueTurn", when: "!dialogFocus" },
   { key: "alt+enter", command: "chat.queueTurnNext", when: "!dialogFocus" },
+  {
+    key: "mod+shift+v",
+    command: "composer.pasteAsText",
+    when: "isElectron && composerFocus && !dialogFocus",
+  },
   { key: "mod+s", command: "composer.stash", when: "composerFocus && !dialogFocus" },
   { key: "mod+enter", command: "dialog.primaryAction", when: "dialogFocus" },
   { key: "mod+o", command: "editor.openFavorite" },

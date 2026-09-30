@@ -2971,6 +2971,101 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("classifies Claude Read of an image as image_view, including streamed input", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "look at the screenshots",
+        attachments: [],
+      });
+
+      const emitStream = (uuid: string, event: Record<string, unknown>) =>
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-image-read",
+          uuid,
+          parent_tool_use_id: null,
+          event,
+        } as unknown as SDKMessage);
+
+      emitStream("image-read-start", {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "tool_use",
+          id: "tool-image-read-1",
+          name: "Read",
+          input: { file_path: "/repo/docs/Screenshot.PNG" },
+        },
+      });
+      emitStream("image-read-streamed-start", {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "tool_use", id: "tool-image-read-2", name: "Read", input: {} },
+      });
+      emitStream("image-read-streamed-delta", {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "input_json_delta", partial_json: '{"file_path":"/repo/out/chart.webp"}' },
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-image-read",
+        uuid: "result-image-read",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const started = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.itemId === "tool-image-read-1",
+      );
+      assert.equal(started?.type === "item.started" && started.payload.itemType, "image_view");
+      assert.equal(
+        started?.type === "item.started" && started.payload.detail,
+        "/repo/docs/Screenshot.PNG",
+      );
+
+      const streamedStart = runtimeEvents.find(
+        (event) => event.type === "item.started" && event.itemId === "tool-image-read-2",
+      );
+      assert.equal(
+        streamedStart?.type === "item.started" && streamedStart.payload.itemType,
+        "dynamic_tool_call",
+      );
+      const streamedUpdate = runtimeEvents.find(
+        (event) => event.type === "item.updated" && event.itemId === "tool-image-read-2",
+      );
+      assert.equal(
+        streamedUpdate?.type === "item.updated" && streamedUpdate.payload.itemType,
+        "image_view",
+      );
+      assert.deepEqual(streamedUpdate?.type === "item.updated" && streamedUpdate.payload.data, {
+        toolName: "Read",
+        input: { file_path: "/repo/out/chart.webp" },
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect(
     "emits file-change requestKind and bare file path detail for Claude Edit/Write/MultiEdit/NotebookEdit",
     () => {

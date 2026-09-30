@@ -1,3 +1,12 @@
+import { workspaceBasenameMatch } from "../lib/workspaceBasename";
+import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
+import { WorkspaceMediaView } from "./WorkspaceMediaView";
+import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
+import type { ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { partitionDroppedAttachments } from "../lib/droppedAttachments";
+import { composerAttachmentStatus } from "../lib/attachmentValidation";
+import { foldedPasteFile } from "../lib/textPaste";
+import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
 import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
 import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
 import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
@@ -292,7 +301,7 @@ import {
   LastInvokedScriptByProjectSchema,
   type PendingTurnDispatchRollback,
   PullRequestDialogState,
-  readFileAsDataUrl,
+  attachedFileReferenceWarnings,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   revokeBlobPreviewUrl,
@@ -656,6 +665,13 @@ export default function ChatView({
   );
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
+  const mediaRootsRef = useRef({ projects, threads });
+  mediaRootsRef.current = { projects, threads };
+  const [referencedAsset, setReferencedAsset] = useState<{
+    identity: ProjectIssueAssetUrlInput["identity"];
+    path: string;
+    name: string;
+  } | null>(null);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
@@ -3210,14 +3226,7 @@ export default function ChatView({
         await Promise.all(
           composerImages.map(async (image) => {
             try {
-              const dataUrl = await readFileAsDataUrl(image.file);
-              stagedAttachmentById.set(image.id, {
-                id: image.id,
-                name: image.name,
-                mimeType: image.mimeType,
-                sizeBytes: image.sizeBytes,
-                dataUrl,
-              });
+              stagedAttachmentById.set(image.id, await persistComposerAttachment(threadId, image));
             } catch {
               const existingPersisted = existingPersistedById.get(image.id);
               if (existingPersisted) {
@@ -3761,6 +3770,10 @@ export default function ChatView({
         }
         return;
       }
+      if (command === "composer.pasteAsText" && composerFocused) {
+        pasteAsTextUntilRef.current = Date.now() + 1000;
+        return;
+      }
       if (command === "composer.stash" && composerFocused) {
         event.preventDefault();
         event.stopPropagation();
@@ -3988,14 +4001,7 @@ export default function ChatView({
       addComposerFilePathsToDraft(paths);
     }
 
-    const warnings: string[] = [];
-    if (missingPathCount > 0) {
-      warnings.push("File attachments require the desktop app to resolve filesystem paths.");
-    }
-    if (invalidPathCount > 0) {
-      warnings.push("Some file attachments could not be added.");
-    }
-    for (const warning of warnings) {
+    for (const warning of attachedFileReferenceWarnings({ missingPathCount, invalidPathCount })) {
       toastManager.add({
         type: "warning",
         title: warning,
@@ -4017,21 +4023,32 @@ export default function ChatView({
     removeComposerFilePathFromDraft(filePath);
   };
 
+  const pasteAsTextUntilRef = useRef(0);
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) {
+    // Paste as text is one-shot and wins over both folding and file import, even
+    // when the clipboard also carries files (e.g. a spreadsheet selection).
+    if (pasteAsTextUntilRef.current > Date.now()) {
+      pasteAsTextUntilRef.current = 0;
       return;
     }
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      event.preventDefault();
-      void addComposerImages(imageFiles);
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0) {
+      if (isConnecting) return;
+      const text = event.clipboardData.getData("text/plain");
+      const folded = foldedPasteFile(
+        text,
+        prompt,
+        getServerSendLimits().maxInputChars,
+        composerImages.map((file) => file.name),
+      );
+      if (folded) {
+        event.preventDefault();
+        void addComposerImages([folded]);
+      }
+      return;
     }
-    if (nonImageFiles.length > 0 && isElectron) {
-      addComposerFileAttachments(nonImageFiles);
-      event.preventDefault();
-    }
+    event.preventDefault();
+    void addComposerImages(files);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -4134,15 +4151,9 @@ export default function ChatView({
     event.preventDefault();
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
-    const files = Array.from(event.dataTransfer.files);
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      void addComposerImages(imageFiles);
-    }
-    if (nonImageFiles.length > 0) {
-      addComposerFileAttachments(nonImageFiles);
-    }
+    const { files, folders } = partitionDroppedAttachments(event.dataTransfer);
+    if (folders.length) addComposerFileAttachments(folders);
+    void addComposerImages(files);
     focusComposer();
   };
 
@@ -4341,6 +4352,11 @@ export default function ChatView({
       setThreadError(activeThread.id, error instanceof Error ? error.message : String(error));
       return;
     }
+    const attachmentIssue = composerAttachmentStatus(composerImages, selectedProvider).error;
+    if (attachmentIssue) {
+      setThreadError(activeThread.id, attachmentIssue);
+      return;
+    }
     sendInFlightRef.current = true;
     const mentionedPaths = collectComposerMentionPaths(promptForSend);
     if (mentionedPaths.length > 0) {
@@ -4474,22 +4490,24 @@ export default function ChatView({
           ? basenameOfPath(composerFilePathsSnapshot[0])
           : trimmed;
     const turnAttachmentsPromise = Promise.all(
-      composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
-      })),
+      composerImagesSnapshot.map(async (image) => {
+        const uploadId = await ensureComposerUpload(threadIdForSend, image);
+        const saved = await api.attachments.getUploads({
+          threadId: threadIdForSend,
+          uploadIds: [uploadId],
+        });
+        if (!saved[0]) throw new Error(`${image.name} expired. Remove it and re-attach the file.`);
+        return { type: "upload" as const, uploadId };
+      }),
     );
     const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
+      type: image.type,
       id: image.id,
       name: image.name,
       mimeType: image.mimeType,
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
-      sourceBlob: image.file,
+      ...(image.uploadId ? {} : { sourceBlob: image.file }),
     }));
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
@@ -5721,14 +5739,57 @@ export default function ChatView({
     },
     [navigate, threadId],
   );
+  const fileNavigationGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      fileNavigationGeneration.current++;
+    },
+    [threadId],
+  );
   const handleFileNavigation = useCallback(
     (filePath: string, turnId?: TurnId): boolean => {
+      const generation = ++fileNavigationGeneration.current;
       if (!settings.openFileLinksInPanel) {
         return false;
       }
 
       const parsed = normalizeFilePathForDiffLookup(filePath, workspaceRoot);
       if (!parsed || !parsed.workspaceRelative) {
+        const roots = mediaRootsRef.current;
+        const target = resolveChatAssetTarget(
+          filePath,
+          workspaceRoot,
+          roots.projects,
+          roots.threads,
+        );
+        if (target) {
+          setReferencedAsset({ ...target, name: target.path });
+          return true;
+        }
+        const basename = filePath.split(/[\\/]/u).at(-1);
+        for (const thread of roots.threads)
+          for (const message of thread.messages)
+            for (const attachment of message.attachments ?? []) {
+              try {
+                const pathname = new URL(
+                  attachment.sourceUrl ?? attachment.previewUrl ?? "",
+                  window.location.href,
+                ).pathname;
+                if (
+                  pathname.startsWith("/attachments/") &&
+                  decodeURIComponent(pathname.split("/").at(-1)!) === basename
+                ) {
+                  setReferencedAsset({
+                    identity: { kind: "attachments" },
+                    path: decodeURIComponent(pathname.slice("/attachments/".length)),
+                    name: attachment.name,
+                  });
+                  return true;
+                }
+              } catch {
+                /* An optimistic attachment may not have a durable URL yet. */
+              }
+            }
         return false;
       }
 
@@ -5757,22 +5818,34 @@ export default function ChatView({
         return true;
       }
 
-      void queryClient.invalidateQueries({
-        queryKey: providerQueryKeys.fileContent({
-          cwd: workspaceRoot,
-          relativePath: parsed.path,
-        }),
-      });
-      void navigate({
-        to: "/$threadId",
-        params: { threadId },
-        search: (previous) => ({
-          ...clearFileViewSearchParams(previous),
-          fileViewPath: parsed.path,
-          ...(parsed.line ? { fileLine: parsed.line } : {}),
-          ...(parsed.column ? { fileColumn: parsed.column } : {}),
-        }),
-      });
+      const openFile = (relativePath: string) => {
+        if (generation !== fileNavigationGeneration.current) return;
+        void queryClient.invalidateQueries({
+          queryKey: providerQueryKeys.fileContent({
+            cwd: workspaceRoot,
+            relativePath,
+          }),
+        });
+        void navigate({
+          to: "/$threadId",
+          params: { threadId },
+          search: (previous) => ({
+            ...clearFileViewSearchParams(previous),
+            fileViewPath: relativePath,
+            ...(parsed.line ? { fileLine: parsed.line } : {}),
+            ...(parsed.column ? { fileColumn: parsed.column } : {}),
+          }),
+        });
+      };
+      const api = readNativeApi();
+      if (workspaceRoot && api && !/[\\/]/u.test(parsed.path) && parsed.path.length <= 256) {
+        void api.projects
+          .searchEntries({ cwd: workspaceRoot, query: parsed.path, limit: 25 })
+          .then((result) =>
+            openFile(workspaceBasenameMatch(parsed.path, result.entries) ?? parsed.path),
+          )
+          .catch(() => openFile(parsed.path));
+      } else openFile(parsed.path);
       return true;
     },
     [
@@ -5864,6 +5937,23 @@ export default function ChatView({
 
   const workspace = (
     <FileNavigationProvider value={handleFileNavigation}>
+      <Dialog
+        open={referencedAsset !== null}
+        onOpenChange={(open) => {
+          if (!open) setReferencedAsset(null);
+        }}
+      >
+        <DialogPopup className="h-[80vh] max-w-5xl p-4">
+          <DialogTitle>{referencedAsset?.name}</DialogTitle>
+          {referencedAsset && (
+            <WorkspaceMediaView
+              name={referencedAsset.name}
+              relativePath={referencedAsset.path}
+              identity={referencedAsset.identity}
+            />
+          )}
+        </DialogPopup>
+      </Dialog>
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
         onDragEnter={onComposerDragEnter}
@@ -6157,6 +6247,9 @@ export default function ChatView({
                   onPromptChange={onPromptChange}
                   onComposerCommandKey={onComposerCommandKey}
                   onComposerPaste={onComposerPaste}
+                  onAttachFiles={(files) => {
+                    void addComposerImages(files);
+                  }}
                   phase={phase}
                   isConnecting={isConnecting}
                   onRespondToApproval={onRespondToApproval}

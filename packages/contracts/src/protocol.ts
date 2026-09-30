@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { NonNegativeInt } from "./baseSchemas";
 
 /** Bump when a client must decode a new union variant or persisted state shape. */
-export const F5_PROTOCOL_VERSION = 9;
+export const F5_PROTOCOL_VERSION = 10;
 export const F5_PROTOCOL_HEADER = "X-F5-Protocol";
 export const F5_PROTOCOL_QUERY = "protocol";
 export const F5_UPGRADE_REQUIRED_CLOSE_CODE = 4426;
@@ -15,6 +15,8 @@ export const ProtocolUpgradeRequired = Schema.Struct({
 
 export const ProviderSendLimits = Schema.Struct({
   maxInputChars: NonNegativeInt,
+  maxAttachmentBytes: Schema.optional(NonNegativeInt),
+  maxFileBytes: Schema.optional(NonNegativeInt),
   maxImagesPerTurn: NonNegativeInt,
   maxImageBytes: NonNegativeInt,
   maxImageDataUrlChars: NonNegativeInt,
@@ -28,5 +30,19 @@ export const ServerBootstrap = Schema.Struct({
     attachments: Schema.Struct({ enabled: Schema.Boolean, maxFileBytes: NonNegativeInt }),
   }),
   sendLimits: ProviderSendLimits,
+  providerSendLimits: Schema.optional(Schema.Record(Schema.String, ProviderSendLimits)),
+  attachmentLimits: Schema.optional(
+    Schema.Struct({
+      maxCount: NonNegativeInt,
+      maxImageBytes: NonNegativeInt,
+      maxImagesBytes: NonNegativeInt,
+      maxFileBytes: NonNegativeInt,
+      maxTotalBytes: NonNegativeInt,
+      clientConcurrency: NonNegativeInt,
+      serverConcurrency: NonNegativeInt,
+      draftQuotaBytes: NonNegativeInt,
+      profileQuotaBytes: NonNegativeInt,
+    }),
+  ),
 });
 export type ServerBootstrap = typeof ServerBootstrap.Type;

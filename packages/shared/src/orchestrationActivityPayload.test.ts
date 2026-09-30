@@ -9,6 +9,15 @@ import {
 } from "./orchestrationActivityPayload";
 
 describe("orchestrationActivityPayload", () => {
+  it.each([
+    { path: "/repo/output.png" },
+    { input: { file_path: "/repo/output.png" } },
+    { item: { type: "imageView", id: "item-1", path: "/repo/output.png" } },
+  ])("retains image-view paths through compaction and replay", (data) => {
+    const payload = { itemType: "image_view", data };
+    const compact = compactThreadActivityPayload({ kind: "tool.completed", payload });
+    expect(readToolActivityPayload(compact)?.imagePath).toBe("/repo/output.png");
+  });
   it("parses MCP tool names into server and tool segments", () => {
     expect(parseMcpToolName("mcp__filesystem__list_allowed_directories")).toEqual({
       server: "filesystem",

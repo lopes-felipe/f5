@@ -174,7 +174,7 @@ export function mapMessageAttachmentsFromReadModel(
     const existing = previousAttachments[index];
     if (
       existing &&
-      existing.type === "image" &&
+      existing.type === attachment.type &&
       existing.id === attachment.id &&
       existing.name === attachment.name &&
       existing.mimeType === attachment.mimeType &&
@@ -186,7 +186,7 @@ export function mapMessageAttachmentsFromReadModel(
     }
     changed = true;
     return {
-      type: "image" as const,
+      type: attachment.type,
       id: attachment.id,
       name: attachment.name,
       mimeType: attachment.mimeType,

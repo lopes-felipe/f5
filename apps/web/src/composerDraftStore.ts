@@ -1,5 +1,14 @@
+import { ensureNativeApi } from "./nativeApi";
+import { processComposerImageBounded } from "./lib/imageCompression";
+import { getServerAttachmentLimits } from "./protocolState";
+import {
+  uploadAttachment,
+  attachmentSources,
+  setAttachmentSource,
+} from "./lib/attachmentUploadQueue";
+import { getServerHttpOrigin } from "./lib/serverHttpOrigin";
+import type { AttachmentUpload } from "@t3tools/contracts";
 import { defaultDraftRuntimeMode } from "./lib/draftSettingsDefaults";
-import { getServerSendLimits } from "./protocolState";
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   isRuntimeMode,
@@ -186,11 +195,89 @@ export interface PersistedComposerImageAttachment {
   mimeType: string;
   sizeBytes: number;
   dataUrl: string;
+  uploadId?: string;
+  uploadThreadId?: ThreadId;
+  kind?: "image" | "file";
 }
 
-export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
+export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl" | "type"> {
+  type: "image" | "file";
+  uploadId?: string;
+  uploadThreadId?: ThreadId;
   previewUrl: string;
   file: File;
+}
+
+const fileUploads = new WeakMap<File, Map<string, Promise<AttachmentUpload>>>();
+export async function ensureComposerUpload(
+  threadId: ThreadId,
+  image: ComposerImageAttachment,
+): Promise<string> {
+  if (image.uploadId && image.uploadThreadId === threadId) {
+    const [upload] = await ensureNativeApi().attachments.getUploads({
+      threadId,
+      uploadIds: [image.uploadId],
+    });
+    if (!upload) throw new Error("Upload expired. Re-attach the file.");
+    return upload.uploadId;
+  }
+  let byThread = fileUploads.get(image.file);
+  if (!byThread) {
+    byThread = new Map();
+    fileUploads.set(image.file, byThread);
+  }
+  let pending = byThread.get(threadId);
+  if (!pending) {
+    pending = image.uploadId
+      ? ensureNativeApi().attachments.cloneToUpload({
+          threadId,
+          source: { uploadId: image.uploadId },
+        })
+      : uploadAttachment(getServerHttpOrigin(), threadId, image.file);
+    byThread.set(threadId, pending);
+    pending.catch(() => byThread?.delete(threadId));
+  }
+  return (await pending).uploadId;
+}
+async function releaseRemovedUpload(
+  threadId: ThreadId,
+  image: ComposerImageAttachment,
+  metadata?: PersistedComposerImageAttachment,
+) {
+  const completed = await fileUploads.get(image.file)?.get(threadId);
+  const id = metadata?.uploadId ?? image.uploadId ?? completed?.uploadId;
+  const owner =
+    metadata?.uploadThreadId ?? image.uploadThreadId ?? completed?.draftThreadId ?? threadId;
+  if (!id) return;
+  const state = useComposerDraftStore.getState();
+  const referenced =
+    Object.values(state.draftsByThreadId).some(
+      (draft) =>
+        draft.persistedAttachments.some((entry) => entry.uploadId === id) ||
+        draft.images.some((entry) => entry.uploadId === id || entry.file === image.file),
+    ) ||
+    state.promptStashes.some((stash) =>
+      stash.draft.attachments.some((entry) => entry.uploadId === id),
+    );
+  if (!referenced)
+    await ensureNativeApi().attachments.releaseUploads({ threadId: owner, uploadIds: [id] });
+}
+export async function persistComposerAttachment(
+  threadId: ThreadId,
+  image: ComposerImageAttachment,
+): Promise<PersistedComposerImageAttachment> {
+  const uploadId = await ensureComposerUpload(threadId, image);
+  const uploaded = await fileUploads.get(image.file)?.get(threadId);
+  return {
+    id: image.id,
+    name: uploaded?.name ?? image.name,
+    mimeType: uploaded?.mimeType ?? image.mimeType,
+    sizeBytes: uploaded?.sizeBytes ?? image.sizeBytes,
+    kind: uploaded?.kind ?? image.type,
+    uploadId,
+    uploadThreadId: threadId,
+    dataUrl: "",
+  };
 }
 
 export interface ComposerImageImportState {
@@ -731,6 +818,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 async function serializeComposerDraftAttachments(
   draft: ComposerThreadDraftState,
+  threadId?: ThreadId,
 ): Promise<PersistedComposerImageAttachment[]> {
   const persistedById = new Map(
     draft.persistedAttachments.map((attachment) => [attachment.id, attachment]),
@@ -738,6 +826,8 @@ async function serializeComposerDraftAttachments(
   return Promise.all(
     draft.images.map(async (image) => {
       const persisted = persistedById.get(image.id);
+      if (persisted?.uploadId) return persisted;
+      if (threadId) return persistComposerAttachment(threadId, image);
       if (persisted) return persisted;
       return {
         id: image.id,
@@ -892,9 +982,9 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
     typeof mimeType !== "string" ||
     typeof sizeBytes !== "number" ||
     !Number.isFinite(sizeBytes) ||
-    typeof dataUrl !== "string" ||
+    (typeof dataUrl !== "string" && typeof candidate.uploadId !== "string") ||
     id.length === 0 ||
-    dataUrl.length === 0
+    (!dataUrl && !candidate.uploadId)
   ) {
     return null;
   }
@@ -903,7 +993,12 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
     name,
     mimeType,
     sizeBytes,
-    dataUrl,
+    dataUrl: typeof dataUrl === "string" ? dataUrl : "",
+    ...(typeof candidate.uploadId === "string" ? { uploadId: candidate.uploadId } : {}),
+    ...(typeof candidate.uploadThreadId === "string"
+      ? { uploadThreadId: ThreadId.makeUnsafe(candidate.uploadThreadId) }
+      : {}),
+    kind: candidate.kind === "file" ? "file" : "image",
   };
 }
 
@@ -1363,6 +1458,7 @@ function persistedDraftMatches(threadId: ThreadId, draft: ComposerThreadDraftSta
 function hydreatePersistedComposerImageAttachment(
   attachment: PersistedComposerImageAttachment,
 ): File | null {
+  if (attachment.uploadId) return new File([], attachment.name, { type: attachment.mimeType });
   const commaIndex = attachment.dataUrl.indexOf(",");
   const header = commaIndex === -1 ? attachment.dataUrl : attachment.dataUrl.slice(0, commaIndex);
   const payload = commaIndex === -1 ? "" : attachment.dataUrl.slice(commaIndex + 1);
@@ -1401,12 +1497,17 @@ function hydrateImagesFromPersisted(
 
     return [
       {
-        type: "image" as const,
+        type: attachment.kind ?? "image",
+        ...(attachment.uploadId
+          ? { uploadId: attachment.uploadId, uploadThreadId: attachment.uploadThreadId }
+          : {}),
         id: attachment.id,
         name: attachment.name,
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
-        previewUrl: attachment.dataUrl,
+        previewUrl: attachment.uploadId
+          ? `${getServerHttpOrigin()}/api/attachments/uploads/${attachment.uploadId}`
+          : attachment.dataUrl,
         file,
       } satisfies ComposerImageAttachment,
     ];
@@ -2105,7 +2206,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
 
         let maxAttachments: number;
         try {
-          maxAttachments = getServerSendLimits().maxImagesPerTurn;
+          maxAttachments = getServerAttachmentLimits().maxCount;
         } catch (error) {
           return {
             imported: [],
@@ -2123,17 +2224,17 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const pendingCount = state.imageImportsByThreadId[threadId]?.pendingCount ?? 0;
           let reservedCount = existingImageCount + pendingCount;
           for (const file of files) {
-            if (!file.type.trim().toLowerCase().startsWith("image/")) {
+            if (file.size === 0 || file.size > getServerAttachmentLimits().maxFileBytes) {
               failures.push({
                 name: file.name,
-                message: `Unsupported file type for '${file.name || "file"}'. Please attach image files only.`,
+                message: "File is empty or exceeds the server file-size limit.",
               });
               continue;
             }
             if (reservedCount >= maxAttachments) {
               failures.push({
                 name: file.name,
-                message: `You can attach up to ${maxAttachments} images per message.`,
+                message: `You can attach up to ${maxAttachments} attachments per message.`,
               });
               continue;
             }
@@ -2159,7 +2260,22 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         const processed = await Promise.all(
           acceptedFiles.map(async (file) => {
             try {
-              return { file, result: await processor(file, { signal: controller.signal }) };
+              const requiresConversion =
+                file.type.startsWith("image/") &&
+                !["image/heic", "image/heif", "image/gif", "image/webp"].includes(file.type);
+              return {
+                file,
+                result:
+                  requiresConversion || options?.processor
+                    ? await processComposerImageBounded(processor, file, controller.signal)
+                    : {
+                        ok: true as const,
+                        file,
+                        recompressed: false,
+                        originalSizeBytes: file.size,
+                        finalSizeBytes: file.size,
+                      },
+              };
             } catch {
               return { file, result: { ok: false as const, reason: "unreadable" as const } };
             }
@@ -2192,8 +2308,14 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             });
             continue;
           }
+          const source = attachmentSources.get(file);
+          if (source) setAttachmentSource(result.file, source);
           nextImages.push({
-            type: "image",
+            type:
+              result.file.size <= getServerAttachmentLimits().maxImageBytes &&
+              ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(result.file.type)
+                ? "image"
+                : "file",
             id: randomUUID(),
             name: result.file.name || "image",
             mimeType: result.file.type,
@@ -2231,6 +2353,21 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           };
         });
 
+        // Persist sidebar drops and preview captures even when their composer is not mounted.
+        for (const image of nextImages) {
+          void persistComposerAttachment(threadId, image)
+            .then((metadata) => {
+              const draft = get().draftsByThreadId[threadId];
+              if (!draft?.images.some((entry) => entry.id === image.id)) return;
+              get().syncPersistedAttachments(threadId, [
+                ...draft.persistedAttachments.filter((entry) => entry.id !== image.id),
+                metadata,
+              ]);
+            })
+            .catch(() => {
+              /* Keep the in-memory file and the upload retry state. */
+            });
+        }
         return { imported, failures, cancelled: false };
       },
       removeImage: (threadId, imageId) => {
@@ -2266,6 +2403,14 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           return { draftsByThreadId: nextDraftsByThreadId };
         });
+        if (removedImage)
+          void releaseRemovedUpload(
+            threadId,
+            removedImage,
+            existing.persistedAttachments.find((entry) => entry.id === imageId),
+          ).catch(() => {
+            /* Expiry remains the fallback after a disconnection. */
+          });
       },
       addFilePaths: (threadId, paths) => {
         if (threadId.length === 0 || paths.length === 0) {
@@ -2616,7 +2761,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
 
         let attachments: PersistedComposerImageAttachment[];
         try {
-          attachments = await serializeComposerDraftAttachments(sourceDraft);
+          attachments = await serializeComposerDraftAttachments(sourceDraft, threadId);
         } catch (error) {
           return {
             status: "failed",
