@@ -1,4 +1,17 @@
 import {
+  ATTACHMENT_MAX_COUNT,
+  ATTACHMENT_MAX_IMAGE_BYTES,
+  ATTACHMENT_MAX_IMAGES_BYTES,
+  ATTACHMENT_MAX_FILE_BYTES,
+  ATTACHMENT_MAX_TURN_BYTES,
+  ATTACHMENT_CLIENT_UPLOAD_CONCURRENCY,
+  ATTACHMENT_SERVER_UPLOAD_CONCURRENCY,
+  ATTACHMENT_DRAFT_QUOTA_BYTES,
+  ATTACHMENT_PROFILE_QUOTA_BYTES,
+} from "@t3tools/contracts";
+import { providerMaxImages, providerMaxAttachmentBytes } from "@t3tools/shared/attachmentLimits";
+import { KNOWN_PROVIDER_KINDS } from "@t3tools/contracts";
+import {
   F5_PROTOCOL_VERSION,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -9,6 +22,8 @@ import {
 
 const sendLimits = {
   maxInputChars: PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  maxAttachmentBytes: ATTACHMENT_MAX_TURN_BYTES,
+  maxFileBytes: ATTACHMENT_MAX_FILE_BYTES,
   maxImagesPerTurn: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   maxImageBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   maxImageDataUrlChars: PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
@@ -16,9 +31,34 @@ const sendLimits = {
 
 export const SERVER_BOOTSTRAP: ServerBootstrap = {
   protocolVersion: F5_PROTOCOL_VERSION,
-  capabilities: ["image-attachments"],
-  // Generic uploads do not exist yet. Advertise only implemented functionality.
-  uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
+  capabilities: [
+    "image-attachments",
+    "custom-model-metadata",
+    "assistant-quotes",
+    "repository-issue-links",
+  ],
+  uploadLimits: { attachments: { enabled: true, maxFileBytes: ATTACHMENT_MAX_FILE_BYTES } },
+  providerSendLimits: Object.fromEntries(
+    KNOWN_PROVIDER_KINDS.map((provider) => [
+      provider,
+      {
+        ...sendLimits,
+        maxImagesPerTurn: providerMaxImages(provider),
+        maxAttachmentBytes: providerMaxAttachmentBytes(provider),
+      },
+    ]),
+  ),
+  attachmentLimits: {
+    maxCount: ATTACHMENT_MAX_COUNT,
+    maxImageBytes: ATTACHMENT_MAX_IMAGE_BYTES,
+    maxImagesBytes: ATTACHMENT_MAX_IMAGES_BYTES,
+    maxFileBytes: ATTACHMENT_MAX_FILE_BYTES,
+    maxTotalBytes: ATTACHMENT_MAX_TURN_BYTES,
+    clientConcurrency: ATTACHMENT_CLIENT_UPLOAD_CONCURRENCY,
+    serverConcurrency: ATTACHMENT_SERVER_UPLOAD_CONCURRENCY,
+    draftQuotaBytes: ATTACHMENT_DRAFT_QUOTA_BYTES,
+    profileQuotaBytes: ATTACHMENT_PROFILE_QUOTA_BYTES,
+  },
   sendLimits,
 };
 

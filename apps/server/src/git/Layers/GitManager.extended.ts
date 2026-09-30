@@ -1,3 +1,4 @@
+import { emptyGitProjectRepositories } from "../testDoubles";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -593,6 +594,7 @@ function makeManager(input?: {
       Layer.succeed(TextGeneration, textGeneration),
       Layer.succeed(ServerConfig, serverConfig),
       ServerSettingsService.layerTest(),
+      emptyGitProjectRepositories,
       gitCoreLayer,
       NodeServices.layer,
     );

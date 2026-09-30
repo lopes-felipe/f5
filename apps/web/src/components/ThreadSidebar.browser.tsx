@@ -1,3 +1,5 @@
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { DEFAULT_SERVER_SETTINGS, type ProjectId as SettingsProjectId } from "@t3tools/contracts";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
 import "../index.css";
 
@@ -374,6 +376,24 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     };
   }
   if (tag === WS_METHODS.projectsCloneList) return [];
+  if (tag === WS_METHODS.serverGetProjectSettings) {
+    const project = fixture.snapshot.projects.find((p) => p.id === body.projectId);
+    return resolveProjectSettings({
+      projectId: body.projectId as SettingsProjectId,
+      global: fixture.serverConfig.settings ?? DEFAULT_SERVER_SETTINGS,
+      legacyEnvMode: project?.defaultEnvMode ?? null,
+    });
+  }
+  if (tag === WS_METHODS.serverMigrateClientSetting) {
+    fixture.serverConfig = {
+      ...fixture.serverConfig,
+      settings: {
+        ...(fixture.serverConfig.settings ?? DEFAULT_SERVER_SETTINGS),
+        [body.key as string]: body.value,
+      },
+    };
+    return { applied: true, currentValue: body.value };
+  }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }

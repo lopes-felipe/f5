@@ -94,7 +94,10 @@ export interface ChatImageAttachment {
   sourceBlob?: Blob;
 }
 
-export type ChatAttachment = ChatImageAttachment;
+export type ChatAttachment = Omit<ChatImageAttachment, "type"> & {
+  type: "image" | "file";
+  source?: "pasted-text" | "snapshot" | undefined;
+};
 
 export interface ChatMessage {
   id: MessageId;
@@ -137,6 +140,8 @@ export interface TurnDiffSummary {
 }
 
 export interface Project {
+  defaultModel?: string | null;
+  defaultModelSelection?: ModelSelection | null | undefined;
   id: ProjectId;
   name: string;
   cwd: string;

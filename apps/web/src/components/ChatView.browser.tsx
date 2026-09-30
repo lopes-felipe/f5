@@ -1,3 +1,4 @@
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
@@ -1208,8 +1209,12 @@ function createThreadTailDetailsResult(threadId: ThreadId) {
   };
 }
 
+const uploadedFiles = new Map<string, import("@t3tools/contracts").AttachmentUpload>();
+
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
+  if (tag === WS_METHODS.attachmentsGetUploads)
+    return (body.uploadIds as string[]).map((id) => uploadedFiles.get(id) ?? null);
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
   }
@@ -1318,6 +1323,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     };
   }
   if (tag === WS_METHODS.projectsCloneList) return [];
+  if (tag === WS_METHODS.serverGetProjectSettings) {
+    const project = fixture.snapshot.projects.find((p) => p.id === body.projectId);
+    return resolveProjectSettings({
+      projectId: body.projectId as ProjectId,
+      global: fixture.serverConfig.settings,
+      legacyEnvMode: project?.defaultEnvMode ?? null,
+    });
+  }
+  if (tag === WS_METHODS.serverMigrateClientSetting)
+    return { applied: true, currentValue: body.value };
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
@@ -1462,6 +1477,21 @@ const worker = setupWorker(
 
       sendResolution(resolution);
     });
+  }),
+  http.post("*/api/attachments/uploads", async ({ request }) => {
+    const bytes = await request.arrayBuffer();
+    const upload = {
+      uploadId: crypto.randomUUID(),
+      draftThreadId: ThreadId.makeUnsafe(new URL(request.url).searchParams.get("threadId")!),
+      kind: "file" as const,
+      name: decodeURIComponent(request.headers.get("X-F5-File-Name")!),
+      mimeType: request.headers.get("Content-Type") || "application/octet-stream",
+      sizeBytes: bytes.byteLength,
+      contentHash: "fixture-sha256",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    uploadedFiles.set(upload.uploadId, upload);
+    return HttpResponse.json(upload, { status: 201 });
   }),
   http.get("*/attachments/:attachmentId", () =>
     HttpResponse.text(ATTACHMENT_SVG, {
@@ -1949,6 +1979,58 @@ describe("ChatView timeline (full app)", () => {
   afterEach(() => {
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
+  });
+
+  it("submits a form with required free text and an empty optional field", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "form-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "form",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Form",
+      payload: {
+        requestId: "form-request",
+        questions: [
+          { id: "name", header: "Name", question: "Enter a name", options: [] },
+          {
+            id: "description",
+            header: "Description",
+            question: "Optional description",
+            options: [],
+            optional: true,
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await expect.element(page.getByText("Enter a name", { exact: true })).toBeVisible();
+      await page.elementLocator(await waitForComposerEditor()).fill("Ada");
+      await page.getByRole("button", { name: "Next question", exact: true }).click();
+      await expect.element(page.getByText("Optional description", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Submit answers", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              type: "thread.user-input.respond",
+              answers: { name: "Ada", description: "" },
+            }),
+          }),
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it.each(["option", "dismissal"])("preserves typed question text after %s", async (resolution) => {
@@ -3863,6 +3945,46 @@ describe("ChatView timeline (full app)", () => {
     },
   );
 
+  it("uploads a picked PDF before sending and persists only its upload reference", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "picked-file" as MessageId,
+        targetText: "existing",
+        fillerPairCount: 1,
+        targetPairIndex: 0,
+      }),
+    });
+    try {
+      await waitForComposerShell();
+      const input = document.querySelector<HTMLInputElement>('input[aria-label="Attach files"]');
+      expect(input).not.toBeNull();
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["%PDF-1.7\nfixture"], "notes.pdf", { type: "application/pdf" }));
+      input!.files = transfer.files;
+      input!.dispatchEvent(new Event("change", { bubbles: true }));
+      await vi.waitFor(() => {
+        const saved =
+          useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.persistedAttachments;
+        expect(saved).toEqual([
+          expect.objectContaining({ name: "notes.pdf", dataUrl: "", uploadId: expect.any(String) }),
+        ]);
+      });
+      const send = await waitForSendButton();
+      await vi.waitFor(() => expect(send.disabled).toBe(false));
+      send.click();
+      await vi.waitFor(() => {
+        const dispatch = getDispatchCommandRequests("thread.turn.start");
+        expect(dispatch).toHaveLength(1);
+        expect(dispatch[0]?.command).toMatchObject({
+          message: { attachments: [{ type: "upload", uploadId: expect.any(String) }] },
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("sends file-only drafts with workspace-relative attachment paths and a filename title fallback", async () => {
     const absoluteFilePath = "/repo/project/apps/web/src/components/file-only-send.tsx";
     useComposerDraftStore.setState({
@@ -3975,6 +4097,95 @@ describe("ChatView timeline (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("sends $PATH on Enter without opening skills for Claude", async () => {
+    const base = createSnapshotForTargetUser({
+      targetMessageId: "currency-user" as MessageId,
+      targetText: "Hello",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [createTestServerProvider("claudeAgent", { checkedAt: NOW_ISO })],
+        };
+      },
+      snapshot: {
+        ...base,
+        threads: base.threads.map((thread) => ({
+          ...thread,
+          model: "claude-sonnet-4-6",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-sonnet-4-6",
+          },
+          session: thread.session
+            ? {
+                ...thread.session,
+                providerName: "claudeAgent",
+                providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+              }
+            : null,
+        })),
+      },
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("$PATH");
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe("$PATH"),
+      );
+      await vi.waitFor(async () => expect((await waitForSendButton()).disabled).toBe(false));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
+          expect.objectContaining({
+            command: expect.objectContaining({
+              message: expect.objectContaining({ text: "$PATH" }),
+            }),
+          }),
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("inserts a Codex skill mid-prompt with dollar syntax", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithCodexRuntimeSkills(),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Please use $rev");
+      await vi.waitFor(() => expect(document.body.textContent).toContain("/review"));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          code: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Please use $review ",
+        ),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -6290,4 +6501,159 @@ describe("ChatView timeline (full app)", () => {
       await mounted.cleanup();
     }
   });
+  it("does not submit a selected pending answer when sending a quote", async () => {
+    const snapshot = createSnapshotWithRichAssistantTarget();
+    const question = createThreadActivity({
+      id: "quote-question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "quote-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which choice?",
+            options: [{ label: "Original answer", description: "Keep it" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+    });
+    try {
+      await page.getByText("Original answer", { exact: true }).click();
+      const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
+      const range = document.createRange();
+      range.selectNodeContents(paragraph);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Quote comment" }).fill("Explain this quote");
+      page
+        .getByRole("textbox", { name: "Quote comment" })
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      await expect
+        .element(
+          page.getByText("Finish the pending question before quoting into chat.", { exact: true }),
+        )
+        .toBeVisible();
+      expect(getDispatchCommandRequests("thread.user-input.respond")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each([
+    { shortcut: false, planFollowUp: false },
+    { shortcut: true, planFollowUp: false },
+    { shortcut: true, planFollowUp: true },
+  ])(
+    "quotes an assistant selection and sends portable Markdown ($shortcut, plan follow-up=$planFollowUp)",
+    async ({ shortcut, planFollowUp }) => {
+      let snapshot = createSnapshotWithRichAssistantTarget();
+      if (planFollowUp) {
+        const planThread = createPlanFollowUpSnapshot().threads.find(
+          (thread) => thread.id === THREAD_ID,
+        )!;
+        snapshot = {
+          ...snapshot,
+          threads: snapshot.threads.map((thread) =>
+            thread.id === THREAD_ID
+              ? {
+                  ...thread,
+                  interactionMode: planThread.interactionMode,
+                  latestTurn: planThread.latestTurn,
+                  proposedPlans: planThread.proposedPlans,
+                }
+              : thread,
+          ),
+        };
+      }
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot,
+      });
+      try {
+        const paragraph = await vi.waitFor(() => {
+          const node = document.querySelector('[data-message-role="assistant"] p');
+          expect(node).not.toBeNull();
+          return node!;
+        });
+        const text = paragraph.textContent!.trim().slice(0, 4000);
+        const range = document.createRange();
+        range.selectNodeContents(paragraph);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        paragraph.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await page.getByRole("textbox", { name: "Quote comment" }).fill("Please explain.");
+        await page.getByRole("button", { name: "Back", exact: true }).click();
+        await page.getByRole("button", { name: "Quote reply", exact: true }).click();
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .toHaveValue("Please explain.");
+        if (shortcut) {
+          const comment = page.getByRole("textbox", { name: "Quote comment" }).element();
+          comment.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: "Enter",
+              metaKey: true,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        } else {
+          await page.getByRole("button", { name: "Add quote to composer", exact: true }).click();
+        }
+        if (!shortcut) {
+          await vi.waitFor(() => {
+            const prompt =
+              useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "";
+            expect(prompt).toContain("> " + text);
+            expect(prompt).toContain("Please explain.");
+          });
+          const send = await waitForSendButton();
+          await vi.waitFor(() => expect(send.disabled).toBe(false));
+          send.click();
+        }
+        await vi.waitFor(() =>
+          expect(getDispatchCommandRequests("thread.turn.start")).toContainEqual(
+            expect.objectContaining({
+              command: expect.objectContaining({
+                message: expect.objectContaining({ text: expect.stringContaining("> " + text) }),
+              }),
+            }),
+          ),
+        );
+        await expect
+          .element(page.getByRole("textbox", { name: "Quote comment" }))
+          .not.toBeInTheDocument();
+        await vi.waitFor(() =>
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(
+            "",
+          ),
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 });

@@ -1,11 +1,13 @@
+import { cachedGlobalDraftSettings } from "./draftSettingsDefaults";
+import { useStore } from "../store";
 import type { ProjectId, ThreadEnvMode } from "@t3tools/contracts";
 import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { nonDefaultThreadEnvMode, resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
+import { nonDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 
-import { useAppSettings } from "../appSettings";
+import { projectSettingsQueryOptions } from "./projectSettingsQuery";
+import { migrateLegacyClientSetting } from "../hooks/useMigrateClientSettings";
 import { ensureNativeApi } from "../nativeApi";
-import { useStore } from "../store";
 
 const CHECKED_IN_PROJECT_CONFIG_STALE_TIME_MS = 5_000;
 
@@ -21,52 +23,45 @@ export interface ResolveProjectThreadEnvModeOptions {
   readonly forceNonDefault?: boolean;
 }
 
-export function resolveProjectThreadEnvModeImmediately(input: {
-  readonly options: ResolveProjectThreadEnvModeOptions;
-  readonly projectDefault: ThreadEnvMode | null;
-  readonly cachedConfigDefault: ThreadEnvMode | null;
-  readonly globalDefault: ThreadEnvMode;
-  readonly prefetchConfig: () => void;
-}): ThreadEnvMode {
-  let configDefault: ThreadEnvMode | null = null;
-  if (input.options.requested === undefined && input.projectDefault === null) {
-    configDefault = input.cachedConfigDefault;
-    if (configDefault === null) input.prefetchConfig();
-  }
-  const resolved = resolveThreadEnvMode({
-    requested: input.options.requested,
-    projectDefault: input.projectDefault,
-    globalDefault: configDefault ?? input.globalDefault,
-  });
-  return input.options.forceNonDefault ? nonDefaultThreadEnvMode(resolved) : resolved;
+export function resolveCachedProjectThreadEnvMode(projectId: ProjectId): ThreadEnvMode {
+  const global = cachedGlobalDraftSettings();
+  const project = useStore.getState().projects.find((p) => p.id === projectId);
+  return (
+    global.projectSettingsOverrides[projectId]?.defaultThreadEnvMode ??
+    project?.defaultEnvMode ??
+    global.defaultThreadEnvMode
+  );
 }
 
 export function useProjectThreadEnvModeResolver() {
   const queryClient = useQueryClient();
-  const projects = useStore((state) => state.projects);
-  const { settings } = useAppSettings();
-
   return useCallback(
     async (
       projectId: ProjectId,
       options: ResolveProjectThreadEnvModeOptions = {},
     ): Promise<ThreadEnvMode> => {
-      const projectDefault =
-        projects.find((project) => project.id === projectId)?.defaultEnvMode ?? null;
-      const query = projectCheckedInConfigQueryOptions(projectId);
-      return resolveProjectThreadEnvModeImmediately({
-        options,
-        projectDefault,
-        cachedConfigDefault: queryClient.getQueryData(query.queryKey)?.defaultThreadEnvMode ?? null,
-        globalDefault: settings.defaultThreadEnvMode,
-        // A checked-in project config is useful, but reading it must never sit
-        // on the critical path for opening a local draft. Prime the cache for
-        // the next resolution while immediately using any value available.
-        prefetchConfig: () => {
-          void queryClient.prefetchQuery(query).catch(() => undefined);
-        },
-      });
+      if (options.requested)
+        return options.forceNonDefault
+          ? nonDefaultThreadEnvMode(options.requested)
+          : options.requested;
+      await migrateLegacyClientSetting().catch(() => undefined);
+      const { settings } = await queryClient
+        .fetchQuery(projectSettingsQueryOptions(projectId))
+        .catch(() => {
+          const cached = queryClient.getQueryData(projectSettingsQueryOptions(projectId).queryKey);
+          if (cached) return cached;
+          const global = cachedGlobalDraftSettings();
+          return {
+            settings: {
+              ...global,
+              defaultThreadEnvMode: resolveCachedProjectThreadEnvMode(projectId),
+            },
+          };
+        });
+      return options.forceNonDefault
+        ? nonDefaultThreadEnvMode(settings.defaultThreadEnvMode)
+        : settings.defaultThreadEnvMode;
     },
-    [projects, queryClient, settings.defaultThreadEnvMode],
+    [queryClient],
   );
 }

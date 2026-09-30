@@ -1,3 +1,4 @@
+import { beginAccountChange } from "../../profiles/ProviderAccountGuard.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -398,39 +399,40 @@ function makeProviderServiceLayerForAdapters(
   );
 }
 
-it.effect(
-  "rejects a custom-named Grok instance before opening a read-only workflow session",
-  () => {
-    const codex = makeFakeCodexAdapter();
-    const registry = makeAdapterRegistryMock({ codex: codex.adapter });
-    return Effect.gen(function* () {
-      const service = yield* ProviderService;
-      const failure = yield* service
-        .startSession(asThreadId("document"), {
-          threadId: asThreadId("document"),
-          providerInstanceId: ProviderInstanceId.make("research-account"),
-          runtimeMode: "full-access",
-          workflowExecutionProfile: "attended-readonly",
-        })
-        .pipe(Effect.flip);
-      assert.equal(failure._tag, "ProviderValidationError");
-      assert.match(failure.message, /Grok cannot enforce read-only/);
-    }).pipe(
-      Effect.provide(
-        makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]), {
-          getInstanceInfo: (instanceId) =>
-            registry.getInstanceInfo(ProviderInstanceId.make("codex")).pipe(
-              Effect.map((info) => ({
-                ...info,
-                instanceId,
-                driverKind: "grok" as typeof info.driverKind,
-              })),
-            ),
-        }),
-      ),
-    );
-  },
-);
+for (const driver of ["grok", "antigravity"] as const)
+  it.effect(
+    `rejects a custom-named ${driver} instance before opening a read-only workflow session`,
+    () => {
+      const codex = makeFakeCodexAdapter();
+      const registry = makeAdapterRegistryMock({ codex: codex.adapter });
+      return Effect.gen(function* () {
+        const service = yield* ProviderService;
+        const failure = yield* service
+          .startSession(asThreadId("document"), {
+            threadId: asThreadId("document"),
+            providerInstanceId: ProviderInstanceId.make("research-account"),
+            runtimeMode: "full-access",
+            workflowExecutionProfile: "attended-readonly",
+          })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderValidationError");
+        assert.match(failure.message, /cannot enforce read-only/);
+      }).pipe(
+        Effect.provide(
+          makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]), {
+            getInstanceInfo: (instanceId) =>
+              registry.getInstanceInfo(ProviderInstanceId.make("codex")).pipe(
+                Effect.map((info) => ({
+                  ...info,
+                  instanceId,
+                  driverKind: driver as typeof info.driverKind,
+                })),
+              ),
+          }),
+        ),
+      );
+    },
+  );
 
 const routing = makeProviderServiceLayer();
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
@@ -822,6 +824,82 @@ routing.layer("ProviderServiceLive routing", (it) => {
       Effect.provide(layer),
     );
   });
+
+  for (const kind of ["codex", "claudeAgent", "opencode"] as const) {
+    it.effect(`delivers 40 MiB PDF and HEIC paths plus image overflow to ${kind}`, () => {
+      const adapter = makeFakeCodexAdapter(kind);
+      const layer = makeProviderServiceLayerForAdapters(new Map([[kind, adapter.adapter]]));
+      const threadId = asThreadId(`media-${kind}`);
+      const root = path.join(
+        os.tmpdir(),
+        `f5-provider-service-tests-${process.pid}`,
+        "attachments",
+      );
+      const attachments: ChatAttachment[] = [
+        {
+          type: "file",
+          id: `${threadId}-12345678-1234-1234-1234-123456789abc`,
+          name: "document.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 40 * 1024 * 1024,
+        },
+        {
+          type: "file",
+          id: `${threadId}-12345678-1234-1234-1234-123456789abd`,
+          name: "photo.heic",
+          mimeType: "application/octet-stream",
+          sizeBytes: 16,
+        },
+        ...Array.from({ length: 21 }, (_, i) => ({
+          type: "image" as const,
+          id: `${threadId}-12345678-1234-1234-1234-${String(i).padStart(12, "0")}`,
+          name: `${i}.png`,
+          mimeType: "image/png",
+          sizeBytes: 4,
+        })),
+      ];
+      const files = attachments.map((file) =>
+        path.join(
+          root,
+          `${file.id}${file.type === "image" ? ".png" : file.name.endsWith(".pdf") ? ".pdf" : ".bin"}`,
+        ),
+      );
+      return Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        fs.mkdirSync(root, { recursive: true });
+        files.forEach((file, i) => {
+          fs.writeFileSync(file, "file");
+          fs.truncateSync(file, attachments[i]!.sizeBytes);
+        });
+        yield* provider.startSession(threadId, {
+          threadId,
+          provider: kind,
+          runtimeMode: "full-access",
+        });
+        yield* provider.sendTurn({ threadId, input: "Inspect these files", attachments });
+        const sent = adapter.sendTurn.mock.calls.at(-1)?.[0];
+        assert.equal(sent?.resolvedAttachments?.length, 23);
+        assert.equal(sent?.attachments?.filter((file) => file.type === "image").length, 20);
+        assert.equal(
+          sent?.attachments?.filter((file) => file.type === "file").length,
+          kind === "opencode" ? 1 : 0,
+        );
+        assert.deepEqual(
+          sent?.resolvedAttachments?.map((file) => file.localPath),
+          files,
+        );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() =>
+            files.forEach((file) => {
+              if (fs.existsSync(file)) fs.unlinkSync(file);
+            }),
+          ),
+        ),
+        Effect.provide(layer),
+      );
+    });
+  }
 
   it.effect("fails the turn when a referenced attachment file is missing", () => {
     const codex = makeFakeCodexAdapter("codex");
@@ -1957,4 +2035,74 @@ validation.layer("ProviderServiceLive validation", (it) => {
       }
     }),
   );
+});
+
+it.effect("blocks session creation and turn dispatch during an account change", () => {
+  const fake = makeFakeCodexAdapter("antigravity");
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const threadId = asThreadId("account-guard");
+    const instanceId = ProviderInstanceId.make("antigravity");
+    yield* service.startSession(threadId, {
+      threadId,
+      providerInstanceId: instanceId,
+      runtimeMode: "full-access",
+    });
+    const release = beginAccountChange(
+      path.join(os.tmpdir(), `f5-provider-service-tests-${process.pid}`),
+      instanceId,
+    );
+    try {
+      const sendFailure = yield* service
+        .sendTurn({ threadId, input: "hello", attachments: [] })
+        .pipe(Effect.flip);
+      assert.equal(sendFailure._tag, "ProviderValidationError");
+      assert.match(sendFailure.message, /Account change in progress/);
+      const startFailure = yield* service
+        .startSession(asThreadId("blocked"), {
+          threadId: asThreadId("blocked"),
+          providerInstanceId: instanceId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(startFailure.message, /Account change in progress/);
+      assert.equal(fake.sendTurn.mock.calls.length, 0);
+      assert.equal(fake.startSession.mock.calls.length, 1);
+    } finally {
+      release();
+    }
+    yield* service.sendTurn({ threadId, input: "hello", attachments: [] });
+    assert.equal(fake.sendTurn.mock.calls.length, 1);
+  }).pipe(
+    Effect.provide(makeProviderServiceLayerForAdapters(new Map([["antigravity", fake.adapter]]))),
+  );
+});
+
+it.effect("uses the admitted binding without rereading routing during send", () => {
+  const fake = makeFakeCodexAdapter();
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("stable-admission");
+    yield* service.startSession(threadId, {
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "full-access",
+    });
+    const original = directory.getBinding.bind(directory);
+    let reads = 0;
+    const spy = vi.spyOn(directory, "getBinding").mockImplementation((id) => {
+      reads++;
+      // A second routing read simulates a concurrent removal/rebind.
+      return reads === 1 ? original(id) : Effect.succeed(Option.none());
+    });
+    try {
+      yield* service.sendTurn({ threadId, input: "hello", attachments: [] });
+      // One admission read and one post-dispatch persistence read.
+      assert.equal(reads, 2);
+      assert.equal(fake.sendTurn.mock.calls.length, 1);
+    } finally {
+      spy.mockRestore();
+    }
+  }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", fake.adapter]]))));
 });

@@ -1,3 +1,4 @@
+import { assetSecurityFixture } from "./test/assetSecurityFixture";
 import { fileURLToPath } from "node:url";
 import { playwright } from "@vitest/browser-playwright";
 import { defineConfig, mergeConfig } from "vitest/config";
@@ -9,6 +10,7 @@ const srcPath = fileURLToPath(new URL("./src", import.meta.url));
 export default mergeConfig(
   viteConfig,
   defineConfig({
+    plugins: [assetSecurityFixture()],
     resolve: {
       alias: {
         "~": srcPath,
@@ -16,6 +18,9 @@ export default mergeConfig(
     },
     test: {
       include: [
+        "src/components/WorkspaceMediaView.browser.tsx",
+        "src/components/AssetImageGallery.browser.tsx",
+        "src/hooks/useMigrateClientSettings.browser.ts",
         "src/components/FileViewPanel.browser.tsx",
         "src/hooks/inputSafety.browser.tsx",
         "src/components/ProfileSwitcher.browser.tsx",
@@ -50,6 +55,7 @@ export default mergeConfig(
         "src/routes/-_chat.settings.browser.tsx",
         "src/routes/-_chat.index.browser.tsx",
         "src/components/chat/AssistantMessageActions.browser.tsx",
+        "src/components/chat/AssistantQuoteToolbar.browser.tsx",
         "src/components/chat/ComposerPendingApprovalActions.browser.tsx",
         "src/components/chat/ClaudeTraitsPicker.browser.tsx",
         "src/components/chat/CodexTraitsPicker.browser.tsx",

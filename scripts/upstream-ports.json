@@ -83,10 +83,19 @@
     {
       "upstreamSha": "0141bc2bf5fcf52a563240a6bce4b58050496db5",
       "subject": "feat(settings): choose how new worktrees initialize submodules (#12955)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): choose how new worktrees initialize submodules. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: global and project submodule policy is applied to worktree creation and missing-worktree recreation, including PR worktrees.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1005",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "0150c6a53b409ba3bcb45645709b649cf8708354",
@@ -127,10 +136,14 @@
     {
       "upstreamSha": "01eb4b9a8776e6057dfacf12e7366565e5eab934",
       "subject": "fix(web): align notification icons with titles (#12202)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): align notification icons with titles. Reimplement in f5; not yet delivered.",
+      "reason": "Align notification icons with the title row and share the full-width description layout between regular and anchored toasts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ui/toast.tsx:34",
+        "apps/web/src/components/ui/toast.browser.tsx:80"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "01f3e50eca5102ccd881de6f942a98fe6a518ad4",
@@ -357,10 +370,11 @@
     {
       "upstreamSha": "052c7ae53e46c705d5fd5dfa995275bc3100744e",
       "subject": "feat(chat): show provider thinking traces (#11784)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(chat): show provider thinking traces. Reimplement in f5; not yet delivered.",
+      "reason": "ACP agent_thought_chunk uses the existing reasoning stream for Cursor, Grok and Antigravity.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AcpRuntimeModel.ts:660"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "053affbed2659f90cd1b1efaaa7a75865c4131c7",
@@ -446,10 +460,19 @@
     {
       "upstreamSha": "06336460c9988f29c71e839c4c9c840c4552e077",
       "subject": "feat(providers): add Google Antigravity via the official ACP agent (#9348)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(providers): add Google Antigravity via the official ACP agent. Reimplement in f5; not yet delivered.",
+      "reason": "F5-native Antigravity driver, pinned explicit installation, isolated OAuth, native requests, model discovery, attachments and gated native compaction.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:31",
+        "apps/server/src/provider/AntigravityInstallation.test.ts:33",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "063ed7120a17de65fcd5bd835b5c7c4e19536037",
@@ -512,10 +535,14 @@
     {
       "upstreamSha": "06de9e90ab0832727968c58ce72282b94a95ae17",
       "subject": "fix(server): keep previously used providers working after upgrades (#8176)",
-      "reason": "Phase 4: fix(server): keep previously used providers working after upgrades. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 preserves enabled-by-default decoding for every pre-existing provider and persisted instance configuration; only the newly introduced Antigravity driver defaults off.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "packages/contracts/src/settings.ts:103",
+        "packages/contracts/src/settings.ts:138"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "074bcd6dc897f9c28b1bbc04737daa6ee3d8e40f",
@@ -747,10 +774,18 @@
     {
       "upstreamSha": "095d57552c4579ce33a6560a76b7c643b92f00f9",
       "subject": "fix(desktop): hold-to-quit no longer strands the quit (#11016)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): hold-to-quit no longer strands the quit. Reimplement in f5; not yet delivered.",
+      "reason": "Use the final pinned quit state machine, including failed or delayed settings reads that must not strand a quit request.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "098bf5329727fcd7d973bf842e6b4d50d6e7b924",
@@ -859,10 +894,17 @@
     {
       "upstreamSha": "0aae1e2ad7ab174004f39746eb4c72b905de932d",
       "subject": "fix(antigravity): discover legacy workspace skills (#9410)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): discover legacy workspace skills. Reimplement in f5; not yet delivered.",
+      "reason": "Discover current and legacy Antigravity project skill roots, including flat Markdown files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/server/src/orchestration/projectSkills.test.ts:275"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "0acf05f4f561b873853587f8629ca691b18a613a",
@@ -902,10 +944,17 @@
     {
       "upstreamSha": "0b83045d00d88d0a0b0866fe4942a50a41a08471",
       "subject": "feat(providers): expose native slash commands across clients (#11519)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(providers): expose native slash commands across clients. Reimplement in f5; not yet delivered.",
+      "reason": "ACP command notifications reach the composer; OpenCode SDK native commands acknowledge their matching user-message receipt before generation completes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:696",
+        "apps/server/src/provider/Layers/GrokAdapter.test.ts:321"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "0ba06a122bc73f705bfc18875366b4eeb1160992",
@@ -1073,10 +1122,19 @@
     {
       "upstreamSha": "0e0ddaeedf30698bec131caf040a8e8d7b2e3f37",
       "subject": "feat(web): add opt-in thread notifications and sounds (#11481)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): add opt-in thread notifications and sounds. Reimplement in f5; not yet delivered.",
+      "reason": "Add migrated off/system/sound/system-and-sound modes with opt-in WebAudio tones, preserving existing notification preferences and snooze suppression.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/appSettings.ts:367",
+        "apps/web/src/threadAttention.ts:13",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:363"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "0e1570bde5b64458449a45989f1b56d6fd651883",
@@ -1204,10 +1262,17 @@
     {
       "upstreamSha": "0ff87f251dafb32703d5f531e7b248ad0a581ee2",
       "subject": "fix(web): keep citation comment when popover is dismissed (#10831)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): keep citation comment when popover is dismissed. Reimplement in f5; not yet delivered.",
+      "reason": "In the approved quote-reply design, Back and Escape retain the comment until insertion or explicit cancellation; no server citation state is introduced.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:101",
+        "apps/web/src/components/ChatView.browser.tsx:6268"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "10421bcdc9a059e0a717250257769af92567b645",
@@ -1366,10 +1431,19 @@
     {
       "upstreamSha": "1262d2f3ab2940c1d47ca4f5c4ca42e5c7259765",
       "subject": "feat(server): let t3.json limit or disable submodule init in new worktrees (#12953)",
-      "reason": "Phase 6 (project-scoped settings): feat(server): let t3.json limit or disable submodule init in new worktrees. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: checked-in worktreeSubmodules supports none, shallow and recursive; project overrides take precedence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/contracts/src/settings.ts:203",
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "126afb56fca56c663f4f40acd46f123ab27eee2b",
@@ -1656,10 +1730,18 @@
     {
       "upstreamSha": "15fea6c5f40331c8325f33bd08b2dcbf924e935a",
       "subject": "fix(providers): discover workspace skills everywhere (#9180)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(providers): discover workspace skills everywhere. Reimplement in f5; not yet delivered.",
+      "reason": "Scan supported project/user skill roots and expose discovered skills across provider composers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/web/src/components/ChatView.logic.ts:80"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "160c76c6d1c5ab78441e21503cd10e7942b917f6",
@@ -2496,10 +2578,17 @@
     {
       "upstreamSha": "2120fbc185737b71f09de020b95224f9e636d1e5",
       "subject": "fix(web): avoid duplicate Antigravity install status (#9419)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): avoid duplicate Antigravity install status. Reimplement in f5; not yet delivered.",
+      "reason": "F5 uses one owner-scoped account panel and one explicit install job; it does not implement the upstream duplicate setup-status surfaces.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/web/src/components/settings/ProviderAccountPanel.tsx:110",
+        "apps/server/src/profiles/ProviderAccountService.ts:180"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "2152d44de2db30a6bae965b0afd30be080e5c872",
@@ -2632,10 +2721,11 @@
     {
       "upstreamSha": "2271a27dad1205b403a66af01461f856986e5064",
       "subject": "fix(server): keep Homebrew mise shims manual-only (#10085)",
-      "reason": "Phase 4: fix(server): keep Homebrew mise shims manual-only. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 provider maintenance is advisory only and never automatically executes Homebrew or mise updates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/Layers/ProviderUpdateAdvisorLive.ts:60"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "2274444e92275fda2033de6636e3143ac3599ffb",
@@ -2745,10 +2835,18 @@
     {
       "upstreamSha": "242816af805b048aec653d6cc359ecc784ef98c5",
       "subject": "feat(web): show settings scope as a sentence at the top of the page (#13139)",
-      "reason": "Phase 6 (project-scoped settings): feat(web): show settings scope as a sentence at the top of the page. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: visible Global/project scope at the top of settings, using the final breadcrumb design selected in review.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "2433f4c1c01cf9e9eca983c9aeec375524e29273",
@@ -2796,10 +2894,20 @@
     {
       "upstreamSha": "24c4ba68f536d56e8482a1e4d7070a6771da551d",
       "subject": "fix(desktop): close the window before quit cleanup (#6562)",
-      "reason": "Phase 5: fix(desktop): close the window before quit cleanup. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Close desktop windows after renderer unload checks and before bounded backend/preview cleanup; a veto reveals the app without stopping backends. Update handoff uses the same preflight and cleanup.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/main.ts:2940",
+        "apps/desktop/src/quitPreflight.test.ts:1",
+        "apps/desktop/scripts/smoke-test.mjs:90",
+        "apps/desktop/src/main.ts:1976"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "252df7742047af8a1b859dc652b2f40b639d16b3",
@@ -2883,10 +2991,11 @@
     {
       "upstreamSha": "2675e3c70327719a99af4ae6e53e7b74fb8a9be0",
       "subject": "fix(antigravity): keep subagent batches active after launch (#9579)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): keep subagent batches active after launch. Reimplement in f5; not yet delivered.",
+      "reason": "A completed start_subagent tool is a launch receipt, not completion of its batch; keep task activity until the parent turn ends.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityTasks.test.ts:14"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "26894dda7b6d78c5863ccec6581caf0ec7f4843b",
@@ -3146,10 +3255,11 @@
     {
       "upstreamSha": "2a47fc905a7a1054823919980f625b7cd869f1c1",
       "subject": "fix(skills): support unicode currency symbols as skill aliases (#12098)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(skills): support unicode currency symbols as skill aliases. Reimplement in f5; not yet delivered.",
+      "reason": "Codex currency-symbol skill completion opens only for matching skills; shell variables and other providers retain ordinary send behavior.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/composer-logic.test.ts:321"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "2a7a449cca3c7760b689a54b3aa02476a206dbc9",
@@ -3228,10 +3338,16 @@
     {
       "upstreamSha": "2b178231ebfa597947efb4ec31bf60e0bb9e3128",
       "subject": "fix: allow more attachments without raising the image payload budget (#12620)",
-      "reason": "Phase 7b (generic attachments and uploads): fix: allow more attachments without raising the image payload budget. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: attachment count (100) is independent of per-provider inline image caps; overflow images are delivered by path instead of raising the image payload budget.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/shared/src/attachmentLimits.ts:14",
+        "packages/contracts/src/attachmentUpload.ts:4",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
@@ -3273,10 +3389,19 @@
     {
       "upstreamSha": "2c0e891740f86205784506a974096cf110b64da7",
       "subject": "feat(settings): add per-project overrides for scopable server settings (#11176)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): add per-project overrides for scopable server settings. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: f5-native seven-key project overrides, replacement/reset, source resolution, server consumers and deletion cleanup; no environment layer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/shared/src/projectSettings.ts:12",
+        "apps/server/src/wsServer.test.ts:1897",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "2c16c1d264173d86fc354e9a4c0c78cd42e514b7",
@@ -3357,10 +3482,16 @@
     {
       "upstreamSha": "2cb1a26f061fa9029ccbe2a614f02bb14b22dd45",
       "subject": "fix(web): open the file a bare filename reference names (#6297)",
-      "reason": "Phase 7c: fix(web): open the file a bare filename reference names. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 7c: a bare filename in an agent file link opens the unique workspace match (exact, then case-folded) and never picks between ambiguous matches.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/lib/workspaceBasename.ts:2",
+        "apps/web/src/components/ChatView.tsx:5845",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "2d156a83b96ebf2e4a9c6017251baad357ae6ab1",
@@ -3389,10 +3520,17 @@
     {
       "upstreamSha": "2d377bfb1c8c85a61679fa6cdb6e8181cfb13626",
       "subject": "fix(web): dismiss selection actions when pressing buttons (#12950)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): dismiss selection actions when pressing buttons. Reimplement in f5; not yet delivered.",
+      "reason": "Dismiss quote selection actions when another button is pressed, even when that button preserves the DOM selection.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:25",
+        "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "2d5464afbc19058be8c125d5ee70481d721d14f4",
@@ -3675,10 +3813,15 @@
     {
       "upstreamSha": "30e3649c3281fe88b3d8d125293f1bb58132a3c2",
       "subject": "fix(web): match thread notification icons to sidebar status (#12806)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): match thread notification icons to sidebar status. Reimplement in f5; not yet delivered.",
+      "reason": "Use sidebar thread-status icons for in-app toasts and matching local SVG icons for system notifications.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/threadStatus.ts:192",
+        "apps/web/src/threadStatusNotifications.ts:224",
+        "apps/web/src/components/ui/toast.tsx:251"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "30e471530b3e2ddf59caf309636bed940b8b3776",
@@ -3950,10 +4093,16 @@
     {
       "upstreamSha": "34a12bc33f5fba02b0b398e7dff35ca041a87dc7",
       "subject": "fix(web): reject unsupported composer image types at attach time (#6574)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): reject unsupported composer image types at attach time. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: images are classified by magic bytes on upload; unsupported image types are attached as generic files rather than failing at send.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/attachmentUploads.ts:132",
+        "apps/web/src/lib/attachmentValidation.ts:5",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "34b15a9acec5519425c81bdd2a10f11e9ba3d23d",
@@ -4528,10 +4677,17 @@
     {
       "upstreamSha": "3bf74eb6dce3e1372cfafc2ca84825f4b13bae6a",
       "subject": "fix(claude): report usage limits on retried turns (#10549)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): report usage limits on retried turns. Reimplement in f5; not yet delivered.",
+      "reason": "Track rejected windows and warning identities per Claude turn, including retries, and clear recovered windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502",
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:174"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "3c0665543f0e31db1e3425d4fcf9f4aea295a8ce",
@@ -4616,10 +4772,14 @@
     {
       "upstreamSha": "3d00cfd5a710a58bf108de7a66fbe00a1420cc78",
       "subject": "fix(claude): name the expired login or usage limit instead of a generic API error (#10321)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): name the expired login or usage limit instead of a generic API error. Reimplement in f5; not yet delivered.",
+      "reason": "Explain expired Claude login with /login and replace generic failed-result text with known usage-window evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "3d32797f6f4614205debf8a61f09e950f5f9a81c",
@@ -4761,10 +4921,15 @@
     {
       "upstreamSha": "3fd21df62da3191f1abf12a0cd74df6de9ed30a2",
       "subject": "fix(server): pass Codex image attachments by path to avoid oversized requests (#11050)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(server): pass Codex image attachments by path to avoid oversized requests. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: Codex receives image attachments as localImage paths instead of inline data URLs.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/codexAppServerManager.ts:1104",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "3fd50643311d0b0e702628f906f7cb6bbe84e1ba",
@@ -4934,18 +5099,33 @@
     {
       "upstreamSha": "42a8fd5103b4af57b16be721a9864ca3a5c18c5b",
       "subject": "feat(pull-requests): link GitHub references in markdown (#8812)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(pull-requests): link GitHub references in markdown. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved Phase 5 chat Markdown references using PR/remote repository context and forge-aware issue URLs, excluding code and existing links. PR-hub rich Markdown remains in Phase 12.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/lib/remarkIssueReferences.ts:34",
+        "apps/web/src/repositoryLinkContext.ts:6",
+        "apps/web/src/components/ChatMarkdown.test.tsx:89"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42b6bcc6f59bd0369377746b0f2ef370c275b624",
       "subject": "feat(web): add opt-in in-app thread notifications (#11570)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): add opt-in in-app thread notifications. Reimplement in f5; not yet delivered.",
+      "reason": "Add opt-in in-app thread-status toasts with a View action and suppress snoozed and archived threads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ThreadStatusNotificationController.tsx:164",
+        "apps/web/src/components/ThreadStatusNotificationController.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "42bdea1c9c1d4b7c5c2e77cd23cf53fae68a6fd4",
@@ -5229,10 +5409,15 @@
     {
       "upstreamSha": "47a95332a2b8fe47da9fb0af97fd6f0b542a18ee",
       "subject": "fix(web): browse folders from file breadcrumbs (#8910)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): browse folders from file breadcrumbs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: file viewer breadcrumbs browse parent folders.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/FileViewPanel.tsx:424",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "47ace94962a714a561d7cfbdbaa4c721ef6b0598",
@@ -5886,10 +6071,15 @@
     {
       "upstreamSha": "4fed6cfb3517ef9af9b2a361142152c079504530",
       "subject": "feat: add inline file previews and attachment chips across surfaces (#11265)",
-      "reason": "Phase 7b (generic attachments and uploads): feat: add inline file previews and attachment chips across surfaces. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: generic attachments render as file chips in the timeline and open in the shared media viewer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:9",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "50027bb3ad2912f9127304392a2c85ad5ab9a4ba",
@@ -6529,10 +6719,11 @@
     {
       "upstreamSha": "58ba5594439c984b08d13b6d4efb5407adb06943",
       "subject": "fix(server): bound OpenCode skill discovery output (#7675)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): bound OpenCode skill discovery output. Reimplement in f5; not yet delivered.",
+      "reason": "F5 discovers OpenCode skills through a time-bounded SDK call rather than CLI pipe output, and retains only skill metadata, never document content.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:338"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "58f89818e3ada7f680bede396d41ed27eb618203",
@@ -6653,10 +6844,21 @@
     {
       "upstreamSha": "5a433244d0b827176df8b76a05959cd1a7a98ce2",
       "subject": "feat: add custom model names and option descriptors (#9807)",
-      "reason": "Phase 5 (independent desktop/chat features): feat: add custom model names and option descriptors. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved custom-model string/object schema, display-name editor and optional capability metadata while retaining F5 catalogs, aliases and version gates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "packages/contracts/src/settings.ts:107",
+        "apps/server/src/provider/providerSnapshot.ts:154",
+        "apps/web/src/components/settings/ProviderModelsSection.tsx:319",
+        "packages/shared/src/customModels.test.ts:1",
+        "apps/web/src/modelSelection.ts:49",
+        "apps/web/src/modelSelection.test.ts:503"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "5a61f50cce12685f70d530aa5fdf83d9c9b065d7",
@@ -6991,10 +7193,15 @@
     {
       "upstreamSha": "5f4c7161fa7782ea93b63fe934d43229742e7ec8",
       "subject": "fix(server): canonicalise media paths the same way their callers do (#9575)",
-      "reason": "Phase 7c (rich file/media viewing): fix(server): canonicalise media paths the same way their callers do. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent (extended in Phase 7): asset grants canonicalise both the root and the requested path with realpath before containment checks, the same way callers resolve them.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/WorkspaceAssetAuthorizer.ts:280",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "5f84efa1ec2fb3cd6f6c54545cc34bb77ac1ddb8",
@@ -7163,10 +7370,15 @@
     {
       "upstreamSha": "61a91b6ef1bd45424169c6650362b358d49bbe34",
       "subject": "fix(web): group image views like other tool calls (#9597)",
-      "reason": "Phase 7c: fix(web): group image views like other tool calls. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: f5's work-log grouping never special-cased image views, so image_view entries already group like other tool calls; Phase 7 only adds a collapsed thumbnail to the row.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/chat/MessagesTimeline.tsx:2676",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "61b25b88d7922a480790066341867f3f8ae42fcb",
@@ -7299,10 +7511,17 @@
     {
       "upstreamSha": "6349a0e68a958cc51b7b5198683c1d1db88b8d28",
       "subject": "fix(antigravity): distinguish session initialization auth failures (#9919)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): distinguish session initialization auth failures. Reimplement in f5; not yet delivered.",
+      "reason": "F5 account authentication and thread initialization are separate operations. Login does not create a session or load models, so session initialization failure cannot be misreported as failed Google authentication.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/server/src/profiles/AntigravityAccountProcess.ts:39",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "6365919f2e5bcfb4fa4020b95e19af26ae40979f",
@@ -7431,10 +7650,15 @@
     {
       "upstreamSha": "652515a349741d234111b85f27597be3265d1ffc",
       "subject": "fix(web): render assistant images inline in chat (#9126)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): render assistant images inline in chat. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: assistant markdown images render inline through asset grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatMarkdown.tsx:357",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "659986ce384d29123269820ccb8340ab4d824cdd",
@@ -7547,10 +7771,18 @@
     {
       "upstreamSha": "678f23a69943e3eef7171f452b44f2931d2ef21f",
       "subject": "fix(desktop): restore second-press quit fallback (#9485)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): restore second-press quit fallback. Reimplement in f5; not yet delivered.",
+      "reason": "Retain the second-press fallback in every quit shortcut mode, independently of repeat cadence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "67993623afb14c017bb0b959478dc892f9c427da",
@@ -7649,10 +7881,15 @@
     {
       "upstreamSha": "68c2277f500bbbb299396bcdcd0aec60dcb5db9d",
       "subject": "feat(composer): fold large pastes into text attachments (#11442)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(composer): fold large pastes into text attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: pastes of at least 32 KiB UTF-8, or over the input limit, fold into numbered pasted-text attachments.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/textPaste.ts:9",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "68d569138b0a2ac250004df69e4d5a663f11574b",
@@ -8007,10 +8244,15 @@
     {
       "upstreamSha": "6df0add6e65b7c0040b5774635f794e4ff802ddd",
       "subject": "fix(web): navigate markdown images as galleries (#10625)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): navigate markdown images as galleries. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat images open a keyboard-navigable gallery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/AssetImageGallery.tsx:8",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "6e324b9bbfc72e694c3c16abeb59716c37fc02d5",
@@ -8045,10 +8287,15 @@
     {
       "upstreamSha": "6e5e986f15b3cbec3588646ddf216f00b4301785",
       "subject": "feat: badge background thread notifications on desktop and web (#11569)",
-      "reason": "Phase 5 (independent desktop/chat features): feat: badge background thread notifications on desktop and web. Reimplement in f5; not yet delivered.",
+      "reason": "Add opt-in desktop and web attention badges, title fallback, and profile-aware aggregation that avoids double-counting multiple windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/threadAttention.ts:47",
+        "apps/desktop/src/desktopAttention.ts:6",
+        "apps/desktop/src/desktopAttention.test.ts:71"
+      ],
+      "f5Shas": ["3ccb2023978310a5794915fb5191d9f1addb223f"]
     },
     {
       "upstreamSha": "6e6d1b49412d064ccbde7daae2e287f9b62efd7d",
@@ -8309,10 +8556,19 @@
     {
       "upstreamSha": "716069f40f000887cb01685099a16e19d9194307",
       "subject": "fix(server): keep attachments until the command commits (#7941)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(server): keep attachments until the command commits. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: attachment ingress persists ownership transactionally with the owning command, and Phase 7 upload claims reuse that path with a lease so bytes are kept until the command commits.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/server/src/attachmentIngress.ts:343",
+        "apps/server/src/attachmentUploads.ts:301",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": [
+        "b4bec80827a1888003d44f8ee83872b97db4e067",
+        "d4d6991e764631bc825a3e4061651d6ff1ab484f"
+      ]
     },
     {
       "upstreamSha": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
@@ -8482,10 +8738,19 @@
     {
       "upstreamSha": "742173a13250bcba880b700aaead34e1b0810dff",
       "subject": "feat(settings): resolve t3.json inside the project settings resolver (#12954)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): resolve t3.json inside the project settings resolver. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: checked-in f5.json/t3.json values participate in the shared precedence resolver, with bounded regular-file reads and per-field fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/project/projectSettings.ts:10",
+        "packages/shared/src/checkedInProjectFile.ts:103",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "7441b36926eb111a193183f98c06aced4f4c3acf",
@@ -8691,10 +8956,15 @@
     {
       "upstreamSha": "77512998485718eb1b6c336e20f196eb40a6a32f",
       "subject": "feat(web): preview document attachments in the file viewer (#9292)",
-      "reason": "Phase 7c (rich file/media viewing): feat(web): preview document attachments in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: document attachments (Markdown, HTML, PDF) preview in the file viewer through attachment grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:110",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "777f5bb2e11fe30e7fdcb5741b0b1d9bb20924d6",
@@ -8720,10 +8990,15 @@
     {
       "upstreamSha": "77c9d1eb5b6a48d38f6f0a2bb4a8cff8e4752ade",
       "subject": "fix: render workspace images in chat markdown (#6433)",
-      "reason": "Phase 7c (rich file/media viewing): fix: render workspace images in chat markdown. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: workspace image paths in chat markdown receive batched, re-issued asset grants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:100",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "77d9ffc822ac4c1f3600dc6c97e92fc94e9e12a3",
@@ -8735,10 +9010,19 @@
     {
       "upstreamSha": "77e35c561259733d880ab62a43aad0894d301d9b",
       "subject": "fix(web): send cited messages with Cmd+Enter (#9307)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(web): send cited messages with Cmd+Enter. Reimplement in f5; not yet delivered.",
+      "reason": "Cmd/Ctrl+Enter in a quote comment inserts portable Markdown and uses the ordinary send path; IME composition does not send.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:93",
+        "apps/web/src/components/ChatView.browser.tsx:6268",
+        "apps/web/src/components/ChatView.browser.tsx:6332"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "7810fb263f5a92b9d438d1eabf408d2ac705e944",
@@ -9131,10 +9415,17 @@
     {
       "upstreamSha": "7e65b226e7a74ecd13bf8b4738ea6bdd096cb1ba",
       "subject": "feat(auth): share provider sign-in flows and credential bindings (#12983)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(auth): share provider sign-in flows and credential bindings. Reimplement in f5; not yet delivered.",
+      "reason": "Reuse F5 owner-scoped account jobs and exclusive OAuth leases for Antigravity installation, sign-in and logout while retaining per-profile and per-instance credentials.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/profiles/ProviderAccountService.ts:180",
+        "apps/server/src/profiles/ProviderAccountService.test.ts:182"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "7e7cd32463b528838cb10ef6b89ef6ceac1f7a4c",
@@ -9253,10 +9544,18 @@
     {
       "upstreamSha": "80a14b6588f0e856983e6d10002cde9e00e9d3e2",
       "subject": "fix(server): discover project skills for Codex and OpenCode (#8778)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): discover project skills for Codex and OpenCode. Reimplement in f5; not yet delivered.",
+      "reason": "Expose project .agents/.codex/.opencode skill definitions to Codex and OpenCode with explicit instruction paths when absent from native inventories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/web/src/components/ChatView.logic.ts:257"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "80b53730d1e821563e5c348fdf4f5fc7616a49f7",
@@ -9363,10 +9662,15 @@
     {
       "upstreamSha": "820e5639c30be83a9433f696613760f8ee42075a",
       "subject": "fix(server): serve html assets with utf-8 charset (#6409)",
-      "reason": "Phase 7a: fix(server): serve html assets with utf-8 charset. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 7a: text and JSON assets are served with a UTF-8 charset by the shared assetHttp headers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7a"
+      "disposition": "ported",
+      "plannedWorkstream": "7a",
+      "evidence": [
+        "apps/server/src/assetHttp.ts:120",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "823119350ee29cca434b1295aa5c560f4c9ef98a",
@@ -9603,10 +9907,19 @@
     {
       "upstreamSha": "84b9d9bc2d8a13a8b13d59b81f1012f5cb57ebd2",
       "subject": "fix(clients): honor project default models in new threads (#6011)",
-      "reason": "Phase 6: fix(clients): honor project default models in new threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 6: fresh drafts honor f5's explicit project model default before last-used preferences; reused drafts keep their chosen model. Mobile and upstream environment-specific storage are outside scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:38",
+        "apps/web/src/hooks/useHandleNewThread.test.ts:51",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "850e4582e4c828b1533a400bf56a532721239198",
@@ -10006,10 +10319,18 @@
     {
       "upstreamSha": "8b033de48247086c1b6c6968ce7cf33b358a1ec5",
       "subject": "fix(clients): dedupe skills in composer menus (#8043)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(clients): dedupe skills in composer menus. Reimplement in f5; not yet delivered.",
+      "reason": "Deduplicate skill and command names across native and filesystem inventories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:80",
+        "apps/server/src/provider/supportedSlashCommands.ts:14"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "8b1ea4dd2465f3cf3cfa02d6878beaa1ec22e71a",
@@ -10028,10 +10349,19 @@
     {
       "upstreamSha": "8b2c0465def151f022e01dd04b1b6ba3859bd714",
       "subject": "feat(web): pick settings environment and project as two selects (#10636)",
-      "reason": "Phase 6 (project-scoped settings): feat(web): pick settings environment and project as two selects. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: Global/project scope selector and project URL parameter; upstream environment selector excluded by the approved scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "apps/web/src/routes/_chat.settings.tsx:1",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
@@ -10078,18 +10408,30 @@
     {
       "upstreamSha": "8bd544cdfd22aa38ab82bc1adc0b851755a299ef",
       "subject": "fix(web): keep agent images collapsed (#9460)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): keep agent images collapsed. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: viewed agent images start collapsed in the work log and expand on demand.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/chat/MessagesTimeline.tsx:2725",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8c18b5bb21a5349fbadba8c77456ea34c41b7339",
       "subject": "fix(antigravity): stop health checks from filling the disk with _MEI folders (#12008)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): stop health checks from filling the disk with _MEI folders. Reimplement in f5; not yet delivered.",
+      "reason": "Antigravity status checks only inspect files; live processes use scoped temporary directories cleaned after shutdown.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:168"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "8c3b5bef17a637bf53f297189350359790ef7afb",
@@ -10279,10 +10621,14 @@
     {
       "upstreamSha": "8ea52c8f2f4361e875d72ab30d72d37cfae4d87f",
       "subject": "fix(antigravity): update managed runtime to 1.1.1 (#9509)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): update managed runtime to 1.1.1. Reimplement in f5; not yet delivered.",
+      "reason": "Pin official agy_acp_server_1.1.1 assets with exact archive/executable sizes and SHA-256 verification.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/antigravityRelease.ts:1",
+        "apps/server/src/provider/AntigravityInstallation.ts:110"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "8eb1f6e74869130b7602e0c6b0ab56b7805c0889",
@@ -10347,18 +10693,29 @@
     {
       "upstreamSha": "8f49132214a40c85cf46bf5e3d8ea11c04a9610a",
       "subject": "feat(server): accept PDF, ZIP, and other file uploads up to 50MB (#8235)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(server): accept PDF, ZIP, and other file uploads up to 50MB. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: HTTP uploads accept any file type up to 50 MiB (images 10 MiB) with a 256 MiB per-turn aggregate and staging quotas.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/contracts/src/attachmentUpload.ts:7",
+        "apps/server/src/attachmentUploads.ts:167",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8f525af5afa93dff58775030d9b503d3bda36b7b",
       "subject": "fix(web): open agent images in expanded preview (#8807)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): open agent images in expanded preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: clicking an agent image opens it in the expanded gallery preview.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:150",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "8f7da3b99e48ffb678d3426a1b5fb602ecdd50f7",
@@ -10569,10 +10926,15 @@
     {
       "upstreamSha": "922bd692251bc803c12a3fab159efe83c957bb70",
       "subject": "refactor(media): unify file and media previews across clients (#9253)",
-      "reason": "Phase 7c (rich file/media viewing): refactor(media): unify file and media previews across clients. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: one WorkspaceMediaView renders files and attachments for the file panel and attachment chips.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:12",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "9235c83eb7f16c321ad02aa4cc502fbe0be252c1",
@@ -10584,10 +10946,12 @@
     {
       "upstreamSha": "9257bd860a44ce2a324c917ca66a1a81e73607bd",
       "subject": "fix(web): add back button to project settings (#8168)",
-      "reason": "Phase 6: fix(web): add back button to project settings. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5's sidebar already provides Back for every /settings scope, including the new project scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "equivalent",
+      "plannedWorkstream": "6",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:3534"],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "929f7e6479d00754dee4e4554b24b25478b8064d",
@@ -10707,10 +11071,17 @@
     {
       "upstreamSha": "940e8233c227a186044078e99e45e1933eb525e4",
       "subject": "fix(claude): surface usage-limit pauses in the thread (#7165)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): surface usage-limit pauses in the thread. Reimplement in f5; not yet delivered.",
+      "reason": "Show deduplicated Claude rejected-window warnings with reset timestamps without warning on available overage.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/usageLimitMessages.ts:15",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3502"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "941acb4f919bcef337d4d9e1623101bdc30d3616",
@@ -10947,10 +11318,15 @@
     {
       "upstreamSha": "96bddf81258090690bfcf4e6a6414aa0dcf1910a",
       "subject": "fix(desktop): paste as text no longer doubles the pasted text (#11958)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(desktop): paste as text no longer doubles the pasted text. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: desktop Paste as text (composer.pasteAsText) bypasses folding once and inserts the text a single time.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/ChatView.tsx:3773",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "96bfa67b3d05d8adb2fb23d1017bd10fe4b9a338",
@@ -11100,10 +11476,15 @@
     {
       "upstreamSha": "99960383d094b850f0001d3067fa604aa3adf7d6",
       "subject": "fix: open agent file links in the file viewer (#8098)",
-      "reason": "Phase 7c (rich file/media viewing): fix: open agent file links in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: agent file links open in the file viewer panel.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatView.tsx:5834",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
@@ -11334,10 +11715,18 @@
     {
       "upstreamSha": "9d1879b142a2f5d01383357646a4679d1a2bd202",
       "subject": "feat(desktop): add configurable quit shortcut confirmation (#9076)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(desktop): add configurable quit shortcut confirmation. Reimplement in f5; not yet delivered.",
+      "reason": "Add hold, double-click and direct quit settings over the owned renderer bridge, with hold as the default.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/appSettings.ts:364",
+        "apps/desktop/src/desktopAttention.ts:83",
+        "apps/web/src/components/QuitHoldOverlay.tsx:5"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "9d28c21a26aeef198cb064fe466e49cbeabfe09c",
@@ -11384,10 +11773,18 @@
     {
       "upstreamSha": "9da0fab08e0ee444affdfb4916e294c579158bb6",
       "subject": "feat(web): redesign skills in `$` menu and in `/` menu (#8009)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(web): redesign skills in `$` menu and in `/` menu. Reimplement in f5; not yet delivered.",
+      "reason": "F5-native skill picker is available through currency triggers and alongside slash commands, includes enabled native inventories, and keeps existing composer layout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:80",
+        "apps/web/src/components/ChatView.tsx:2275"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "9dbdcece5f488c66f6b9ac516b610f45bbbb676a",
@@ -11531,10 +11928,19 @@
     {
       "upstreamSha": "9f40b2f563c662b43887b11ff99c466fe871c1af",
       "subject": "feat(settings): add shared project defaults and scoped overrides (#9754)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): add shared project defaults and scoped overrides. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: shared defaults and project overrides use f5's server settings and existing profile/account boundaries; existing threads retain their explicit modes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "packages/contracts/src/settings.ts:203",
+        "packages/shared/src/projectSettings.test.ts:41",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "9f73ca3677faa975be00f0ac55460279671df726",
@@ -11881,10 +12287,15 @@
     {
       "upstreamSha": "a5ac766596bdf6c7d6852ecda453e2a85a7b08d4",
       "subject": "fix(media): preserve playback during fullscreen transitions (#11113)",
-      "reason": "Phase 7c (rich file/media viewing): fix(media): preserve playback during fullscreen transitions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: the video element is keyed by file so playback survives re-renders and fullscreen transitions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:184",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "a5bbad910f78cc14eef8baa94fe6f46676f78d5a",
@@ -11973,10 +12384,15 @@
     {
       "upstreamSha": "a7028f1399911e8ddfd8013914b100ee49b95595",
       "subject": "fix: use Pierre icons consistently for attachments (#10475)",
-      "reason": "Phase 7b (generic attachments and uploads): fix: use Pierre icons consistently for attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Existing f5 equivalent: attachment chips use the same VS Code entry icons as the file tree and composer, so icons are already consistent; f5 does not use Pierre icons for files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:23",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "a76b898b3aa4fd4081104b06a3b2c942bd4fecb7",
@@ -12204,10 +12620,17 @@
     {
       "upstreamSha": "ab67795dde448a3608d8689f7ad1975bb977e5a9",
       "subject": "fix(antigravity): load user skills from ~/.gemini for every project (#10257)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): load user skills from ~/.gemini for every project. Reimplement in f5; not yet delivered.",
+      "reason": "Expose user Gemini skills from both supported global directories while linking only skill directories into the isolated runtime home.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:112",
+        "apps/server/src/orchestration/projectSkills.ts:499"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "ab8182cb4e5338caf93ee90a7bd57351a0c77283",
@@ -12270,10 +12693,15 @@
     {
       "upstreamSha": "ac4aae101d060b5355a5de58e23c7387886d9021",
       "subject": "feat(web): play video attachments in chat (#8688)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): play video attachments in chat. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: video attachments play inline in chat through capability URLs with Range support.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:41",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ac4f1a2b6d52b082edcc06d866892f8dcfdc033f",
@@ -12354,10 +12782,14 @@
     {
       "upstreamSha": "ad47d2347c6917f7db33e6e3902e1e8e5d5281ec",
       "subject": "fix(claude): discover repo-local .agents/skills in skill discovery (#5488)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): discover repo-local .agents/skills in skill discovery. Reimplement in f5; not yet delivered.",
+      "reason": "Include repository and user .agents/skills for Claude discovery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/orchestration/projectSkills.ts:499"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "adcd90858c3bfece59095465d2f49860ba3dcea9",
@@ -12491,10 +12923,15 @@
     {
       "upstreamSha": "aff9318bf46beaf05cc7155b428d3f0b8711efd2",
       "subject": "fix(web): retry failed attachment uploads after reconnect (#10338)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): retry failed attachment uploads after reconnect. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: the upload queue retries failed uploads with back-off (including 429 Retry-After) and exposes Retry after reconnect.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/attachmentUploadQueue.ts:155",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "b01771c2383bbcdf154b8c4e9f1a7d5e3867e2d0",
@@ -12926,10 +13363,15 @@
     {
       "upstreamSha": "b5d89038ae72142038dfa8cf69d49b7a607fe98e",
       "subject": "feat(web): accept file drops into sidebar threads (#7892)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): accept file drops into sidebar threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: files dropped onto a sidebar thread are uploaded into that thread's draft through the shared attachment path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "b5f4e8137b3cbd657fbe2b698f9db4e321acbc3d",
@@ -13091,10 +13533,18 @@
     {
       "upstreamSha": "b7dbbbaf6c394621cba57cf58dfcc1845f445ef6",
       "subject": "feat(desktop): Chrome-style hold-to-quit (#5508)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(desktop): Chrome-style hold-to-quit. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the final upstream hold-to-quit behavior across all Electron webContents, with renderer hints and native fallback outside app windows.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b7fc81dea2b7c963c34a365b82644ce963df19a2",
@@ -13106,10 +13556,19 @@
     {
       "upstreamSha": "b8262b41228e03b2e1e14b701be449034349c8ba",
       "subject": "fix(desktop): hold-to-quit no longer gets stuck (#9141)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): hold-to-quit no longer gets stuck. Reimplement in f5; not yet delivered.",
+      "reason": "Handle modifier release, suppressed key-up and delayed mode reads without leaving hold-to-quit stuck; all webContents share one handler.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48",
+        "apps/desktop/src/desktopAttention.test.ts:96"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "b84f63bb13f13b1d0ee8537c4d244d6f1efdb987",
@@ -13287,10 +13746,18 @@
     {
       "upstreamSha": "baf67b6e3accd48d510fd0d39a4e6b978a1eea80",
       "subject": "fix(antigravity): keep model choices up to date (#9511)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): keep model choices up to date. Reimplement in f5; not yet delivered.",
+      "reason": "Read Antigravity model choices from the live config reference on status refresh and retain explicit custom models.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Drivers/AntigravityDriver.ts:61",
+        "apps/server/src/provider/Layers/AntigravityProvider.test.ts:28"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
@@ -13319,10 +13786,15 @@
     {
       "upstreamSha": "bba79cc254b65969bde6b6bfc3032c3b5b9316ae",
       "subject": "fix(web): hide invalid slash skill completions (#8904)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): hide invalid slash skill completions. Reimplement in f5; not yet delivered.",
+      "reason": "Only valid, host-compatible, non-reserved skill names become slash completions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "bbd5cc03231b8b831b44bdbd6e62bf736391cb1f",
@@ -13399,10 +13871,18 @@
     {
       "upstreamSha": "bc918e74ace5dbb4fe1ce73b59d06a9ca1be9ed3",
       "subject": "fix(server): discover project skills for Claude (#9210)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): discover project skills for Claude. Reimplement in f5; not yet delivered.",
+      "reason": "Keep project-scoped Claude skills, project-over-user precedence and explicit source-file dispatch.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/orchestration/projectSkills.ts:499",
+        "apps/web/src/components/ChatView.logic.ts:257"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "bc9428a06a60db59cfddb99c6d7044a9db47eb1c",
@@ -13414,10 +13894,15 @@
     {
       "upstreamSha": "bcb855a633566c2dc70239155ddcd28f0fa736c4",
       "subject": "feat(web): attach PDFs, ZIPs, and other files to a turn (#8236)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): attach PDFs, ZIPs, and other files to a turn. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: PDFs, archives and other files attach to a turn as generic file attachments; archives are never extracted.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "packages/contracts/src/attachmentUpload.ts:15",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bcc20249cc0a888430f2006d61c11de176d531cd",
@@ -13520,18 +14005,27 @@
     {
       "upstreamSha": "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c",
       "subject": "feat(web): safely attach HEIC photos as JPEG images (#8161)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): safely attach HEIC photos as JPEG images. Reimplement in f5; not yet delivered.",
+      "reason": "Declined in Phase 7b: the libheif (LGPL) licensing gate for heic-to was not cleared, so HEIC/HEIF photos are attached and delivered as plain files without conversion.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "declined",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "docs/user/attachments-and-media.md:3",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ]
     },
     {
       "upstreamSha": "bde39d4d7977ce85d6ea396a983d6b6a25bf7e07",
       "subject": "feat(web): accept file drops into sidebar threads (#7892)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): accept file drops into sidebar threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: files dropped onto a sidebar thread are uploaded into that thread's draft through the shared attachment path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bdf99c17bf7ae634728481677cf1bca8db65d00e",
@@ -13568,10 +14062,19 @@
     {
       "upstreamSha": "be3da50e96bb6700fbd111e061d8071a04427fb0",
       "subject": "fix(server): check out submodules in a new worktree (#7674)",
-      "reason": "Phase 6 (project-scoped settings): fix(server): check out submodules in a new worktree. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: initialize new-worktree submodules, disable file transport, and retain the worktree with a warning if initialization fails.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/server/src/git/Layers/GitCore.ts:1653",
+        "apps/server/src/git/Layers/GitCore.test.ts:1",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "be53bbd85044e937c359a89b6004c3d3c38ffcf1",
@@ -13616,10 +14119,15 @@
     {
       "upstreamSha": "beae2147a9487ec47ac992319f2216914b4cb62d",
       "subject": "fix(media): preview host files and stream videos across clients (#9023)",
-      "reason": "Phase 7c (rich file/media viewing): fix(media): preview host files and stream videos across clients. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: host files are previewed and videos stream through single-range responses.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/assetHttp.ts:193",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "bed0b4cdad41408bb09b445a0a8f8ea0e5b62d1b",
@@ -13795,18 +14303,28 @@
     {
       "upstreamSha": "c0e09f323ac9f6bf4b9119cbad841db3379588d6",
       "subject": "fix(web): render nested markdown images correctly (#8501)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): render nested markdown images correctly. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: rendered Markdown resolves relative images from the file's own directory, so nested documents' images render.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/FileViewPanel.tsx:526",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "c0ebc882b88dbcffd5a712e403b3c3c517ba4ea6",
       "subject": "fix(web): return focus to the composer after closing a media preview (#9513)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): return focus to the composer after closing a media preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: closing the image gallery returns focus to the element that opened it.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/AssetImageGallery.tsx:30",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "c0f9d917c1ab08d30f2b3715dd25d2175a6d2ecf",
@@ -14284,10 +14802,11 @@
     {
       "upstreamSha": "c7dc3cbd068a93c9fb5027df7bea719d16e4ffbe",
       "subject": "fix(server): keep mise-owned npm packages manual-only (#9927)",
-      "reason": "Phase 4: fix(server): keep mise-owned npm packages manual-only. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 does not run automated npm provider maintenance, including mise-owned packages; the update advisor only supplies suggestions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": ["apps/server/src/provider/Layers/ProviderUpdateAdvisorLive.ts:60"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "c7e6d711d3f2982e54854258987509e8f69b31cd",
@@ -14345,10 +14864,17 @@
     {
       "upstreamSha": "c8872fd22aadb8d155f1bedc10576d8314f93e56",
       "subject": "fix(server): keep the Antigravity Google sign-in across server restarts (#10244)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(server): keep the Antigravity Google sign-in across server restarts. Reimplement in f5; not yet delivered.",
+      "reason": "Read the profile-local native token on startup instead of replacing persisted login state with an unauthenticated probe.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50",
+        "apps/server/src/profiles/ProviderAccountService.test.ts:182"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "c89e3e12a41e13e09e0103d08a41d0688a99fb49",
@@ -14381,10 +14907,19 @@
     {
       "upstreamSha": "c8ec7df12415140c6413372f53e3be4fe2e959f8",
       "subject": "fix(web): make settings project scopes searchable and scrollable (#10570)",
-      "reason": "Phase 6: fix(web): make settings project scopes searchable and scrollable. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 6: searchable project scope picker with bounded scrolling and browser coverage.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "c8f77e0d441264efb0acfac312e852c81ae3da83",
@@ -14455,10 +14990,18 @@
     {
       "upstreamSha": "caa8a0db98f9d32e98a1645caa7f7dd37b14f187",
       "subject": "fix(desktop): quit immediately on a second shortcut press (#9657)",
-      "reason": "Phase 5: fix(desktop): quit immediately on a second shortcut press. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Quit immediately on the second shortcut press within 500 ms before awaiting settings, while repeat events remain a hold.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "caab2fdbac041ac2e851ad4fa3ac4a40a1d4a8f6",
@@ -14574,10 +15117,15 @@
     {
       "upstreamSha": "cbe93e8dfba68ff6fbe8c69e43a633fdc79db62d",
       "subject": "fix(web): show project settings for new threads (#9743)",
-      "reason": "Phase 6: fix(web): show project settings for new threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5 already exposes project actions and project configuration from ChatHeader for local drafts as well as persisted threads; the action is not gated on server-thread existence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "equivalent",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/chat/ChatHeader.tsx:151",
+        "apps/web/src/hooks/useProjectBreadcrumbActions.ts:33"
+      ],
+      "f5Shas": ["553ee4c282c6a3e5e811903ef80abc1b659bf11a"]
     },
     {
       "upstreamSha": "cc39ec1008ce584e088e79210b69d3359357463b",
@@ -14696,10 +15244,15 @@
     {
       "upstreamSha": "ce71c04f0aa9d2e5cd340e2a04cb1b0d5e24419d",
       "subject": "feat(client): render viewed images in work logs (#8936)",
-      "reason": "Phase 7c (rich file/media viewing): feat(client): render viewed images in work logs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: image_view work-log entries render the viewed image; the path survives compaction and replay.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "packages/shared/src/orchestrationActivityPayload.ts:885",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ce8ca5bb3d005d8653d1b09c1e7c9e02d3ef8ae4",
@@ -14756,18 +15309,35 @@
     {
       "upstreamSha": "cf1ba3d7da98357243ee056d2fd358eed8171981",
       "subject": "feat(settings): configure default permissions for new threads (#11346)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): configure default permissions for new threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: global/project permission defaults seed new drafts after resolving server settings; existing draft/turn choices remain explicit.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/hooks/useCreateProjectBackedDraftThread.ts:1",
+        "apps/web/src/composerDraftStore.ts:1094",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "cf251c3bd00ff0e0cc90a78b20c043cf58f330ad",
       "subject": "Add OpenCode skill discovery (#3154)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): Add OpenCode skill discovery. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode SDK skill inventory feeds configured runtime commands and the composer; provider inventories also appear in the skill picker.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/Layers/OpenCodeAdapter.ts:1411",
+        "apps/web/src/components/ChatView.logic.ts:80"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "cf5c9948c895e120965165b7b2b643ca275c5315",
@@ -14843,10 +15413,15 @@
     {
       "upstreamSha": "d0b19b32e01d7abc8829c01353d759fed3d304ed",
       "subject": "fix(claude): preview images read from the workspace (#9119)",
-      "reason": "Phase 7c (rich file/media viewing): fix(claude): preview images read from the workspace. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: Claude Read calls on image files (including streamed input) are classified as image_view and carry the path to the work log.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:708",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d0b4acbd13b2b602710e4a7d60c42f4799a409be",
@@ -14865,10 +15440,15 @@
     {
       "upstreamSha": "d0f855bfa91b1d961a17a02ec3e383f9671caba1",
       "subject": "fix(web): size the chat image slot from server-reported dimensions (#10200)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): size the chat image slot from server-reported dimensions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat image slots use server-reported dimensions as their aspect ratio.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:131",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d115a96763b76d00f06b06272688cf68eebe8206",
@@ -14905,10 +15485,15 @@
     {
       "upstreamSha": "d1a644897119300688cbd8bf26e0b64aeb92c382",
       "subject": "fix(web): dropped folders become path chips on the local environment and are refused on remote ones (#12001)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): dropped folders become path chips on the local environment and are refused on remote ones. Reimplement in f5; not yet delivered. Port local folder path references only; multi-machine environments remain excluded.",
+      "reason": "Phase 7b: dropped local folders become path references rather than uploads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/droppedAttachments.ts:14",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d1d15c67f4a5fb82fd8d5e01e5e3b288296789c3",
@@ -15125,10 +15710,18 @@
     {
       "upstreamSha": "d487dfbf46be344e818725be70ee04be2436bfb4",
       "subject": "fix(web): resume Antigravity threads without repeated sign-in (#9647)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(web): resume Antigravity threads without repeated sign-in. Reimplement in f5; not yet delivered.",
+      "reason": "Resume Antigravity using session/resume and the existing isolated account home; expired sign-in directs the user to account setup instead of launching hidden login.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/acp/AcpSessionRuntime.ts:686",
+        "apps/server/src/provider/acp/AntigravityAcpSupport.ts:83"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "d4ba2a1f11498eae9683f6dc95a08b1c17c29765",
@@ -15237,10 +15830,18 @@
     {
       "upstreamSha": "d64335bb5913c21869633a4236d9409911e3da52",
       "subject": "fix(codex): name the usage limit and its reset instead of relaying \"out of credits\" (#10473)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(codex): name the usage limit and its reset instead of relaying \"out of credits\". Reimplement in f5; not yet delivered.",
+      "reason": "Name Codex main usage windows and reset times, preserve partial updates and exclude Spark snapshots.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/provider/codexErrors.ts:35",
+        "apps/server/src/provider/usageLimitMessages.test.ts:58"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "d67157a09c28883d7856d03d2b1d3aecdbf1b890",
@@ -15449,18 +16050,31 @@
     {
       "upstreamSha": "d92dca74eb7b7c6068619752f5b9a55c0e36f352",
       "subject": "fix(web): resume imported custom-provider threads (#10184)",
-      "reason": "Phase 4: fix(web): resume imported custom-provider threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Resolve imported histories through their configured/live provider instance before model inference, preserving custom instance routing.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/ChatView.logic.ts:904",
+        "apps/web/src/components/ChatView.logic.test.ts:1184"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "d937e30759ceae421bf3cc1b84414de4b67df76c",
       "subject": "feat(web): render HTML and PDF files in the file viewer (#9143)",
-      "reason": "Phase 7c (rich file/media viewing): feat(web): render HTML and PDF files in the file viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: HTML renders in a sandboxed iframe with an html-document grant, and PDF in a native viewer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/WorkspaceMediaView.tsx:178",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "d94fbda344398bd266b9f6645e531eb17d3c9e4e",
@@ -15649,10 +16263,18 @@
     {
       "upstreamSha": "db9a0671bb8921ebf5f9da16cd54f7e87f5ef3b0",
       "subject": "refactor(web): move settings scope pickers into breadcrumbs (#13165)",
-      "reason": "Phase 6 (project-scoped settings): refactor(web): move settings scope pickers into breadcrumbs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: scope controls are a Global › Project breadcrumb with search, scroll and URL persistence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:23",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "dbc7bfa3f36cc61a3f1a2015e47d71ae9dee5421",
@@ -15990,10 +16612,14 @@
     {
       "upstreamSha": "e01c153c18a94a2aa33df7115c6cfee1eb09880f",
       "subject": "fix(antigravity): forward Google sign-in URLs from browser helper (#9425)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): forward Google sign-in URLs from browser helper. Reimplement in f5; not yet delivered.",
+      "reason": "The isolated browser helper returns validated Google OAuth URLs to the owning account job rather than opening a server-side browser.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:136"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "e022fa430edbf8d448efe0f34303ff290ebb3dc0",
@@ -16156,10 +16782,19 @@
     {
       "upstreamSha": "e22040dfc190d04573238c5db2e69df72e5f1017",
       "subject": "feat(settings): edit any scopable setting as a project override (#10639)",
-      "reason": "Phase 6 (project-scoped settings): feat(settings): edit any scopable setting as a project override. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 6: all seven approved scoped keys editable with inheritance badges and reset; global-only controls hidden in project scope.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "6"
+      "disposition": "ported",
+      "plannedWorkstream": "6",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:80",
+        "apps/web/src/routes/-_chat.settings.browser.tsx:408",
+        "docs/reviews/phase-six-project-settings-validation.md:25"
+      ],
+      "f5Shas": [
+        "553ee4c282c6a3e5e811903ef80abc1b659bf11a",
+        "50c765bc55fe74909e6872cbcc23b391fb9e00e9"
+      ]
     },
     {
       "upstreamSha": "e25021af767b10c560862fcec714cf67fb22cfae",
@@ -16220,10 +16855,15 @@
     {
       "upstreamSha": "e2e6ce6a29451e9fac612ab83f7a104b6d6475a3",
       "subject": "feat(server): report image dimensions with signed asset URLs (#10198)",
-      "reason": "Phase 7c (rich file/media viewing): feat(server): report image dimensions with signed asset URLs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: asset URL issuance reports image dimensions read from file headers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/server/src/imageDimensions.ts:4",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "e31e568bdb2fac30a3c785190201750c6d7dd61c",
@@ -16502,10 +17142,15 @@
     {
       "upstreamSha": "e723501227b7d1d0b960eb8fcfd9c8d6099d805e",
       "subject": "feat(composer): list skills with slash commands (#7737)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(composer): list skills with slash commands. Reimplement in f5; not yet delivered.",
+      "reason": "Combine native slash commands with discovered project and provider skills in the composer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:80"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "e74c668d786ffc14f40a9540cd3aede02ba5d62e",
@@ -16532,10 +17177,20 @@
     {
       "upstreamSha": "e7deb2aaf4d4d089618dc0c8f393fa0b8b6c77e9",
       "subject": "feat(web): cite assistant responses with inline citations (#9146)",
-      "reason": "Phase 5 (independent desktop/chat features): feat(web): cite assistant responses with inline citations. Reimplement in f5; not yet delivered.",
+      "reason": "Implement the approved F5 quote-reply variant: assistant selection toolbar, bounded local Lexical quote node and comment, serialized into durable Markdown. Upstream server citations and mobile changes are intentionally excluded by the review.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:9",
+        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.ts:14",
+        "apps/web/src/components/chat/composer/ComposerAssistantQuoteNode.test.ts:17",
+        "apps/web/src/components/ChatView.browser.tsx:6332"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229",
+        "a2bc2b12d46e187344c2261b73212499989abe61"
+      ]
     },
     {
       "upstreamSha": "e7f6a30caba5c390d5bbc9c300de89b68601c057",
@@ -16639,10 +17294,15 @@
     {
       "upstreamSha": "e9f50c3efcb02a199042364ead292e164274e716",
       "subject": "feat(web): upload image attachments before sending (#8048)",
-      "reason": "Phase 7b (generic attachments and uploads): feat(web): upload image attachments before sending. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: attachments upload over HTTP before sending; drafts persist upload ids and sending waits for uploads to finish.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/lib/attachmentUploadQueue.ts:22",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ea0487cc9adf9f51c865fe39128102afc532bcfc",
@@ -16691,10 +17351,15 @@
     {
       "upstreamSha": "ea71a19d4181ce13b0e8f374f45ba9237ee4a9ce",
       "subject": "fix(claude): skills picked from the composer now run (#9128)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(claude): skills picked from the composer now run. Reimplement in f5; not yet delivered.",
+      "reason": "Composer skill selections retain structured invocation metadata and explicit source paths when the provider has no matching native skill.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/web/src/components/ChatView.logic.ts:183"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff",
+        "6c5b37168c0a03b24fba74ab8715f803ded98a4f"
+      ]
     },
     {
       "upstreamSha": "ea8c9e5ca3ace89cbf6cf0a2aa03047aab1d3ef9",
@@ -16725,10 +17390,15 @@
     {
       "upstreamSha": "ead4ce52a1624d9c55461f61524580978fc8b719",
       "subject": "fix(grok): improve skills, plans, usage, and turn reliability (#8358)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(grok): improve skills, plans, usage, and turn reliability. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 4 delivers Grok skill discovery, native commands and reasoning, retaining Phase 1c lifecycle fixes. This multi-area commit remains open for the Usage readers/dashboard work explicitly assigned to Phase 11.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "evidence": [
+        "apps/server/src/provider/Drivers/GrokSkills.test.ts:6",
+        "apps/server/src/provider/Layers/GrokAdapter.test.ts:54"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"],
+      "plannedWorkstream": "11"
     },
     {
       "upstreamSha": "eadeaf228267be215a2e9486f16b876d703dcccc",
@@ -16768,10 +17438,14 @@
     {
       "upstreamSha": "eb334ca57448742139fb8ec38fb397c1e51c45c5",
       "subject": "fix(antigravity): handle native sign-in URLs on stderr (#9514)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): handle native sign-in URLs on stderr. Reimplement in f5; not yet delivered.",
+      "reason": "Recognize validated native OAuth links on stderr as well as helper/stdout notices; redact URLs from termination diagnostics.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityAcpSupport.ts:214"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "eb6c170c42eaec20d063ce80ff810e97d4dddb37",
@@ -16859,10 +17533,15 @@
     {
       "upstreamSha": "ec5ede5e6a1f2f9d564a5834462f47d1b7e5f0ec",
       "subject": "fix(web): open video attachment thumbnails in the viewer (#11734)",
-      "reason": "Phase 7b (generic attachments and uploads): fix(web): open video attachment thumbnails in the viewer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7b: video attachment chips open in the shared viewer and also play inline.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7b"
+      "disposition": "ported",
+      "plannedWorkstream": "7b",
+      "evidence": [
+        "apps/web/src/components/chat/AttachmentFileChip.tsx:30",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ec8b2119c377f5c1dbe6235b221ef98eca31a96e",
@@ -16882,10 +17561,15 @@
     {
       "upstreamSha": "eced382b451abc35137e7047b010c6ae5f6e9353",
       "subject": "fix(web): keep chat media at a stable size while it loads (#9938)",
-      "reason": "Phase 7c (rich file/media viewing): fix(web): keep chat media at a stable size while it loads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 7c: chat media keeps a stable slot size while loading via reported dimensions and placeholders.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "ported",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "apps/web/src/components/ChatAssetImage.tsx:131",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ],
+      "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
     },
     {
       "upstreamSha": "ecf3716fd190005b1552957b3c7880ab849a0a65",
@@ -17265,10 +17949,14 @@
     {
       "upstreamSha": "f193a6863c494fdfa36a1ef3132e42a7d7b42926",
       "subject": "fix(server): bypass owned caches on explicit provider refresh (#13109)",
-      "reason": "Phase 4: fix(server): bypass owned caches on explicit provider refresh. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Explicit F5 refresh already invalidates instance-owned Claude capability/account caches before snapshot refresh; Cursor automatic status intentionally avoids ACP model probes, and F5 has no upstream ModelManifest cache.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "equivalent",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderRegistry.ts:200",
+        "apps/server/src/provider/Drivers/ClaudeProbeCache.ts:55"
+      ],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "f1a08116f9c6f98d933d53fa897be3d8e3ac1e03",
@@ -17357,10 +18045,17 @@
     {
       "upstreamSha": "f25e4428961982e3935300cfd3c78f7d0fac4ee9",
       "subject": "fix(antigravity): allow slow runtime startup during setup (#9510)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): fix(antigravity): allow slow runtime startup during setup. Reimplement in f5; not yet delivered.",
+      "reason": "Account jobs allow ten minutes for slow first startup/login and 45 minutes for explicit installation; passive status checks never start the native runtime.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": [
+        "apps/server/src/profiles/ProviderAccountService.ts:243",
+        "apps/server/src/provider/Layers/AntigravityProvider.ts:50"
+      ],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "9c562a4c2868e31caad697b11c56a6fba633a6ff"
+      ]
     },
     {
       "upstreamSha": "f26198d799bb81bf754985d457a60f8a851ea895",
@@ -17460,10 +18155,18 @@
     {
       "upstreamSha": "f3cb7f509595d304c6e2ccc7afe05c95ec45a7d8",
       "subject": "fix(desktop): prevent quit shortcut spillover (#7397)",
-      "reason": "Phase 5 (independent desktop/chat features): fix(desktop): prevent quit shortcut spillover. Reimplement in f5; not yet delivered.",
+      "reason": "Wait for key release or the repeat-aware quiet grace period after a completed hold so shortcut repeats do not spill into the next app.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/desktop/src/quitHold.ts:40",
+        "apps/desktop/src/quitHold.test.ts:1",
+        "apps/desktop/src/desktopAttention.test.ts:48"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "f3d3fe4569274c5ee6f3c5435809330bef494a2d",
@@ -17505,10 +18208,14 @@
     {
       "upstreamSha": "f46a709ee487e1e6e04423fcb7032a26eb103129",
       "subject": "feat(files): open markdown, HTML, and PDF files outside the workspace (#9140)",
-      "reason": "Phase 7c (rich file/media viewing): feat(files): open markdown, HTML, and PDF files outside the workspace. Reimplement in f5; not yet delivered.",
+      "reason": "Declined in Phase 7c: the approved plan restricts viewing to registered projects, worktrees and the profile's attachments directory; files outside the workspace remain editor-only.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "7c"
+      "disposition": "declined",
+      "plannedWorkstream": "7c",
+      "evidence": [
+        "docs/user/attachments-and-media.md:28",
+        "docs/reviews/phase-seven-media-validation.md:1"
+      ]
     },
     {
       "upstreamSha": "f47a3fe90354a3dfa14276e3699541d552426276",
@@ -17764,10 +18471,11 @@
     {
       "upstreamSha": "f8a14b28ff80a92d8f4df9a9aa53bfacb8195199",
       "subject": "feat(antigravity): show subagent calls and results (#9515)",
-      "reason": "Phase 4 (provider capabilities and Antigravity): feat(antigravity): show subagent calls and results. Reimplement in f5; not yet delivered.",
+      "reason": "Show native Antigravity subagent launch/progress/failure without confusing MCP tools or treating launch receipts as completed agents.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "4"
+      "disposition": "ported",
+      "evidence": ["apps/server/src/provider/acp/AntigravityTasks.test.ts:14"],
+      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"]
     },
     {
       "upstreamSha": "f8b4c464b4760d73e0ece7e68011c738803d8b69",
@@ -18119,10 +18827,17 @@
     {
       "upstreamSha": "fe07ffe7c0bf1858ba4d1cd1ce0a67b10802a747",
       "subject": "fix(web): remove inserted citations on cancel (#10518)",
-      "reason": "Phase 5: fix(web): remove inserted citations on cancel. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Cancellation inserts no quote or comment into the composer; tested together with selection dismissal and IME handling.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "5"
+      "disposition": "ported",
+      "evidence": [
+        "apps/web/src/components/chat/AssistantQuoteToolbar.tsx:116",
+        "apps/web/src/components/chat/AssistantQuoteToolbar.browser.tsx:6"
+      ],
+      "f5Shas": [
+        "3ccb2023978310a5794915fb5191d9f1addb223f",
+        "1ffbece7538b699dd579ab85cd3a2d51df8ec229"
+      ]
     },
     {
       "upstreamSha": "fe281c5408164250da6688de6fc71ac12d8a9d8f",

@@ -88,7 +88,15 @@ describe("Toast close controls", () => {
         timeout: 0,
       });
 
-      await waitForToastTitle("Stacked toast with close");
+      const title = await waitForToastTitle("Stacked toast with close");
+      const icon = document.querySelector<HTMLElement>('[data-slot="toast-icon"]')!;
+      const description = document.querySelector<HTMLElement>('[data-slot="toast-description"]')!;
+      expect(
+        Math.abs(icon.getBoundingClientRect().top - title.getBoundingClientRect().top),
+      ).toBeLessThan(2);
+      expect(
+        Math.abs(description.getBoundingClientRect().left - icon.getBoundingClientRect().left),
+      ).toBeLessThan(2);
       const closeButton = document.querySelector<HTMLButtonElement>('[data-slot="toast-close"]');
       expect(closeButton?.getAttribute("aria-label")).toBe("Dismiss");
       closeButton?.click();

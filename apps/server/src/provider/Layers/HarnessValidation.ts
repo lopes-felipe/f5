@@ -97,6 +97,8 @@ function connectivityTimeoutMessage(provider: ProviderKind): string {
       return "OpenCode one-off prompt query timed out.";
     case "grok":
       return "Grok one-off prompt query timed out.";
+    case "antigravity":
+      return "Antigravity one-off prompt query timed out.";
   }
 }
 
@@ -242,6 +244,8 @@ function providerDisplayName(provider: ProviderKind): string {
       return "OpenCode";
     case "grok":
       return "Grok";
+    case "antigravity":
+      return "Antigravity";
   }
 }
 
@@ -412,7 +416,7 @@ export const HarnessValidationLive = Layer.effect(
     const inFlight = yield* Ref.make(false);
 
     const runProviderPreflight = (params: {
-      readonly provider: ProviderKind;
+      readonly provider: (typeof HARNESS_VALIDATION_ORDER)[number];
       readonly settings: ServerSettings;
       readonly providerOptions?: ProviderStartOptions;
     }) => {
@@ -476,7 +480,7 @@ export const HarnessValidationLive = Layer.effect(
     };
 
     const validateProvider = (params: {
-      readonly provider: ProviderKind;
+      readonly provider: (typeof HARNESS_VALIDATION_ORDER)[number];
       readonly settings: ServerSettings;
       readonly providerOptions?: ProviderStartOptions;
     }) =>

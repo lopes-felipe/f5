@@ -191,7 +191,9 @@ interface CodexAccountSnapshot {
 export interface CodexAppServerSendTurnInput {
   readonly threadId: ThreadId;
   readonly input?: string;
-  readonly attachments?: ReadonlyArray<{ type: "image"; url: string }>;
+  readonly attachments?: ReadonlyArray<
+    { type: "image"; url: string } | { type: "localImage"; path: string }
+  >;
   readonly model?: string;
   readonly serviceTier?: string | null;
   readonly effort?: string;
@@ -1087,7 +1089,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const context = this.requireSession(input.threadId);
 
     const turnInput: Array<
-      { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
+      | { type: "text"; text: string; text_elements: [] }
+      | { type: "image"; url: string }
+      | { type: "localImage"; path: string }
     > = [];
     if (input.input) {
       turnInput.push({
@@ -1097,6 +1101,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
     }
     for (const attachment of input.attachments ?? []) {
+      if (attachment.type === "localImage") {
+        turnInput.push(attachment);
+      }
       if (attachment.type === "image") {
         turnInput.push({
           type: "image",
@@ -1119,7 +1126,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const turnStartParams: {
       threadId: string;
       input: Array<
-        { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
+        | { type: "text"; text: string; text_elements: [] }
+        | { type: "image"; url: string }
+        | { type: "localImage"; path: string }
       >;
       model?: string;
       serviceTier?: string | null;

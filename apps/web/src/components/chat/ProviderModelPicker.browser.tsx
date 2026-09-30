@@ -36,6 +36,7 @@ const MODEL_OPTIONS_BY_PROVIDER = {
   cursor: [{ slug: "auto", name: "Auto" }],
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
   grok: [{ slug: "grok-build", name: "Grok Build" }],
+  antigravity: [],
 } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
 
 async function mountPicker(props?: {
@@ -237,6 +238,7 @@ describe("ProviderModelPicker", () => {
       cursor: [],
       opencode: [],
       grok: [],
+      antigravity: [],
     } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
     const mounted = await mountPicker({
       provider: "codex",

@@ -1,9 +1,13 @@
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model";
-import { ModelSelection } from "./orchestration";
+import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  ProviderOptionSelections,
+  ModelCapabilities,
+} from "./model";
+import { ModelSelection, RuntimeMode } from "./orchestration";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
 export { ThreadEnvMode };
@@ -100,13 +104,23 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(() => fallback),
   );
 
+export const CustomModelSetting = Schema.Union([
+  Schema.String,
+  Schema.Struct({
+    slug: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+    name: Schema.optionalKey(TrimmedString.check(Schema.isMaxLength(120))),
+    capabilities: Schema.optionalKey(ModelCapabilities),
+  }),
+]);
+export type CustomModelSetting = typeof CustomModelSetting.Type;
+
 export const CodexSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("codex"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CodexSettings = typeof CodexSettings.Type;
 
@@ -114,7 +128,7 @@ export const ClaudeSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -123,7 +137,7 @@ export const CursorSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("agent"),
   apiEndpoint: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CursorSettings = typeof CursorSettings.Type;
 export const OpenCodeSettings = Schema.Struct({
@@ -131,16 +145,23 @@ export const OpenCodeSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("opencode"),
   serverUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   serverPassword: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type OpenCodeSettings = typeof OpenCodeSettings.Type;
 
 export const GrokSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("grok"),
-  customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type GrokSettings = typeof GrokSettings.Type;
+
+export const AntigravitySettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
+  nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+});
+export type AntigravitySettings = typeof AntigravitySettings.Type;
 
 export const ObservabilitySettings = Schema.Struct({
   otlpTracesUrl: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -176,10 +197,47 @@ export const SourceControlWritingSettings = Schema.Struct({
 });
 export type SourceControlWritingSettings = typeof SourceControlWritingSettings.Type;
 
+const SourceControlWritingSettingsPatch = Schema.Struct({
+  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
+  commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
+  commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
+  prBodyTemplate: Schema.optionalKey(Schema.String),
+  branchNamePrefix: Schema.optionalKey(Schema.String),
+  customInstructions: Schema.optionalKey(Schema.String),
+  generateCommitMessages: Schema.optionalKey(Schema.Boolean),
+  generatePrContent: Schema.optionalKey(Schema.Boolean),
+});
+
+export const WorktreeSubmodules = Schema.Literals(["none", "shallow", "recursive"]);
+export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
+
+export const ProjectSettingsOverrides = Schema.Struct({
+  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
+  worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
+  textGenerationModelSelection: Schema.optionalKey(ModelSelection),
+  sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
+  enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
+  prHubDefaultMergeMethod: Schema.optionalKey(
+    Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
+  ),
+});
+export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
+
 export const ServerSettings = Schema.Struct({
+  defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
+  worktreeSubmodules: WorktreeSubmodules.pipe(
+    Schema.withDecodingDefault(() => "recursive" as const),
+  ),
+  projectSettingsOverrides: Schema.Record(ProjectId, ProjectSettingsOverrides).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
+  clientSettingMigrations: Schema.Record(Schema.String, IsoDateTime).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
   gitAuthorName: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   gitAuthorEmail: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
-  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
     Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
@@ -215,6 +273,7 @@ export const ServerSettings = Schema.Struct({
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+    antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   }).pipe(Schema.withDecodingDefault(() => ({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
@@ -266,14 +325,14 @@ const CodexSettingsPatch = Schema.Struct({
   homePath: Schema.optionalKey(Schema.String),
   shadowHomePath: Schema.optionalKey(Schema.String),
   launchArgs: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
   launchArgs: Schema.optionalKey(Schema.String),
 });
 
@@ -281,7 +340,7 @@ const CursorSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   apiEndpoint: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const OpenCodeSettingsPatch = Schema.Struct({
@@ -289,13 +348,13 @@ const OpenCodeSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(Schema.String),
   serverUrl: Schema.optionalKey(Schema.String),
   serverPassword: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const GrokSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
-  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
 const PrHubSettingsPatch = Schema.Struct({
@@ -303,18 +362,12 @@ const PrHubSettingsPatch = Schema.Struct({
   excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
-const SourceControlWritingSettingsPatch = Schema.Struct({
-  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
-  commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
-  commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
-  prBodyTemplate: Schema.optionalKey(Schema.String),
-  branchNamePrefix: Schema.optionalKey(Schema.String),
-  customInstructions: Schema.optionalKey(Schema.String),
-  generateCommitMessages: Schema.optionalKey(Schema.Boolean),
-  generatePrContent: Schema.optionalKey(Schema.Boolean),
-});
-
 export const ServerSettingsPatch = Schema.Struct({
+  defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
+  worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
+  projectSettingsOverrides: Schema.optionalKey(
+    Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
+  ),
   gitAuthorName: Schema.optionalKey(Schema.String),
   gitAuthorEmail: Schema.optionalKey(Schema.String),
   // Server settings
@@ -342,6 +395,13 @@ export const ServerSettingsPatch = Schema.Struct({
       cursor: Schema.optionalKey(CursorSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
+      antigravity: Schema.optionalKey(
+        Schema.Struct({
+          enabled: Schema.optionalKey(Schema.Boolean),
+          customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+          nativeCompaction: Schema.optionalKey(Schema.Boolean),
+        }),
+      ),
     }),
   ),
   // Whole-map replacement for the new instance config. Patching individual
@@ -351,3 +411,38 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
+
+export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
+  "defaultRuntimeMode",
+  "defaultThreadEnvMode",
+  "worktreeSubmodules",
+  "textGenerationModelSelection",
+  "sourceControlWriting",
+  "enableAssistantStreaming",
+  "prHubDefaultMergeMethod",
+] as const satisfies ReadonlyArray<keyof ServerSettings>;
+export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
+export const ProjectSettingSource = Schema.Literals([
+  "project",
+  "legacy-project",
+  "f5.json",
+  "t3.json",
+  "global",
+  "default",
+]);
+export const ProjectSettingsResult = Schema.Struct({
+  settings: ServerSettings,
+  sources: Schema.Record(Schema.Literals(PROJECT_SCOPED_SERVER_SETTING_KEYS), ProjectSettingSource),
+  overrides: ProjectSettingsOverrides,
+});
+export type ProjectSettingsResult = typeof ProjectSettingsResult.Type;
+export const MigrateClientSettingInput = Schema.Union([
+  Schema.Struct({ key: Schema.Literal("defaultThreadEnvMode"), value: ThreadEnvMode }),
+  Schema.Struct({ key: Schema.Literal("enableAssistantStreaming"), value: Schema.Boolean }),
+]);
+export type MigrateClientSettingInput = typeof MigrateClientSettingInput.Type;
+export const MigrateClientSettingResult = Schema.Struct({
+  applied: Schema.Boolean,
+  currentValue: Schema.Union([ThreadEnvMode, Schema.Boolean]),
+});
+export type MigrateClientSettingResult = typeof MigrateClientSettingResult.Type;

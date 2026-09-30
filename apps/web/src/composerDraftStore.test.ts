@@ -1,3 +1,18 @@
+vi.mock("./lib/attachmentUploadQueue", () => ({
+  attachmentSources: new WeakMap(),
+  setAttachmentSource: (file: File) => file,
+  uploadAttachment: vi.fn(async (_origin, threadId, file) => ({
+    uploadId: crypto.randomUUID(),
+    draftThreadId: threadId,
+    name: file.name,
+    kind: "image",
+    mimeType: file.type,
+    sizeBytes: file.size,
+    contentHash: "test-hash",
+    expiresAt: new Date(Date.now() + 86400000).toISOString(),
+  })),
+}));
+vi.mock("./lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://localhost" }));
 import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
 import { createComposerMention } from "./composer-editor-mentions";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
@@ -190,6 +205,10 @@ describe("composerDraftStore image imports", () => {
   });
 
   it("reserves attachment slots before asynchronous processing", async () => {
+    setServerBootstrap({
+      ...serverBootstrapFixture,
+      attachmentLimits: { ...serverBootstrapFixture.attachmentLimits!, maxCount: 8 },
+    });
     for (let index = 0; index < 7; index += 1) {
       useComposerDraftStore.getState().addImage(
         threadA,
@@ -218,7 +237,7 @@ describe("composerDraftStore image imports", () => {
       .importImages(threadA, [secondFile], {
         processor: vi.fn<ComposerImageProcessor>(),
       });
-    expect(secondResult.failures[0]?.message).toContain("up to 8 images");
+    expect(secondResult.failures[0]?.message).toContain("up to 8 attachments");
 
     resolveFirst({
       ok: true,
@@ -643,7 +662,7 @@ describe("composerDraftStore prompt stash", () => {
     expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
   });
 
-  it("rejects image-heavy stashes before they can exhaust shared draft storage", async () => {
+  it("replaces legacy image bytes with upload references when stashing", async () => {
     const image = makeImage({ id: "oversized-stash", previewUrl: "blob:oversized-stash" });
     useComposerDraftStore.getState().addImage(sourceThreadId, image);
     useComposerDraftStore.getState().syncPersistedAttachments(sourceThreadId, [
@@ -661,11 +680,10 @@ describe("composerDraftStore prompt stash", () => {
       projectId,
     });
 
-    expect(result).toMatchObject({ status: "failed" });
-    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images).toHaveLength(
-      1,
-    );
-    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
+    expect(result).toMatchObject({ status: "stored" });
+    const saved = useComposerDraftStore.getState().promptStashes[0]?.draft.attachments[0];
+    expect(saved?.uploadId).toBeTruthy();
+    expect(saved?.dataUrl).toBe("");
   });
 
   it("keeps only the twenty newest saved prompts", async () => {
@@ -952,7 +970,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       branch: "feature/test",
       worktreePath: "/tmp/worktree-test",
       envMode: "worktree",
-      runtimeMode: "full-access",
+      runtimeMode: "approval-required",
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
     });
@@ -961,7 +979,7 @@ describe("composerDraftStore project draft thread mapping", () => {
       branch: "feature/test",
       worktreePath: "/tmp/worktree-test",
       envMode: "worktree",
-      runtimeMode: "full-access",
+      runtimeMode: "approval-required",
       interactionMode: "default",
       createdAt: "2026-01-01T00:00:00.000Z",
     });
@@ -1534,6 +1552,9 @@ it("returns a visible import failure before welcome metadata arrives", async () 
     ]);
   expect(result.imported).toEqual([]);
   expect(result.failures).toEqual([
-    { name: "clipboard.png", message: expect.stringContaining("Waiting for server capabilities") },
+    {
+      name: "clipboard.png",
+      message: expect.stringContaining("Waiting for server upload capabilities"),
+    },
   ]);
 });

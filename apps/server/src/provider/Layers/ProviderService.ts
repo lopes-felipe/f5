@@ -1,3 +1,8 @@
+import {
+  getProviderAttachmentLimitError,
+  nativeProviderAttachments,
+} from "@t3tools/shared/attachmentLimits";
+import { withAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
@@ -10,10 +15,12 @@ import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
  *
  * @module ProviderServiceLive
  */
-import { access } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 
 import {
   DEFAULT_RUNTIME_MODE,
+  EventId,
   ModelSelection,
   isKnownProviderKind,
   type TurnId,
@@ -706,6 +713,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         return { adapter, session: resumed, orphanedTurnId } as const;
       }).pipe(
+        withAccountAdmission(
+          serverConfig.stateDir,
+          resolveBindingInstanceId(input.binding),
+          input.operation,
+        ),
         withMetrics({
           counter: providerSessionsTotal,
           attributes: providerMetricAttributes(input.binding.provider, {
@@ -719,9 +731,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly operation: string;
       readonly allowRecovery: boolean;
       readonly fallbackActiveTurnId?: TurnId;
+      readonly binding?: Option.Option<ProviderRuntimeBinding>;
     }) =>
       Effect.gen(function* () {
-        const bindingOption = yield* directory.getBinding(input.threadId);
+        const bindingOption = input.binding ?? (yield* directory.getBinding(input.threadId));
         const binding = Option.getOrUndefined(bindingOption);
         if (!binding) {
           return yield* toValidationError(
@@ -851,12 +864,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
           if (
-            resolvedProvider === "grok" &&
+            (resolvedProvider === "grok" || resolvedProvider === "antigravity") &&
             parsed.workflowExecutionProfile?.endsWith("readonly")
           ) {
             return yield* toValidationError(
               "ProviderService.startSession",
-              "Grok cannot enforce read-only workflow turns.",
+              `${resolvedProvider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
             );
           }
           if (parsed.provider !== undefined && parsed.provider !== resolvedProvider) {
@@ -1013,6 +1026,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
           return sessionWithInstance;
         }).pipe(
+          withAccountAdmission(
+            serverConfig.stateDir,
+            requestedInstanceId,
+            "ProviderService.startSession",
+          ),
           withMetrics({
             counter: providerSessionsTotal,
             attributes: () =>
@@ -1054,6 +1072,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.interaction_mode": input.interactionMode,
           "provider.attachment_count": input.attachments.length,
         });
+        const binding = yield* directory.getBinding(input.threadId);
+        const instanceId = Option.isSome(binding) ? resolveBindingInstanceId(binding.value) : "";
         let metricProvider = "unknown";
         let metricModel = input.model;
         return yield* Effect.gen(function* () {
@@ -1061,15 +1081,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId: input.threadId,
             operation: "ProviderService.sendTurn",
             allowRecovery: true,
+            binding,
           });
           metricProvider = routed.adapter.provider;
           if (
-            routed.adapter.provider === "grok" &&
+            (routed.adapter.provider === "grok" || routed.adapter.provider === "antigravity") &&
             input.workflowExecutionProfile?.endsWith("readonly")
           ) {
             return yield* toValidationError(
               "ProviderService.sendTurn",
-              "Grok cannot enforce read-only workflow turns.",
+              `${routed.adapter.provider === "grok" ? "Grok" : "Antigravity"} cannot enforce read-only workflow turns.`,
             );
           }
           metricModel = input.model;
@@ -1077,8 +1098,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             ...(input.model ? { "provider.model": input.model } : {}),
           });
+          const limitError = getProviderAttachmentLimitError(
+            input.attachments,
+            routed.adapter.provider,
+          );
+          if (limitError) return yield* toValidationError("ProviderService.sendTurn", limitError);
           const attachmentPaths = input.attachments.map((attachment) => {
             switch (attachment.type) {
+              case "file":
               case "image": {
                 const localPath = resolveAttachmentPath({
                   attachmentsDir: serverConfig.attachmentsDir,
@@ -1097,8 +1124,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               attachmentPaths.map(async ({ attachment, localPath }) => {
                 if (localPath === null) return attachment.id;
                 try {
-                  await access(localPath);
-                  return null;
+                  const current = await lstat(localPath);
+                  return current.isFile() && current.size === attachment.sizeBytes
+                    ? null
+                    : attachment.id;
                 } catch {
                   return attachment.id;
                 }
@@ -1108,17 +1137,40 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           if (missingAttachmentIds.length > 0) {
             return yield* toValidationError(
               "ProviderService.sendTurn",
-              `The following attachments are no longer available: ${missingAttachmentIds.join(", ")}`,
+              `The following attachments changed or are no longer available: ${missingAttachmentIds.join(", ")}`,
             );
           }
           const resolvedAttachments = attachmentPaths.map(({ attachment, localPath }) => ({
             ...attachment,
             localPath: localPath!,
           }));
+          const nativeAttachments = nativeProviderAttachments(
+            input.attachments,
+            routed.adapter.provider,
+          );
           const turn = yield* routed.adapter.sendTurn({
             ...input,
+            attachments: nativeAttachments,
             resolvedAttachments,
           });
+          const inlineIds = new Set(nativeAttachments.map((attachment) => attachment.id));
+          const overflowImages = input.attachments.filter(
+            (attachment) => attachment.type === "image" && !inlineIds.has(attachment.id),
+          );
+          if (overflowImages.length)
+            yield* publishRuntimeEvent({
+              type: "runtime.warning",
+              eventId: EventId.makeUnsafe(randomUUID()),
+              provider: routed.adapter.provider,
+              threadId: input.threadId,
+              turnId: turn.turnId,
+              createdAt: new Date().toISOString(),
+              payload: {
+                category: "provider",
+                message: `${overflowImages.length} image(s) delivered as files because this provider's inline image limit was reached. Saved paths remain available to the agent.`,
+                actionable: false,
+              },
+            });
           const persistedBinding = yield* directory.getBinding(input.threadId);
           const persistedRuntimePayload = Option.match(persistedBinding, {
             onNone: () => undefined,
@@ -1152,6 +1204,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           return turn;
         }).pipe(
+          withAccountAdmission(serverConfig.stateDir, instanceId, "ProviderService.sendTurn"),
           withMetrics({
             counter: providerTurnsTotal,
             timer: providerTurnDuration,
@@ -1540,11 +1593,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               : {}),
           ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
         };
-        const result = yield* adapter.runOneOffPrompt
-          ? adapter.runOneOffPrompt(providerInput)
-          : adapter.compactConversation!(providerInput).pipe(
-              Effect.map((response) => ({ text: response.summary })),
-            );
+        const result = yield* (
+          adapter.runOneOffPrompt
+            ? adapter.runOneOffPrompt(providerInput)
+            : adapter.compactConversation!(providerInput).pipe(
+                Effect.map((response) => ({ text: response.summary })),
+              )
+        ).pipe(
+          withAccountAdmission(
+            serverConfig.stateDir,
+            input.modelSelection?.instanceId ??
+              defaultInstanceIdForDriver(ProviderDriverKind.make(provider)),
+            "ProviderService.runOneOffPrompt",
+          ),
+        );
         yield* analytics.record("provider.one_off_prompt.ran", {
           provider,
           model: input.modelSelection?.model ?? input.model,

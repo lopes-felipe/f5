@@ -1,4 +1,5 @@
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
+import { useMigrateClientSettings } from "../hooks/useMigrateClientSettings";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import {
   acceptProfileWelcome,
@@ -112,6 +113,7 @@ export function applyProviderAdvisoriesToServerConfig(
 }
 
 function RootRouteView() {
+  useMigrateClientSettings();
   useAppearanceSettingsSync();
   const { resolvedTheme } = useTheme();
   useThemePaletteSync(resolvedTheme);
@@ -1215,7 +1217,7 @@ function EventRouter() {
     let subscribed = false;
     const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
       updateProfileAccounts(payload.providers);
-      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
+      void queryClient.invalidateQueries({ queryKey: serverQueryKeys.all });
       if (!subscribed) return;
       if (payload.source !== "keybindings") return;
       const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));

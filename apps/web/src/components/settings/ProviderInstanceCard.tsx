@@ -1,4 +1,11 @@
 "use client";
+
+import type { CustomModelSetting } from "@t3tools/contracts";
+import {
+  customModelSlug,
+  normalizeCustomModels,
+  readCustomModels,
+} from "@t3tools/shared/customModels";
 import { ProviderAccountPanel } from "./ProviderAccountPanel";
 
 import {
@@ -24,7 +31,6 @@ import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import { cn } from "../../lib/utils";
 import { AccentColorPicker } from "./AccentColorPicker";
-import { normalizeCustomModelSlugs } from "../../modelSelection";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -109,19 +115,6 @@ function readConfigString(config: unknown, key: string): string {
 }
 
 /**
- * Read a string[] at `key` from the opaque config blob, filtering out
- * non-string entries. Used for `customModels`, which is always typed as
- * `string[]` by the concrete driver schemas but arrives here as
- * `Schema.Unknown`.
- */
-function readConfigStringArray(config: unknown, key: string): ReadonlyArray<string> {
-  if (config === null || typeof config !== "object") return [];
-  const value = (config as Record<string, unknown>)[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-/**
  * Produce the next config blob after setting `key` to `value`. Empty
  * strings drop the key so server defaults stay in effect, mirroring the
  * save-time normalization in `AddProviderInstanceDialog`. Returns
@@ -168,7 +161,7 @@ function nextConfigBlobWithValue(
 
 export function deriveProviderModelsForDisplay(input: {
   readonly liveModels: ReadonlyArray<ServerProviderModel> | undefined;
-  readonly customModels: ReadonlyArray<string>;
+  readonly customModels: ReadonlyArray<CustomModelSetting>;
   readonly driverKind?: ProviderDriverKind | null;
 }): ReadonlyArray<ServerProviderModel> {
   const normalizeSlug = (slug: string) =>
@@ -183,18 +176,23 @@ export function deriveProviderModelsForDisplay(input: {
   );
   const serverModels = input.liveModels?.filter((model) => !model.isCustom) ?? [];
   const builtInModelSlugs = new Set(serverModels.map((model) => model.slug));
-  const normalizedCustomModelSlugs = input.driverKind
-    ? normalizeCustomModelSlugs(input.customModels, builtInModelSlugs, input.driverKind)
-    : Array.from(new Set(input.customModels.map((slug) => slug.trim()).filter(Boolean)));
-  const customModels = normalizedCustomModelSlugs.map(
-    (slug) =>
-      liveCustomModelsBySlug.get(slug) ?? {
-        slug,
-        name: slug,
-        isCustom: true,
-        capabilities: null,
-      },
-  );
+  const customModels = normalizeCustomModels(
+    input.customModels,
+    input.driverKind,
+    builtInModelSlugs,
+  ).map((candidate) => {
+    const slug = customModelSlug(candidate);
+    const live = liveCustomModelsBySlug.get(slug);
+    return {
+      slug,
+      isCustom: true,
+      name: typeof candidate === "string" ? (live?.name ?? slug) : candidate.name?.trim() || slug,
+      capabilities:
+        typeof candidate === "string"
+          ? (live?.capabilities ?? null)
+          : (candidate.capabilities ?? live?.capabilities ?? null),
+    };
+  });
   return [...serverModels, ...customModels];
 }
 
@@ -493,7 +491,7 @@ export function ProviderInstanceCard({
     ? instance.driver
     : null;
 
-  const customModels = readConfigStringArray(instance.config, "customModels");
+  const customModels = readCustomModels(instance.config);
   // Server-returned models may lag behind settings writes. Treat probe
   // models as the source for built-ins only; custom rows come directly
   // from the current instance config so add/remove reflects immediately.
@@ -502,9 +500,11 @@ export function ProviderInstanceCard({
     customModels,
     driverKind,
   });
-  const normalizedCustomModels = modelsForDisplay
-    .filter((model) => model.isCustom)
-    .map((model) => model.slug);
+  const normalizedCustomModels = normalizeCustomModels(
+    customModels,
+    driverKind,
+    new Set(modelsForDisplay.filter((model) => !model.isCustom).map((model) => model.slug)),
+  );
 
   const updateDisplayName = (value: string) => {
     const trimmed = value.trim();
@@ -540,14 +540,11 @@ export function ProviderInstanceCard({
     );
   };
 
-  const updateCustomModels = (next: ReadonlyArray<string>) => {
+  const updateCustomModels = (next: ReadonlyArray<CustomModelSetting>) => {
     const builtInModelSlugs = new Set(
       (liveProvider?.models ?? []).filter((model) => !model.isCustom).map((model) => model.slug),
     );
-    const normalized =
-      driverKind !== null
-        ? normalizeCustomModelSlugs(next, builtInModelSlugs, driverKind)
-        : Array.from(new Set(next.map((slug) => slug.trim()).filter(Boolean)));
+    const normalized = normalizeCustomModels(next, driverKind, builtInModelSlugs);
     const nextConfig = nextConfigBlobWithValue(instance.config, "customModels", normalized);
     const { config: _omit, ...rest } = instance;
     onUpdate({ ...rest, config: nextConfig } as ProviderInstanceConfig);
@@ -802,6 +799,25 @@ export function ProviderInstanceCard({
               />
             </div>
 
+            {driverKind === "antigravity" ? (
+              <label className="flex items-center justify-between border-t border-border/60 px-4 py-3 sm:px-5">
+                <span className="text-xs">Enable native /compact command</span>
+                <Switch
+                  checked={
+                    typeof instance.config === "object" &&
+                    instance.config !== null &&
+                    "nativeCompaction" in instance.config &&
+                    instance.config.nativeCompaction === true
+                  }
+                  onCheckedChange={(value) =>
+                    onUpdate({
+                      ...instance,
+                      config: nextConfigBlobWithValue(instance.config, "nativeCompaction", value),
+                    })
+                  }
+                />
+              </label>
+            ) : null}
             {driverOption?.fields.map((field) => (
               <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
                 <label htmlFor={`provider-instance-${instanceId}-${field.key}`} className="block">
@@ -825,7 +841,9 @@ export function ProviderInstanceCard({
               </div>
             ))}
 
-            {(driverKind === "codex" || driverKind === "claudeAgent") && (
+            {(driverKind === "codex" ||
+              driverKind === "claudeAgent" ||
+              driverKind === "antigravity") && (
               <ProviderAccountPanel instanceId={instanceId} driver={instance.driver} />
             )}
             {driverOption !== undefined ? (

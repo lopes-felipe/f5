@@ -1,3 +1,4 @@
+import { claudeLimitState } from "../usageLimitMessages.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -71,6 +72,7 @@ import {
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
+import { isImagePreviewPath } from "@t3tools/shared/filePreview";
 import { translateMcpForClaudeAgent } from "@t3tools/shared/mcpTranslation";
 import {
   Cause,
@@ -169,6 +171,9 @@ interface ClaudeTurnState {
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
+  authenticationFailureMessage?: string;
+  rejectedUsageLimits?: Map<string, string>;
+  announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
   /**
    * Deferred signalled from `completeTurn` to cancel the interrupt watchdog
@@ -699,12 +704,29 @@ function toPermissionMode(value: unknown): PermissionMode | undefined {
   }
 }
 
+/** A Claude `Read` of an image renders as a viewed image rather than a text read. */
+function readToolImagePath(toolName: string, input: Record<string, unknown>): string | undefined {
+  const normalized = toolName.trim().toLowerCase();
+  if (normalized !== "read" && normalized !== "read file") {
+    return undefined;
+  }
+  const pathValue = input.file_path ?? input.path;
+  if (typeof pathValue !== "string") {
+    return undefined;
+  }
+  const path = pathValue.trim();
+  return path.length > 0 && isImagePreviewPath(path) ? path : undefined;
+}
+
 function classifyToolItemType(
   toolName: string,
-  options?: { readonly blockType?: string },
+  options?: { readonly blockType?: string; readonly input?: Record<string, unknown> },
 ): CanonicalItemType {
   if (options?.blockType?.toLowerCase() === "mcp_tool_use") {
     return "mcp_tool_call";
+  }
+  if (options?.input && readToolImagePath(toolName, options.input)) {
+    return "image_view";
   }
 
   const normalized = toolName.toLowerCase();
@@ -1500,6 +1522,8 @@ function buildUserMessageEffect(
           );
           break;
         }
+        case "file":
+          break;
         default:
           throw new Error(
             `Unsupported Claude attachment type '${String((attachment as { type?: unknown }).type)}'.`,
@@ -1515,8 +1539,9 @@ function buildUserMessageEffect(
 }
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
+  if (isInterruptedResult(result)) return "interrupted";
   if (result.subtype === "success") {
-    return "completed";
+    return result.is_error ? "failed" : "completed";
   }
 
   const errors = resultErrorsText(result);
@@ -3128,9 +3153,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             const detail = parsedInput
               ? summarizeToolRequest(tool.toolName, parsedInput)
               : tool.detail;
-            const title = parsedInput ? titleForTool(tool.itemType, parsedInput) : tool.title;
+            const itemType =
+              parsedInput && tool.itemType !== "mcp_tool_call"
+                ? classifyToolItemType(tool.toolName, { input: parsedInput })
+                : tool.itemType;
+            const title = parsedInput ? titleForTool(itemType, parsedInput) : tool.title;
             let nextTool: ToolInFlight = {
               ...tool,
+              itemType,
               partialInputJson,
               title,
               ...(parsedInput ? { input: parsedInput } : {}),
@@ -3205,12 +3235,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
 
           const toolName = block.name;
-          const itemType = classifyToolItemType(toolName, { blockType: block.type });
           const requestKind = classifyToolRequestKind(toolName, { blockType: block.type });
           const toolInput =
             typeof block.input === "object" && block.input !== null
               ? (block.input as Record<string, unknown>)
               : {};
+          const itemType = classifyToolItemType(toolName, {
+            blockType: block.type,
+            input: toolInput,
+          });
           const itemId = block.id;
           const detail = summarizeToolRequest(toolName, toolInput);
           const inputFingerprint =
@@ -3612,6 +3645,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (context.turnState) {
+          if (message.type === "assistant" && message.error === "authentication_failed") {
+            context.turnState.authenticationFailureMessage =
+              "Claude login expired or is invalid. Run /login in this provider account, then retry.";
+          }
           context.turnState.items.push(message.message);
           yield* backfillAssistantTextBlocksFromSnapshot(context, message);
         }
@@ -3629,8 +3666,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
+        const hint =
+          context.turnState?.authenticationFailureMessage ??
+          [...(context.turnState?.rejectedUsageLimits?.values() ?? [])][0];
         const status = turnStatusFromResult(message);
-        const errorMessage = resultUserFacingError(message);
+        const originalError = resultUserFacingError(message);
+        const errorMessage =
+          status === "failed" &&
+          hint &&
+          (!originalError ||
+            /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
+            ? [originalError, hint].filter(Boolean).join(" ")
+            : originalError;
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;
@@ -4001,6 +4048,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (message.type === "rate_limit_event") {
+          const info = message.rate_limit_info;
+          const turn = context.turnState;
+          if (info && turn) {
+            const limit = claudeLimitState(info as unknown as Record<string, unknown>);
+            turn.rejectedUsageLimits ??= new Map();
+            turn.announcedUsageLimits ??= new Set();
+            if (limit.blocked) {
+              turn.rejectedUsageLimits.set(limit.window, limit.message);
+              if (!turn.announcedUsageLimits.has(limit.key)) {
+                turn.announcedUsageLimits.add(limit.key);
+                yield* emitRuntimeWarning(context, limit.message, {
+                  detail: { rateLimitType: limit.window },
+                });
+              }
+            } else if (
+              info.status === "allowed" ||
+              info.status === "allowed_warning" ||
+              info.status === "rejected"
+            ) {
+              turn.rejectedUsageLimits.delete(limit.window);
+            }
+          }
           yield* offerRuntimeEvent({
             ...base,
             type: "account.rate-limits.updated",

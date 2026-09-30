@@ -115,6 +115,7 @@ function buildLayer(input: {
     getById: () => Effect.succeed(input.thread),
     upsert: notImplemented,
     listByProjectId: notImplemented,
+    listProjectIdsByWorktreePath: notImplemented,
     deleteById: notImplemented,
   };
   const projectRepository: ProjectionProjectRepositoryShape = {

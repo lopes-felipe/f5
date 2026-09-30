@@ -1,7 +1,7 @@
 import { splitPromptIntoComposerSegments, type ComposerMention } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
-export type ComposerTriggerKind = "path" | "slash-command";
+export type ComposerTriggerKind = "path" | "slash-command" | "skill";
 export type ComposerSlashCommand = "model" | "plan" | "default";
 
 export interface ComposerTrigger {
@@ -269,6 +269,10 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
 
   const tokenStart = tokenStartForCursor(text, cursor);
   const token = text.slice(tokenStart, cursor);
+  const skillMatch = /^\p{Sc}([a-zA-Z0-9-]*)$/u.exec(token);
+  if (skillMatch && !/^[0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?$/.test(skillMatch[1] ?? "")) {
+    return { kind: "skill", query: skillMatch[1] ?? "", rangeStart: tokenStart, rangeEnd: cursor };
+  }
   if (!token.startsWith("@")) {
     return null;
   }

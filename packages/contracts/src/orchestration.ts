@@ -1,3 +1,4 @@
+import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
@@ -178,13 +179,14 @@ export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
 export const ProviderApprovalOption = Schema.Struct({
   decision: ProviderApprovalDecision,
   label: Schema.String,
+  warning: Schema.optional(Schema.String),
 });
 export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 
 export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
-export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
+export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 100;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
 const ProviderTurnInputText = Schema.String.check(
@@ -228,9 +230,18 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(ATTACHMENT_MAX_FILE_BYTES)),
+  source: Schema.optional(Schema.Literals(["pasted-text", "snapshot"])),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadedAttachmentRef]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -275,7 +286,9 @@ export type ProjectMemory = typeof ProjectMemory.Type;
 export const ProjectSkillScope = Schema.Literals(["project", "user"]);
 export type ProjectSkillScope = typeof ProjectSkillScope.Type;
 
-export const ProjectSkill = Schema.Struct({
+const ProjectSkillDefinition = Schema.Struct({
+  nativeProviders: Schema.optional(Schema.Array(ProviderKind)),
+  sourcePath: Schema.optional(TrimmedNonEmptyString),
   id: TrimmedNonEmptyString,
   projectId: ProjectId,
   scope: ProjectSkillScope,
@@ -287,6 +300,10 @@ export const ProjectSkill = Schema.Struct({
   paths: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => [])),
   updatedAt: IsoDateTime,
 });
+export const ProjectSkill = ProjectSkillDefinition.mapFields((fields) => ({
+  ...fields,
+  providerVariants: Schema.optional(Schema.Record(Schema.String, ProjectSkillDefinition)),
+}));
 export type ProjectSkill = typeof ProjectSkill.Type;
 
 export const OrchestrationProject = Schema.Struct({
@@ -628,6 +645,7 @@ export const CompactSubagentState = Schema.Struct({
 export type CompactSubagentState = typeof CompactSubagentState.Type;
 
 export const CompactToolActivityPayload = Schema.Struct({
+  imagePath: Schema.optional(TrimmedNonEmptyString),
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),
   status: Schema.optional(CompactToolActivityStatus),

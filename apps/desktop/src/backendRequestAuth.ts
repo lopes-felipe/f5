@@ -5,9 +5,31 @@ export const DESKTOP_BACKEND_REQUEST_FILTER = `http://${DESKTOP_BACKEND_HOST}/*`
 
 export interface DesktopBackendRequestAuthInput {
   readonly url: string;
+  readonly initiator?: DesktopBackendRequestInitiator;
   readonly backendPort: number;
   readonly authToken: string;
   readonly requestHeaders: Record<string, string>;
+}
+
+/** Populated only by main from Electron's request/frame identity, never renderer input. */
+export interface DesktopBackendRequestInitiator {
+  readonly registeredRenderer: boolean;
+  readonly mainFrame: boolean;
+  readonly frameOrigin: string;
+  readonly appOrigin: string;
+}
+
+export function shouldAuthorizeDesktopBackendRequest(
+  initiator: DesktopBackendRequestInitiator | undefined,
+): boolean {
+  return (
+    initiator !== undefined &&
+    initiator.registeredRenderer &&
+    initiator.mainFrame &&
+    initiator.frameOrigin !== "null" &&
+    initiator.frameOrigin.length > 0 &&
+    initiator.frameOrigin === initiator.appOrigin
+  );
 }
 
 export function getDesktopBackendHttpOrigin(backendPort: number): string {
@@ -38,6 +60,7 @@ export function authorizeDesktopBackendRequestHeaders(
   input: DesktopBackendRequestAuthInput,
 ): Record<string, string> {
   if (
+    !shouldAuthorizeDesktopBackendRequest(input.initiator) ||
     input.authToken.length === 0 ||
     !isPrivateDesktopBackendRequest(input.url, input.backendPort)
   ) {

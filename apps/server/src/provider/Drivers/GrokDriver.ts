@@ -1,3 +1,4 @@
+import { discoverGrokSkills, discoverGlobalGrokSkills } from "./GrokSkills.ts";
 /**
  * GrokDriver — `ProviderDriver` for the xAI Grok CLI runtime.
  *
@@ -63,6 +64,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment, process.env);
       const continuationIdentity = defaultProviderContinuationIdentity({
@@ -79,12 +81,30 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
 
       const adapter = yield* makeGrokAdapter(effectiveConfig, {
         environment: processEnv,
+        discoverSkillCommands: (cwd) =>
+          discoverGrokSkills(effectiveConfig, processEnv, cwd).pipe(
+            Effect.map((skills) =>
+              skills
+                .filter((skill) => skill.enabled)
+                .map((skill) => ({
+                  name: skill.name,
+                  description: skill.description ?? skill.name,
+                })),
+            ),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });
       const textGeneration = yield* makeGrokTextGeneration(effectiveConfig, processEnv);
 
       const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv).pipe(
+        Effect.flatMap((snapshot) =>
+          enabled && snapshot.installed
+            ? discoverGlobalGrokSkills(effectiveConfig, processEnv).pipe(
+                Effect.map((skills) => ({ ...snapshot, skills })),
+              )
+            : Effect.succeed(snapshot),
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       );

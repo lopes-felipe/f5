@@ -1,3 +1,8 @@
+import {
+  ComposerAssistantQuoteNode,
+  $createAssistantQuoteNode,
+  type AssistantQuote,
+} from "./chat/composer/ComposerAssistantQuoteNode";
 import { ComposerMarkdownStylePlugin } from "./chat/composer/ComposerMarkdownStylePlugin";
 import { LexicalComposer, type InitialConfigType } from "@lexical/react/LexicalComposer";
 import { useLexicalComposerContext } from "@lexical/react/LexicalComposerContext";
@@ -649,6 +654,7 @@ function collectTerminalContextIds(node: LexicalNode): string[] {
 }
 
 export interface ComposerPromptEditorHandle {
+  insertAssistantQuote: (quote: AssistantQuote) => void;
   focus: () => void;
   focusAt: (cursor: number) => void;
   focusAtEnd: () => void;
@@ -1194,6 +1200,19 @@ function ComposerPromptEditorInner({
   useImperativeHandle(
     editorRef,
     () => ({
+      insertAssistantQuote: (quote) => {
+        editor.update(
+          () => {
+            const root = $getRoot();
+            const paragraph = $createParagraphNode();
+            paragraph.append($createAssistantQuoteNode(quote), $createLineBreakNode());
+            root.append(paragraph);
+            paragraph.selectEnd();
+          },
+          { discrete: true },
+        );
+        editor.focus();
+      },
       focus: () => {
         focusAt(snapshotRef.current.cursor);
       },
@@ -1209,7 +1228,7 @@ function ComposerPromptEditorInner({
       },
       readSnapshot,
     }),
-    [focusAt, readSnapshot],
+    [editor, focusAt, readSnapshot],
   );
 
   const handleEditorChange = useCallback((editorState: EditorState) => {
@@ -1335,7 +1354,7 @@ export const ComposerPromptEditor = forwardRef<
     () => ({
       namespace: "t3tools-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerTerminalContextNode],
+      nodes: [ComposerMentionNode, ComposerTerminalContextNode, ComposerAssistantQuoteNode],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,

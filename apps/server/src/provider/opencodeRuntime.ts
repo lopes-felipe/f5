@@ -1,3 +1,4 @@
+import { normalizeSupportedSlashCommands } from "./supportedSlashCommands.ts";
 import { pathToFileURL } from "node:url";
 
 import type {
@@ -210,7 +211,14 @@ export function toOpenCodeFileParts(input: {
 
   for (const attachment of input.attachments ?? []) {
     switch (attachment.type) {
+      case "file":
       case "image": {
+        if (
+          attachment.type === "file" &&
+          !attachment.mimeType.startsWith("text/") &&
+          attachment.mimeType !== "application/pdf"
+        )
+          continue;
         const attachmentPath = input.resolveAttachmentPath(attachment);
         if (!attachmentPath) {
           continue;
@@ -363,6 +371,28 @@ export const loadOpenCodeSkills = (
             ]
           : [];
       }),
+    ),
+  );
+
+export const loadOpenCodeCommands = (client: OpencodeClient) =>
+  runOpenCodeSdk("command.list", (signal) => client.command.list(undefined, { signal })).pipe(
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      onTimeout: () =>
+        Effect.fail(
+          new OpenCodeRuntimeError({
+            operation: "command.list",
+            detail: "OpenCode command discovery timed out.",
+          }),
+        ),
+    }),
+    Effect.map((response) =>
+      normalizeSupportedSlashCommands(
+        (response.data ?? []).map((command) => ({
+          name: command.name,
+          description: command.description ?? `Run ${command.name}`,
+        })),
+      ),
     ),
   );
 

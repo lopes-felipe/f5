@@ -1,3 +1,11 @@
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  isKnownProviderKind,
+  ProviderInstanceId,
+  type ProviderKind,
+  type ModelSelection,
+} from "@t3tools/contracts";
 import { ServerSettings, type ServerSettingsPatch } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { deepMerge } from "./Struct";
@@ -142,7 +150,13 @@ export function applyServerSettingsPatch(
   current: ServerSettings,
   patch: ServerSettingsPatch,
 ): ServerSettings {
-  const next = deepMerge(current, patch);
+  const { projectSettingsOverrides: overridePatch, ...rest } = patch;
+  let overrides = { ...current.projectSettingsOverrides };
+  for (const [id, value] of Object.entries(overridePatch ?? {})) {
+    if (value === null) delete overrides[id as keyof typeof overrides];
+    else overrides = { ...overrides, [id]: value };
+  }
+  const next = { ...deepMerge(current, rest), projectSettingsOverrides: overrides };
   const nextWithReplacements =
     patch.providerInstances !== undefined
       ? {
@@ -166,4 +180,51 @@ export function applyServerSettingsPatch(
     result = { ...result, [key]: createModelSelection(instanceId, model, options) };
   }
   return result;
+}
+
+/**
+ * Ensure the `textGenerationModelSelection` points to an enabled provider.
+ * If the selected provider is disabled, fall back to the first enabled
+ * provider with its default model.  This is applied at read-time so the
+ * persisted preference is preserved for when a provider is re-enabled.
+ */
+export function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
+  const selection = settings.textGenerationModelSelection;
+  const instanceConfig = settings.providerInstances[selection.instanceId];
+  if (instanceConfig !== undefined) {
+    return (instanceConfig.enabled ?? true) ? settings : fallbackTextGenerationProvider(settings);
+  }
+
+  if (
+    isKnownProviderKind(selection.instanceId) &&
+    settings.providers[selection.instanceId as ProviderKind]?.enabled
+  ) {
+    return settings;
+  }
+
+  return fallbackTextGenerationProvider(settings);
+}
+
+function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
+  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
+    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
+    return instance === undefined ? provider.enabled : (instance.enabled ?? true);
+  });
+  const fallback =
+    fallbackEntry && isKnownProviderKind(fallbackEntry[0])
+      ? (fallbackEntry[0] as ProviderKind)
+      : undefined;
+  if (!fallback) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    textGenerationModelSelection: {
+      instanceId: ProviderInstanceId.make(fallback),
+      model:
+        DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
+        DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    } satisfies ModelSelection,
+  };
 }

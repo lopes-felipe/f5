@@ -1,3 +1,8 @@
+import {
+  formatCodexUsageError,
+  mergeCodexLimitSnapshot,
+  type CodexLimitSnapshot,
+} from "../codexErrors.ts";
 import { describeMcpElicitation } from "../../codex/mcpElicitation.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
@@ -37,7 +42,7 @@ import {
   codexNotificationDisposition,
   codexThreadItemDisposition,
 } from "@t3tools/shared/codexProtocolManifest";
-import { Effect, FileSystem, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
+import { Effect, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
 
 import {
   ProviderAdapterProcessError,
@@ -1042,6 +1047,7 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
 function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
+  limits?: CodexLimitSnapshot,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const payload = asObject(event.payload);
   const turn = asObject(payload?.turn);
@@ -1276,7 +1282,15 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "turn/completed") {
-    const errorMessage = asString(asObject(turn?.error)?.message);
+    const rawErrorMessage = asString(asObject(turn?.error)?.message);
+    const errorMessage = rawErrorMessage
+      ? formatCodexUsageError(
+          rawErrorMessage,
+          limits,
+          event.createdAt,
+          asObject(turn?.error)?.codexErrorInfo,
+        )
+      : undefined;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -2043,7 +2057,14 @@ function mapToRuntimeEvents(
         type: willRetry ? "runtime.warning" : "runtime.error",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
-          message,
+          message: willRetry
+            ? message
+            : formatCodexUsageError(
+                message,
+                limits,
+                event.createdAt,
+                asObject(payload?.error)?.codexErrorInfo,
+              ),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
@@ -2134,7 +2155,6 @@ function mapToRuntimeEvents(
 
 export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* Effect.service(ServerConfig);
     const nativeEventLogger =
       options?.nativeEventLogger ??
@@ -2295,7 +2315,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const codexAttachments = yield* Effect.forEach(
-          input.attachments ?? [],
+          (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
           (attachment) =>
             Effect.gen(function* () {
               switch (attachment.type) {
@@ -2311,21 +2331,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                       new Error(`Invalid attachment id '${attachment.id}'.`),
                     );
                   }
-                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new ProviderAdapterRequestError({
-                          provider: PROVIDER,
-                          method: "turn/start",
-                          detail: toMessage(cause, "Failed to read attachment file."),
-                          cause,
-                        }),
-                    ),
-                  );
-                  return {
-                    type: "image" as const,
-                    url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-                  };
+                  return { type: "localImage" as const, path: attachmentPath };
                 }
                 default:
                   throw new Error(
@@ -2504,6 +2510,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       });
 
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+    const limitsByThread = new Map<ThreadId, CodexLimitSnapshot>();
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
@@ -2522,7 +2529,23 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               return;
             }
             yield* writeNativeEvent(event);
-            const runtimeEvents = mapToRuntimeEvents(event, event.threadId);
+            if (event.method === "account/rateLimits/updated") {
+              const snapshot = asObject(asObject(event.payload)?.rateLimits);
+              if (snapshot) {
+                const merged = mergeCodexLimitSnapshot(
+                  limitsByThread.get(event.threadId),
+                  snapshot as CodexLimitSnapshot,
+                );
+                if (merged) limitsByThread.set(event.threadId, merged);
+              }
+            }
+            const runtimeEvents = mapToRuntimeEvents(
+              event,
+              event.threadId,
+              limitsByThread.get(event.threadId),
+            );
+            if (event.method === "session/exited" || event.method === "session/closed")
+              limitsByThread.delete(event.threadId);
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,

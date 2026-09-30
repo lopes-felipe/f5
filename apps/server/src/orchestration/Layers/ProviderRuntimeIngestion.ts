@@ -1,3 +1,5 @@
+import { ServerSettingsService } from "../../serverSettings";
+import { readProjectSettings } from "../../project/projectSettings";
 import { createHash } from "node:crypto";
 
 import {
@@ -21,7 +23,7 @@ import {
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Ref, Stream } from "effect";
+import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import {
   deriveNarratedActivityDisplayHints,
@@ -2023,6 +2025,7 @@ function runtimeEventToActivities(
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const serverSettings = yield* ServerSettingsService;
   const providerService = yield* ProviderService;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
@@ -2173,9 +2176,11 @@ const make = Effect.gen(function* () {
     profiledTurnWatchdogs.set(input.threadId, { turnId: input.turnId, timer });
   });
 
-  const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
-    DEFAULT_ASSISTANT_DELIVERY_MODE,
-  );
+  const assistantDeliveryModes = yield* Cache.make<ThreadId, AssistantDeliveryMode>({
+    capacity: 10000,
+    timeToLive: "24 hours",
+    lookup: () => Effect.succeed(DEFAULT_ASSISTANT_DELIVERY_MODE),
+  });
 
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
@@ -3912,7 +3917,7 @@ const make = Effect.gen(function* () {
           yield* rememberAssistantMessageId(thread.id, turnId, assistantMessageId);
         }
 
-        const assistantDeliveryMode = yield* Ref.get(assistantDeliveryModeRef);
+        const assistantDeliveryMode = yield* Cache.get(assistantDeliveryModes, thread.id);
         if (assistantDeliveryMode === "buffered") {
           const spillChunk = yield* appendBufferedAssistantText(assistantMessageId, assistantDelta);
           if (spillChunk.length > 0) {
@@ -3944,7 +3949,7 @@ const make = Effect.gen(function* () {
         if (turnId) {
           const turnKey = providerTurnKey(thread.id, turnId);
           const spillChunk = yield* appendBufferedReasoningText(turnKey, reasoningDelta);
-          const assistantDeliveryMode = yield* Ref.get(assistantDeliveryModeRef);
+          const assistantDeliveryMode = yield* Cache.get(assistantDeliveryModes, thread.id);
           if (assistantDeliveryMode === "streaming") {
             const assistantMessageId = yield* getLatestAssistantMessageIdForTurn(thread.id, turnId);
             if (assistantMessageId && spillChunk.length > 0) {
@@ -4467,9 +4472,39 @@ const make = Effect.gen(function* () {
     });
 
   const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
-    Ref.set(
-      assistantDeliveryModeRef,
-      event.payload.assistantDeliveryMode ?? DEFAULT_ASSISTANT_DELIVERY_MODE,
+    Effect.gen(function* () {
+      const global = yield* serverSettings.getSettings;
+      const model = yield* orchestrationEngine.getReadModel();
+      const thread = model.threads.find((t) => t.id === event.payload.threadId);
+      const project = model.projects.find(
+        (p) => p.id === thread?.projectId && p.deletedAt === null,
+      );
+      const resolved = project ? yield* readProjectSettings(global, project) : null;
+      const projectControlsStreaming =
+        resolved &&
+        ["project", "f5.json", "t3.json"].includes(resolved.sources.enableAssistantStreaming);
+      const defaultMode = (resolved?.settings ?? global).enableAssistantStreaming
+        ? "streaming"
+        : "buffered";
+      yield* Cache.set(
+        assistantDeliveryModes,
+        event.payload.threadId,
+        projectControlsStreaming
+          ? defaultMode
+          : (event.payload.assistantDeliveryMode ?? defaultMode),
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("Unable to resolve project streaming preference", { error }).pipe(
+          Effect.andThen(
+            Cache.set(
+              assistantDeliveryModes,
+              event.payload.threadId,
+              event.payload.assistantDeliveryMode ?? DEFAULT_ASSISTANT_DELIVERY_MODE,
+            ),
+          ),
+        ),
+      ),
     );
 
   const processInput = (input: RuntimeIngestionInput) =>

@@ -341,3 +341,18 @@ describe("parseStandaloneComposerSlashCommand", () => {
     expect(parseStandaloneComposerSlashCommand("/research")).toBeNull();
   });
 });
+
+it.each(["$", "€", "£", "¥", "₹", "₩", "₿", "𑿝"])(
+  "opens the skill menu for %s without confusing amounts",
+  (prefix) => {
+    const text = `Use ${prefix}2review`;
+    expect(detectComposerTrigger(text, text.length)).toEqual({
+      kind: "skill",
+      query: "2review",
+      rangeStart: 4,
+      rangeEnd: text.length,
+    });
+    const amount = `Costs ${prefix}20k`;
+    expect(detectComposerTrigger(amount, amount.length)).toBeNull();
+  },
+);

@@ -679,3 +679,32 @@ it("returns missing worktree branches without running git", async () => {
   expect(result).toMatchObject({ worktreeMissing: true, branches: [] });
   expect(scripted.calls).toEqual([]);
 });
+
+it.each(["none", "shallow", "recursive"] as const)(
+  "initializes worktree submodules using %s policy without local-file transport",
+  async (submodules) => {
+    const scripted = makeScriptedGitService((input) => ({
+      stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+      code: input.args.includes("submodule") ? 1 : 0,
+    }));
+    const core = await makeCore(scripted.service);
+    const result = await Effect.runPromise(
+      core.createWorktree({ cwd: process.cwd(), branch: "main", path: null, submodules }),
+    );
+    expect(result.worktree.branch).toBe("main");
+    const calls = scripted.calls.filter((call) => call.args.includes("submodule"));
+    if (submodules === "none") expect(calls).toHaveLength(0);
+    else {
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.args).toEqual([
+        "-c",
+        "protocol.file.allow=never",
+        "submodule",
+        "update",
+        "--init",
+        ...(submodules === "recursive" ? ["--recursive"] : []),
+      ]);
+      expect(calls[0]!.cwd).toBe(result.worktree.path);
+    }
+  },
+);

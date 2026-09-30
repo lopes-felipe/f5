@@ -1,0 +1,27 @@
+{
+  "gitAuthorName": "Legacy User",
+  "gitAuthorEmail": "legacy@example.test",
+  "enableAssistantStreaming": true,
+  "enableProviderUpdateChecks": false,
+  "defaultThreadEnvMode": "worktree",
+  "addProjectBaseDirectory": "/projects",
+  "textGenerationModelSelection": { "instanceId": "codex", "model": "gpt-5.4" },
+  "sessionNotesModelSelection": {
+    "instanceId": "codex",
+    "model": "gpt-5.6-luna",
+    "options": [{ "id": "reasoningEffort", "value": "low" }]
+  },
+  "sourceControlWriting": {
+    "commitMessageStyle": "conventional",
+    "commitMessageIncludeBody": false,
+    "prBodyTemplate": "{{summary}}",
+    "branchNamePrefix": "feature/",
+    "customInstructions": "Use concise subjects",
+    "generateCommitMessages": true,
+    "generatePrContent": false
+  },
+  "providers": {},
+  "providerInstances": {},
+  "observability": {},
+  "prHub": {}
+}

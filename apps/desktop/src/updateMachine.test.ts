@@ -134,6 +134,8 @@ describe("updateMachine", () => {
     expect(available.status).toBe("available");
     expect(available.releaseNotes).toBe("Two important fixes");
     expect(downloading.status).toBe("downloading");
+    expect(downloading.releaseNotes).toBe("Two important fixes");
+    expect(progress.releaseNotes).toBe("Two important fixes");
     expect(downloading.downloadPercent).toBe(0);
     expect(progress.downloadPercent).toBe(55.5);
     expect(progress.errorContext).toBeNull();

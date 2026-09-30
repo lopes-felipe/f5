@@ -1,3 +1,5 @@
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { useQuery } from "@tanstack/react-query";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -72,6 +74,8 @@ export function getCustomModelsForProvider(
       return settings.customClaudeModels;
     case "grok":
       return settings.customGrokModels;
+    case "antigravity":
+      return [];
     case "codex":
     default:
       return settings.customCodexModels;
@@ -87,6 +91,8 @@ export function getDefaultCustomModelsForProvider(
       return defaults.customClaudeModels;
     case "grok":
       return defaults.customGrokModels;
+    case "antigravity":
+      return [];
     case "codex":
     default:
       return defaults.customCodexModels;
@@ -99,6 +105,8 @@ export function patchCustomModels(provider: ProviderKind, models: string[]) {
       return { customClaudeModels: models };
     case "grok":
       return { customGrokModels: models };
+    case "antigravity":
+      return {};
     case "codex":
     default:
       return { customCodexModels: models };
@@ -114,7 +122,10 @@ export interface UseSettingsRouteStateOptions {
 
 export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
   const { theme, setTheme, resolvedTheme } = useTheme();
-  const { settings, defaults, updateSettings } = useAppSettings();
+  const { defaults: appDefaults } = useAppSettings();
+  const settings = useSettings();
+  const defaults = { ...DEFAULT_UNIFIED_SETTINGS, ...appDefaults };
+  const { updateSettings } = useUpdateSettings();
   const projects = useStore((state) => state.projects);
   const projectsHydrated = useStore((state) => state.threadsHydrated);
   const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);
@@ -132,6 +143,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     cursor: "",
     opencode: "",
     grok: "",
+    antigravity: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>

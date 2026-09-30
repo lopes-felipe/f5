@@ -1,3 +1,7 @@
+import { ChatAssetImage } from "./ChatAssetImage";
+import { useContext } from "react";
+import { RepositoryLinks } from "../repositoryLinkContext";
+import { remarkIssueReferences } from "../lib/remarkIssueReferences";
 import { GitHubIcon } from "./Icons";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { CheckIcon, CopyIcon } from "lucide-react";
@@ -326,6 +330,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   cwd: string | undefined;
   mode: MarkdownRenderMode;
 }) {
+  const repositoryLinks = useContext(RepositoryLinks);
   const { text, cwd, mode } = props;
   const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
@@ -347,6 +352,11 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   );
   const markdownComponents = useMemo<Components>(
     () => ({
+      img({ src, alt }) {
+        return typeof src === "string" ? (
+          <ChatAssetImage src={src} alt={alt ?? ""} cwd={cwd} />
+        ) : null;
+      },
       a({ node: _node, href, children, ...props }) {
         // Resolve meta directly from the href so reference-style links and
         // balanced-paren hrefs (which the regex pre-scan misses) still
@@ -485,7 +495,10 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   );
 
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, [remarkIssueReferences, repositoryLinks]]}
+      components={markdownComponents}
+    >
       {text}
     </ReactMarkdown>
   );

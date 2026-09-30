@@ -1,3 +1,7 @@
+import {
+  ProjectSettingsScope,
+  SettingsScopePicker,
+} from "../components/settings/ProjectSettingsScope";
 import { ProjectId } from "@t3tools/contracts";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback } from "react";
@@ -37,6 +41,20 @@ function SettingsRouteView() {
   return (
     <SettingsRouteContext.Provider value={routeState}>
       <SettingsLayout
+        scopeHeader={
+          <SettingsScopePicker
+            projectId={search.project}
+            onChange={(project) => {
+              void navigate({
+                search: (prev) => {
+                  const { project: _old, ...rest } = prev;
+                  return project ? { ...rest, project } : rest;
+                },
+              });
+            }}
+          />
+        }
+        scopedContent={search.project ? <ProjectSettingsScope projectId={search.project} /> : null}
         category={search.category}
         item={search.item}
         onCategoryChange={(category) => {
@@ -70,14 +88,23 @@ export const Route = createFileRoute("/_chat/settings")({
     category: SettingsCategory;
     item?: string;
     projectId?: ProjectId;
+    project?: ProjectId;
   } => {
-    const raw = input as { category?: unknown; item?: unknown; projectId?: unknown };
+    const raw = input as {
+      category?: unknown;
+      item?: unknown;
+      projectId?: unknown;
+      project?: unknown;
+    };
     const item = getSettingsItemDescriptor(raw.item);
     const projectId = resolveSettingsProjectIdFromSearch(raw);
     return {
       category: item?.category ?? (isSettingsCategory(raw.category) ? raw.category : "general"),
       ...(item ? { item: item.id } : {}),
       ...(projectId ? { projectId } : {}),
+      ...(typeof raw.project === "string" && raw.project
+        ? { project: ProjectId.makeUnsafe(raw.project) }
+        : {}),
     };
   },
   component: SettingsRouteView,

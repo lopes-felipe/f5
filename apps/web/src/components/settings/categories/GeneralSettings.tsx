@@ -14,7 +14,6 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const THREAD_KEYS = ["defaultThreadEnvMode", "tasksPanelAutoOpen"] as const;
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
@@ -33,6 +32,84 @@ export function GeneralSettings() {
 
   return (
     <>
+      <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+        <label className="block">
+          Default permissions
+          <select
+            aria-label="Default permissions"
+            value={settings.defaultRuntimeMode}
+            onChange={(e) =>
+              void updateSettings({
+                defaultRuntimeMode: e.target.value as typeof settings.defaultRuntimeMode,
+              })
+            }
+          >
+            <option value="full-access">Full access</option>
+            <option value="approval-required">Ask for approval</option>
+            <option value="auto-accept-edits">Accept edits</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+        <label className="block">
+          Worktree submodules
+          <select
+            aria-label="Worktree submodules"
+            value={settings.worktreeSubmodules}
+            onChange={(e) =>
+              void updateSettings({
+                worktreeSubmodules: e.target.value as typeof settings.worktreeSubmodules,
+              })
+            }
+          >
+            <option value="none">None</option>
+            <option value="shallow">Top level</option>
+            <option value="recursive">Recursive</option>
+          </select>
+        </label>
+        {(settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
+          settings.worktreeSubmodules !== defaults.worktreeSubmodules) && (
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() =>
+              updateSettings({
+                defaultRuntimeMode: defaults.defaultRuntimeMode,
+                worktreeSubmodules: defaults.worktreeSubmodules,
+              })
+            }
+          >
+            Restore default
+          </Button>
+        )}
+      </section>
+      {typeof window !== "undefined" && window.desktopBridge && (
+        <section className="rounded-2xl border border-border bg-card p-5">
+          <h2 className="text-sm font-medium">Quit shortcut</h2>
+          <Select
+            value={settings.quitShortcutMode}
+            onValueChange={(value) => {
+              if (value === "hold" || value === "double-click" || value === "direct")
+                updateSettings({ quitShortcutMode: value });
+            }}
+          >
+            <SelectTrigger aria-label="Quit shortcut">
+              <SelectValue>
+                {settings.quitShortcutMode === "hold"
+                  ? "Hold or press twice"
+                  : settings.quitShortcutMode === "double-click"
+                    ? "Press twice"
+                    : "Quit immediately"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup>
+              <SelectItem value="hold">Hold or press twice</SelectItem>
+              <SelectItem value="double-click">Press twice</SelectItem>
+              <SelectItem value="direct">Quit immediately</SelectItem>
+            </SelectPopup>
+          </Select>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-border bg-card p-5">
         <h2 className="text-sm font-medium">Pull requests</h2>
         <p className="my-2 text-xs text-muted-foreground">
@@ -70,6 +147,19 @@ export function GeneralSettings() {
             aria-label="Rich text editor"
             checked={settings.composerRichTextEnabled}
             onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>
+            Load remote images in chat
+            <span className="block text-xs text-muted-foreground">
+              Allow HTTPS images from external websites.
+            </span>
+          </span>
+          <Switch
+            aria-label="Load remote images in chat"
+            checked={settings.loadRemoteImagesInChat}
+            onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
           />
         </label>
         <p className="my-2 text-xs text-muted-foreground">Shift+Enter always inserts a new line.</p>
@@ -209,7 +299,12 @@ export function GeneralSettings() {
             <Button
               size="xs"
               variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(THREAD_KEYS, defaults))}
+              onClick={() =>
+                updateSettings({
+                  defaultThreadEnvMode: defaults.defaultThreadEnvMode,
+                  tasksPanelAutoOpen: defaults.tasksPanelAutoOpen,
+                })
+              }
             >
               Restore default
             </Button>

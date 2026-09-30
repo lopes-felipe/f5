@@ -57,8 +57,17 @@ const runtimeMock = {
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
+    commandCalls: [] as Array<{
+      sessionID: string;
+      messageID: string;
+      command: string;
+      arguments: string;
+    }>,
+    commands: [] as Array<{ name: string; description: string }>,
+    releaseCommand: undefined as (() => void) | undefined,
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
+    subscribeError: null as Error | null,
     messages: [] as MessageEntry[],
     revertMessageID: undefined as string | undefined,
     subscribedEvents: [] as unknown[],
@@ -79,8 +88,13 @@ const runtimeMock = {
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
+    this.state.commandCalls.length = 0;
+    this.state.commands = [];
+    this.state.releaseCommand?.();
+    this.state.releaseCommand = undefined;
     this.state.promptAsyncError = null;
     this.state.closeError = null;
+    this.state.subscribeError = null;
     this.state.messages = [];
     this.state.revertMessageID = undefined;
     this.state.subscribedEvents = [];
@@ -133,6 +147,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      command: { list: async () => ({ data: runtimeMock.state.commands }) },
       app: { skills: async () => ({ data: [] }) },
       session: {
         create: async () => {
@@ -149,6 +164,23 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
           await runtimeMock.state.onAbort?.();
+        },
+        command: async (input: {
+          sessionID: string;
+          messageID: string;
+          command: string;
+          arguments: string;
+        }) => {
+          runtimeMock.state.commandCalls.push(input);
+          const wait = new Promise<void>((resolve) => {
+            runtimeMock.state.releaseCommand = resolve;
+          });
+          runtimeMock.state.emitEvent?.({
+            type: "message.updated",
+            properties: { info: { id: input.messageID, sessionID: input.sessionID, role: "user" } },
+          });
+          await wait;
+          return { data: {} };
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
@@ -182,26 +214,29 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       },
       question: { list: async () => ({ data: [] }) },
       event: {
-        subscribe: async (_: unknown, options: { signal: AbortSignal }) => ({
-          stream: (async function* () {
-            const pending = [...runtimeMock.state.subscribedEvents];
-            let wake: (() => void) | undefined;
-            runtimeMock.state.emitEvent = (event) => {
-              pending.push(event);
-              wake?.();
-            };
-            options.signal.addEventListener("abort", () => wake?.(), { once: true });
-            while (!options.signal.aborted) {
-              if (pending.length) {
-                yield pending.shift();
-                runtimeMock.state.afterEvent?.();
-              } else
-                await new Promise<void>((resolve) => {
-                  wake = resolve;
-                });
-            }
-          })(),
-        }),
+        subscribe: async (_: unknown, options: { signal: AbortSignal }) => {
+          if (runtimeMock.state.subscribeError) throw runtimeMock.state.subscribeError;
+          return {
+            stream: (async function* () {
+              const pending = [...runtimeMock.state.subscribedEvents];
+              let wake: (() => void) | undefined;
+              runtimeMock.state.emitEvent = (event) => {
+                pending.push(event);
+                wake?.();
+              };
+              options.signal.addEventListener("abort", () => wake?.(), { once: true });
+              while (!options.signal.aborted) {
+                if (pending.length) {
+                  yield pending.shift();
+                  runtimeMock.state.afterEvent?.();
+                } else
+                  await new Promise<void>((resolve) => {
+                    wake = resolve;
+                  });
+              }
+            })(),
+          };
+        },
       },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
@@ -265,6 +300,23 @@ const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("removes a session when subscription fails and permits a clean retry", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("subscription-failure");
+      runtimeMock.state.subscribeError = new Error("subscription unavailable");
+      const result = yield* adapter
+        .startSession({ threadId, provider: "opencode", runtimeMode: "full-access" })
+        .pipe(Effect.exit);
+      assert(Exit.isFailure(result));
+      assert.equal(yield* adapter.hasSession(threadId), false);
+      runtimeMock.state.subscribeError = null;
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      assert.equal(yield* adapter.hasSession(threadId), true);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   for (const terminal of ["idle", "error"] as const) {
     it.effect(`records interruption when ${terminal} arrives before abort finishes`, () =>
       Effect.gen(function* () {
@@ -638,6 +690,35 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         }
       }
     }),
+  );
+
+  it.effect(
+    "submits native commands and acknowledges their user-message receipt before generation finishes",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        runtimeMock.state.commands = [{ name: "review", description: "Review code" }];
+        const threadId = asThreadId("native-command");
+        yield* adapter.startSession({ provider: "opencode", threadId, runtimeMode: "full-access" });
+        while (!runtimeMock.state.emitEvent) yield* sleep(1);
+        const result = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "/review current changes",
+            attachments: [],
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("opencode"),
+              model: "openai/gpt-5",
+            },
+          })
+          .pipe(Effect.timeout("3 seconds"));
+        assert.equal(result.threadId, threadId);
+        assert.equal(runtimeMock.state.promptCalls.length, 0);
+        assert.equal(runtimeMock.state.commandCalls[0]?.command, "review");
+        assert.equal(runtimeMock.state.commandCalls[0]?.arguments, "current changes");
+        runtimeMock.state.releaseCommand?.();
+        yield* adapter.stopSession(threadId);
+      }),
   );
 
   it.effect("rolls back session state when sendTurn fails before OpenCode accepts the prompt", () =>

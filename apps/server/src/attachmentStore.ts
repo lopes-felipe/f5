@@ -1,3 +1,4 @@
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
@@ -9,7 +10,28 @@ import {
 } from "./attachmentPaths.ts";
 import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
 
-const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
+const SAFE_FILE_EXTENSIONS = [
+  ".pdf",
+  ".txt",
+  ".md",
+  ".html",
+  ".css",
+  ".json",
+  ".mp4",
+  ".webm",
+  ".mov",
+  ".mp3",
+  ".wav",
+  ".ogg",
+  ".m4a",
+  ".zip",
+  ".csv",
+];
+const ATTACHMENT_FILENAME_EXTENSIONS = [
+  ...SAFE_IMAGE_FILE_EXTENSIONS,
+  ...SAFE_FILE_EXTENSIONS,
+  ".bin",
+];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
 const ATTACHMENT_ID_THREAD_SEGMENT_PATTERN = "[a-z0-9_]+(?:-[a-z0-9_]+)*";
 const ATTACHMENT_ID_UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -55,6 +77,10 @@ export function parseThreadSegmentFromAttachmentId(attachmentId: string): string
 
 export function attachmentRelativePath(attachment: ChatAttachment): string {
   switch (attachment.type) {
+    case "file": {
+      const extension = path.extname(attachment.name).toLowerCase();
+      return `${attachment.id}${SAFE_FILE_EXTENSIONS.includes(extension) ? extension : ".bin"}`;
+    }
     case "image": {
       const extension = inferImageExtension({
         mimeType: attachment.mimeType,

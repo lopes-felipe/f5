@@ -464,6 +464,11 @@ export function createWsNativeApi(): NativeApi {
         };
       },
     },
+    attachments: {
+      getUploads: (input) => transport.request(WS_METHODS.attachmentsGetUploads, input),
+      releaseUploads: (input) => transport.request(WS_METHODS.attachmentsReleaseUploads, input),
+      cloneToUpload: (input) => transport.request(WS_METHODS.attachmentsCloneToUpload, input),
+    },
     projects: {
       clone: (input) => transport.request(WS_METHODS.projectsClone, input),
       cloneList: async () =>
@@ -482,6 +487,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.projectsCancelContentSearch, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
       readFile: (input) => transport.request(WS_METHODS.projectsReadFile, input),
+      openHtmlPreview: (input) => transport.request(WS_METHODS.projectsOpenHtmlPreview, input),
+      issueAssetUrl: (input) => transport.request(WS_METHODS.projectsIssueAssetUrl, input),
     },
     filesystem: {
       browse: (input) => transport.request(WS_METHODS.filesystemBrowse, input),
@@ -547,6 +554,9 @@ export function createWsNativeApi(): NativeApi {
     },
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
+      getProjectSettings: (input) => transport.request(WS_METHODS.serverGetProjectSettings, input),
+      migrateClientSetting: (input) =>
+        transport.request(WS_METHODS.serverMigrateClientSetting, input),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
       refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
       validateHarnesses: (input) => transport.request(WS_METHODS.serverValidateHarnesses, input),

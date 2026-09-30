@@ -1,3 +1,5 @@
+import { composerAttachmentStatus } from "~/lib/attachmentValidation";
+import { AttachmentUploadProgress } from "./AttachmentUploadProgress";
 import { PopupFocusContext } from "~/components/ui/popupFocus";
 import type { ComposerMention } from "~/composer-editor-mentions";
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
@@ -15,6 +17,7 @@ import {
   CircleAlertIcon,
   ListTodoIcon,
   NotebookPenIcon,
+  PaperclipIcon,
   XIcon,
 } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -118,6 +121,7 @@ export interface ChatComposerProps {
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
     event: KeyboardEvent,
   ) => boolean;
+  onAttachFiles: (files: File[]) => void;
   onComposerPaste: (event: React.ClipboardEvent<HTMLElement>) => void;
   phase: import("~/types").SessionPhase;
   isConnecting: boolean;
@@ -146,7 +150,7 @@ export interface ChatComposerProps {
   isWorking: boolean;
   hasPendingTurnDispatch: boolean;
   showInteractionModeToggle: boolean;
-  selectedProvider: "codex" | "claudeAgent" | "cursor" | "opencode" | "grok";
+  selectedProvider: "codex" | "claudeAgent" | "cursor" | "opencode" | "grok" | "antigravity";
   runtimeMode: "auto" | "approval-required" | "auto-accept-edits" | "full-access";
   threadId: import("@t3tools/contracts").ThreadId;
   selectedModel: string;
@@ -239,6 +243,7 @@ export function ChatComposer({
   onPromptChange,
   onComposerCommandKey,
   onComposerPaste,
+  onAttachFiles,
   phase,
   isConnecting,
   onRespondToApproval,
@@ -451,12 +456,23 @@ export function ChatComposer({
               <>
                 {composerImages.length > 0 && (
                   <div className="mb-3 flex flex-wrap gap-2">
+                    {(() => {
+                      const status = composerAttachmentStatus(composerImages, selectedProvider);
+                      return status.error || status.notice ? (
+                        <p
+                          role={status.error ? "alert" : "status"}
+                          className="w-full text-xs text-muted-foreground"
+                        >
+                          {status.error ?? status.notice}
+                        </p>
+                      ) : null;
+                    })()}
                     {composerImages.map((image) => (
                       <div
                         key={image.id}
                         className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
                       >
-                        {image.previewUrl ? (
+                        {image.type === "image" && image.previewUrl ? (
                           <button
                             type="button"
                             className="h-full w-full cursor-zoom-in"
@@ -470,7 +486,7 @@ export function ChatComposer({
                                   src: image.previewUrl,
                                   name: image.name,
                                   mimeType: image.mimeType,
-                                  sourceBlob: image.file,
+                                  ...(image.uploadId ? {} : { sourceBlob: image.file }),
                                 },
                                 { x: event.clientX, y: event.clientY },
                               );
@@ -493,6 +509,7 @@ export function ChatComposer({
                             {image.name}
                           </div>
                         )}
+                        <AttachmentUploadProgress image={image} threadId={threadId} />
                         {nonPersistedComposerImageIdSet.has(image.id) && (
                           <Tooltip>
                             <TooltipTrigger
@@ -640,6 +657,23 @@ export function ChatComposer({
                     : "-m-1 gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
                 )}
               >
+                <label className="inline-flex cursor-pointer items-center rounded-md p-1.5 text-muted-foreground hover:text-foreground focus-within:ring-2 focus-within:ring-ring">
+                  <PaperclipIcon className="size-4" aria-hidden="true" />
+                  <span className="sr-only">Attach files</span>
+                  <input
+                    type="file"
+                    multiple
+                    className="sr-only"
+                    aria-label="Attach files"
+                    disabled={
+                      isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked
+                    }
+                    onChange={(event) => {
+                      onAttachFiles(Array.from(event.currentTarget.files ?? []));
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
                 {/* Provider/model picker */}
                 <ProviderInstanceModelPicker
                   compact={isComposerFooterCompact}

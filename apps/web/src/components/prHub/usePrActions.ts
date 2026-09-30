@@ -109,7 +109,16 @@ export function usePrActions(
   } = {},
 ): UsePrActionsResult {
   const { settings, updateSettings } = useAppSettings();
-  const configuredMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
+  const mergeLookup = useRef(false);
+  const currentPrKey = useRef(pr.key);
+  currentPrKey.current = pr.key;
+  const globalMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
+  const [projectMergeMethod, setProjectMergeMethod] = useState<{
+    key: string;
+    method: typeof globalMergeMethod;
+  } | null>(null);
+  const configuredMergeMethod =
+    projectMergeMethod?.key === pr.key ? projectMergeMethod.method : globalMergeMethod;
   const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [reviewers, setReviewers] = useState("");
@@ -369,7 +378,46 @@ export function usePrActions(
       onApprove: () => setPendingAction("approve"),
       onComment: () => setPendingAction("comment"),
       onRequestChanges: () => setPendingAction("requestChanges"),
-      onMerge: () => setPendingAction("merge"),
+      onMerge: () => {
+        if (busy.current) {
+          toastManager.add({ type: "info", title: "Wait for the current PR action to finish" });
+          return;
+        }
+        if (mergeLookup.current) return;
+        mergeLookup.current = true;
+        void (async () => {
+          try {
+            const candidates = await ensureNativeApi().prHub.resolveLocalCheckout({ key: pr.key });
+            const ids = [
+              ...new Set(
+                candidates.flatMap((candidate) =>
+                  candidate.projectId ? [candidate.projectId] : [],
+                ),
+              ),
+            ];
+            const method =
+              ids.length === 1
+                ? (await ensureNativeApi().server.getProjectSettings({ projectId: ids[0]! }))
+                    .settings.prHubDefaultMergeMethod
+                : globalMergeMethod;
+            if (currentPrKey.current !== pr.key) return;
+            setProjectMergeMethod({ key: pr.key, method });
+            setPendingAction("merge");
+          } catch {
+            if (currentPrKey.current !== pr.key) return;
+            setProjectMergeMethod({ key: pr.key, method: globalMergeMethod });
+            setPendingAction("merge");
+            toastManager.add({
+              type: "info",
+              title: "Using global merge preferences",
+              description:
+                "Project preferences could not be loaded. You can choose the merge method below.",
+            });
+          } finally {
+            mergeLookup.current = false;
+          }
+        })();
+      },
       onMarkReady: () => setPendingAction("markReady"),
       onReRequest: () => {
         setReviewers(pr.reviewRequestReviewers.join(", "));

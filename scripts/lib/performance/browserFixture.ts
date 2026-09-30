@@ -1,3 +1,5 @@
+import { ProjectId } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { fixture, messageFixture } from "./fixtures.ts";
 
 export const LARGE_THREAD = "perf-large";
@@ -202,6 +204,10 @@ export function createBrowserFixture(protocolVersion = 1) {
           return { ok: true };
         case "projects.cloneList":
           return [];
+        case "server.getProjectSettings":
+          return resolveProjectSettings({
+            projectId: ProjectId.makeUnsafe(String(body.projectId)),
+          });
         case "server.getConfig":
           return serverConfig;
         case "agents.getSnapshot":

@@ -1,6 +1,13 @@
+import { projectSettingsQueryOptions } from "../lib/projectSettingsQuery";
 import { useCallback, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ServerSettings, type ServerSettingsPatch, type UnifiedSettings } from "@t3tools/contracts";
+import {
+  ServerSettings,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
+  type ServerSettingsPatch,
+  type UnifiedSettings,
+  type ProjectId,
+} from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 
 import { AppSettingsSchema, type AppSettings, useAppSettings } from "../appSettings";
@@ -45,13 +52,23 @@ export function splitSettingsPatch(patch: Partial<UnifiedWebSettings>): {
 
 export function useSettings<T = UnifiedWebSettings>(
   selector?: (settings: UnifiedWebSettings) => T,
+  projectId?: ProjectId,
 ): T {
   const { settings: appSettings } = useAppSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
-  const merged = useMemo(
-    () => mergeSettings(appSettings, serverConfigQuery.data?.settings),
-    [appSettings, serverConfigQuery.data?.settings],
-  );
+  const projectQuery = useQuery({
+    ...projectSettingsQueryOptions(projectId ?? ("" as ProjectId)),
+    enabled: !!projectId,
+  });
+  const merged = useMemo(() => {
+    const merged = mergeSettings(appSettings, serverConfigQuery.data?.settings);
+    if (projectQuery.data) {
+      for (const key of PROJECT_SCOPED_SERVER_SETTING_KEYS) {
+        Object.assign(merged, { [key]: projectQuery.data.settings[key] });
+      }
+    }
+    return merged;
+  }, [appSettings, serverConfigQuery.data?.settings, projectQuery.data]);
   return useMemo(() => (selector ? selector(merged) : (merged as T)), [merged, selector]);
 }
 
@@ -69,6 +86,7 @@ export function useUpdateSettings() {
       if (Object.keys(serverPatch).length > 0) {
         const update = serverUpdateQueueRef.current.then(async () => {
           const settings = await ensureNativeApi().server.updateSettings(serverPatch);
+          void queryClient.invalidateQueries({ queryKey: ["server", "project-settings"] });
           queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
             existing ? { ...existing, settings } : existing,
           );

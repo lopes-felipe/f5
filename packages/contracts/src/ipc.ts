@@ -1,4 +1,10 @@
 import type {
+  AttachmentUpload,
+  AttachmentUploadsInput,
+  AttachmentCloneToUploadInput,
+} from "./attachmentUpload";
+import type { ProjectId } from "./baseSchemas";
+import type {
   ProfileId,
   ProfileSummary,
   ProfileCreateInput,
@@ -39,6 +45,9 @@ import type {
   ProjectListDirectoryInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
+  ProjectIssueAssetUrlInput,
+  ProjectOpenHtmlPreviewInput,
+  ProjectIssueAssetUrlResult,
   ProjectReadFileResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
@@ -64,7 +73,13 @@ import type {
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server";
-import type { ServerSettings, ServerSettingsPatch } from "./settings";
+import type {
+  MigrateClientSettingInput,
+  MigrateClientSettingResult,
+  ProjectSettingsResult,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type {
   UsageGetAccountsInput,
@@ -395,7 +410,15 @@ export interface DesktopImageDownloadResult {
   savedPath: string;
 }
 
+export type QuitShortcutMode = "hold" | "double-click" | "direct";
+export type QuitShortcutHintEvent =
+  | { state: "up" }
+  | { state: "down"; mode: Exclude<QuitShortcutMode, "direct"> };
+
 export interface DesktopBridge {
+  setQuitShortcutMode?: (mode: QuitShortcutMode) => Promise<void>;
+  onQuitShortcut?: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
+  setAttentionBadge?: (count: number) => Promise<void>;
   getSystemLocale?: () => string | null;
   getProfileId?: () => string | null;
   switchProfile?: (profileId: string) => Promise<boolean>;
@@ -461,6 +484,11 @@ export interface DesktopPreviewBridge {
 }
 
 export interface NativeApi {
+  attachments: {
+    getUploads: (input: AttachmentUploadsInput) => Promise<Array<AttachmentUpload | null>>;
+    releaseUploads: (input: AttachmentUploadsInput) => Promise<{}>;
+    cloneToUpload: (input: AttachmentCloneToUploadInput) => Promise<AttachmentUpload>;
+  };
   profiles?: {
     githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;
     githubLoginStatus: (input: {
@@ -481,7 +509,7 @@ export interface NativeApi {
     remove: (input: { profileId: ProfileId }) => Promise<void>;
     loginStart: (input: {
       instanceId: import("./providerInstance").ProviderInstanceId;
-      method?: "browser" | "device-code";
+      method?: "browser" | "device-code" | "install";
     }) => Promise<{ handle: string }>;
     input: (input: { handle: string; data: string }) => Promise<void>;
     cancel: (input: { handle: string }) => Promise<void>;
@@ -537,6 +565,8 @@ export interface NativeApi {
       input: ProjectCancelContentSearchInput,
     ) => Promise<ProjectCancelContentSearchResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
+    openHtmlPreview: (input: ProjectOpenHtmlPreviewInput) => Promise<{ url: string }>;
+    issueAssetUrl: (input: ProjectIssueAssetUrlInput) => Promise<ProjectIssueAssetUrlResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
   };
   filesystem: {
@@ -578,6 +608,8 @@ export interface NativeApi {
   server: {
     getConfig: () => Promise<ServerConfig>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
+    getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
+    migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
     refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
     validateHarnesses: (input?: {
       providerOptions?: ProviderStartOptions;

@@ -13,6 +13,40 @@ import {
 } from "./AcpRuntimeModel.ts";
 
 describe("AcpRuntimeModel", () => {
+  it("keeps thinking chunks separate from assistant output", () => {
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "Thinking" },
+        },
+      }),
+    ).toMatchObject({
+      events: [{ _tag: "ContentDelta", text: "Thinking", streamKind: "reasoning_text" }],
+    });
+  });
+  it("retains native slash command names and input hints", () => {
+    expect(
+      parseSessionUpdateEvent({
+        sessionId: "s",
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: [
+            { name: "review", description: "Review changes", input: { hint: "branch" } },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      events: [
+        {
+          _tag: "SlashCommandsUpdated",
+          commands: [{ name: "review", description: "Review changes", argumentHint: "branch" }],
+        },
+      ],
+    });
+  });
+
   it("parses session mode state from typed ACP session setup responses", () => {
     const modeState = parseSessionModeState({
       sessionId: "session-1",

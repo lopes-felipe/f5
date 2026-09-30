@@ -1,3 +1,4 @@
+import { AttachmentUploadsInput, AttachmentCloneToUploadInput } from "./attachmentUpload";
 import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
@@ -117,6 +118,8 @@ import {
   ProjectCloneCancelInput,
   ProjectListDirectoryInput,
   ProjectReadFileInput,
+  ProjectIssueAssetUrlInput,
+  ProjectOpenHtmlPreviewInput,
   ProjectSearchEntriesInput,
   ProjectSearchContentsInput,
   ProjectWriteFileInput,
@@ -150,7 +153,7 @@ import {
   ServerUpdateKeybindingInput,
   ServerValidateHarnessesInput,
 } from "./server";
-import { ServerSettingsPatch } from "./settings";
+import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
 import {
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
@@ -261,7 +264,12 @@ export const WS_METHODS = {
   projectsSearchContents: "projects.searchContents",
   projectsCancelContentSearch: "projects.cancelContentSearch",
   projectsWriteFile: "projects.writeFile",
+  attachmentsCloneToUpload: "attachments.cloneToUpload",
+  attachmentsGetUploads: "attachments.getUploads",
+  attachmentsReleaseUploads: "attachments.releaseUploads",
   projectsReadFile: "projects.readFile",
+  projectsOpenHtmlPreview: "projects.openHtmlPreview",
+  projectsIssueAssetUrl: "projects.issueAssetUrl",
   projectsAuthorizeEntry: "projects.authorizeEntry",
   projectsGetCheckedInConfig: "projects.getCheckedInConfig",
 
@@ -311,6 +319,8 @@ export const WS_METHODS = {
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverUpdateSettings: "server.updateSettings",
+  serverGetProjectSettings: "server.getProjectSettings",
+  serverMigrateClientSetting: "server.migrateClientSetting",
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -545,7 +555,12 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsSearchContents, ProjectSearchContentsInput),
   tagRequestBody(WS_METHODS.projectsCancelContentSearch, ProjectCancelContentSearchInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
+  tagRequestBody(WS_METHODS.attachmentsCloneToUpload, AttachmentCloneToUploadInput),
+  tagRequestBody(WS_METHODS.attachmentsGetUploads, AttachmentUploadsInput),
+  tagRequestBody(WS_METHODS.attachmentsReleaseUploads, AttachmentUploadsInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
+  tagRequestBody(WS_METHODS.projectsOpenHtmlPreview, ProjectOpenHtmlPreviewInput),
+  tagRequestBody(WS_METHODS.projectsIssueAssetUrl, ProjectIssueAssetUrlInput),
   tagRequestBody(WS_METHODS.projectsAuthorizeEntry, ProjectAuthorizeEntryInput),
 
   // Filesystem methods
@@ -594,6 +609,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
+  tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
+  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
+  tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),

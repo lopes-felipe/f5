@@ -44,7 +44,8 @@
     "node-pty": "^1.1.0",
     "open": "^10.1.0",
     "ws": "^8.18.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@effect/language-service": "catalog:",
@@ -56,6 +57,7 @@
     "@types/cross-spawn": "6.0.6",
     "@types/node": "catalog:",
     "@types/ws": "^8.5.13",
+    "@types/yauzl": "^3.4.0",
     "effect-acp": "workspace:*",
     "tsdown": "catalog:",
     "typescript": "catalog:",

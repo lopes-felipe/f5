@@ -1,3 +1,4 @@
+import Migration0093 from "./Migrations/093_AttachmentUploads.ts";
 import Migration0092 from "./Migrations/092_ThreadPullRequestSearch.ts";
 import Migration0091 from "./Migrations/091_PrHubRepositoryProvenance.ts";
 import Migration0090 from "./Migrations/090_PrHubIndependentOperations.ts";
@@ -117,6 +118,7 @@ import { Effect } from "effect";
  * returns migrations sorted by ID.
  */
 export const MIGRATIONS = {
+  "93_AttachmentUploads": Migration0093,
   "1_OrchestrationEvents": Migration0001,
   "2_OrchestrationCommandReceipts": Migration0002,
   "3_CheckpointDiffBlobs": Migration0003,

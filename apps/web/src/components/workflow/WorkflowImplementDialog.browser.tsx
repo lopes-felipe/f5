@@ -1,3 +1,5 @@
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import "../../index.css";
 
 import {
@@ -48,6 +50,15 @@ vi.mock("../../nativeApi", () => ({
     },
   }),
   ensureNativeApi: () => ({
+    server: {
+      getProjectSettings: async ({ projectId }: { projectId: ProjectId }) =>
+        resolveProjectSettings({
+          projectId,
+          global: DEFAULT_SERVER_SETTINGS,
+          legacyEnvMode:
+            useStore.getState().projects.find((p) => p.id === projectId)?.defaultEnvMode ?? null,
+        }),
+    },
     git: {
       listBranches: nativeApiMocks.listBranches,
     },

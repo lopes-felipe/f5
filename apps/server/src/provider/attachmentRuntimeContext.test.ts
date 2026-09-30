@@ -19,7 +19,7 @@ describe("provider attachment runtime context", () => {
     const context = buildProviderAttachmentRuntimeContext([attachment]);
 
     expect(context).toContain("best-effort access");
-    expect(context).toContain("sandbox may prevent opening these paths");
+    expect(context).toContain("sandbox may prevent opening a path");
     expect(context).toContain(JSON.stringify(attachment.name));
     expect(context).toContain(JSON.stringify(attachment.localPath));
   });

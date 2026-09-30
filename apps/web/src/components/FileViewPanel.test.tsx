@@ -182,6 +182,22 @@ describe("FileViewPanel", () => {
     useQueryMock.mockReturnValue({
       isLoading: false,
       isError: true,
+      error: new Error("Unable to read src/app.ts"),
+      data: undefined,
+      refetch: vi.fn(),
+    });
+
+    const markup = await renderPanel();
+
+    expect(markup).toContain("Unable to read src/app.ts");
+    expect(markup).toContain("Retry");
+    expect(markup).toContain("Open in editor");
+  });
+
+  it("hands binary files to the media viewer instead of the text error", async () => {
+    useQueryMock.mockReturnValue({
+      isLoading: false,
+      isError: true,
       error: new Error("Binary file cannot be displayed: src/app.ts"),
       data: undefined,
       refetch: vi.fn(),
@@ -189,9 +205,9 @@ describe("FileViewPanel", () => {
 
     const markup = await renderPanel();
 
-    expect(markup).toContain("Binary file cannot be displayed: src/app.ts");
-    expect(markup).toContain("Retry");
-    expect(markup).toContain("Open in editor");
+    // The shared query mock also fails the asset grant, so the media view's own error shows.
+    expect(markup).toContain("Unable to open this file.");
+    expect(markup).not.toContain("Binary file cannot be displayed");
   });
 
   it("shows an editor-only message for files outside the workspace", async () => {

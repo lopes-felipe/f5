@@ -13,10 +13,11 @@ function canonicalize(value: unknown): unknown {
 }
 
 export function canonicalRequestHash(command: ClientThreadTurnStartCommand): string {
-  const attachments = command.message.attachments.map(({ dataUrl, ...attachment }) => ({
-    ...attachment,
-    contentDigest: createHash("sha256").update(dataUrl).digest("hex"),
-  }));
+  const attachments = command.message.attachments.map((entry) => {
+    if (entry.type === "upload") return entry;
+    const { dataUrl, ...attachment } = entry;
+    return { ...attachment, contentDigest: createHash("sha256").update(dataUrl).digest("hex") };
+  });
   const semanticCommand = {
     ...command,
     message: {

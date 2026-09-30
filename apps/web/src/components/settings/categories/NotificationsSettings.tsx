@@ -1,3 +1,5 @@
+import { unlockThreadNotificationSound } from "../../../threadAttention";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import {
   GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
   GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
@@ -22,6 +24,9 @@ const PR_HUB_POLL_INTERVAL_SECONDS_ENABLED_MIN = 60;
 const PR_HUB_POLL_INTERVAL_SECONDS_MAX = 3600;
 
 const NOTIFICATION_KEYS = [
+  "notificationMode",
+  "inAppThreadNotifications",
+  "showAttentionBadge",
   "enableThreadStatusNotifications",
   "enablePrAttentionNotifications",
 ] as const;
@@ -50,7 +55,7 @@ export function NotificationsSettings() {
   const prHubRefreshEnabled = prHubSettings.pollIntervalSeconds !== 0;
   const [excludeReposDraft, setExcludeReposDraft] = useState(prHubSettings.excludeRepos.join("\n"));
   const notificationsEnabled =
-    settings.enableThreadStatusNotifications || settings.enablePrAttentionNotifications;
+    settings.notificationMode.includes("system") || settings.enablePrAttentionNotifications;
 
   useEffect(() => {
     setExcludeReposDraft(prHubSettings.excludeRepos.join("\n"));
@@ -88,6 +93,27 @@ export function NotificationsSettings() {
         </div>
 
         <div className="space-y-3">
+          <label className="flex items-center justify-between gap-3">
+            In-app thread notifications
+            <Switch
+              aria-label="In-app thread notifications"
+              checked={settings.inAppThreadNotifications}
+              onCheckedChange={(checked) =>
+                updateSettings({ inAppThreadNotifications: Boolean(checked) })
+              }
+            />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            Show attention badge
+            <Switch
+              aria-label="Show attention badge"
+              checked={settings.showAttentionBadge}
+              onCheckedChange={(checked) =>
+                updateSettings({ showAttentionBadge: Boolean(checked) })
+              }
+            />
+          </label>
+
           <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
             <div>
               <p className="text-sm font-medium text-foreground">Thread status notifications</p>
@@ -96,15 +122,34 @@ export function NotificationsSettings() {
                 input, plan ready, or completed.
               </p>
             </div>
-            <Switch
-              checked={settings.enableThreadStatusNotifications}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  enableThreadStatusNotifications: Boolean(checked),
-                })
-              }
-              aria-label="Thread status notifications"
-            />
+            <Select
+              value={settings.notificationMode}
+              onValueChange={(value) => {
+                if (value === "sound" || value === "system-and-sound")
+                  unlockThreadNotificationSound();
+                if (
+                  value === "off" ||
+                  value === "system" ||
+                  value === "sound" ||
+                  value === "system-and-sound"
+                )
+                  updateSettings({
+                    notificationMode: value,
+                    enableThreadStatusNotifications:
+                      value === "system" || value === "system-and-sound",
+                  });
+              }}
+            >
+              <SelectTrigger aria-label="Thread status notifications">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup>
+                <SelectItem value="off">Off</SelectItem>
+                <SelectItem value="system">System notification</SelectItem>
+                <SelectItem value="sound">Sound</SelectItem>
+                <SelectItem value="system-and-sound">System notification and sound</SelectItem>
+              </SelectPopup>
+            </Select>
           </div>
 
           <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
@@ -186,8 +231,7 @@ export function NotificationsSettings() {
           </div>
         </div>
 
-        {settings.enableThreadStatusNotifications !== defaults.enableThreadStatusNotifications ||
-        settings.enablePrAttentionNotifications !== defaults.enablePrAttentionNotifications ? (
+        {NOTIFICATION_KEYS.some((key) => settings[key] !== defaults[key]) ? (
           <div className="mt-3 flex justify-end">
             <Button
               size="xs"

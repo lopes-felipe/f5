@@ -112,8 +112,8 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).enablePrAttentionNotifications).toBe(true);
   });
 
-  it("defaults assistant streaming to true", () => {
-    expect(parsePersistedAppSettings(null).enableAssistantStreaming).toBe(true);
+  it("leaves assistant streaming to server settings", () => {
+    expect(parsePersistedAppSettings(null)).not.toHaveProperty("enableAssistantStreaming");
   });
 
   it("defaults workflow threads to collapsed in the sidebar", () => {
@@ -649,7 +649,7 @@ describe("displayProfile", () => {
   it.each(DISPLAY_PROFILE_NAMES)("ignores non-governed keys when deriving %s", (name) => {
     const candidate = {
       ...DISPLAY_PROFILE_PRESETS[name],
-      enableAssistantStreaming: !parsePersistedAppSettings(null).enableAssistantStreaming,
+      enableAssistantStreaming: true,
       openFileLinksInPanel: !parsePersistedAppSettings(null).openFileLinksInPanel,
     };
 
@@ -884,4 +884,24 @@ it("keeps the existing editor mode and enables rich text only for new settings",
     parsePersistedAppSettings(JSON.stringify({ composerRichTextEnabled: false }))
       .composerRichTextEnabled,
   ).toBe(false);
+});
+
+it("migrates legacy notification choices without enabling sounds or badges", () => {
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ enableThreadStatusNotifications: true })),
+  ).toMatchObject({
+    notificationMode: "system",
+    showAttentionBadge: false,
+    inAppThreadNotifications: false,
+  });
+  expect(
+    parsePersistedAppSettings(JSON.stringify({ enableThreadStatusNotifications: false }))
+      .notificationMode,
+  ).toBe("off");
+  expect(
+    parsePersistedAppSettings(
+      JSON.stringify({ enableThreadStatusNotifications: true, notificationMode: "off" }),
+    ).notificationMode,
+  ).toBe("off");
+  expect(parsePersistedAppSettings(null).quitShortcutMode).toBe("hold");
 });

@@ -77,7 +77,18 @@ function isTextGenerationError(error: unknown): error is TextGenerationError {
 export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(function* (
   grokSettings: GrokSettings,
   environment: NodeJS.ProcessEnv = process.env,
+  options?: {
+    makeRuntime: typeof makeGrokAcpRuntime;
+    normalizeModel: (model: string) => string;
+    defaultModelSelection: ModelSelection;
+    useAccountDefaultModel?: boolean;
+  },
 ) {
+  const resolveSelection = (selection: ModelSelection | undefined, model?: string) =>
+    selection ??
+    (options
+      ? { ...options.defaultModelSelection, ...(model ? { model } : {}) }
+      : resolveInputModelSelection(selection, model));
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const runGrokJson = <S extends Schema.Top>({
@@ -100,9 +111,11 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     modelSelection: ModelSelection;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
-      const resolvedModel = resolveGrokAcpBaseModelId(modelSelection.model);
+      const resolvedModel = (options?.normalizeModel ?? resolveGrokAcpBaseModelId)(
+        modelSelection.model,
+      );
       const outputRef = yield* Ref.make("");
-      const runtime = yield* makeGrokAcpRuntime({
+      const runtime = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
         grokSettings,
         environment,
         childProcessSpawner: commandSpawner,
@@ -127,7 +140,10 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         yield* applyGrokAcpModelSelection({
           runtime,
           currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
-          requestedModelId: resolvedModel,
+          requestedModelId:
+            options?.useAccountDefaultModel && resolvedModel === "antigravity-default"
+              ? undefined
+              : resolvedModel,
           mapError: (cause) =>
             mapGrokAcpError(
               operation,
@@ -207,7 +223,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       cwd: input.cwd,
       prompt,
       outputSchemaJson: outputSchema,
-      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+      modelSelection: resolveSelection(input.modelSelection, input.model),
     });
 
     return {
@@ -237,7 +253,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       cwd: input.cwd,
       prompt,
       outputSchemaJson: outputSchema,
-      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+      modelSelection: resolveSelection(input.modelSelection, input.model),
     });
 
     return {
@@ -260,7 +276,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       cwd: input.cwd,
       prompt,
       outputSchemaJson: outputSchema,
-      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+      modelSelection: resolveSelection(input.modelSelection, input.model),
     });
 
     return {
@@ -282,7 +298,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       cwd: input.cwd,
       prompt,
       outputSchemaJson: outputSchema,
-      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+      modelSelection: resolveSelection(input.modelSelection, input.model),
     });
 
     return {
@@ -298,7 +314,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       cwd: input.cwd,
       prompt: input.prompt,
       outputSchemaJson: input.outputSchema,
-      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+      modelSelection: resolveSelection(input.modelSelection, input.model),
     });
   });
 

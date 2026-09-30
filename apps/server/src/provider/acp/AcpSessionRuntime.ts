@@ -44,6 +44,7 @@ export interface AcpSpawnInput {
   readonly args: ReadonlyArray<string>;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly extendEnv?: boolean;
 }
 
 export interface AcpSessionRuntimeOptions {
@@ -56,6 +57,10 @@ export interface AcpSessionRuntimeOptions {
     readonly version: string;
   };
   readonly authMethodId: string;
+  readonly transformStdoutLine?: (line: string) => string;
+  readonly onStderr?: (chunk: string) => void;
+  readonly sanitizeStderr?: (text: string) => string;
+  readonly resumeMethod?: "resume" | "load";
   readonly requestLogger?: (event: AcpSessionRequestLogEvent) => Effect.Effect<void, never>;
   readonly protocolLogging?: {
     readonly logIncoming?: boolean;
@@ -281,7 +286,9 @@ const makeAcpSessionRuntime = (
       );
 
     const spawnEnvironment = options.spawn.env
-      ? { ...process.env, ...options.spawn.env }
+      ? options.spawn.extendEnv === false
+        ? options.spawn.env
+        : { ...process.env, ...options.spawn.env }
       : process.env;
     const invocation = yield* resolveInvocationEffect(
       options.spawn.command,
@@ -298,6 +305,7 @@ const makeAcpSessionRuntime = (
         ChildProcess.make(invocation.file, [...invocation.args], {
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
           env: spawnEnvironment,
+          extendEnv: options.spawn.extendEnv !== false,
         }),
       )
       .pipe(
@@ -313,6 +321,11 @@ const makeAcpSessionRuntime = (
 
     const acpContext = yield* Layer.build(
       EffectAcpClient.layerChildProcess(child, {
+        ...(options.transformStdoutLine
+          ? { transformStdoutLine: options.transformStdoutLine }
+          : {}),
+        ...(options.onStderr ? { onStderr: options.onStderr } : {}),
+        ...(options.sanitizeStderr ? { sanitizeStderr: options.sanitizeStderr } : {}),
         ...(options.protocolLogging?.logIncoming !== undefined
           ? { logIncoming: options.protocolLogging.logIncoming }
           : {}),
@@ -325,11 +338,19 @@ const makeAcpSessionRuntime = (
 
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
+    const startupCommands = new Map<string, EffectAcpSchema.SessionNotification>();
     yield* acp.handleSessionUpdate((notification) =>
       Effect.gen(function* () {
         if (hardeningEnabled) {
           const acceptedSessionId = yield* Ref.get(acceptedSessionIdRef);
           if (acceptedSessionId === null || String(notification.sessionId) !== acceptedSessionId) {
+            if (
+              acceptedSessionId === null &&
+              notification.update.sessionUpdate === "available_commands_update" &&
+              startupCommands.size < 4 &&
+              JSON.stringify(notification).length <= 65_536
+            )
+              startupCommands.set(String(notification.sessionId), notification);
             return;
           }
         }
@@ -662,7 +683,35 @@ const makeAcpSessionRuntime = (
           cwd: options.cwd,
           mcpServers: [],
         } satisfies EffectAcpSchema.LoadSessionRequest;
-        if (hardeningEnabled) {
+        if (options.resumeMethod === "resume") {
+          const resumed = yield* runLoggedRequest(
+            "session/resume",
+            loadPayload,
+            acp.agent.resumeSession(loadPayload),
+          ).pipe(Effect.exit);
+          if (Exit.isSuccess(resumed)) {
+            sessionSetupResult = resumed.value;
+            sessionId = options.resumeSessionId;
+            yield* recordResumeOutcome("loaded");
+          } else if (isDefiniteResumeLoadFailure(resumed.cause)) {
+            yield* Ref.set(acceptedSessionIdRef, null);
+            const createPayload = {
+              cwd: options.cwd,
+              mcpServers: [],
+            } satisfies EffectAcpSchema.NewSessionRequest;
+            const created = yield* runLoggedRequest(
+              "session/new",
+              createPayload,
+              acp.agent.createSession(createPayload),
+            );
+            sessionId = created.sessionId;
+            sessionSetupResult = created;
+            yield* recordResumeOutcome("new-immediate");
+          } else {
+            return yield* Effect.failCause(resumed.cause);
+          }
+          yield* Ref.set(acceptedSessionIdRef, sessionId);
+        } else if (hardeningEnabled) {
           const decision = yield* runHardenedSessionLoad(loadPayload);
           if (decision._tag === "Loaded" || decision._tag === "AdoptedAfterReplay") {
             sessionId = options.resumeSessionId;
@@ -735,6 +784,17 @@ const makeAcpSessionRuntime = (
         sessionSetupResult = created;
       }
 
+      const commands = startupCommands.get(sessionId);
+      startupCommands.clear();
+      if (commands)
+        yield* handleSessionUpdate({
+          queue: eventQueue,
+          modeStateRef,
+          toolCallsRef,
+          toolEmissions,
+          assistantSegmentRef,
+          params: commands,
+        });
       yield* Ref.set(modeStateRef, parseSessionModeState(sessionSetupResult));
       yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
 

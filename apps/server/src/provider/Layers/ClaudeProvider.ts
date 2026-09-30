@@ -1,3 +1,5 @@
+import type { CustomModelSetting } from "@t3tools/contracts";
+import { customModelSlug } from "@t3tools/shared/customModels";
 import { parseClaudeAuthStatusFromOutput, AUTH_TIMEOUT_MS } from "./ProviderHealth";
 import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
@@ -178,10 +180,10 @@ function isClaudeModelGatedOut(
 
 function getProviderClaudeModelsForVersion(
   version: string | null | undefined,
-  customModels: ReadonlyArray<string>,
+  customModels: ReadonlyArray<CustomModelSetting>,
 ): ReadonlyArray<ServerProviderModel> {
   const filteredCustomModels = customModels.filter((candidate) => {
-    const normalized = normalizeModelSlug(candidate, "claudeAgent");
+    const normalized = normalizeModelSlug(customModelSlug(candidate), "claudeAgent");
     return !isClaudeModelGatedOut(normalized, version);
   });
   return providerModelsFromSettings(

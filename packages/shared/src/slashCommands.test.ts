@@ -25,3 +25,10 @@ describe("isReservedHostLocalSlashCommandName", () => {
     expect(isReservedHostLocalSlashCommandName("review")).toBe(false);
   });
 });
+
+it("accepts qualified skills without accepting empty namespace components", () => {
+  expect(normalizeHostCompatibleRuntimeSlashCommandName("acme:review")).toBe("acme:review");
+  expect(normalizeHostCompatibleRuntimeSlashCommandName("acme:plan")).toBe("acme:plan");
+  for (const name of [":review", "acme:", "acme::review"])
+    expect(normalizeHostCompatibleRuntimeSlashCommandName(name)).toBeUndefined();
+});

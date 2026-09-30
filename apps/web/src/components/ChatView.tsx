@@ -1,3 +1,15 @@
+import { workspaceBasenameMatch } from "../lib/workspaceBasename";
+import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
+import { WorkspaceMediaView } from "./WorkspaceMediaView";
+import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
+import type { ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { partitionDroppedAttachments } from "../lib/droppedAttachments";
+import { composerAttachmentStatus } from "../lib/attachmentValidation";
+import { foldedPasteFile } from "../lib/textPaste";
+import { ensureComposerUpload, persistComposerAttachment } from "../composerDraftStore";
+import { defaultDraftRuntimeMode } from "../lib/draftSettingsDefaults";
+import { RepositoryLinks, repositoryLinksForThread } from "../repositoryLinkContext";
+import { AssistantQuoteToolbar } from "./chat/AssistantQuoteToolbar";
 import { isDocumentWorkflow } from "@t3tools/shared/documentWorkflow";
 import { shouldScrollTimeline } from "./chat/timelineScrollTarget";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
@@ -67,7 +79,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate } from "@tanstack/react-router";
-import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
+import { gitBranchesQueryOptions, gitStatusQueryOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
@@ -142,7 +154,6 @@ import {
 import { normalizeGeneratedThreadTitle } from "../threadTitle";
 import {
   DEFAULT_INTERACTION_MODE,
-  DEFAULT_RUNTIME_MODE,
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
@@ -200,7 +211,7 @@ import {
 } from "~/projectScripts";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
-import { readNativeApi } from "~/nativeApi";
+import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
 import {
@@ -276,6 +287,7 @@ import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 
 import {
+  providerKindForImportedThread,
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
@@ -295,7 +307,7 @@ import {
   LastInvokedScriptByProjectSchema,
   type PendingTurnDispatchRollback,
   PullRequestDialogState,
-  readFileAsDataUrl,
+  attachedFileReferenceWarnings,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   revokeBlobPreviewUrl,
@@ -642,7 +654,8 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
     driver === "claudeAgent" ||
     driver === "cursor" ||
     driver === "opencode" ||
-    driver === "grok"
+    driver === "grok" ||
+    driver === "antigravity"
     ? (driver as ProviderKind)
     : null;
 }
@@ -658,6 +671,13 @@ export default function ChatView({
   );
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
+  const mediaRootsRef = useRef({ projects, threads });
+  mediaRootsRef.current = { projects, threads };
+  const [referencedAsset, setReferencedAsset] = useState<{
+    identity: ProjectIssueAssetUrlInput["identity"];
+    path: string;
+    name: string;
+  } | null>(null);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
@@ -1001,8 +1021,9 @@ export default function ChatView({
     }
     return null;
   }, [activeThread, codeReviewWorkflows, investigationWorkflows, planningWorkflows]);
+  const projectSettings = useSettings(undefined, activeThread?.projectId);
   const runtimeMode =
-    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+    composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? projectSettings.defaultRuntimeMode;
   const interactionMode =
     composerDraft.interactionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE;
   const isServerThread = serverThread !== undefined;
@@ -1107,6 +1128,10 @@ export default function ChatView({
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
+      const runtimeMode = await ensureNativeApi()
+        .server.getProjectSettings({ projectId: activeProject.id })
+        .then((result) => result.settings.defaultRuntimeMode)
+        .catch(() => defaultDraftRuntimeMode(activeProject.id));
       const storedDraftThread = getDraftThreadByProjectId(activeProject.id, input);
       if (storedDraftThread) {
         setDraftThreadContext(storedDraftThread.threadId, input);
@@ -1135,7 +1160,7 @@ export default function ChatView({
       const nextThreadId = newThreadId();
       setProjectDraftThreadId(activeProject.id, nextThreadId, {
         createdAt: new Date().toISOString(),
-        runtimeMode: DEFAULT_RUNTIME_MODE,
+        runtimeMode,
         interactionMode: DEFAULT_INTERACTION_MODE,
         ...input,
       });
@@ -1193,12 +1218,17 @@ export default function ChatView({
       activeThread.messages.length > 0 ||
       activeThread.session !== null),
   );
+  const importedThreadProvider = providerKindForImportedThread({
+    instanceId: activeThread?.modelSelection?.instanceId,
+    providers: serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
+    configured: serverConfigQuery.data?.settings?.providerInstances,
+  });
   const inferredThreadProvider =
     activeThread && activeThread.session === null && !selectedProviderByThreadId
-      ? inferProviderForModel(activeThread.model, "codex")
+      ? (importedThreadProvider ?? inferProviderForModel(activeThread.model, "codex"))
       : null;
   const lockedProvider: ProviderKind | null = hasThreadStarted
-    ? (sessionProvider ?? selectedProviderByThreadId ?? null)
+    ? (sessionProvider ?? importedThreadProvider ?? selectedProviderByThreadId ?? null)
     : null;
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
@@ -2274,6 +2304,27 @@ export default function ChatView({
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
   const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
+  const repositoryStatus = useQuery(
+    gitStatusQueryOptions({
+      cwd: gitCwd ?? null,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
+    }),
+  );
+  const repositoryLinks = useMemo(
+    () =>
+      repositoryLinksForThread(
+        repositoryStatus.data?.pr
+          ? {
+              url: repositoryStatus.data.pr.url,
+              provider: repositoryStatus.data.sourceControl?.kind ?? "github",
+            }
+          : undefined,
+        repositoryStatus.data?.sourceControl,
+      ),
+    [repositoryStatus.data?.pr, repositoryStatus.data?.sourceControl],
+  );
+
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: gitCwd,
@@ -2291,7 +2342,8 @@ export default function ChatView({
   );
   const workspaceEntries = workspaceEntriesQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES;
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
-    if (!composerTrigger) return [];
+    if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
+      return [];
     if (composerTrigger.kind === "path") {
       return workspaceEntries.map((entry) => ({
         id: `path:${entry.kind}:${entry.path}`,
@@ -2303,14 +2355,17 @@ export default function ChatView({
       }));
     }
 
-    return buildSlashComposerMenuItems({
+    const items = buildSlashComposerMenuItems({
       query: composerTrigger.query,
       runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
       provider: selectedProvider,
       projectSkills: activeProject?.skills,
+      providerSkills: selectedProviderSnapshot?.skills,
     });
+    return composerTrigger.kind === "skill" ? items.filter((item) => item.type === "skill") : items;
   }, [
     activeProject?.skills,
+    selectedProviderSnapshot?.skills,
     composerTrigger,
     latestConfiguredRuntimeActivity?.slashCommands,
     selectedProvider,
@@ -2318,7 +2373,10 @@ export default function ChatView({
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
-    Boolean(composerTrigger) && dismissedComposerPromptRef.current !== prompt;
+    Boolean(composerTrigger) &&
+    (composerTrigger?.kind !== "skill" ||
+      (selectedProvider === "codex" && composerMenuItems.length > 0)) &&
+    dismissedComposerPromptRef.current !== prompt;
   const activeComposerMenuItem = useMemo(
     () =>
       composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??
@@ -3217,14 +3275,7 @@ export default function ChatView({
         await Promise.all(
           composerImages.map(async (image) => {
             try {
-              const dataUrl = await readFileAsDataUrl(image.file);
-              stagedAttachmentById.set(image.id, {
-                id: image.id,
-                name: image.name,
-                mimeType: image.mimeType,
-                sizeBytes: image.sizeBytes,
-                dataUrl,
-              });
+              stagedAttachmentById.set(image.id, await persistComposerAttachment(threadId, image));
             } catch {
               const existingPersisted = existingPersistedById.get(image.id);
               if (existingPersisted) {
@@ -3774,6 +3825,10 @@ export default function ChatView({
         }
         return;
       }
+      if (command === "composer.pasteAsText" && composerFocused) {
+        pasteAsTextUntilRef.current = Date.now() + 1000;
+        return;
+      }
       if (command === "composer.stash" && composerFocused) {
         event.preventDefault();
         event.stopPropagation();
@@ -4001,14 +4056,7 @@ export default function ChatView({
       addComposerFilePathsToDraft(paths);
     }
 
-    const warnings: string[] = [];
-    if (missingPathCount > 0) {
-      warnings.push("File attachments require the desktop app to resolve filesystem paths.");
-    }
-    if (invalidPathCount > 0) {
-      warnings.push("Some file attachments could not be added.");
-    }
-    for (const warning of warnings) {
+    for (const warning of attachedFileReferenceWarnings({ missingPathCount, invalidPathCount })) {
       toastManager.add({
         type: "warning",
         title: warning,
@@ -4030,21 +4078,32 @@ export default function ChatView({
     removeComposerFilePathFromDraft(filePath);
   };
 
+  const pasteAsTextUntilRef = useRef(0);
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
-    const files = Array.from(event.clipboardData.files);
-    if (files.length === 0) {
+    // Paste as text is one-shot and wins over both folding and file import, even
+    // when the clipboard also carries files (e.g. a spreadsheet selection).
+    if (pasteAsTextUntilRef.current > Date.now()) {
+      pasteAsTextUntilRef.current = 0;
       return;
     }
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      event.preventDefault();
-      void addComposerImages(imageFiles);
+    const files = Array.from(event.clipboardData.files);
+    if (files.length === 0) {
+      if (isConnecting) return;
+      const text = event.clipboardData.getData("text/plain");
+      const folded = foldedPasteFile(
+        text,
+        prompt,
+        getServerSendLimits().maxInputChars,
+        composerImages.map((file) => file.name),
+      );
+      if (folded) {
+        event.preventDefault();
+        void addComposerImages([folded]);
+      }
+      return;
     }
-    if (nonImageFiles.length > 0 && isElectron) {
-      addComposerFileAttachments(nonImageFiles);
-      event.preventDefault();
-    }
+    event.preventDefault();
+    void addComposerImages(files);
   };
 
   const onComposerDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -4147,15 +4206,9 @@ export default function ChatView({
     event.preventDefault();
     dragDepthRef.current = 0;
     setIsDragOverComposer(false);
-    const files = Array.from(event.dataTransfer.files);
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
-    if (imageFiles.length > 0) {
-      void addComposerImages(imageFiles);
-    }
-    if (nonImageFiles.length > 0) {
-      addComposerFileAttachments(nonImageFiles);
-    }
+    const { files, folders } = partitionDroppedAttachments(event.dataTransfer);
+    if (folders.length) addComposerFileAttachments(folders);
+    void addComposerImages(files);
     focusComposer();
   };
 
@@ -4313,6 +4366,7 @@ export default function ChatView({
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(onAdmitted ? { onAdmitted } : {}),
       });
       return;
     }
@@ -4351,6 +4405,11 @@ export default function ChatView({
       sendLimits = getServerSendLimits();
     } catch (error) {
       setThreadError(activeThread.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
+    const attachmentIssue = composerAttachmentStatus(composerImages, selectedProvider).error;
+    if (attachmentIssue) {
+      setThreadError(activeThread.id, attachmentIssue);
       return;
     }
     sendInFlightRef.current = true;
@@ -4457,6 +4516,7 @@ export default function ChatView({
         provider: selectedProvider,
         runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
         projectSkills: activeProject?.skills,
+        providerSkills: selectedProviderSnapshot?.skills,
       });
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
@@ -4487,22 +4547,24 @@ export default function ChatView({
           ? basenameOfPath(composerFilePathsSnapshot[0])
           : trimmed;
     const turnAttachmentsPromise = Promise.all(
-      composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
-        name: image.name,
-        mimeType: image.mimeType,
-        sizeBytes: image.sizeBytes,
-        dataUrl: await readFileAsDataUrl(image.file),
-      })),
+      composerImagesSnapshot.map(async (image) => {
+        const uploadId = await ensureComposerUpload(threadIdForSend, image);
+        const saved = await api.attachments.getUploads({
+          threadId: threadIdForSend,
+          uploadIds: [uploadId],
+        });
+        if (!saved[0]) throw new Error(`${image.name} expired. Remove it and re-attach the file.`);
+        return { type: "upload" as const, uploadId };
+      }),
     );
     const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
+      type: image.type,
       id: image.id,
       name: image.name,
       mimeType: image.mimeType,
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
-      sourceBlob: image.file,
+      ...(image.uploadId ? {} : { sourceBlob: image.file }),
     }));
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
@@ -4593,7 +4655,7 @@ export default function ChatView({
           : {}),
         ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
         provider: selectedProvider,
-        assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+        assistantDeliveryMode: projectSettings.enableAssistantStreaming ? "streaming" : "buffered",
         runtimeMode,
         interactionMode,
         ...(bootstrap ? { bootstrap } : {}),
@@ -4847,9 +4909,11 @@ export default function ChatView({
     async ({
       text,
       interactionMode: nextInteractionMode,
+      onAdmitted,
     }: {
       text: string;
       interactionMode: "default" | "plan";
+      onAdmitted?: () => void;
     }) => {
       const api = readNativeApi();
       if (
@@ -4888,6 +4952,7 @@ export default function ChatView({
           provider: selectedProvider,
           runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
           projectSkills: activeProject?.skills,
+          providerSkills: selectedProviderSnapshot?.skills,
         },
       );
       const inputLengthIssue = getProviderTurnInputLengthIssue(
@@ -4941,7 +5006,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: nextInteractionMode,
           ...(nextInteractionMode === "default" && activeProposedPlan
@@ -4963,6 +5030,7 @@ export default function ChatView({
           localDispatch,
           failureMessage: "Failed to send plan follow-up.",
           onStarted: () => {
+            onAdmitted?.();
             setOptimisticUserMessages((existing) => [
               ...existing,
               {
@@ -4976,6 +5044,7 @@ export default function ChatView({
             ]);
           },
           onQueued: () => {
+            onAdmitted?.();
             toastManager.add({ type: "success", title: "Plan follow-up added to the queue." });
           },
           onNonTransportFailure: (message, failureRollback) => {
@@ -5021,6 +5090,7 @@ export default function ChatView({
     [
       activeThread,
       activeProject?.skills,
+      selectedProviderSnapshot?.skills,
       activeProposedPlan,
       clearComposerDraftContent,
       composerMatchesClearedState,
@@ -5046,7 +5116,7 @@ export default function ChatView({
       setComposerDraftInteractionMode,
       setDraftThreadContext,
       setThreadError,
-      settings.enableAssistantStreaming,
+      projectSettings.enableAssistantStreaming,
       tasksPanelAutoOpen,
       interactionMode,
     ],
@@ -5136,7 +5206,9 @@ export default function ChatView({
             ? { modelOptions: selectedModelOptionsForDispatch }
             : {}),
           ...(providerOptionsForDispatch ? { providerOptions: providerOptionsForDispatch } : {}),
-          assistantDeliveryMode: settings.enableAssistantStreaming ? "streaming" : "buffered",
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
           runtimeMode,
           interactionMode: "default",
           createdAt,
@@ -5197,7 +5269,7 @@ export default function ChatView({
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
     selectedProvider,
-    settings.enableAssistantStreaming,
+    projectSettings.enableAssistantStreaming,
     syncStartupSnapshot,
     syncThreadTailDetails,
     tasksPanelAutoOpen,
@@ -5475,11 +5547,27 @@ export default function ChatView({
     trigger: ComposerTrigger | null;
   } => {
     const snapshot = readComposerSnapshot();
-    return {
-      snapshot,
-      trigger: detectComposerTrigger(snapshot.value, snapshot.expandedCursor),
-    };
-  }, [readComposerSnapshot]);
+    const candidate = detectComposerTrigger(snapshot.value, snapshot.expandedCursor);
+    const trigger =
+      candidate?.kind === "skill" &&
+      (selectedProvider !== "codex" ||
+        !buildSlashComposerMenuItems({
+          query: candidate.query,
+          provider: selectedProvider,
+          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          projectSkills: activeProject?.skills,
+          providerSkills: selectedProviderSnapshot?.skills,
+        }).some((item) => item.type === "skill"))
+        ? null
+        : candidate;
+    return { snapshot, trigger };
+  }, [
+    readComposerSnapshot,
+    selectedProvider,
+    latestConfiguredRuntimeActivity?.slashCommands,
+    activeProject?.skills,
+    selectedProviderSnapshot?.skills,
+  ]);
 
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
@@ -5535,7 +5623,7 @@ export default function ChatView({
         return;
       }
       if (item.type === "skill") {
-        const replacement = buildComposerSkillReplacement(item.name);
+        const replacement = buildComposerSkillReplacement(item.name, selectedProvider);
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
@@ -5558,6 +5646,7 @@ export default function ChatView({
       handleInteractionModeChange,
       isPendingTurnDispatchBlocked,
       resolveActiveComposerTrigger,
+      selectedProvider,
     ],
   );
   const onComposerMenuItemHighlighted = useCallback((itemId: string | null) => {
@@ -5742,14 +5831,57 @@ export default function ChatView({
     },
     [navigate, threadId],
   );
+  const fileNavigationGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      fileNavigationGeneration.current++;
+    },
+    [threadId],
+  );
   const handleFileNavigation = useCallback(
     (filePath: string, turnId?: TurnId): boolean => {
+      const generation = ++fileNavigationGeneration.current;
       if (!settings.openFileLinksInPanel) {
         return false;
       }
 
       const parsed = normalizeFilePathForDiffLookup(filePath, workspaceRoot);
       if (!parsed || !parsed.workspaceRelative) {
+        const roots = mediaRootsRef.current;
+        const target = resolveChatAssetTarget(
+          filePath,
+          workspaceRoot,
+          roots.projects,
+          roots.threads,
+        );
+        if (target) {
+          setReferencedAsset({ ...target, name: target.path });
+          return true;
+        }
+        const basename = filePath.split(/[\\/]/u).at(-1);
+        for (const thread of roots.threads)
+          for (const message of thread.messages)
+            for (const attachment of message.attachments ?? []) {
+              try {
+                const pathname = new URL(
+                  attachment.sourceUrl ?? attachment.previewUrl ?? "",
+                  window.location.href,
+                ).pathname;
+                if (
+                  pathname.startsWith("/attachments/") &&
+                  decodeURIComponent(pathname.split("/").at(-1)!) === basename
+                ) {
+                  setReferencedAsset({
+                    identity: { kind: "attachments" },
+                    path: decodeURIComponent(pathname.slice("/attachments/".length)),
+                    name: attachment.name,
+                  });
+                  return true;
+                }
+              } catch {
+                /* An optimistic attachment may not have a durable URL yet. */
+              }
+            }
         return false;
       }
 
@@ -5778,22 +5910,34 @@ export default function ChatView({
         return true;
       }
 
-      void queryClient.invalidateQueries({
-        queryKey: providerQueryKeys.fileContent({
-          cwd: workspaceRoot,
-          relativePath: parsed.path,
-        }),
-      });
-      void navigate({
-        to: "/$threadId",
-        params: { threadId },
-        search: (previous) => ({
-          ...clearFileViewSearchParams(previous),
-          fileViewPath: parsed.path,
-          ...(parsed.line ? { fileLine: parsed.line } : {}),
-          ...(parsed.column ? { fileColumn: parsed.column } : {}),
-        }),
-      });
+      const openFile = (relativePath: string) => {
+        if (generation !== fileNavigationGeneration.current) return;
+        void queryClient.invalidateQueries({
+          queryKey: providerQueryKeys.fileContent({
+            cwd: workspaceRoot,
+            relativePath,
+          }),
+        });
+        void navigate({
+          to: "/$threadId",
+          params: { threadId },
+          search: (previous) => ({
+            ...clearFileViewSearchParams(previous),
+            fileViewPath: relativePath,
+            ...(parsed.line ? { fileLine: parsed.line } : {}),
+            ...(parsed.column ? { fileColumn: parsed.column } : {}),
+          }),
+        });
+      };
+      const api = readNativeApi();
+      if (workspaceRoot && api && !/[\\/]/u.test(parsed.path) && parsed.path.length <= 256) {
+        void api.projects
+          .searchEntries({ cwd: workspaceRoot, query: parsed.path, limit: 25 })
+          .then((result) =>
+            openFile(workspaceBasenameMatch(parsed.path, result.entries) ?? parsed.path),
+          )
+          .catch(() => openFile(parsed.path));
+      } else openFile(parsed.path);
       return true;
     },
     [
@@ -5883,8 +6027,25 @@ export default function ChatView({
     );
   }
 
-  return (
+  const workspace = (
     <FileNavigationProvider value={handleFileNavigation}>
+      <Dialog
+        open={referencedAsset !== null}
+        onOpenChange={(open) => {
+          if (!open) setReferencedAsset(null);
+        }}
+      >
+        <DialogPopup className="h-[80vh] max-w-5xl p-4">
+          <DialogTitle>{referencedAsset?.name}</DialogTitle>
+          {referencedAsset && (
+            <WorkspaceMediaView
+              name={referencedAsset.name}
+              relativePath={referencedAsset.path}
+              identity={referencedAsset.identity}
+            />
+          )}
+        </DialogPopup>
+      </Dialog>
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background"
         onDragEnter={onComposerDragEnter}
@@ -5892,6 +6053,46 @@ export default function ChatView({
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
+        <AssistantQuoteToolbar
+          key={activeThread.id}
+          currentLength={prompt.length}
+          maxLength={isConnecting ? 0 : getServerSendLimits().maxInputChars}
+          onInsert={async (quote, send) => {
+            if (activePendingProgress)
+              return {
+                inserted: false,
+                error: "Finish the pending question before quoting into chat.",
+              };
+            if (
+              isConnecting ||
+              sendInFlightRef.current ||
+              hasPendingTurnDispatch ||
+              pendingComposerImageImportCount > 0
+            )
+              return {
+                inserted: false,
+                error:
+                  "Wait for the connection, current send, or image import before adding this quote.",
+              };
+            const editor = composerEditorRef.current;
+            if (!editor) return { inserted: false };
+            editor.insertAssistantQuote(quote);
+            if (send) {
+              promptRef.current = editor.readSnapshot().value;
+              let admitted = false;
+              await onSend(undefined, "auto", () => {
+                admitted = true;
+              });
+              if (!admitted)
+                return {
+                  inserted: true,
+                  error:
+                    "Quote added to the composer, but sending was not confirmed. Review the draft or pending send before trying again.",
+                };
+            }
+            return { inserted: true };
+          }}
+        />
         {/* Top bar */}
         <header
           className={cn(
@@ -6139,6 +6340,9 @@ export default function ChatView({
                   onPromptChange={onPromptChange}
                   onComposerCommandKey={onComposerCommandKey}
                   onComposerPaste={onComposerPaste}
+                  onAttachFiles={(files) => {
+                    void addComposerImages(files);
+                  }}
                   phase={phase}
                   isConnecting={isConnecting}
                   onRespondToApproval={onRespondToApproval}
@@ -6297,4 +6501,5 @@ export default function ChatView({
       </div>
     </FileNavigationProvider>
   );
+  return <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>;
 }
