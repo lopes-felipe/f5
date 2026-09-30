@@ -1,4 +1,7 @@
 import { PopupFocusContext } from "~/components/ui/popupFocus";
+import type { ComposerMention } from "~/composer-editor-mentions";
+import { recallComposerMentions } from "~/composerMentionHistoryStore";
+import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { useAppSettings } from "~/appSettings";
 import { useEffect, useRef } from "react";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
@@ -98,6 +101,7 @@ export interface ChatComposerProps {
   >;
   activePendingProgress: import("~/pendingUserInput").PendingUserInputProgress | null;
   prompt: string;
+  mentions: readonly ComposerMention[];
   composerCursor: number;
   composerTerminalContexts: import("~/lib/terminalContext").TerminalContextDraft[];
   removeComposerTerminalContextFromDraft: (contextId: string) => void;
@@ -107,6 +111,7 @@ export interface ChatComposerProps {
     expandedCursor: number,
     cursorAdjacentToMention: boolean,
     terminalContextIds: string[],
+    mentions: readonly ComposerMention[],
   ) => void;
   onComposerCommandKey: (
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
@@ -226,6 +231,7 @@ export function ChatComposer({
   composerEditorRef,
   activePendingProgress,
   prompt,
+  mentions,
   composerCursor,
   composerTerminalContexts,
   removeComposerTerminalContextFromDraft,
@@ -338,12 +344,16 @@ export function ChatComposer({
     });
     if (!result) return false;
     historyPosition.current = result.position;
+    const restoredMentions = result.position
+      ? recallComposerMentions(threadId, result.position.messageId, result.prompt)
+      : [];
     onPromptChange(
       result.prompt,
+      collapseExpandedComposerCursor(result.prompt, result.prompt.length, restoredMentions),
       result.prompt.length,
-      result.prompt.length,
-      false,
+      true, // Recalling a complete prompt must not open autocomplete for trailing literal @text.
       current.terminalContextIds,
+      restoredMentions,
     );
     return true;
   };
@@ -558,6 +568,7 @@ export function ChatComposer({
             <ComposerPromptEditor
               richTextEnabled={settings.composerRichTextEnabled}
               ref={composerEditorRef}
+              mentions={!isComposerApprovalState && !activePendingProgress ? mentions : []}
               value={
                 isComposerApprovalState
                   ? ""

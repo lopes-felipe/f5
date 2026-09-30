@@ -1,4 +1,4 @@
-import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
+import { splitPromptIntoComposerSegments, type ComposerMention } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command";
@@ -86,9 +86,13 @@ function quotedMentionTriggerForCursor(
   return null;
 }
 
-export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function expandCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentions: readonly ComposerMention[] = [],
+): number {
   const collapsedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentions);
   if (segments.length === 0) {
     return collapsedCursor;
   }
@@ -151,16 +155,24 @@ function clampCollapsedComposerCursorForSegments(
   return Math.max(0, Math.min(collapsedLength, Math.floor(cursorInput)));
 }
 
-export function clampCollapsedComposerCursor(text: string, cursorInput: number): number {
+export function clampCollapsedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentions: readonly ComposerMention[] = [],
+): number {
   return clampCollapsedComposerCursorForSegments(
-    splitPromptIntoComposerSegments(text),
+    splitPromptIntoComposerSegments(text, [], mentions),
     cursorInput,
   );
 }
 
-export function collapseExpandedComposerCursor(text: string, cursorInput: number): number {
+export function collapseExpandedComposerCursor(
+  text: string,
+  cursorInput: number,
+  mentions: readonly ComposerMention[] = [],
+): number {
   const expandedCursor = clampCursor(text, cursorInput);
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentions);
   if (segments.length === 0) {
     return expandedCursor;
   }
@@ -205,8 +217,9 @@ export function isCollapsedCursorAdjacentToInlineToken(
   text: string,
   cursorInput: number,
   direction: "left" | "right",
+  mentions: readonly ComposerMention[] = [],
 ): boolean {
-  const segments = splitPromptIntoComposerSegments(text);
+  const segments = splitPromptIntoComposerSegments(text, [], mentions);
   if (!segments.some(isInlineTokenSegment)) {
     return false;
   }

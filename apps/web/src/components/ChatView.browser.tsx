@@ -61,6 +61,8 @@ import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
+import { createComposerMention } from "../composer-editor-mentions";
+import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -3661,6 +3663,31 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("sends literal handles and quoted paths without workspace authorization", async () => {
+    const prompt = 'Use @creditornot/wolt-auth and @scope/package with @"src/main.ts" please ';
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-literal-at" as MessageId,
+        targetText: "literal at target",
+      }),
+    });
+    try {
+      (await waitForSendButton()).click();
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
+      ).toEqual([]);
+      const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
+      expect(command?.message?.text).toBe(prompt.trim());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("inserts an authorized internal file drag and reauthorizes the mention before send", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -3689,6 +3716,9 @@ describe("ChatView timeline (full app)", () => {
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
           "@src/index.ts ",
         );
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual([
+          expect.objectContaining({ path: "src/index.ts", start: 0, end: 13 }),
+        ]);
       });
       expect(
         wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
@@ -4329,13 +4359,21 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("recalls a sent prompt with ArrowUp and restores an empty composer with ArrowDown", async () => {
+    const historyPrompt = "recall @src/main.ts and @scope/pkg";
+    const historyMentions = [createComposerMention("src/main.ts", 7)];
+    useComposerMentionHistoryStore.getState().remember({
+      threadId: THREAD_ID,
+      messageId: "history-user",
+      prompt: historyPrompt,
+      mentions: historyMentions,
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "history-user" as MessageId,
         fillerPairCount: 1,
         targetPairIndex: 0,
-        targetText: "recall this prompt",
+        targetText: historyPrompt,
       }),
     });
     try {
@@ -4346,15 +4384,25 @@ describe("ChatView timeline (full app)", () => {
       );
       await vi.waitFor(() =>
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
-          "recall this prompt",
+          historyPrompt,
         ),
       );
-      await vi.waitFor(() => expect(editor.textContent).toBe("recall this prompt"));
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual(
+          historyMentions,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(editor.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+      );
       editor.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
       );
       await vi.waitFor(() =>
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions ?? []).toEqual(
+        [],
       );
     } finally {
       await mounted.cleanup();
@@ -4807,7 +4855,8 @@ describe("ChatView timeline (full app)", () => {
 
   it("restores the draft prompt, image, and terminal context after an unresolved send", async () => {
     const otherThreadId = "thread-recovery-navigation" as ThreadId;
-    const prompt = `Check this screenshot ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+    const prompt = `Check @src/main.ts screenshot ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+    const mentions = [createComposerMention("src/main.ts", 6)];
     const image = createComposerImageAttachment({
       id: "image-recovery",
       name: "recovery.svg",
@@ -4837,7 +4886,7 @@ describe("ChatView timeline (full app)", () => {
         [PROJECT_ID]: THREAD_ID,
       },
     });
-    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt, mentions);
     useComposerDraftStore.getState().addImage(THREAD_ID, image);
     useComposerDraftStore.getState().addTerminalContext(THREAD_ID, terminalContext);
 
@@ -4891,6 +4940,7 @@ describe("ChatView timeline (full app)", () => {
         () => {
           const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
           expect(draft?.prompt).toBe(prompt);
+          expect(draft?.mentions).toEqual(mentions);
           expect(draft?.images).toHaveLength(1);
           expect(draft?.images[0]?.previewUrl.startsWith("blob:")).toBe(true);
           expect(draft?.terminalContexts.map((context) => context.id)).toEqual([

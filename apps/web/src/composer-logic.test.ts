@@ -11,6 +11,7 @@ import {
   replaceTextRange,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
+import { createComposerMention } from "./composer-editor-mentions";
 
 describe("detectComposerTrigger", () => {
   it("detects @path trigger at cursor", () => {
@@ -166,9 +167,11 @@ describe("expandCollapsedComposerCursor", () => {
     const collapsedCursorAfterMention = "what's in my ".length + 2;
     const expandedCursorAfterMention = "what's in my @AGENTS.md ".length;
 
-    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
-      expandedCursorAfterMention,
-    );
+    expect(
+      expandCollapsedComposerCursor(text, collapsedCursorAfterMention, [
+        createComposerMention("AGENTS.md", text.indexOf("@")),
+      ]),
+    ).toBe(expandedCursorAfterMention);
   });
 
   it("maps collapsed quoted mention cursor to expanded text cursor", () => {
@@ -176,15 +179,19 @@ describe("expandCollapsedComposerCursor", () => {
     const collapsedCursorAfterMention = "what is in ".length + 2;
     const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
 
-    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
-      expandedCursorAfterMention,
-    );
+    expect(
+      expandCollapsedComposerCursor(text, collapsedCursorAfterMention, [
+        createComposerMention("My File.md", text.indexOf("@")),
+      ]),
+    ).toBe(expandedCursorAfterMention);
   });
 
   it("allows path trigger detection to close after selecting a mention", () => {
     const text = "what's in my @AGENTS.md ";
     const collapsedCursorAfterMention = "what's in my ".length + 2;
-    const expandedCursor = expandCollapsedComposerCursor(text, collapsedCursorAfterMention);
+    const expandedCursor = expandCollapsedComposerCursor(text, collapsedCursorAfterMention, [
+      createComposerMention("AGENTS.md", text.indexOf("@")),
+    ]);
 
     expect(detectComposerTrigger(text, expandedCursor)).toBeNull();
   });
@@ -200,9 +207,11 @@ describe("collapseExpandedComposerCursor", () => {
     const collapsedCursorAfterMention = "what's in my ".length + 2;
     const expandedCursorAfterMention = "what's in my @AGENTS.md ".length;
 
-    expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
-      collapsedCursorAfterMention,
-    );
+    expect(
+      collapseExpandedComposerCursor(text, expandedCursorAfterMention, [
+        createComposerMention("AGENTS.md", text.indexOf("@")),
+      ]),
+    ).toBe(collapsedCursorAfterMention);
   });
 
   it("maps expanded quoted mention cursor back to collapsed cursor", () => {
@@ -210,29 +219,36 @@ describe("collapseExpandedComposerCursor", () => {
     const collapsedCursorAfterMention = "what is in ".length + 2;
     const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
 
-    expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
-      collapsedCursorAfterMention,
-    );
+    expect(
+      collapseExpandedComposerCursor(text, expandedCursorAfterMention, [
+        createComposerMention("My File.md", text.indexOf("@")),
+      ]),
+    ).toBe(collapsedCursorAfterMention);
   });
 
   it("keeps replacement cursors aligned when another mention already exists earlier", () => {
     const text = "open @AGENTS.md then @src/index.ts ";
+    const mentions = [
+      createComposerMention("AGENTS.md", 5),
+      createComposerMention("src/index.ts", 21),
+    ];
     const expandedCursor = text.length;
-    const collapsedCursor = collapseExpandedComposerCursor(text, expandedCursor);
+    const collapsedCursor = collapseExpandedComposerCursor(text, expandedCursor, mentions);
 
     expect(collapsedCursor).toBe("open ".length + 1 + " then ".length + 2);
-    expect(expandCollapsedComposerCursor(text, collapsedCursor)).toBe(expandedCursor);
+    expect(expandCollapsedComposerCursor(text, collapsedCursor, mentions)).toBe(expandedCursor);
   });
 });
 
 describe("clampCollapsedComposerCursor", () => {
   it("clamps to collapsed prompt length when mentions are present", () => {
     const text = "open @AGENTS.md then ";
+    const mentions = [createComposerMention("AGENTS.md", 5)];
 
-    expect(clampCollapsedComposerCursor(text, text.length)).toBe(
+    expect(clampCollapsedComposerCursor(text, text.length, mentions)).toBe(
       "open ".length + 1 + " then ".length,
     );
-    expect(clampCollapsedComposerCursor(text, Number.POSITIVE_INFINITY)).toBe(
+    expect(clampCollapsedComposerCursor(text, Number.POSITIVE_INFINITY, mentions)).toBe(
       "open ".length + 1 + " then ".length,
     );
   });
@@ -275,7 +291,11 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
     const mentionStart = "open ".length;
     const mentionEnd = mentionStart + 1;
 
-    expect(isCollapsedCursorAdjacentToInlineToken(text, mentionEnd, "left")).toBe(true);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, mentionEnd, "left", [
+        createComposerMention("AGENTS.md", mentionStart),
+      ]),
+    ).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, mentionStart, "left")).toBe(false);
     expect(isCollapsedCursorAdjacentToInlineToken(text, mentionEnd + 1, "left")).toBe(false);
   });
@@ -285,7 +305,11 @@ describe("isCollapsedCursorAdjacentToInlineToken", () => {
     const mentionStart = "open ".length;
     const mentionEnd = mentionStart + 1;
 
-    expect(isCollapsedCursorAdjacentToInlineToken(text, mentionStart, "right")).toBe(true);
+    expect(
+      isCollapsedCursorAdjacentToInlineToken(text, mentionStart, "right", [
+        createComposerMention("AGENTS.md", mentionStart),
+      ]),
+    ).toBe(true);
     expect(isCollapsedCursorAdjacentToInlineToken(text, mentionEnd, "right")).toBe(false);
     expect(isCollapsedCursorAdjacentToInlineToken(text, mentionStart - 1, "right")).toBe(false);
   });

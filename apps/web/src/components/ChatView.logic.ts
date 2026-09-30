@@ -304,6 +304,7 @@ export type PendingTurnDispatchStatus =
 
 export interface PendingTurnDispatchRollback {
   prompt: string;
+  mentions?: readonly import("../composer-editor-mentions").ComposerMention[];
   images: ComposerImageAttachment[];
   filePaths: string[];
   terminalContexts: TerminalContextDraft[];

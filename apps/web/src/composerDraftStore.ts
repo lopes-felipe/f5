@@ -1,5 +1,12 @@
 import { getServerSendLimits } from "./protocolState";
 import {
+  type ComposerMention,
+  normalizeComposerMentions,
+  reconcileComposerMentions,
+  composerMentionsEqual,
+  filterComposerTerminalPlaceholders,
+} from "./composer-editor-mentions";
+import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   isRuntimeMode,
   ProjectId,
@@ -227,6 +234,7 @@ interface PersistedTerminalContextDraft {
 
 interface PersistedComposerThreadDraftState {
   prompt: string;
+  mentions?: readonly ComposerMention[];
   attachments: PersistedComposerImageAttachment[];
   filePaths?: string[];
   terminalContexts?: PersistedTerminalContextDraft[];
@@ -260,6 +268,7 @@ interface PersistedComposerDraftStoreState {
 
 export interface ComposerThreadDraftState {
   prompt: string;
+  mentions: readonly ComposerMention[];
   images: ComposerImageAttachment[];
   nonPersistedImageIds: string[];
   persistedAttachments: PersistedComposerImageAttachment[];
@@ -296,6 +305,7 @@ export interface PromptStashEntry {
   readonly preview: string;
   readonly draft: PromptStashDraftSelection & {
     readonly prompt: string;
+    readonly mentions?: readonly ComposerMention[];
     readonly attachments: PersistedComposerImageAttachment[];
     readonly filePaths: string[];
     readonly terminalContexts: TerminalContextDraft[];
@@ -414,7 +424,7 @@ interface ComposerDraftStoreState {
   clearProjectDraftThreadId: (projectId: ProjectId) => void;
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   clearDraftThread: (threadId: ThreadId) => void;
-  setPrompt: (threadId: ThreadId, prompt: string) => void;
+  setPrompt: (threadId: ThreadId, prompt: string, mentions?: readonly ComposerMention[]) => void;
   setFilePaths: (threadId: ThreadId, filePaths: string[]) => void;
   setTerminalContexts: (threadId: ThreadId, contexts: TerminalContextDraft[]) => void;
   setProvider: (threadId: ThreadId, provider: ProviderKind | null | undefined) => void;
@@ -507,6 +517,7 @@ Object.freeze(EMPTY_FILE_PATHS);
 Object.freeze(EMPTY_TERMINAL_CONTEXTS);
 const EMPTY_THREAD_DRAFT = Object.freeze({
   prompt: "",
+  mentions: [],
   images: EMPTY_IMAGES,
   nonPersistedImageIds: EMPTY_IDS,
   persistedAttachments: EMPTY_PERSISTED_ATTACHMENTS,
@@ -529,6 +540,7 @@ const REASONING_EFFORT_VALUES = new Set<CodexReasoningEffort>(
 function createEmptyThreadDraft(): ComposerThreadDraftState {
   return {
     prompt: "",
+    mentions: [],
     images: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
@@ -672,6 +684,7 @@ function clearSendableComposerDraftContent(
   return {
     ...draft,
     prompt: "",
+    mentions: [],
     images: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],
@@ -687,6 +700,7 @@ function hasSameStashableDraftContent(
   if (!left) return false;
   return (
     left.prompt === right.prompt &&
+    composerMentionsEqual(left.mentions, right.mentions) &&
     left.images.length === right.images.length &&
     left.images.every((image, index) => image === right.images[index]) &&
     left.filePaths.length === right.filePaths.length &&
@@ -747,25 +761,6 @@ async function serializeComposerDraftAttachments(
       } satisfies PersistedComposerImageAttachment;
     }),
   );
-}
-
-function filterPromptTerminalContextPlaceholders(
-  prompt: string,
-  keepContextByIndex: ReadonlyArray<boolean>,
-): string {
-  let contextIndex = 0;
-  let nextPrompt = "";
-  for (const character of prompt) {
-    if (character !== INLINE_TERMINAL_CONTEXT_PLACEHOLDER) {
-      nextPrompt += character;
-      continue;
-    }
-    if (keepContextByIndex[contextIndex] === true) {
-      nextPrompt += character;
-    }
-    contextIndex += 1;
-  }
-  return nextPrompt;
 }
 
 function isAbsoluteFileReference(filePath: string): boolean {
@@ -1011,6 +1006,10 @@ function normalizePromptStashEntry(value: unknown): PromptStashEntry | null {
     preview: candidate.preview.slice(0, 80),
     draft: {
       prompt: typeof draft.prompt === "string" ? draft.prompt : "",
+      mentions: normalizeComposerMentions(
+        typeof draft.prompt === "string" ? draft.prompt : "",
+        draft.mentions,
+      ),
       attachments,
       filePaths: Array.isArray(draft.filePaths)
         ? normalizeAttachedFilePaths(
@@ -1229,6 +1228,11 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     }
     nextDraftsByThreadId[threadId as ThreadId] = {
       prompt,
+      mentions: reconcileComposerMentions(
+        promptCandidate,
+        prompt,
+        normalizeComposerMentions(promptCandidate, draftCandidate.mentions),
+      ),
       attachments,
       ...(filePaths.length > 0 ? { filePaths } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
@@ -1298,6 +1302,7 @@ function toPersistedThreadDraft(
 ): PersistedComposerThreadDraftState {
   const persistedDraft: PersistedComposerThreadDraftState = {
     prompt: draft.prompt,
+    ...(draft.mentions.length > 0 ? { mentions: draft.mentions } : {}),
     attachments: draft.persistedAttachments,
   };
   if (draft.filePaths.length > 0) {
@@ -1417,6 +1422,7 @@ function toHydratedThreadDraft(
 ): ComposerThreadDraftState {
   return {
     prompt: persistedDraft.prompt,
+    mentions: normalizeComposerMentions(persistedDraft.prompt, persistedDraft.mentions),
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     nonPersistedImageIds: [],
     persistedAttachments: persistedDraft.attachments,
@@ -1748,7 +1754,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           };
         });
       },
-      setPrompt: (threadId, prompt) => {
+      setPrompt: (threadId, prompt, mentions) => {
         if (threadId.length === 0) {
           return;
         }
@@ -1757,6 +1763,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraft: ComposerThreadDraftState = {
             ...existing,
             prompt,
+            mentions:
+              mentions === undefined
+                ? reconcileComposerMentions(existing.prompt, prompt, existing.mentions)
+                : normalizeComposerMentions(prompt, mentions),
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
           if (shouldRemoveDraft(nextDraft)) {
@@ -1806,6 +1816,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             prompt: ensureInlineTerminalContextPlaceholders(
               existing.prompt,
               normalizedContexts.length,
+            ),
+            mentions: reconcileComposerMentions(
+              existing.prompt,
+              ensureInlineTerminalContextPlaceholders(existing.prompt, normalizedContexts.length),
+              existing.mentions,
             ),
             terminalContexts: normalizedContexts,
           };
@@ -2330,6 +2345,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraft: ComposerThreadDraftState = {
             ...existing,
             prompt,
+            mentions: reconcileComposerMentions(existing.prompt, prompt, existing.mentions),
             terminalContexts: [
               ...existing.terminalContexts.slice(0, boundedIndex),
               normalizedContext,
@@ -2372,6 +2388,14 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
                 prompt: ensureInlineTerminalContextPlaceholders(
                   existing.prompt,
                   existing.terminalContexts.length + acceptedContexts.length,
+                ),
+                mentions: reconcileComposerMentions(
+                  existing.prompt,
+                  ensureInlineTerminalContextPlaceholders(
+                    existing.prompt,
+                    existing.terminalContexts.length + acceptedContexts.length,
+                  ),
+                  existing.mentions,
                 ),
                 terminalContexts: [...existing.terminalContexts, ...acceptedContexts],
               },
@@ -2547,6 +2571,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraft: ComposerThreadDraftState = {
             ...current,
             prompt: "",
+            mentions: [],
             images: [],
             nonPersistedImageIds: [],
             persistedAttachments: [],
@@ -2637,6 +2662,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           preview: composerDraftPreview(sourceDraft),
           draft: {
             prompt: sourceDraft.prompt,
+            mentions: sourceDraft.mentions,
             attachments,
             filePaths: [...sourceDraft.filePaths],
             terminalContexts: sourceDraft.terminalContexts.map((context) => ({ ...context })),
@@ -2746,10 +2772,12 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         const terminalContexts = stash.draft.terminalContexts
           .filter((_, index) => keepTerminalContextByIndex[index] === true)
           .map((context) => ({ ...context, threadId: input.threadId }));
-        const prompt = filterPromptTerminalContextPlaceholders(
+        const filteredDraft = filterComposerTerminalPlaceholders(
           stash.draft.prompt,
+          stash.draft.mentions ?? [],
           keepTerminalContextByIndex,
         );
+        const prompt = filteredDraft.prompt;
         const authorizedFiles = reauthorizePromptStashFilePaths({
           filePaths: stash.draft.filePaths,
           workspaceRoots: input.workspaceRoots,
@@ -2767,6 +2795,11 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         const provider = normalizeProviderKind(selection.provider);
         const restoredDraft: ComposerThreadDraftState = {
           prompt: ensureInlineTerminalContextPlaceholders(prompt, terminalContexts.length),
+          mentions: reconcileComposerMentions(
+            prompt,
+            ensureInlineTerminalContextPlaceholders(prompt, terminalContexts.length),
+            filteredDraft.mentions,
+          ),
           images,
           nonPersistedImageIds: [],
           persistedAttachments: stash.draft.attachments,

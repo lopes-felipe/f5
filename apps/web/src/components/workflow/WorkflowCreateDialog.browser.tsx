@@ -1342,6 +1342,26 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("submits literal handles and quoted paths without authorizing them", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      await page
+        .getByRole("textbox")
+        .first()
+        .fill('Use @creditornot/wolt-auth and @"src/main.ts" please');
+      createWorkflowButton().click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.authorizeEntry).not.toHaveBeenCalled();
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].requirementPrompt).toBe(
+        'Use @creditornot/wolt-auth and @"src/main.ts" please',
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("accepts an authorized internal file drag and rechecks it on submit", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -1373,6 +1393,16 @@ describe("WorkflowCreateDialog", () => {
         relativePath: "docs/AGENTS.md",
         kind: "file",
       });
+
+      nativeApiMocks.authorizeEntry.mockRejectedValueOnce(
+        new Error("File not found: docs/AGENTS.md"),
+      );
+      createWorkflowButton().click();
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("File not found: docs/AGENTS.md"),
+      );
+      expect(nativeApiMocks.createWorkflow).not.toHaveBeenCalled();
+      expect(document.querySelector("textarea")?.value).toBe("@docs/AGENTS.md ");
 
       createWorkflowButton().click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));

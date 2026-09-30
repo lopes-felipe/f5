@@ -57,7 +57,12 @@ import {
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
 } from "../../lib/attachedFiles";
-import { collectComposerMentionPaths } from "../../composer-editor-mentions";
+import {
+  collectComposerMentionPaths,
+  createComposerMention,
+  reconcileComposerMentions,
+  type ComposerMention,
+} from "../../composer-editor-mentions";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import {
@@ -488,7 +493,23 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     serverConfigQuery.data?.providers,
   );
   const [workflowType, setWorkflowType] = useState<WorkflowTypeValue>("planning");
-  const [requirementPrompt, setRequirementPrompt] = useState("");
+  const [requirementDraft, setRequirementDraft] = useState<{
+    text: string;
+    mentions: readonly ComposerMention[];
+  }>({ text: "", mentions: [] });
+  const requirementPrompt = requirementDraft.text;
+  const requirementEditRef = useRef<{ start: number; end: number } | undefined>(undefined);
+  const captureRequirementSelection = (element: HTMLTextAreaElement) => {
+    requirementEditRef.current = { start: element.selectionStart, end: element.selectionEnd };
+  };
+  const setRequirementPrompt = (text: string) => {
+    const edit = requirementEditRef.current;
+    requirementEditRef.current = undefined;
+    setRequirementDraft((current) => ({
+      text,
+      mentions: reconcileComposerMentions(current.text, text, current.mentions, edit),
+    }));
+  };
   const [documentType, setDocumentType] = useState<WorkflowDocumentType>(
     DEFAULT_WORKFLOW_DOCUMENT_TYPE,
   );
@@ -832,10 +853,14 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       .then((relativePath) => {
         const mention = composerFileMention(relativePath);
         if (mention === null) throw new Error("The file path is invalid.");
-        setRequirementPrompt(
-          (current) =>
-            `${current}${current.length > 0 && !/\s$/.test(current) ? " " : ""}${mention} `,
-        );
+        setRequirementDraft((current) => {
+          const prefix =
+            current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
+          return {
+            text: prefix + mention + " ",
+            mentions: [...current.mentions, createComposerMention(relativePath, prefix.length)],
+          };
+        });
         window.requestAnimationFrame(focusPromptEditor);
       })
       .catch((cause) => {
@@ -891,7 +916,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         setSubmitting(false);
         return;
       }
-      const mentionedPaths = collectComposerMentionPaths(requirementPrompt);
+      const mentionedPaths = collectComposerMentionPaths(
+        requirementPrompt,
+        requirementDraft.mentions,
+      );
       if (mentionedPaths.length > 0 && project) {
         try {
           await authorizeComposerMentionPaths({
@@ -1154,6 +1182,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                 ref={promptTextareaRef}
                 className="min-h-32 w-full resize-y bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
                 value={requirementPrompt}
+                onBeforeInput={(event) => captureRequirementSelection(event.currentTarget)}
+                onPasteCapture={(event) => captureRequirementSelection(event.currentTarget)}
+                onCutCapture={(event) => captureRequirementSelection(event.currentTarget)}
                 onChange={(event) => setRequirementPrompt(event.target.value)}
                 placeholder={
                   workflowType === "document"
