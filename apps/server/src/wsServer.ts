@@ -4160,6 +4160,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 (thread) => thread.id === command.threadId,
               )
             : undefined;
+        if (
+          body.intent === "steer" &&
+          (!steeringThread?.session?.activeTurnId ||
+            steeringThread.runtimeMode !== command.runtimeMode ||
+            steeringThread.interactionMode !== command.interactionMode)
+        ) {
+          yield* removePersistedTurnAttachments(command);
+          return yield* new RouteRequestError({
+            message:
+              "Steering requires an active turn with the same Build/Plan and permission modes.",
+          });
+        }
         const queuedCommand = steeringThread?.session?.activeTurnId
           ? { ...command, expectedTurnId: steeringThread.session.activeTurnId }
           : command;

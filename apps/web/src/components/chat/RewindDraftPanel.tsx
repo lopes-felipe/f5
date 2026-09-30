@@ -46,9 +46,9 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
           });
           throw failure.reason;
         }
-        const text = useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "";
-        if (text !== draft.text && !text.endsWith(`\n\n${draft.text}`))
-          store.setPrompt(threadId, [text, draft.text].filter(Boolean).join("\n\n"));
+        useComposerDraftStore
+          .getState()
+          .placeRecoveredPrompt(threadId, draft.operationId, draft.text);
         store.addImages(
           threadId,
           uploads.map((upload) => ({
@@ -138,9 +138,10 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
           </button>
         </div>
       ) : null}
-      {draft.state === "reconciliation-required" && draft.targetMessageId ? (
+      {(draft.state === "prepared" || draft.state === "reconciliation-required") &&
+      draft.targetMessageId ? (
         <button type="button" disabled={busy} onClick={() => void recheck()}>
-          Recheck rewind
+          {draft.state === "prepared" ? "Retry rewind" : "Recheck rewind"}
         </button>
       ) : null}
       {draft.error ? <p className="mt-2 text-xs text-destructive">{draft.error}</p> : null}

@@ -1390,7 +1390,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   key,
                   isRecord(value) && Array.isArray(value.answers)
                     ? { ...value, answers: [...value.answers, note] }
-                    : { answers: [String(value), note] },
+                    : { answers: [...(Array.isArray(value) ? value : [String(value)]), note] },
                 ]),
               )
             : input.answers;

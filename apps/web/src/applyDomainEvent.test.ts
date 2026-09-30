@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   EventId,
@@ -614,6 +615,33 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.estimatedContextTokens).toBe(45_000);
     expect(next.threads[0]?.modelContextWindowTokens).toBe(1_050_000);
     expect(next.threads[0]?.latestTurn?.turnId).toBe(turnId);
+  });
+
+  it("clears blocking questions on an otherwise unchanged terminal session event", () => {
+    const event = makeEvent("thread.session-set", {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      session: {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-04-01T09:06:00.000Z",
+      },
+    });
+    const initial = applyDomainEvent(makeState(), event);
+    const pending = {
+      requestId: ApprovalRequestId.makeUnsafe("blocking-question"),
+      turnId: null,
+      createdAt: "2026-04-01T09:06:00.000Z",
+      questions: [],
+    };
+    const state = {
+      ...initial,
+      threads: initial.threads.map((thread) => ({ ...thread, pendingUserInputs: [pending] })),
+    };
+    expect(applyDomainEvent(state, event).threads[0]?.pendingUserInputs).toEqual([]);
   });
 
   it("preserves token usage source across session updates that omit token metadata", () => {

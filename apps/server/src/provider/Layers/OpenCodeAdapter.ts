@@ -1441,7 +1441,8 @@ export function makeOpenCodeAdapter(
 
     const sendTurn: OpenCodeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
       const context = ensureSessionContext(sessions, input.threadId);
-      const turnId = TurnId.make(`opencode-turn-${yield* Random.nextUUIDv4}`);
+      const messageId = `msg_${(yield* Random.nextUUIDv4).replaceAll("-", "")}`;
+      const turnId = TurnId.make(messageId);
       const modelSelection =
         input.modelSelection ??
         (input.model ? { instanceId: boundInstanceId, model: input.model } : undefined) ??
@@ -1520,7 +1521,6 @@ export function makeOpenCodeAdapter(
         commandMatch?.[1] && context.nativeCommands.has(commandMatch[1])
           ? commandMatch[1]
           : undefined;
-      const messageId = `msg_${(yield* Random.nextUUIDv4).replaceAll("-", "")}`;
       const receipt = yield* Deferred.make<void>();
       if (nativeCommand) context.commandReceipts.set(messageId, receipt);
       const submission = (
@@ -1545,6 +1545,7 @@ export function makeOpenCodeAdapter(
           : runOpenCodeSdk("session.promptAsync", () =>
               context.client.session.promptAsync({
                 sessionID: context.openCodeSessionId,
+                messageID: messageId,
                 model: parsedModel,
                 ...(context.activeAgent ? { agent: context.activeAgent } : {}),
                 ...(context.activeVariant ? { variant: context.activeVariant } : {}),

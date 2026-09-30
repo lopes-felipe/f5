@@ -1356,7 +1356,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
               }
             : thread.latestTurn;
         const error = visibleThreadSessionError(event.payload.threadId, event.payload.session);
+        const pendingUserInputs = projectPendingUserInputs(thread.pendingUserInputs ?? [], event);
         if (
+          pendingUserInputs.length === (thread.pendingUserInputs ?? []).length &&
           session === thread.session &&
           latestTurn === thread.latestTurn &&
           error === thread.error &&
@@ -1369,7 +1371,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(session !== thread.session ? { session } : {}),
-          pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
+          pendingUserInputs,
           ...(latestTurn !== thread.latestTurn ? { latestTurn } : {}),
           ...(error !== thread.error ? { error } : {}),
           ...(nextEstimatedContextTokens !== thread.estimatedContextTokens

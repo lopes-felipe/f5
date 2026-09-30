@@ -1504,6 +1504,51 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
     }),
   );
 
+  it.effect("steers a live prompt without waiting for its send serialization lock", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-live-steer-hardening");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "250" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      const first = yield* adapter
+        .sendTurn({ threadId, input: "first", attachments: [] })
+        .pipe(Effect.forkChild);
+      while (!events.some((event) => event.type === "turn.started"))
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 1)));
+      const turnId = events.find((event) => event.type === "turn.started")!.turnId!;
+      const steer = yield* adapter.steerTurn!({
+        threadId,
+        input: "follow up",
+        expectedTurnId: turnId,
+        attachments: [],
+      }).pipe(Effect.forkChild);
+      const results = yield* Effect.all([Fiber.join(first), Fiber.join(steer)], {
+        concurrency: "unbounded",
+      });
+      assert.equal(results[0].turnId, results[1].turnId);
+      assert.equal(events.filter((event) => event.type === "turn.started").length, 1);
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+
   it.effect("serializes overlapping sends and completes each turn exactly once", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

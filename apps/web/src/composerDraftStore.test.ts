@@ -849,6 +849,26 @@ describe("composerDraftStore terminal contexts", () => {
     );
   });
 
+  it("persists recovered rewind placement across edits and hydration", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadId, "Existing draft");
+    store.placeRecoveredPrompt(threadId, "rewind-operation", "Recovered prompt");
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe(
+      "Existing draft\n\nRecovered prompt",
+    );
+    store.setPrompt(threadId, "Edited recovered prompt");
+    const options = useComposerDraftStore.persist.getOptions();
+    const persisted = options.partialize!(useComposerDraftStore.getState());
+    const hydrated = options.merge!(persisted, useComposerDraftStore.getInitialState());
+    useComposerDraftStore.setState(hydrated);
+    useComposerDraftStore
+      .getState()
+      .placeRecoveredPrompt(threadId, "rewind-operation", "Recovered prompt");
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe(
+      "Edited recovered prompt",
+    );
+  });
+
   it("persists and hydrates file paths", () => {
     useComposerDraftStore
       .getState()

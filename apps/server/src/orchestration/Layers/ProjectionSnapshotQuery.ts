@@ -2468,13 +2468,29 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       const inputRows = yield* sql<{
         readonly threadId: string;
         readonly payload: string;
-      }>`SELECT thread_id AS "threadId", payload_json AS payload FROM projection_pending_user_inputs WHERE resolution IS NULL`;
+      }>`SELECT thread_id AS "threadId", payload_json AS payload FROM projection_pending_user_inputs WHERE resolution IS NULL`.pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.pendingUserInputs:query",
+            "ProjectionSnapshotQuery.pendingUserInputs:decode",
+          ),
+        ),
+      );
       const inputsByThread = new Map<string, PendingUserInput[]>();
-      for (const row of inputRows)
-        inputsByThread.set(row.threadId, [
-          ...(inputsByThread.get(row.threadId) ?? []),
-          Schema.decodeUnknownSync(Schema.fromJsonString(PendingUserInput))(row.payload),
-        ]);
+      for (const row of inputRows) {
+        const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(PendingUserInput))(
+          row.payload,
+        );
+        if (Option.isSome(decoded))
+          inputsByThread.set(row.threadId, [
+            ...(inputsByThread.get(row.threadId) ?? []),
+            decoded.value,
+          ]);
+        else
+          yield* Effect.logWarning("Skipping invalid pending user input in snapshot", {
+            threadId: row.threadId,
+          });
+      }
       const threads = threadRows.map((row) =>
         buildThreadSnapshot({
           row,
@@ -2495,20 +2511,40 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         readonly targetMessageId: string;
         readonly mode: string;
         readonly error: string | null;
-      }>`SELECT thread_id AS "threadId", operation_id AS "operationId", state, draft_json AS draft, target_message_id AS "targetMessageId", mode, error FROM rewind_operations WHERE draft_resolved_at IS NULL`;
+      }>`SELECT thread_id AS "threadId", operation_id AS "operationId", state, draft_json AS draft, target_message_id AS "targetMessageId", mode, error FROM rewind_operations WHERE draft_resolved_at IS NULL`.pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.rewindDrafts:query",
+            "ProjectionSnapshotQuery.rewindDrafts:decode",
+          ),
+        ),
+      );
       const draftsByThread = new Map<string, RewindDraft[]>();
-      for (const row of draftRows)
-        draftsByThread.set(row.threadId, [
-          ...(draftsByThread.get(row.threadId) ?? []),
-          Schema.decodeUnknownSync(RewindDraft)({
-            ...JSON.parse(row.draft),
+      for (const row of draftRows) {
+        const json = Schema.decodeUnknownOption(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+        )(row.draft);
+        const decoded = Option.isSome(json)
+          ? Schema.decodeUnknownOption(RewindDraft)({
+              ...json.value,
+              operationId: row.operationId,
+              state: row.state,
+              targetMessageId: row.targetMessageId,
+              restoreFiles: row.mode === "conversation-and-files",
+              error: row.error,
+            })
+          : Option.none();
+        if (Option.isSome(decoded))
+          draftsByThread.set(row.threadId, [
+            ...(draftsByThread.get(row.threadId) ?? []),
+            decoded.value,
+          ]);
+        else
+          yield* Effect.logWarning("Skipping invalid rewind draft in snapshot", {
+            threadId: row.threadId,
             operationId: row.operationId,
-            state: row.state,
-            targetMessageId: row.targetMessageId,
-            restoreFiles: row.mode === "conversation-and-files",
-            error: row.error,
-          }),
-        ]);
+          });
+      }
       const threadsWithInputs = threads.map((thread) => ({
         ...thread,
         pendingUserInputs: inputsByThread.get(thread.id) ?? [],

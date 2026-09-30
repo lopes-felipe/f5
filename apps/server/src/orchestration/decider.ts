@@ -1241,11 +1241,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         steering &&
         (targetThread.session?.activeTurnId !== command.expectedTurnId ||
           targetThread.interactionMode !== command.interactionMode ||
-          targetThread.runtimeMode !== command.runtimeMode)
+          targetThread.runtimeMode !== command.runtimeMode ||
+          (command.model !== undefined && targetThread.model !== command.model) ||
+          (command.modelSelection !== undefined &&
+            JSON.stringify(targetThread.modelSelection) !== JSON.stringify(command.modelSelection)))
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "The active turn or its mode changed before steering.",
+          detail: "The active turn, model, or mode changed before steering.",
         });
       }
       const threadIsBusy =

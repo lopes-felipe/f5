@@ -921,11 +921,6 @@ const make = Effect.gen(function* () {
   });
 
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
-    yield* conversationRewind.recover.pipe(
-      Effect.catchCause((cause) =>
-        Effect.logError("rewind startup recovery failed", { cause: Cause.pretty(cause) }),
-      ),
-    );
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (
@@ -958,6 +953,17 @@ const make = Effect.gen(function* () {
     // Historical recovery can involve filesystem and Git work for many turns.
     // Keep it supervised by the reactor scope, but do not hold server readiness
     // or queue availability until the entire sweep finishes.
+    const recoverRewinds: Effect.Effect<void, unknown> = conversationRewind.recover;
+    yield* Effect.forkScoped(
+      recoverRewinds.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.logError("rewind startup recovery failed", { cause: Cause.pretty(cause) }),
+        ),
+      ),
+    );
+
     yield* Effect.forkScoped(reconcileStartupQuiescence);
   });
 

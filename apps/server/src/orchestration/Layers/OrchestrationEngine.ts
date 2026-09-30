@@ -142,7 +142,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         const fallbackRows =
-          envelope.command.type === "thread.turn.start" && Option.isSome(existingReceipt)
+          (envelope.command.type === "thread.turn.start" ||
+            envelope.command.type === "thread.turn.steer") &&
+          Option.isSome(existingReceipt)
             ? yield* sql<{
                 readonly event: string;
               }>`SELECT d.event_json AS event FROM provider_turn_deliveries d JOIN next_turn_queue q ON q.command_id = d.command_id WHERE d.command_id = ${envelope.command.commandId} AND d.thread_id = ${envelope.command.threadId} AND d.state = 'rejected' AND d.certainty = 'not_sent' AND q.last_error_code = 'steer_queued' AND q.deleted_at IS NULL`
@@ -299,7 +301,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   const eventJson = Schema.encodeSync(Schema.fromJsonString(OrchestrationEvent))(
                     savedEvent,
                   );
-                  if (steerFallback && savedEvent.type === "thread.turn-start-requested")
+                  if (steerFallback)
                     yield* sql`UPDATE provider_turn_deliveries SET event_json = ${eventJson}, state = 'pending', provider_turn_id = NULL, attempt = 0, error_code = NULL, error_detail = NULL, certainty = NULL, not_before = NULL, outcome_projected_at = NULL WHERE command_id = ${savedEvent.commandId} AND state = 'rejected' AND certainty = 'not_sent'`;
                   yield* sql`
                     INSERT OR IGNORE INTO provider_turn_deliveries (

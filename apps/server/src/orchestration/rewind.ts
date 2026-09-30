@@ -1,7 +1,7 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { CheckpointRef, CommandId, EventId, type OrchestrationEvent } from "@t3tools/contracts";
-import { Effect } from "effect";
+import { Cause, Effect, Semaphore } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
@@ -44,7 +44,9 @@ export const makeConversationRewind = Effect.gen(function* () {
   const fail = (message: string) => Effect.fail(new Error(message));
   const update = (id: string, state: string) =>
     sql`UPDATE rewind_operations SET state = ${state}, error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${id}`;
-  const run = (request: Request) =>
+  // Startup recovery and new requests share serialization, including no-Git rewinds.
+  const gate = yield* Semaphore.make(1);
+  const execute = (request: Request) =>
     Effect.gen(function* () {
       const model = yield* engine.getReadModel();
       const thread = model.threads.find((thread) => thread.id === request.threadId);
@@ -221,10 +223,12 @@ export const makeConversationRewind = Effect.gen(function* () {
       });
       yield* requiresWorkspace ? withWorktreeLifecycleLock(workspace!, perform) : perform;
     }).pipe(
+      Effect.timeout("30 seconds"),
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
-          const detail = String(cause);
-          yield* sql`UPDATE rewind_operations SET state = 'reconciliation-required', error = ${detail}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${request.operationId} AND thread_id = ${request.threadId} AND target_message_id = ${request.targetMessageId} AND state <> 'completed'`;
+          if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+          const detail = Cause.pretty(cause);
+          yield* sql`UPDATE rewind_operations SET state = CASE WHEN state = 'prepared' THEN 'prepared' ELSE 'reconciliation-required' END, error = ${detail}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${request.operationId} AND thread_id = ${request.threadId} AND target_message_id = ${request.targetMessageId} AND state <> 'completed'`;
           const op =
             (yield* sql<Operation>`SELECT * FROM rewind_operations WHERE operation_id = ${request.operationId}`)[0];
           yield* engine
@@ -241,7 +245,9 @@ export const makeConversationRewind = Effect.gen(function* () {
                 kind: "conversation.rewind.failed",
                 tone: "error",
                 summary: op
-                  ? "Conversation rewind requires reconciliation"
+                  ? op.state === "prepared"
+                    ? "Conversation rewind preparation failed; retry is safe"
+                    : "Conversation rewind requires reconciliation"
                   : "Conversation rewind could not start",
                 payload: { detail },
                 turnId: null,
@@ -284,6 +290,7 @@ export const makeConversationRewind = Effect.gen(function* () {
         }),
       ),
     );
+  const run = (request: Request) => gate.withPermit(execute(request));
   const recover = Effect.gen(function* () {
     const requests = yield* sql<{
       readonly payload: string;

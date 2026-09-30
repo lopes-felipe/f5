@@ -5647,11 +5647,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               method: "thread/rollback",
               detail: "Interrupt the active turn before rewinding.",
             });
+          if (!Number.isInteger(numTurns) || numTurns < 1)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/rollback",
+              detail: "numTurns must be an integer greater than zero.",
+            });
           const retainedTurnId =
             context.turns[Math.max(0, context.turns.length - numTurns) - 1]?.id;
           const retainedBoundaryIndex = context.turnBoundaries.findIndex(
             (boundary) => boundary.turnId === retainedTurnId,
           );
+          if (
+            retainedTurnId !== undefined &&
+            (retainedBoundaryIndex < 0 || !context.resumeSessionId)
+          )
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/rollback",
+              detail:
+                "The retained Claude turn has no reliable assistant boundary; conversation history was preserved.",
+            });
           const nextLength = retainedBoundaryIndex + 1;
           const boundaries = context.turnBoundaries.slice(0, nextLength);
           const boundary = boundaries.at(-1);
@@ -5669,11 +5685,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // local turn list alone leaves the provider remembering reverted turns.
           yield* startSessionUnlocked({ ...context.startInput, resumeCursor: cursor });
           const restarted = yield* requireSession(threadId);
-          if (!boundary && context.turns.length > numTurns)
-            yield* emitRuntimeWarning(
-              restarted,
-              "Claude turn boundaries are unavailable; started a fresh conversation.",
-            );
           return yield* snapshotThread(restarted);
         }),
       );

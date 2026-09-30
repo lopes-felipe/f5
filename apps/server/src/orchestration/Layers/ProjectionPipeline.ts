@@ -2189,9 +2189,14 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       const rows = yield* sql<{
         readonly payload: string;
       }>`SELECT payload_json AS payload FROM projection_pending_user_inputs WHERE thread_id = ${threadId} AND resolution IS NULL`;
-      const current = rows.map((row) =>
-        Schema.decodeUnknownSync(Schema.fromJsonString(PendingUserInput))(row.payload),
-      );
+      const current: PendingUserInput[] = [];
+      for (const row of rows) {
+        const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(PendingUserInput))(
+          row.payload,
+        );
+        if (decoded._tag === "Some") current.push(decoded.value);
+        else yield* Effect.logWarning("Skipping invalid pending user input", { threadId });
+      }
       const next = projectPendingUserInputs(current, event);
       for (const input of current)
         if (!next.some((candidate) => candidate.requestId === input.requestId)) {

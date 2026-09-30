@@ -21,9 +21,10 @@ export function AsyncUserInputPanel({
   const [attachments, setAttachments] = useState<AttachmentUpload[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resolved, setResolved] = useState(false);
   const resolve = async (dismissed: boolean) => {
     const api = readNativeApi();
-    if (!api || busy) return;
+    if (!api || busy || resolved) return;
     setBusy(true);
     setError(null);
     try {
@@ -33,6 +34,13 @@ export function AsyncUserInputPanel({
         requestId: input.requestId,
         createdAt: new Date().toISOString(),
       };
+      if (dismissed && attachments.length) {
+        await api.attachments.releaseUploads({
+          threadId,
+          uploadIds: attachments.map((attachment) => attachment.uploadId),
+        });
+        setAttachments([]);
+      }
       await api.orchestration.dispatchCommand(
         dismissed
           ? { ...base, type: "thread.user-input.dismiss" }
@@ -56,17 +64,17 @@ export function AsyncUserInputPanel({
               })),
             },
       );
-      if (dismissed && attachments.length)
-        await api.attachments.releaseUploads({
-          threadId,
-          uploadIds: attachments.map((attachment) => attachment.uploadId),
-        });
+      setAttachments([]);
+      setAnswers({});
+      setCustom({});
+      setResolved(true);
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
   };
+  if (resolved) return null;
   return (
     <section className="mb-2 rounded-lg border border-border p-3" aria-label="Question from agent">
       {input.questions.map((question) => (

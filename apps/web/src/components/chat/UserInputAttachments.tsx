@@ -13,7 +13,7 @@ export function UserInputAttachments({
 }: {
   threadId: ThreadId;
   attachments: readonly AttachmentUpload[];
-  onChange: (attachments: AttachmentUpload[]) => void;
+  onChange: (update: (attachments: readonly AttachmentUpload[]) => AttachmentUpload[]) => void;
   disabled: boolean;
   onDismiss: () => void;
   onUploadBusyChange?: ((busy: boolean) => void) | undefined;
@@ -43,8 +43,8 @@ export function UserInputAttachments({
               files.map((file) => uploadAttachment(getServerHttpOrigin(), threadId, file)),
             )
               .then((results) => {
-                onChange([
-                  ...attachments,
+                onChange((current) => [
+                  ...current,
                   ...results.flatMap((result) =>
                     result.status === "fulfilled" ? [result.value] : [],
                   ),

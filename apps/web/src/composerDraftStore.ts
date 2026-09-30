@@ -321,6 +321,7 @@ interface PersistedTerminalContextDraft {
 }
 
 interface PersistedComposerThreadDraftState {
+  recoveredRewindOperationIds?: readonly string[];
   prompt: string;
   mentions?: readonly ComposerMention[];
   attachments: PersistedComposerImageAttachment[];
@@ -355,6 +356,7 @@ interface PersistedComposerDraftStoreState {
 }
 
 export interface ComposerThreadDraftState {
+  recoveredRewindOperationIds?: readonly string[];
   prompt: string;
   mentions: readonly ComposerMention[];
   images: ComposerImageAttachment[];
@@ -512,6 +514,7 @@ interface ComposerDraftStoreState {
   clearProjectDraftThreadId: (projectId: ProjectId) => void;
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   clearDraftThread: (threadId: ThreadId) => void;
+  placeRecoveredPrompt: (threadId: ThreadId, operationId: string, text: string) => void;
   setPrompt: (threadId: ThreadId, prompt: string, mentions?: readonly ComposerMention[]) => void;
   setFilePaths: (threadId: ThreadId, filePaths: string[]) => void;
   setTerminalContexts: (threadId: ThreadId, contexts: TerminalContextDraft[]) => void;
@@ -711,6 +714,7 @@ function normalizeTerminalContextsForThread(
 
 function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   return (
+    (draft.recoveredRewindOperationIds?.length ?? 0) === 0 &&
     draft.prompt.length === 0 &&
     draft.images.length === 0 &&
     draft.persistedAttachments.length === 0 &&
@@ -1302,11 +1306,21 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     const codexFastMode =
       draftCandidate.codexFastMode === true ||
       (typeof draftCandidate.serviceTier === "string" && draftCandidate.serviceTier === "fast");
+    const recoveredRewindOperationIds = Array.isArray(draftCandidate.recoveredRewindOperationIds)
+      ? [
+          ...new Set(
+            draftCandidate.recoveredRewindOperationIds.filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            ),
+          ),
+        ]
+      : [];
     const prompt = ensureInlineTerminalContextPlaceholders(
       promptCandidate,
       terminalContexts.length,
     );
     if (
+      recoveredRewindOperationIds.length === 0 &&
       promptCandidate.length === 0 &&
       attachments.length === 0 &&
       filePaths.length === 0 &&
@@ -1323,6 +1337,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       continue;
     }
     nextDraftsByThreadId[threadId as ThreadId] = {
+      ...(recoveredRewindOperationIds.length ? { recoveredRewindOperationIds } : {}),
       prompt,
       mentions: reconcileComposerMentions(
         promptCandidate,
@@ -1398,6 +1413,9 @@ function toPersistedThreadDraft(
 ): PersistedComposerThreadDraftState {
   const persistedDraft: PersistedComposerThreadDraftState = {
     prompt: draft.prompt,
+    ...(draft.recoveredRewindOperationIds?.length
+      ? { recoveredRewindOperationIds: draft.recoveredRewindOperationIds }
+      : {}),
     ...(draft.mentions.length > 0 ? { mentions: draft.mentions } : {}),
     attachments: draft.persistedAttachments,
   };
@@ -1524,6 +1542,9 @@ function toHydratedThreadDraft(
 ): ComposerThreadDraftState {
   return {
     prompt: persistedDraft.prompt,
+    ...(persistedDraft.recoveredRewindOperationIds?.length
+      ? { recoveredRewindOperationIds: persistedDraft.recoveredRewindOperationIds }
+      : {}),
     mentions: normalizeComposerMentions(persistedDraft.prompt, persistedDraft.mentions),
     images: hydrateImagesFromPersisted(persistedDraft.attachments),
     nonPersistedImageIds: [],
@@ -1855,6 +1876,27 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return {
             draftThreadsByThreadId: restDraftThreadsByThreadId,
             projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
+          };
+        });
+      },
+      placeRecoveredPrompt: (threadId, operationId, text) => {
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          if (existing.recoveredRewindOperationIds?.includes(operationId)) return state;
+          const prompt = [existing.prompt, text].filter(Boolean).join("\n\n");
+          return {
+            draftsByThreadId: {
+              ...state.draftsByThreadId,
+              [threadId]: {
+                ...existing,
+                prompt,
+                mentions: reconcileComposerMentions(existing.prompt, prompt, existing.mentions),
+                recoveredRewindOperationIds: [
+                  ...(existing.recoveredRewindOperationIds ?? []),
+                  operationId,
+                ],
+              },
+            },
           };
         });
       },

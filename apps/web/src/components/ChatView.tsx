@@ -3614,6 +3614,8 @@ export default function ChatView({
       beginPendingTurnDispatch,
       clearPendingTurnDispatch,
       recoveryEpoch,
+      phase,
+      settings.followUpBehavior,
       setStorePendingTurnDispatch,
       setThreadError,
       updateStorePendingTurnDispatch,
@@ -4920,7 +4922,7 @@ export default function ChatView({
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {
-    if (!activePendingUserInput || !activePendingProgress) {
+    if (activePendingIsResponding || !activePendingUserInput || !activePendingProgress) {
       return;
     }
     if (activePendingProgress.isLastQuestion) {
@@ -4931,6 +4933,7 @@ export default function ChatView({
     }
     setActivePendingUserInputQuestionIndex(activePendingProgress.questionIndex + 1);
   }, [
+    activePendingIsResponding,
     activePendingProgress,
     activePendingResolvedAnswers,
     activePendingUserInput,
@@ -6357,10 +6360,12 @@ export default function ChatView({
                     key={activePendingUserInput.requestId}
                     threadId={activeThread.id}
                     attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
-                    onChange={(attachments) =>
+                    onChange={(update) =>
                       setAnswerAttachments((current) => ({
                         ...current,
-                        [activePendingUserInput.requestId]: attachments,
+                        [activePendingUserInput.requestId]: update(
+                          current[activePendingUserInput.requestId] ?? [],
+                        ),
                       }))
                     }
                     onUploadBusyChange={(busy) =>

@@ -424,6 +424,24 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       assert.deepEqual(runtimeMock.state.permissionReplies, []);
     }),
   );
+  it.effect("uses native prompt message IDs for turn delivery and rollback readback", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("native-turn-identity");
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      const sent = yield* adapter.sendTurn({
+        threadId,
+        input: "Check identity",
+        model: "openai/gpt-5",
+      });
+      const prompt = runtimeMock.state.promptCalls.at(-1) as { messageID: string };
+      assert.equal(sent.turnId, prompt.messageID);
+      runtimeMock.state.messages = [{ info: { id: prompt.messageID, role: "user" }, parts: [] }];
+      assert.equal((yield* adapter.readThread(threadId)).turns[0]?.id, sent.turnId);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("rolls back complete user turns including multiple assistant steps", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -796,6 +814,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+        messageID: (runtimeMock.state.promptCalls.at(-1) as { messageID: string }).messageID,
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -842,6 +861,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       });
 
       assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+        messageID: (runtimeMock.state.promptCalls.at(-1) as { messageID: string }).messageID,
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "anthropic",
@@ -870,6 +890,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
 
       assert.equal(session.model, "openai/gpt-5");
       assert.deepEqual(runtimeMock.state.promptCalls.at(-1), {
+        messageID: (runtimeMock.state.promptCalls.at(-1) as { messageID: string }).messageID,
         sessionID: "http://127.0.0.1:9999/session",
         model: {
           providerID: "openai",

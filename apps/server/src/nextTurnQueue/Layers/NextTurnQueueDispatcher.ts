@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { recoverRestartTurnMarkers } from "../restartTurns.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { EventId as importEventIdFactory } from "@t3tools/contracts";
@@ -84,6 +85,7 @@ function storageError(cause: unknown): NextTurnQueueStorageError {
 export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const restartSettingsOption = yield* Effect.serviceOption(ServerSettingsService);
   const threads = yield* ProjectionThreadRepository;
   const sessions = yield* ProjectionThreadSessionRepository;
   const turns = yield* ProjectionTurnRepository;
@@ -649,7 +651,12 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const recoverRestartTurns = Effect.gen(function* () {
     if (Option.isNone(sqlOption)) return;
-    const resumed = yield* recoverRestartTurnMarkers.pipe(
+    const recovery = Option.isSome(restartSettingsOption)
+      ? recoverRestartTurnMarkers.pipe(
+          Effect.provideService(ServerSettingsService, restartSettingsOption.value),
+        )
+      : recoverRestartTurnMarkers;
+    const resumed = yield* recovery.pipe(
       Effect.provideService(SqlClient.SqlClient, sqlOption.value),
       Effect.provideService(OrchestrationEngineService, engine),
       Effect.provideService(NextTurnQueueStore, store),

@@ -6569,6 +6569,46 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("preserves history when a retained Claude turn has no assistant boundary", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      for (const input of ["silent first", "second"]) {
+        yield* adapter.sendTurn({ threadId: session.threadId, input, attachments: [] });
+        const completed = yield* Stream.filter(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runHead, Effect.forkChild);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "123e4567-e89b-42d3-a456-426614174000",
+          uuid: `result-${input}`,
+        } as unknown as SDKMessage);
+        yield* Fiber.join(completed);
+      }
+      const queryInput = harness.getLastCreateQueryInput();
+      const error = yield* adapter.rollbackThread(session.threadId, 1).pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      assert.equal((yield* adapter.readThread(session.threadId)).turns.length, 2);
+      assert.equal(harness.getLastCreateQueryInput(), queryInput);
+      for (const count of [0, -1, 1.5]) {
+        const invalid = yield* adapter.rollbackThread(session.threadId, count).pipe(Effect.flip);
+        assert.equal(invalid._tag, "ProviderAdapterRequestError");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect(
     "supports rollbackThread by trimming in-memory turns and preserving earlier turns",
     () => {

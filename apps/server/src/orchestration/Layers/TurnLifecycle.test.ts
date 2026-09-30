@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import { recoverRestartTurnMarkers } from "../../nextTurnQueue/restartTurns.ts";
@@ -32,6 +33,7 @@ const suite = it.layer(
     Layer.provideMerge(OrchestrationProjectionPipelineLive),
     Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+    Layer.provideMerge(ServerSettingsService.layerTest({ resumeActiveTurnsAfterRestart: true })),
     Layer.provideMerge(NextTurnQueueStoreLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "phase8-tests-" })),
@@ -67,6 +69,26 @@ const seed = (name: string) =>
       createdAt: at,
     });
     return threadId;
+  });
+const interrupted = (threadId: ThreadId, turnId = "old-turn") =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    for (const busy of [true, false])
+      yield* engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe(`interrupt:${threadId}:${turnId}:${busy}`),
+        threadId,
+        createdAt: at,
+        session: {
+          threadId,
+          providerName: "codex",
+          status: busy ? "running" : "stopped",
+          runtimeMode: "full-access",
+          activeTurnId: busy ? TurnId.makeUnsafe(turnId) : null,
+          lastError: null,
+          updatedAt: at,
+        },
+      });
   });
 const question = (threadId: ThreadId, message = true) =>
   Effect.gen(function* () {
@@ -111,6 +133,8 @@ suite("durable turn lifecycle", (it) => {
         const requestId = yield* question(blockedThread);
         const expiredThread = yield* seed("restart-expired");
         const sql = yield* SqlClient.SqlClient;
+        yield* interrupted(threadId);
+        yield* interrupted(blockedThread);
         const marked = new Date().toISOString();
         const continuationId = `resume:${threadId}:old-turn`;
         yield* sql`INSERT INTO restart_turn_markers VALUES (${threadId}, 'old-turn', ${marked}, ${continuationId})`;
@@ -143,6 +167,39 @@ suite("durable turn lifecycle", (it) => {
         });
         assert.deepEqual(yield* recoverRestartTurnMarkers, [blockedThread]);
       }),
+  );
+
+  it.effect("revokes restart markers after opt-out or newer conversation work", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("restart-revoked");
+      yield* interrupted(threadId);
+      const sql = yield* SqlClient.SqlClient;
+      const marker = () =>
+        sql`INSERT INTO restart_turn_markers VALUES (${threadId}, 'old-turn', ${new Date().toISOString()}, ${`resume:${threadId}:old-turn`})`;
+      yield* marker();
+      yield* interrupted(threadId, "newer-turn");
+      assert.deepEqual(yield* recoverRestartTurnMarkers, []);
+      assert.equal(
+        (yield* sql`SELECT * FROM restart_turn_markers WHERE thread_id = ${threadId}`).length,
+        0,
+      );
+      const optedOutThread = yield* seed("restart-opted-out");
+      yield* interrupted(optedOutThread);
+      yield* sql`INSERT INTO restart_turn_markers VALUES (${optedOutThread}, 'old-turn', ${new Date().toISOString()}, ${`resume:${optedOutThread}:old-turn`})`;
+      yield* (yield* ServerSettingsService).updateSettings({
+        resumeActiveTurnsAfterRestart: false,
+      });
+      assert.deepEqual(yield* recoverRestartTurnMarkers, []);
+      assert.equal(
+        (yield* sql`SELECT * FROM restart_turn_markers WHERE thread_id = ${threadId}`).length,
+        0,
+      );
+      assert.equal(
+        (yield* sql`SELECT * FROM restart_turn_markers WHERE thread_id = ${optedOutThread}`).length,
+        0,
+      );
+      yield* (yield* ServerSettingsService).updateSettings({ resumeActiveTurnsAfterRestart: true });
+    }),
   );
 
   it.effect(
@@ -304,6 +361,39 @@ suite("durable turn lifecycle", (it) => {
       assert.equal((yield* store.listByThread(threadId)).items.length, 0);
     }),
   );
+  it.effect("skips corrupt pending questions and rewind drafts while projecting valid rows", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("corrupt-runtime-rows");
+      const requestId = yield* question(threadId);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO projection_pending_user_inputs VALUES (${threadId}, 'bad-question', '{', NULL)`;
+      yield* sql`INSERT INTO rewind_operations(operation_id, thread_id, target_message_id, provider_session_id, mode, expected_revision, state, relative_count, retained_count, boundary_json, draft_json, created_at, updated_at) VALUES ('bad-draft', ${threadId}, 'bad-message', 'session', 'conversation', 0, 'completed', 1, 0, '[]', '{', ${at}, ${at})`;
+      const query = yield* ProjectionSnapshotQuery;
+      assert.equal(
+        (yield* query.getSnapshot()).threads.find((thread) => thread.id === threadId)
+          ?.pendingUserInputs?.[0]?.requestId,
+        requestId,
+      );
+      const engine = yield* OrchestrationEngineService;
+      yield* engine.dispatch({
+        type: "thread.user-input.dismiss",
+        commandId: CommandId.makeUnsafe("dismiss-corrupt-neighbor"),
+        threadId,
+        requestId,
+        createdAt: at,
+      });
+      const snapshot = yield* query.getSnapshot();
+      assert.equal(
+        snapshot.threads.find((thread) => thread.id === threadId)?.pendingUserInputs?.length,
+        0,
+      );
+      assert.equal(
+        snapshot.threads.find((thread) => thread.id === threadId)?.rewindDrafts?.length,
+        0,
+      );
+    }),
+  );
+
   it.effect("re-admits only a definitely rejected steer as a start using its original IDs", () =>
     Effect.gen(function* () {
       const threadId = yield* seed("steer-fallback-engine");
@@ -337,6 +427,20 @@ suite("durable turn lifecycle", (it) => {
           updatedAt: at,
         },
       });
+      const mismatch = yield* engine
+        .dispatch({
+          ...command,
+          commandId: CommandId.makeUnsafe("steer-wrong-model"),
+          type: "thread.turn.steer",
+          expectedTurnId: TurnId.makeUnsafe("busy"),
+          model: "different-model",
+        })
+        .pipe(Effect.flip);
+      assert.equal(mismatch._tag, "OrchestrationCommandInvariantError");
+      assert.equal(
+        (yield* engine.getReadModel()).threads.find((thread) => thread.id === threadId)?.model,
+        "gpt-5-codex",
+      );
       yield* store.insertSubmission({
         submissionId: commandId,
         itemId: commandId,
@@ -349,6 +453,24 @@ suite("durable turn lifecycle", (it) => {
         type: "thread.turn.steer",
         expectedTurnId: TurnId.makeUnsafe("busy"),
       });
+      yield* sql`UPDATE provider_turn_deliveries SET state = 'rejected', certainty = 'not_sent' WHERE command_id = ${commandId}`;
+      yield* store.fallbackSteer(commandId);
+      yield* store.setSteer(
+        commandId,
+        (yield* store.listByThread(threadId)).state.revision,
+        TurnId.makeUnsafe("busy"),
+      );
+      yield* engine.dispatch({
+        ...command,
+        type: "thread.turn.steer",
+        expectedTurnId: TurnId.makeUnsafe("busy"),
+      });
+      const reissued = (yield* sql<{
+        state: string;
+        event: string;
+      }>`SELECT state,event_json AS event FROM provider_turn_deliveries WHERE command_id = ${commandId}`)[0]!;
+      assert.equal(reissued.state, "pending");
+      assert.equal(JSON.parse(reissued.event).type, "thread.turn-steer-requested");
       yield* sql`UPDATE provider_turn_deliveries SET state = 'rejected', certainty = 'not_sent' WHERE command_id = ${commandId}`;
       yield* store.fallbackSteer(commandId);
       yield* engine.dispatch({
