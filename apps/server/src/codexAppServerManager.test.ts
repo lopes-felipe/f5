@@ -984,7 +984,7 @@ describe("sendTurn", () => {
     );
   });
 
-  it("clamps ultra for the default Astra selection", async () => {
+  it("passes ultra through for the default GPT-6.1 Sol selection", async () => {
     const { manager, context, sendRequest } = createSendTurnHarness();
     delete (context.session as { model?: string }).model;
 
@@ -998,12 +998,12 @@ describe("sendTurn", () => {
       context,
       "turn/start",
       expect.objectContaining({
-        model: "gpt-6-astra",
-        effort: "max",
+        model: "gpt-6.1-sol",
+        effort: "ultra",
         collaborationMode: expect.objectContaining({
           settings: expect.objectContaining({
-            model: "gpt-6-astra",
-            reasoning_effort: "max",
+            model: "gpt-6.1-sol",
+            reasoning_effort: "ultra",
           }),
         }),
       }),

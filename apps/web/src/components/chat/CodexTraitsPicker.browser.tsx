@@ -140,6 +140,26 @@ describe("CodexTraitsPicker", () => {
     }
   });
 
+  it("keeps a persisted Ultra selection for GPT-6.1 Sol", async () => {
+    const mounted = await mountPicker({ model: "gpt-6.1-sol", effort: "ultra" });
+
+    try {
+      expect(page.getByRole("button").element().textContent?.trim()).toBe("Ultra");
+      await page.getByRole("button").click();
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Ultra");
+        expect(page.getByRole("menuitemradio").all()).toHaveLength(8);
+      });
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[
+          ThreadId.makeUnsafe("thread-codex-traits")
+        ]?.modelOptions?.codex?.reasoningEffort,
+      ).toBe("ultra");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps Ultra available for GPT-5.6 Sol", async () => {
     const mounted = await mountPicker({ model: "gpt-5.6-sol" });
 

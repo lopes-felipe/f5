@@ -687,10 +687,21 @@ describe("displayProfile", () => {
 });
 
 describe("getAppModelOptions", () => {
+  it("deduplicates a previously custom GPT-6.1 Sol as a built-in option", () => {
+    const options = getAppModelOptions("codex", ["gpt-6.1-sol"]);
+    expect(options.filter((option) => option.slug === "gpt-6.1-sol")).toHaveLength(1);
+    expect(options[0]).toMatchObject({
+      slug: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      shortName: "6.1 Sol",
+      isCustom: false,
+    });
+  });
   it("appends saved custom models after the built-in options", () => {
     const options = getAppModelOptions("codex", ["custom/internal-model"]);
 
     expect(options.map((option) => option.slug)).toEqual([
+      "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
@@ -777,7 +788,7 @@ describe("resolveAppModelSelection", () => {
   });
 
   it("falls back to the provider default when no model is selected", () => {
-    expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-6-astra");
+    expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-6.1-sol");
   });
 
   it("normalizes the GPT-5.6 Sol short alias to the runnable Codex slug", () => {
