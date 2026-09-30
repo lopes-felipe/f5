@@ -1898,6 +1898,7 @@ describe("ChatView timeline (full app)", () => {
     setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    useComposerMentionHistoryStore.setState({ entries: [] });
     document.body.innerHTML = "";
     wsRequests.length = 0;
     useComposerDraftStore.setState({
@@ -2003,6 +2004,63 @@ describe("ChatView timeline (full app)", () => {
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
           "Keep my typed answer",
         ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("renders an explicitly picked file as a chip in a custom question answer", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "question-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "question-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which approach?",
+            options: [{ label: "Use option", description: "Use the suggested approach" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.projectsSearchEntries
+            ? {
+                type: "result",
+                result: {
+                  entries: [{ path: "src/a.ts", kind: "file", parentPath: "src" }],
+                  truncated: false,
+                },
+              }
+            : undefined;
+      },
+    });
+    try {
+      await expect.element(page.getByText("Which approach?", { exact: true })).toBeVisible();
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Use @src/a");
+      await page.getByText("a.ts", { exact: true }).click();
+      await vi.waitFor(() =>
+        expect(editor.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions ?? []).toEqual(
+        [],
       );
     } finally {
       await mounted.cleanup();
@@ -3743,10 +3801,67 @@ describe("ChatView timeline (full app)", () => {
           }),
         );
       });
+      await vi.waitFor(() => {
+        expect(useComposerMentionHistoryStore.getState().entries).toEqual([
+          expect.objectContaining({
+            threadId: THREAD_ID,
+            promptLength: "@src/index.ts".length,
+            mentions: [expect.objectContaining({ path: "src/index.ts", start: 0, end: 13 })],
+          }),
+        ]);
+      });
     } finally {
       await mounted.cleanup();
     }
   });
+
+  it.each(["length", "dispatch"])(
+    "does not retain mention history after %s rejection",
+    async (rejection) => {
+      const prompt = "Read @src/main.ts and investigate";
+      const mentions = [createComposerMention("src/main.ts", 5)];
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt, mentions);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "rejection-user" as MessageId,
+          targetText: "Previous message",
+        }),
+        configureFixture: (nextFixture) => {
+          nextFixture.resolveWsRequest = (body) =>
+            rejection === "dispatch" && getSubmittedTurnCommand(body)
+              ? { type: "error", message: "Test admission rejected" }
+              : undefined;
+        },
+      });
+      try {
+        const sendButton = await waitForSendButton();
+        if (rejection === "length")
+          setServerBootstrap({
+            ...serverBootstrapFixture,
+            sendLimits: { ...serverBootstrapFixture.sendLimits, maxInputChars: 10 },
+          });
+        sendButton.click();
+        await expect
+          .element(
+            page
+              .getByText(
+                rejection === "length"
+                  ? /exceeds the 10 character provider input limit/
+                  : /Test admission rejected/,
+              )
+              .first(),
+          )
+          .toBeVisible();
+        expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual(
+          mentions,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("sends file-only drafts with workspace-relative attachment paths and a filename title fallback", async () => {
     const absoluteFilePath = "/repo/project/apps/web/src/components/file-only-send.tsx";
@@ -4364,7 +4479,7 @@ describe("ChatView timeline (full app)", () => {
     useComposerMentionHistoryStore.getState().remember({
       threadId: THREAD_ID,
       messageId: "history-user",
-      prompt: historyPrompt,
+      promptLength: historyPrompt.length,
       mentions: historyMentions,
     });
     const mounted = await mountChatView({
@@ -4941,6 +5056,7 @@ describe("ChatView timeline (full app)", () => {
           const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
           expect(draft?.prompt).toBe(prompt);
           expect(draft?.mentions).toEqual(mentions);
+          expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
           expect(draft?.images).toHaveLength(1);
           expect(draft?.images[0]?.previewUrl.startsWith("blob:")).toBe(true);
           expect(draft?.terminalContexts.map((context) => context.id)).toEqual([

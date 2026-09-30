@@ -4,7 +4,6 @@ import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isMacPlatform } from "../lib/utils";
 import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
-import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
 import { ChatComposer } from "./chat/composer/ChatComposer";
 import { getServerSendLimits, useProtocolState } from "../protocolState";
@@ -127,6 +126,7 @@ import {
   deletePendingTurnDispatchArtifacts,
   getPendingTurnDispatchArtifacts,
   listPendingTurnDispatchArtifacts,
+  rememberAcceptedTurnMentions,
   setPendingTurnDispatchArtifacts,
   type PendingTurnDispatchState,
   type PendingTurnStartCommand,
@@ -1913,18 +1913,27 @@ export default function ChatView({
     }
 
     promptRef.current = nextCustomAnswer;
-    const nextCursor = collapseExpandedComposerCursor(nextCustomAnswer, nextCustomAnswer.length);
+    const nextCursor = collapseExpandedComposerCursor(
+      nextCustomAnswer,
+      nextCustomAnswer.length,
+      activePendingProgress?.activeDraft?.mentions,
+    );
     setComposerCursor(nextCursor);
     setComposerTrigger(
       detectComposerTrigger(
         nextCustomAnswer,
-        expandCollapsedComposerCursor(nextCustomAnswer, nextCursor),
+        expandCollapsedComposerCursor(
+          nextCustomAnswer,
+          nextCursor,
+          activePendingProgress?.activeDraft?.mentions,
+        ),
       ),
     );
     setComposerHighlightedItemId(null);
   }, [
     prompt,
     activePendingProgress?.customAnswer,
+    activePendingProgress?.activeDraft?.mentions,
     activePendingUserInput?.requestId,
     activePendingProgress?.activeQuestion?.id,
   ]);
@@ -3485,6 +3494,7 @@ export default function ChatView({
                         })
                       : submission.snapshot;
                   useNextTurnQueueStore.getState().applySnapshot(snapshot);
+                  rememberAcceptedTurnMentions(input.command.commandId);
                   clearPendingTurnDispatch({ commandId: input.command.commandId });
                   input.onQueued?.();
                   return null;
@@ -3500,6 +3510,7 @@ export default function ChatView({
         useNextTurnQueueStore
           .getState()
           .removeOptimistic(input.command.threadId, input.command.commandId);
+        rememberAcceptedTurnMentions(input.command.commandId);
         input.onStarted?.();
         updateStorePendingTurnDispatch(input.command.threadId, (current) => {
           if (!current || current.commandId !== input.command.commandId) {
@@ -3561,6 +3572,7 @@ export default function ChatView({
       return;
     }
 
+    rememberAcceptedTurnMentions(pendingTurnDispatch.commandId);
     clearPendingTurnDispatch();
     const activeThreadError = activeThread?.error ?? localDraftErrorsByThreadId[threadId] ?? null;
     if (isTransportConnectionErrorMessage(activeThreadError)) {
@@ -3592,6 +3604,7 @@ export default function ChatView({
       (message) => message.id === pendingTurnDispatch.messageId,
     );
     if (messageAccepted || serverAcknowledgedPendingTurnDispatch) {
+      rememberAcceptedTurnMentions(pendingTurnDispatch.commandId);
       clearPendingTurnDispatch();
       const activeThreadError = activeThread?.error ?? localDraftErrorsByThreadId[threadId] ?? null;
       if (isTransportConnectionErrorMessage(activeThreadError)) {
@@ -4456,14 +4469,6 @@ export default function ChatView({
       composerFilePathsSnapshot,
     );
     const messageIdForSend = newMessageId();
-    if (mentionsForSend.length > 0) {
-      useComposerMentionHistoryStore.getState().remember({
-        threadId: threadIdForSend,
-        messageId: messageIdForSend,
-        prompt: promptForSend,
-        mentions: mentionsForSend,
-      });
-    }
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue = getProviderTurnInputLengthIssue(
@@ -4787,6 +4792,7 @@ export default function ChatView({
       nextCursor: number,
       expandedCursor: number,
       cursorAdjacentToMention: boolean,
+      mentions: readonly ComposerMention[],
     ) => {
       if (!activePendingUserInput) {
         return;
@@ -4799,6 +4805,7 @@ export default function ChatView({
           [questionId]: setPendingUserInputCustomAnswer(
             existing[activePendingUserInput.requestId]?.[questionId],
             value,
+            mentions,
           ),
         },
       }));
@@ -5358,7 +5365,9 @@ export default function ChatView({
       }
       const next = replaceTextRange(promptRef.current, rangeStart, rangeEnd, replacement);
       const mentions = replaceComposerMentionRange(
-        composerMentionsRef.current,
+        activePendingProgress
+          ? (activePendingProgress.activeDraft?.mentions ?? [])
+          : composerMentionsRef.current,
         safeStart,
         safeEnd,
         replacement.length,
@@ -5376,6 +5385,7 @@ export default function ChatView({
             [activePendingQuestion.id]: setPendingUserInputCustomAnswer(
               existing[activePendingUserInput.requestId]?.[activePendingQuestion.id],
               next.text,
+              mentions,
             ),
           },
         }));
@@ -5394,7 +5404,7 @@ export default function ChatView({
       });
       return true;
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
+    [activePendingProgress, activePendingUserInput, setPrompt],
   );
 
   const insertComposerFileMention = useCallback(
@@ -5585,6 +5595,7 @@ export default function ChatView({
       cursorAdjacentToMention: boolean,
       terminalContextIds: string[],
       mentions: readonly ComposerMention[],
+      options?: { suppressAutocomplete?: boolean },
     ) => {
       if (activePendingProgress?.activeQuestion && activePendingUserInput) {
         onChangeActivePendingUserInputCustomAnswer(
@@ -5593,6 +5604,7 @@ export default function ChatView({
           nextCursor,
           expandedCursor,
           cursorAdjacentToMention,
+          mentions,
         );
         return;
       }
@@ -5615,7 +5627,9 @@ export default function ChatView({
       }
       setComposerCursor(nextCursor);
       setComposerTrigger(
-        cursorAdjacentToMention ? null : detectComposerTrigger(nextPrompt, expandedCursor),
+        options?.suppressAutocomplete || cursorAdjacentToMention
+          ? null
+          : detectComposerTrigger(nextPrompt, expandedCursor),
       );
     },
     [

@@ -1,3 +1,4 @@
+import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import {
   acceptProfileWelcome,
@@ -636,10 +637,14 @@ function EventRouter() {
         clearPromotedDraftThreads(new Set(useStore.getState().threads.map((thread) => thread.id)));
       }
       if (event.type === "project.deleted") {
+        useComposerMentionHistoryStore
+          .getState()
+          .retainThreads(new Set(useStore.getState().threads.map((thread) => thread.id)));
         pruneDraftThreadsForCurrentProjects();
         removeOrphanedTerminalsForCurrentStoreThreads();
       }
       if (event.type === "thread.deleted") {
+        useComposerMentionHistoryStore.getState().forgetThread(event.payload.threadId);
         removeOrphanedTerminalsForCurrentStoreThreads();
       }
       if (event.type === "thread.turn-diff-completed" || event.type === "thread.reverted") {
@@ -715,6 +720,9 @@ function EventRouter() {
         pruneDraftThreadsForCurrentProjects();
       }
       if (sawProjectDeleted || sawThreadDeleted) {
+        useComposerMentionHistoryStore
+          .getState()
+          .retainThreads(new Set(useStore.getState().threads.map((thread) => thread.id)));
         removeOrphanedTerminalsForCurrentStoreThreads();
       }
       if (sawProviderInvalidating) {
@@ -982,6 +990,17 @@ function EventRouter() {
       committedSequence = Math.max(committedSequence, snapshot.snapshotSequence);
       flushSequenceCommitWaiters();
       syncStartupSnapshot(snapshot);
+      if (!snapshotIsProvisional) {
+        useComposerMentionHistoryStore
+          .getState()
+          .retainThreads(
+            new Set(
+              snapshot.threads
+                .filter((thread) => thread.deletedAt === null)
+                .map((thread) => thread.id),
+            ),
+          );
+      }
       reconcileDraftThreadsAfterStartupSnapshot(snapshot);
       if (startupDetailThreadId && bundledThreadTailDetails) {
         queryClient.setQueryData(

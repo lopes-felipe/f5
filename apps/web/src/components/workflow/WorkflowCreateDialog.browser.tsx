@@ -326,11 +326,11 @@ function dispatchModifiedEnter(
 }
 
 function getRequirementEditorSurface(): HTMLDivElement {
-  const textarea = document.querySelector("textarea");
-  if (!(textarea instanceof HTMLTextAreaElement)) {
-    throw new Error("Workflow requirement textarea not found.");
+  const editor = document.querySelector('[data-testid="composer-editor"]');
+  if (!(editor instanceof HTMLElement)) {
+    throw new Error("Workflow requirement editor not found.");
   }
-  const surface = textarea.parentElement;
+  const surface = editor.closest(".composer-editor-surface")?.parentElement;
   if (!(surface instanceof HTMLDivElement)) {
     throw new Error("Workflow requirement surface not found.");
   }
@@ -598,9 +598,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Fable 5");
       });
-      await page
-        .getByPlaceholder("Describe the feature or requirement to plan.")
-        .fill("Plan the gated workflow");
+      await page.getByTestId("composer-editor").fill("Plan the gated workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -642,9 +640,7 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Opus 5");
       });
-      await page
-        .getByPlaceholder("Describe the feature or requirement to plan.")
-        .fill("Plan the Opus workflow");
+      await page.getByTestId("composer-editor").fill("Plan the Opus workflow");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
@@ -684,9 +680,7 @@ describe("WorkflowCreateDialog", () => {
       },
     );
     try {
-      await page
-        .getByPlaceholder("Describe the feature or requirement to plan.")
-        .fill("Plan Fable support");
+      await page.getByTestId("composer-editor").fill("Plan Fable support");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
@@ -798,9 +792,7 @@ describe("WorkflowCreateDialog", () => {
       ).toBe(false);
       expect(createWorkflowButton().disabled).toBe(true);
 
-      await page
-        .getByPlaceholder("Describe the feature or requirement to plan.")
-        .fill("Plan the new workflow behavior");
+      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -833,11 +825,7 @@ describe("WorkflowCreateDialog", () => {
     };
     try {
       await page.getByRole("button", { name: "Document", exact: true }).click();
-      await page
-        .getByPlaceholder(
-          "Describe the proposed change, audience, desired tone, constraints, and supporting inputs.",
-        )
-        .fill("Describe the migration");
+      await page.getByTestId("composer-editor").fill("Describe the migration");
       await chooseClaude("Author B", "Claude Sonnet 4.6");
       expect(findProviderFieldButton("Reader model").textContent).toContain("Sonnet 4.6");
       const authorA = findProviderFieldButton("Author A").textContent;
@@ -871,11 +859,7 @@ describe("WorkflowCreateDialog", () => {
       await page.getByRole("button", { name: "Document", exact: true }).click();
       await page.getByRole("combobox", { name: "Document type" }).click();
       await page.getByRole("option", { name: "ADR", exact: true }).click();
-      await page
-        .getByPlaceholder(
-          "Describe the architectural decision, audience, alternatives, tone, and evidence.",
-        )
-        .fill("Record why we chose queues");
+      await page.getByTestId("composer-editor").fill("Record why we chose queues");
       expect(document.body.textContent).toContain("/ 24,000");
       expect(document.body.textContent).not.toContain("Plans directory");
       expect(document.body.textContent).not.toContain("Compare against branch");
@@ -926,11 +910,7 @@ describe("WorkflowCreateDialog", () => {
       await expect
         .element(page.getByRole("textbox", { name: "Reader persona (optional)" }))
         .not.toBeInTheDocument();
-      await page
-        .getByPlaceholder(
-          "Describe the decision, stakeholder audience, tone, and supporting inputs.",
-        )
-        .fill("Fund the migration");
+      await page.getByTestId("composer-editor").fill("Fund the migration");
       await page.getByRole("button", { name: /Start workflow/ }).click();
       await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
       expect(nativeApiMocks.createRun.mock.calls[0]![0].input).toMatchObject({
@@ -1052,7 +1032,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      const prompt = page.getByTestId("composer-editor");
       await prompt.fill("Plan the new workflow behavior");
 
       dispatchModifiedEnter(prompt.element());
@@ -1091,7 +1071,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      const prompt = page.getByTestId("composer-editor");
       dispatchModifiedEnter(prompt.element());
       await vi.waitFor(() => {
         expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(0);
@@ -1111,7 +1091,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      const prompt = page.getByTestId("composer-editor");
       await prompt.fill("Plan the new workflow behavior");
 
       const composingEvent = createModifiedEnterEvent();
@@ -1138,13 +1118,13 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      const prompt = page.getByTestId("composer-editor");
       await prompt.click();
       await userEvent.keyboard("First line{Enter}Second line");
 
       const textarea = prompt.element();
-      expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
-      expect((textarea as HTMLTextAreaElement).value).toBe("First line\nSecond line");
+      expect(textarea).toBeInstanceOf(HTMLElement);
+      expect((textarea as HTMLElement).innerText).toBe("First line\nSecond line");
       expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(0);
     } finally {
       await screen.unmount();
@@ -1168,9 +1148,7 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      await page
-        .getByPlaceholder("Describe the feature or requirement to plan.")
-        .fill("Plan the new workflow behavior");
+      await page.getByTestId("composer-editor").fill("Plan the new workflow behavior");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1221,11 +1199,7 @@ describe("WorkflowCreateDialog", () => {
     try {
       await page.getByRole("button", { name: "Code Review" }).click();
 
-      await page
-        .getByPlaceholder(
-          "Describe what the reviewers should inspect and how they should review it.",
-        )
-        .fill("Review the workflow changes");
+      await page.getByTestId("composer-editor").fill("Review the workflow changes");
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);
@@ -1274,11 +1248,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       await page.getByRole("button", { name: "Investigation" }).click();
-      await page
-        .getByPlaceholder(
-          "Describe the problem, symptoms, suspected regression, or evidence to investigate.",
-        )
-        .fill("Investigate checkout timeouts");
+      await page.getByTestId("composer-editor").fill("Investigate checkout timeouts");
       await page.getByText("Own-model review").click();
 
       await vi.waitFor(() => {
@@ -1386,7 +1356,7 @@ describe("WorkflowCreateDialog", () => {
       );
 
       await vi.waitFor(() => {
-        expect(document.querySelector("textarea")?.value).toBe("@docs/AGENTS.md ");
+        expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1);
       });
       expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledWith({
         cwd: "/repo/project",
@@ -1402,7 +1372,7 @@ describe("WorkflowCreateDialog", () => {
         expect(document.body.textContent).toContain("File not found: docs/AGENTS.md"),
       );
       expect(nativeApiMocks.createWorkflow).not.toHaveBeenCalled();
-      expect(document.querySelector("textarea")?.value).toBe("@docs/AGENTS.md ");
+      expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1);
 
       createWorkflowButton().click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
@@ -1413,6 +1383,51 @@ describe("WorkflowCreateDialog", () => {
     } finally {
       await screen.unmount();
       host.remove();
+    }
+  });
+
+  it("keeps workflow mention identity through deletion, undo and redo beside identical literal text", async () => {
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+    );
+    try {
+      const editor = page.getByTestId("composer-editor");
+      await editor.fill("@docs/AGENTS.md ");
+      const transfer = new DataTransfer();
+      writeFileTreeDragMention(transfer, {
+        projectId: "project-1",
+        workspaceIdentity: workspaceIdentityForRoot("project-1", "/repo/project"),
+        relativePath: "docs/AGENTS.md",
+      });
+      getRequirementEditorSurface().dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        }),
+      );
+      const chipCount = () => document.querySelectorAll("[data-composer-mention-chip]").length;
+      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      await userEvent.keyboard("{Backspace}{Backspace}");
+      await vi.waitFor(() => expect(chipCount()).toBe(0));
+      expect(editor.element().textContent).toContain("@docs/AGENTS.md");
+      const modifier = /Mac/.test(navigator.platform) ? "Meta" : "Control";
+      const undo = "{" + modifier + ">}z{/" + modifier + "}";
+      await userEvent.keyboard(undo);
+      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      await userEvent.keyboard("{" + modifier + ">}{Shift>}z{/Shift}{/" + modifier + "}");
+      await vi.waitFor(() => expect(chipCount()).toBe(0));
+      await userEvent.keyboard(undo);
+      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      nativeApiMocks.authorizeEntry.mockClear();
+      createWorkflowButton().click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/repo/project",
+        relativePath: "docs/AGENTS.md",
+      });
+    } finally {
+      await screen.unmount();
     }
   });
 

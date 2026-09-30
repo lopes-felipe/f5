@@ -1,8 +1,14 @@
 import type { UserInputQuestion } from "@t3tools/contracts";
+import {
+  normalizeComposerMentions,
+  reconcileComposerMentions,
+  type ComposerMention,
+} from "./composer-editor-mentions";
 
 export interface PendingUserInputDraftAnswer {
   selectedOptionLabels?: string[];
   customAnswer?: string;
+  mentions?: readonly ComposerMention[];
 }
 
 /**
@@ -78,12 +84,18 @@ export function resolvePendingUserInputAnswer(
 export function setPendingUserInputCustomAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
+  mentions?: readonly ComposerMention[],
 ): PendingUserInputDraftAnswer {
   const selectedOptionLabels =
     customAnswer.trim().length > 0 ? undefined : draft?.selectedOptionLabels;
 
+  const nextMentions =
+    mentions === undefined
+      ? reconcileComposerMentions(draft?.customAnswer ?? "", customAnswer, draft?.mentions ?? [])
+      : normalizeComposerMentions(customAnswer, mentions);
   return {
     customAnswer,
+    ...(nextMentions.length > 0 ? { mentions: nextMentions } : {}),
     ...(selectedOptionLabels && selectedOptionLabels.length > 0 ? { selectedOptionLabels } : {}),
   };
 }

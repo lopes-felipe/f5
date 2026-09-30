@@ -5,6 +5,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { create } from "zustand";
+import {
+  createMentionHistoryEntry,
+  useComposerMentionHistoryStore,
+} from "./composerMentionHistoryStore";
 
 import type { LocalDispatchSnapshot } from "./session-logic";
 import type {
@@ -62,6 +66,22 @@ export function setPendingTurnDispatchArtifacts(
 
 export function deletePendingTurnDispatchArtifacts(commandId: CommandId): void {
   pendingTurnDispatchArtifactsByCommandId.delete(commandId);
+}
+
+/** Save provenance only after admission, including reconnect recovery. */
+export function rememberAcceptedTurnMentions(commandId: CommandId): void {
+  const artifacts = getPendingTurnDispatchArtifacts(commandId);
+  if (!artifacts?.rollback.mentions?.length) return;
+  const { command, rollback } = artifacts;
+  const entry = createMentionHistoryEntry({
+    threadId: command.threadId,
+    messageId: command.message.messageId,
+    messageText: command.message.text,
+    prompt: rollback.prompt,
+    mentions: rollback.mentions ?? [],
+    terminalContexts: rollback.terminalContexts,
+  });
+  if (entry.mentions.length > 0) useComposerMentionHistoryStore.getState().remember(entry);
 }
 
 export function listPendingTurnDispatchArtifacts(): PendingTurnDispatchArtifacts[] {

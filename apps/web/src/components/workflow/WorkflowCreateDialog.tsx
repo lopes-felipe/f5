@@ -60,9 +60,10 @@ import {
 import {
   collectComposerMentionPaths,
   createComposerMention,
-  reconcileComposerMentions,
   type ComposerMention,
 } from "../../composer-editor-mentions";
+import { collapseExpandedComposerCursor } from "../../composer-logic";
+import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../ComposerPromptEditor";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import {
@@ -496,20 +497,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const [requirementDraft, setRequirementDraft] = useState<{
     text: string;
     mentions: readonly ComposerMention[];
-  }>({ text: "", mentions: [] });
+    cursor: number;
+  }>({ text: "", mentions: [], cursor: 0 });
   const requirementPrompt = requirementDraft.text;
-  const requirementEditRef = useRef<{ start: number; end: number } | undefined>(undefined);
-  const captureRequirementSelection = (element: HTMLTextAreaElement) => {
-    requirementEditRef.current = { start: element.selectionStart, end: element.selectionEnd };
-  };
-  const setRequirementPrompt = (text: string) => {
-    const edit = requirementEditRef.current;
-    requirementEditRef.current = undefined;
-    setRequirementDraft((current) => ({
-      text,
-      mentions: reconcileComposerMentions(current.text, text, current.mentions, edit),
-    }));
-  };
   const [documentType, setDocumentType] = useState<WorkflowDocumentType>(
     DEFAULT_WORKFLOW_DOCUMENT_TYPE,
   );
@@ -546,7 +536,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOverPrompt, setIsDragOverPrompt] = useState(false);
-  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const promptEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const submittingRef = useRef(false);
   const dragDepthRef = useRef(0);
   const resolveWorkflowModelSelection = (provider: ProviderKind, model: string): ModelSlug =>
@@ -637,7 +627,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
 
   const focusPromptEditor = () => {
-    promptTextareaRef.current?.focus();
+    promptEditorRef.current?.focusAtEnd();
   };
 
   const onWorkflowTypeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -702,7 +692,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setReaderReviewEnabled(true);
     setReaderPersona("");
     setReaderSlot(null);
-    setRequirementPrompt("");
+    setRequirementDraft({ text: "", mentions: [], cursor: 0 });
     setAttachedFilePaths([]);
     setReviewBranch("");
     setPlansDirectory("plans");
@@ -856,9 +846,15 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         setRequirementDraft((current) => {
           const prefix =
             current.text + (current.text.length > 0 && !/\s$/.test(current.text) ? " " : "");
+          const text = prefix + mention + " ";
+          const mentions = [
+            ...current.mentions,
+            createComposerMention(relativePath, prefix.length),
+          ];
           return {
-            text: prefix + mention + " ",
-            mentions: [...current.mentions, createComposerMention(relativePath, prefix.length)],
+            text,
+            mentions,
+            cursor: collapseExpandedComposerCursor(text, text.length, mentions),
           };
         });
         window.requestAnimationFrame(focusPromptEditor);
@@ -1088,7 +1084,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogPopup className="max-w-2xl" onKeyDown={onDialogKeyDown}>
+      <DialogPopup className="max-w-2xl" onKeyDownCapture={onDialogKeyDown}>
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
@@ -1178,14 +1174,19 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                   })}
                 </div>
               ) : null}
-              <textarea
-                ref={promptTextareaRef}
-                className="min-h-32 w-full resize-y bg-transparent text-sm outline-hidden placeholder:text-muted-foreground"
+              <ComposerPromptEditor
+                ref={promptEditorRef}
+                className="min-h-32 text-sm"
                 value={requirementPrompt}
-                onBeforeInput={(event) => captureRequirementSelection(event.currentTarget)}
-                onPasteCapture={(event) => captureRequirementSelection(event.currentTarget)}
-                onCutCapture={(event) => captureRequirementSelection(event.currentTarget)}
-                onChange={(event) => setRequirementPrompt(event.target.value)}
+                mentions={requirementDraft.mentions}
+                cursor={requirementDraft.cursor}
+                terminalContexts={[]}
+                disabled={submitting}
+                onRemoveTerminalContext={() => {}}
+                onPaste={() => {}}
+                onChange={(text, cursor, _expanded, _adjacent, _contexts, mentions) =>
+                  setRequirementDraft({ text, cursor, mentions })
+                }
                 placeholder={
                   workflowType === "document"
                     ? documentProfile.placeholder

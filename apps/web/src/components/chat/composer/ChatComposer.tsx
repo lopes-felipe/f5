@@ -112,6 +112,7 @@ export interface ChatComposerProps {
     cursorAdjacentToMention: boolean,
     terminalContextIds: string[],
     mentions: readonly ComposerMention[],
+    options?: { suppressAutocomplete?: boolean },
   ) => void;
   onComposerCommandKey: (
     key: "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape",
@@ -351,9 +352,10 @@ export function ChatComposer({
       result.prompt,
       collapseExpandedComposerCursor(result.prompt, result.prompt.length, restoredMentions),
       result.prompt.length,
-      true, // Recalling a complete prompt must not open autocomplete for trailing literal @text.
+      false,
       current.terminalContextIds,
       restoredMentions,
+      { suppressAutocomplete: true },
     );
     return true;
   };
@@ -568,7 +570,13 @@ export function ChatComposer({
             <ComposerPromptEditor
               richTextEnabled={settings.composerRichTextEnabled}
               ref={composerEditorRef}
-              mentions={!isComposerApprovalState && !activePendingProgress ? mentions : []}
+              mentions={
+                isComposerApprovalState
+                  ? []
+                  : activePendingProgress
+                    ? (activePendingProgress.activeDraft?.mentions ?? [])
+                    : mentions
+              }
               value={
                 isComposerApprovalState
                   ? ""

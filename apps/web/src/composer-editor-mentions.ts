@@ -1,5 +1,6 @@
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
+  formatInlineTerminalContextLabel,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
 import { randomUUID } from "./lib/utils";
@@ -29,6 +30,44 @@ export interface ComposerMention {
 }
 
 export const EMPTY_COMPOSER_MENTIONS: readonly ComposerMention[] = Object.freeze([]);
+
+/** Serialize terminal chips while retaining file offsets in the sent text. */
+export function materializeComposerPrompt(
+  prompt: string,
+  mentions: readonly ComposerMention[],
+  terminalContexts: readonly TerminalContextDraft[],
+): { prompt: string; mentions: ComposerMention[] } {
+  let text = "";
+  const nextMentions: ComposerMention[] = [];
+  for (const segment of splitPromptIntoComposerSegments(prompt, terminalContexts, mentions)) {
+    if (segment.type === "terminal-context") {
+      if (segment.context) text += formatInlineTerminalContextLabel(segment.context);
+    } else if (segment.type === "mention") {
+      nextMentions.push({
+        id: segment.id,
+        path: segment.path,
+        start: text.length,
+        end: text.length + segment.raw.length,
+      });
+      text += segment.raw;
+    } else {
+      text += segment.text;
+    }
+  }
+  const start = text.length - text.trimStart().length;
+  const trimmed = text.trim();
+  return {
+    prompt: trimmed,
+    mentions: normalizeComposerMentions(
+      trimmed,
+      nextMentions.map((mention) => ({
+        ...mention,
+        start: mention.start - start,
+        end: mention.end - start,
+      })),
+    ),
+  };
+}
 
 const SIMPLE_MENTION_PATH_REGEX = /^(?=.*[./])[^\s@"\\]+$/;
 
