@@ -62,6 +62,8 @@ import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workflowFixtures";
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
+import { createComposerMention } from "../composer-editor-mentions";
+import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -1926,6 +1928,7 @@ describe("ChatView timeline (full app)", () => {
     setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
+    useComposerMentionHistoryStore.setState({ entries: [] });
     document.body.innerHTML = "";
     wsRequests.length = 0;
     useComposerDraftStore.setState({
@@ -2083,6 +2086,63 @@ describe("ChatView timeline (full app)", () => {
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
           "Keep my typed answer",
         ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("renders an explicitly picked file as a chip in a custom question answer", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "question-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "question-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which approach?",
+            options: [{ label: "Use option", description: "Use the suggested approach" }],
+          },
+        ],
+      },
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.projectsSearchEntries
+            ? {
+                type: "result",
+                result: {
+                  entries: [{ path: "src/a.ts", kind: "file", parentPath: "src" }],
+                  truncated: false,
+                },
+              }
+            : undefined;
+      },
+    });
+    try {
+      await expect.element(page.getByText("Which approach?", { exact: true })).toBeVisible();
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Use @src/a");
+      await page.getByText("a.ts", { exact: true }).click();
+      await vi.waitFor(() =>
+        expect(editor.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions ?? []).toEqual(
+        [],
       );
     } finally {
       await mounted.cleanup();
@@ -3743,6 +3803,31 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("sends literal handles and quoted paths without workspace authorization", async () => {
+    const prompt = 'Use @creditornot/wolt-auth and @scope/package with @"src/main.ts" please ';
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-literal-at" as MessageId,
+        targetText: "literal at target",
+      }),
+    });
+    try {
+      (await waitForSendButton()).click();
+      await vi.waitFor(() =>
+        expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
+      );
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
+      ).toEqual([]);
+      const command = getSubmittedTurnCommand(getDispatchCommandRequests("thread.turn.start")[0]!);
+      expect(command?.message?.text).toBe(prompt.trim());
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("inserts an authorized internal file drag and reauthorizes the mention before send", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -3771,6 +3856,9 @@ describe("ChatView timeline (full app)", () => {
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
           "@src/index.ts ",
         );
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual([
+          expect.objectContaining({ path: "src/index.ts", start: 0, end: 13 }),
+        ]);
       });
       expect(
         wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
@@ -3795,10 +3883,67 @@ describe("ChatView timeline (full app)", () => {
           }),
         );
       });
+      await vi.waitFor(() => {
+        expect(useComposerMentionHistoryStore.getState().entries).toEqual([
+          expect.objectContaining({
+            threadId: THREAD_ID,
+            promptLength: "@src/index.ts".length,
+            mentions: [expect.objectContaining({ path: "src/index.ts", start: 0, end: 13 })],
+          }),
+        ]);
+      });
     } finally {
       await mounted.cleanup();
     }
   });
+
+  it.each(["length", "dispatch"])(
+    "does not retain mention history after %s rejection",
+    async (rejection) => {
+      const prompt = "Read @src/main.ts and investigate";
+      const mentions = [createComposerMention("src/main.ts", 5)];
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt, mentions);
+      const mounted = await mountChatView({
+        viewport: DEFAULT_VIEWPORT,
+        snapshot: createSnapshotForTargetUser({
+          targetMessageId: "rejection-user" as MessageId,
+          targetText: "Previous message",
+        }),
+        configureFixture: (nextFixture) => {
+          nextFixture.resolveWsRequest = (body) =>
+            rejection === "dispatch" && getSubmittedTurnCommand(body)
+              ? { type: "error", message: "Test admission rejected" }
+              : undefined;
+        },
+      });
+      try {
+        const sendButton = await waitForSendButton();
+        if (rejection === "length")
+          setServerBootstrap({
+            ...serverBootstrapFixture,
+            sendLimits: { ...serverBootstrapFixture.sendLimits, maxInputChars: 10 },
+          });
+        sendButton.click();
+        await expect
+          .element(
+            page
+              .getByText(
+                rejection === "length"
+                  ? /exceeds the 10 character provider input limit/
+                  : /Test admission rejected/,
+              )
+              .first(),
+          )
+          .toBeVisible();
+        expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual(
+          mentions,
+        );
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
 
   it("uploads a picked PDF before sending and persists only its upload reference", async () => {
     const mounted = await mountChatView({
@@ -4540,13 +4685,21 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("recalls a sent prompt with ArrowUp and restores an empty composer with ArrowDown", async () => {
+    const historyPrompt = "recall @src/main.ts and @scope/pkg";
+    const historyMentions = [createComposerMention("src/main.ts", 7)];
+    useComposerMentionHistoryStore.getState().remember({
+      threadId: THREAD_ID,
+      messageId: "history-user",
+      promptLength: historyPrompt.length,
+      mentions: historyMentions,
+    });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
         targetMessageId: "history-user" as MessageId,
         fillerPairCount: 1,
         targetPairIndex: 0,
-        targetText: "recall this prompt",
+        targetText: historyPrompt,
       }),
     });
     try {
@@ -4557,15 +4710,25 @@ describe("ChatView timeline (full app)", () => {
       );
       await vi.waitFor(() =>
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
-          "recall this prompt",
+          historyPrompt,
         ),
       );
-      await vi.waitFor(() => expect(editor.textContent).toBe("recall this prompt"));
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions).toEqual(
+          historyMentions,
+        ),
+      );
+      await vi.waitFor(() =>
+        expect(editor.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1),
+      );
       editor.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
       );
       await vi.waitFor(() =>
         expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.mentions ?? []).toEqual(
+        [],
       );
     } finally {
       await mounted.cleanup();
@@ -5018,7 +5181,8 @@ describe("ChatView timeline (full app)", () => {
 
   it("restores the draft prompt, image, and terminal context after an unresolved send", async () => {
     const otherThreadId = "thread-recovery-navigation" as ThreadId;
-    const prompt = `Check this screenshot ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+    const prompt = `Check @src/main.ts screenshot ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`;
+    const mentions = [createComposerMention("src/main.ts", 6)];
     const image = createComposerImageAttachment({
       id: "image-recovery",
       name: "recovery.svg",
@@ -5048,7 +5212,7 @@ describe("ChatView timeline (full app)", () => {
         [PROJECT_ID]: THREAD_ID,
       },
     });
-    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt);
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, prompt, mentions);
     useComposerDraftStore.getState().addImage(THREAD_ID, image);
     useComposerDraftStore.getState().addTerminalContext(THREAD_ID, terminalContext);
 
@@ -5102,6 +5266,8 @@ describe("ChatView timeline (full app)", () => {
         () => {
           const draft = useComposerDraftStore.getState().draftsByThreadId[THREAD_ID];
           expect(draft?.prompt).toBe(prompt);
+          expect(draft?.mentions).toEqual(mentions);
+          expect(useComposerMentionHistoryStore.getState().entries).toEqual([]);
           expect(draft?.images).toHaveLength(1);
           expect(draft?.images[0]?.previewUrl.startsWith("blob:")).toBe(true);
           expect(draft?.terminalContexts.map((context) => context.id)).toEqual([

@@ -2,6 +2,8 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 import type { Project, Thread } from "./types";
 import { deleteThreadsWithCleanup } from "./archiveActions";
+import { createComposerMention } from "./composer-editor-mentions";
+import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
 
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), confirm: vi.fn(), close: vi.fn() }));
 vi.mock("./nativeApi", () => ({
@@ -49,12 +51,23 @@ describe("bulk deletion cleanup", () => {
     ["b", "a"],
   ])("keeps shared worktrees after partial failure (%s then %s)", async (first, second) => {
     const input = harness([first, second]);
+    useComposerMentionHistoryStore.setState({
+      entries: ["a", "b"].map((threadId) => ({
+        threadId,
+        messageId: "m",
+        promptLength: 9,
+        mentions: [createComposerMention("src/a.ts", 0)],
+      })),
+    });
     const rejection = new Error("Deletion rejected");
     mocks.dispatch.mockImplementation(async (command) => {
       if (command.threadId === "a") throw rejection;
     });
     const result = await deleteThreadsWithCleanup(input);
     expect(result.succeeded).toEqual(["b"]);
+    expect(
+      useComposerMentionHistoryStore.getState().entries.map((entry) => entry.threadId),
+    ).toEqual(["a"]);
     expect(result.failures).toEqual([{ threadId: "a", error: rejection }]);
     expect(mocks.dispatch).toHaveBeenCalledTimes(2);
     expect(mocks.confirm).not.toHaveBeenCalled();

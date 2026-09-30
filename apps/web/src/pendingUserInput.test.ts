@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createComposerMention } from "./composer-editor-mentions";
 
 import {
   buildPendingUserInputAnswers,
@@ -12,6 +13,15 @@ import {
 } from "./pendingUserInput";
 
 describe("resolvePendingUserInputAnswer", () => {
+  it("keeps selected custom-answer mentions local and invalidates changed references", () => {
+    const answer = "Use @src/a.ts";
+    const mentions = [createComposerMention("src/a.ts", 4)];
+    const draft = setPendingUserInputCustomAnswer(undefined, answer, mentions);
+    expect(draft.mentions).toEqual(mentions);
+    expect(resolvePendingUserInputAnswer(draft)).toBe(answer);
+    expect(setPendingUserInputCustomAnswer(draft, answer, []).mentions).toBeUndefined();
+    expect(setPendingUserInputCustomAnswer(draft, "Use @src/b.ts").mentions).toBeUndefined();
+  });
   it("prefers a custom answer over a selected option", () => {
     expect(
       resolvePendingUserInputAnswer({

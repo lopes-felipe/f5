@@ -21,6 +21,7 @@ async function mountPicker(props?: {
   >["draftsByThreadId"];
   draftsByThreadId[threadId] = {
     prompt: "",
+    mentions: [],
     images: [],
     nonPersistedImageIds: [],
     persistedAttachments: [],

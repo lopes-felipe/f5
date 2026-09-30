@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { ComposerMention } from "~/composer-editor-mentions";
 import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
@@ -9,12 +10,12 @@ import type { ComposerPromptEditorHandle } from "~/components/ComposerPromptEdit
 import type { ComposerCommandItem } from "../ComposerCommandMenu";
 
 /** Transient editor state; remains mounted when navigating between thread drafts. */
-export function useComposerState(prompt: string) {
+export function useComposerState(prompt: string, mentions: readonly ComposerMention[]) {
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [composerCursor, setComposerCursor] = useState(() =>
-    collapseExpandedComposerCursor(prompt, prompt.length),
+    collapseExpandedComposerCursor(prompt, prompt.length, mentions),
   );
   const [composerTrigger, setComposerTrigger] = useState<ComposerTrigger | null>(() =>
     detectComposerTrigger(prompt, prompt.length),

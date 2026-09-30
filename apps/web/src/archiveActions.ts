@@ -1,4 +1,5 @@
 import { recordThreadUndo } from "./threadUndo";
+import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
 import {
   type CodeReviewWorkflowId,
   type InvestigationWorkflowId,
@@ -211,6 +212,7 @@ export async function deleteThreadsWithCleanup(
         commandId: newCommandId(),
         threadId,
       });
+      useComposerMentionHistoryStore.getState().forgetThread(threadId);
       succeeded.push(threadId);
     } catch (error) {
       failures.push({ threadId, error });

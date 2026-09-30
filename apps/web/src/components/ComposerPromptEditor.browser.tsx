@@ -6,9 +6,17 @@ import { PopupFocusContext } from "./ui/popupFocus";
 import { Menu, MenuTrigger, MenuPopup, MenuItem } from "./ui/menu";
 import { render } from "vitest-browser-react";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
+import { createComposerMention, type ComposerMention } from "../composer-editor-mentions";
 
-function Harness({ initial = "**Bold** and `code` with @src/main.ts" }: { initial?: string }) {
+function Harness({
+  initial = "**Bold** and `code` with @src/main.ts",
+  initialMentions = [],
+}: {
+  initial?: string;
+  initialMentions?: readonly ComposerMention[];
+}) {
   const [value, setValue] = useState(initial);
+  const [mentions, setMentions] = useState(initialMentions);
   const [cursor, setCursor] = useState(0);
   const [rich, setRich] = useState(true);
   const [snapshot, setSnapshot] = useState("");
@@ -19,13 +27,15 @@ function Harness({ initial = "**Bold** and `code` with @src/main.ts" }: { initia
         ref={editor}
         richTextEnabled={rich}
         value={value}
+        mentions={mentions}
         cursor={cursor}
         terminalContexts={[]}
         disabled={false}
         placeholder="Prompt"
-        onChange={(next, position) => {
+        onChange={(next, position, _expanded, _adjacent, _contexts, nextMentions) => {
           setValue(next);
           setCursor(position);
+          setMentions(nextMentions);
         }}
         onRemoveTerminalContext={() => {}}
         onPaste={() => {}}
@@ -35,6 +45,8 @@ function Harness({ initial = "**Bold** and `code` with @src/main.ts" }: { initia
         Read prompt
       </button>
       <output aria-label="Serialized prompt">{snapshot}</output>
+      <output aria-label="Mentions">{JSON.stringify(mentions)}</output>
+      <button onClick={() => editor.current?.focusAtEnd()}>Focus end</button>
     </>
   );
 }
@@ -54,6 +66,47 @@ it("changes Markdown styling without rewriting prompt bytes or file mentions", a
   await expect
     .element(screen.getByLabelText("Serialized prompt"))
     .toHaveTextContent("**Bold** and `code` with @src/main.ts");
+});
+
+it("keeps pasted and typed handles literal, including quoted paths", async () => {
+  const screen = await render(<Harness initial="" />);
+  const editor = screen.getByTestId("composer-editor");
+  await editor.click();
+  await userEvent.type(editor, "Use @creditornot/wolt-auth please ");
+  const transfer = new DataTransfer();
+  transfer.setData("text/plain", '@"src/main.ts" @scope/package ');
+  editor.element().dispatchEvent(
+    new ClipboardEvent("paste", {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: transfer,
+    }),
+  );
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
+  expect(editor.element().querySelectorAll("[data-composer-mention-chip]")).toHaveLength(0);
+  await screen.getByRole("button", { name: "Read prompt" }).click();
+  await expect
+    .element(screen.getByLabelText("Serialized prompt"))
+    .toHaveTextContent('Use @creditornot/wolt-auth please @"src/main.ts" @scope/package');
+});
+
+it("preserves only the selected occurrence through deletion and undo/redo", async () => {
+  const prompt = "@src/main.ts @src/main.ts";
+  const mention = createComposerMention("src/main.ts", 13);
+  const screen = await render(<Harness initial={prompt} initialMentions={[mention]} />);
+  const editor = screen.getByTestId("composer-editor");
+  expect(editor.element().querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1);
+  await screen.getByRole("button", { name: "Focus end" }).click();
+  await userEvent.keyboard("{Backspace}");
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
+  const modifier = navigator.platform.toUpperCase().includes("MAC") ? "Meta" : "Control";
+  await userEvent.keyboard("{" + modifier + ">}z{/" + modifier + "}");
+  await expect
+    .poll(() => editor.element().querySelectorAll("[data-composer-mention-chip]").length)
+    .toBe(1);
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent(mention.id);
+  await userEvent.keyboard("{" + modifier + ">}{Shift>}z{/Shift}{/" + modifier + "}");
+  await expect.element(screen.getByLabelText("Mentions")).toHaveTextContent("[]");
 });
 
 it("preserves explicitly quoted mention source when toggling editor mode", async () => {

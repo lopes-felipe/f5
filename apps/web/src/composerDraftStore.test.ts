@@ -14,6 +14,7 @@ vi.mock("./lib/attachmentUploadQueue", () => ({
 }));
 vi.mock("./lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://localhost" }));
 import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
+import { createComposerMention } from "./composer-editor-mentions";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -485,6 +486,59 @@ describe("composerDraftStore prompt stash", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     resetComposerDraftBaseStorageForTesting();
+  });
+
+  it("persists explicit occurrences through hydration, stash restore and clearing", async () => {
+    const prompt = "@src/main.ts @creditornot/wolt-auth ";
+    const mentions = [createComposerMention("src/main.ts", 0)];
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(sourceThreadId, prompt, mentions);
+    const options = useComposerDraftStore.persist.getOptions();
+    const persisted = options.partialize!(useComposerDraftStore.getState());
+    const hydrated = options.merge!(persisted, useComposerDraftStore.getInitialState());
+    expect(hydrated.draftsByThreadId[sourceThreadId]?.mentions).toEqual(mentions);
+
+    const saved = await store.stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+      workspaceRoot: "/repo",
+    });
+    expect(saved.status).toBe("stored");
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.mentions ?? [],
+    ).toEqual([]);
+    const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+    expect(
+      await store.restorePromptStash({
+        stashId,
+        threadId: sourceThreadId,
+        projectId,
+        workspaceRoots: ["/repo"],
+      }),
+    ).toMatchObject({ status: "restored" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.mentions).toEqual(
+      mentions,
+    );
+    store.setPrompt(sourceThreadId, "Now " + prompt);
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.mentions).toEqual([
+      { ...mentions[0], start: 4, end: mentions[0]!.end + 4 },
+    ]);
+    store.clearComposerContent(sourceThreadId);
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.mentions ?? [],
+    ).toEqual([]);
+  });
+
+  it("hydrates legacy drafts as literal text", () => {
+    const hydrated = useComposerDraftStore.persist.getOptions().merge!(
+      {
+        draftsByThreadId: {
+          [sourceThreadId]: { prompt: '@src/main.ts @"Makefile" ', attachments: [] },
+        },
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+    expect(hydrated.draftsByThreadId[sourceThreadId]?.mentions).toEqual([]);
   });
 
   it("stores the complete draft and clears only sendable composer content", async () => {
