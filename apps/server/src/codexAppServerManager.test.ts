@@ -39,6 +39,7 @@ const currentDate = () => new Date().toISOString().slice(0, 10);
 function createSendTurnHarness(input?: {
   readonly instructionContext?: Record<string, unknown>;
   readonly resumedContextSent?: boolean;
+  readonly modelContextWindowTokens?: number;
 }) {
   const manager = new CodexAppServerManager();
   const context = {
@@ -61,7 +62,9 @@ function createSendTurnHarness(input?: {
     modelContextWindowCatalog: new Map<string, number>(),
     configuredBase: {
       model: "gpt-5.3-codex",
-      modelContextWindowTokens: 400_000,
+      ...(input?.modelContextWindowTokens !== undefined
+        ? { modelContextWindowTokens: input.modelContextWindowTokens }
+        : {}),
       cwd: "/tmp/project",
     } as Record<string, unknown>,
     resumedContextSent: input?.resumedContextSent ?? false,
@@ -879,35 +882,42 @@ describe("startSession", () => {
 });
 
 describe("sendTurn", () => {
-  it.each([undefined, 872_000])(
-    "replaces the previous model limit with the new catalog limit %s",
-    async (limit) => {
-      const { manager, context, updateSession } = createSendTurnHarness();
-      updateSession.mockRestore();
-      context.modelContextWindowCatalog.set("gpt-5.3-codex", 400_000);
-      if (limit !== undefined) context.modelContextWindowCatalog.set("gpt-6.1-sol", limit);
-      const events: ProviderEvent[] = [];
-      manager.on("event", (event) => events.push(event));
-      await manager.sendTurn({
-        threadId: asThreadId("thread_1"),
-        input: "Switch",
-        model: "gpt-6.1-sol",
-      });
-      const expected = {
-        model: "gpt-6.1-sol",
-        cwd: "/tmp/project",
-        ...(limit !== undefined ? { modelContextWindowTokens: limit } : {}),
-      };
-      expect(context.configuredBase).toEqual(expected);
-      expect(context.session.model).toBe("gpt-6.1-sol");
-      expect(events.find((event) => event.method === "session/configured")?.payload).toEqual({
-        config: expected,
-      });
+  it.each([
+    {
+      description: "omits the previous limit when the new model has no catalog limit",
+      limit: undefined,
     },
-  );
+    { description: "uses the new model's reported catalog limit", limit: 872_000 },
+  ])("$description", async ({ limit }) => {
+    const { manager, context, updateSession } = createSendTurnHarness({
+      modelContextWindowTokens: 400_000,
+    });
+    updateSession.mockRestore();
+    context.modelContextWindowCatalog.set("gpt-5.3-codex", 400_000);
+    if (limit !== undefined) context.modelContextWindowCatalog.set("gpt-6.1-sol", limit);
+    const events: ProviderEvent[] = [];
+    manager.on("event", (event) => events.push(event));
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Switch",
+      model: "gpt-6.1-sol",
+    });
+    const expected = {
+      model: "gpt-6.1-sol",
+      cwd: "/tmp/project",
+      ...(limit !== undefined ? { modelContextWindowTokens: limit } : {}),
+    };
+    expect(context.configuredBase).toEqual(expected);
+    expect(context.session.model).toBe("gpt-6.1-sol");
+    expect(events.find((event) => event.method === "session/configured")?.payload).toEqual({
+      config: expected,
+    });
+  });
 
   it("preserves the previous model and limit when turn/start fails", async () => {
-    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness({
+      modelContextWindowTokens: 400_000,
+    });
     updateSession.mockRestore();
     sendRequest.mockRejectedValueOnce(new Error("model unavailable"));
     await expect(

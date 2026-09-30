@@ -144,10 +144,17 @@ describe("CodexTraitsPicker", () => {
     const mounted = await mountPicker({ model: "gpt-6.1-sol", effort: "ultra" });
 
     try {
-      expect(page.getByRole("button").element().textContent?.trim()).toBe("Ultra");
+      await vi.waitFor(() => {
+        expect(page.getByRole("button").element().textContent?.trim()).toBe("Ultra");
+      });
       await page.getByRole("button").click();
       await vi.waitFor(() => {
-        expect(document.body.textContent ?? "").toContain("Ultra");
+        expect(
+          page
+            .getByRole("menuitemradio", { name: "Ultra", exact: true })
+            .element()
+            .getAttribute("aria-checked"),
+        ).toBe("true");
         expect(page.getByRole("menuitemradio").all()).toHaveLength(8);
       });
       expect(

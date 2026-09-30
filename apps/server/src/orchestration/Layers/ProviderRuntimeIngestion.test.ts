@@ -1741,7 +1741,13 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: new Date().toISOString(),
       payload: { config: { model: "gpt-6.1-sol" } },
     });
-    const thread = await waitForThread(harness.engine, (entry) => entry.model === "gpt-6.1-sol");
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.model === "gpt-6.1-sol" &&
+        entry.modelContextWindowTokens === 1_050_000 &&
+        entry.session?.modelContextWindowTokens === 1_050_000,
+    );
     expect(thread.modelContextWindowTokens).toBe(1_050_000);
     expect(thread.session?.modelContextWindowTokens).toBe(1_050_000);
   });
