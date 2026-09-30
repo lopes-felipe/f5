@@ -5,9 +5,25 @@ import {
   providerModelOptionsToSelections,
   providerSelectionsToModelOptions,
 } from "./providerModelOptions";
-import { normalizeCodexModelOptions } from "@t3tools/shared/model";
+import {
+  resolveCodexReasoningEffortForModel,
+  normalizeCodexModelOptions,
+} from "@t3tools/shared/model";
 
 describe("providerModelOptions", () => {
+  it("serializes Sol Ultra and omits its default High effort", () => {
+    const codex = normalizeCodexModelOptions("gpt-6.1-sol", { reasoningEffort: "ultra" });
+    expect(providerModelOptionsToSelections("codex", { codex })).toEqual([
+      { id: "reasoningEffort", value: "ultra" },
+    ]);
+    const defaults = normalizeCodexModelOptions("gpt-6.1-sol", { reasoningEffort: "high" });
+    expect(
+      providerModelOptionsToSelections("codex", defaults ? { codex: defaults } : undefined),
+    ).toBeUndefined();
+    expect(resolveCodexReasoningEffortForModel("gpt-6.1-sol", defaults?.reasoningEffort)).toBe(
+      "high",
+    );
+  });
   it("normalizes non-default Codex reasoning efforts from the shared effort options", () => {
     expect(
       normalizeProviderModelOptions({

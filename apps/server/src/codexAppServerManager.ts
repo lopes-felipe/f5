@@ -125,6 +125,7 @@ interface CodexSessionContext {
   nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
   instructionContext?: Partial<SharedInstructionInput>;
   configuredBase?: Record<string, unknown>;
+  modelContextWindowCatalog: ReadonlyMap<string, number>;
   availableSkills: ReadonlyArray<SupportedSlashCommand>;
   supportedCommandsFingerprint: string;
   skillsLoaded: boolean;
@@ -770,7 +771,6 @@ export interface CodexAppServerManagerEvents {
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
   private readonly sessionStartLocks = new Map<ThreadId, Promise<void>>();
-  private modelContextWindowCatalog = new Map<string, number>();
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
   constructor(services?: ServiceMap.ServiceMap<never>) {
@@ -890,6 +890,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         pendingUserInputs: new Map(),
         nativeRequestCorrelations: new Map(),
         instructionContext: buildCodexInstructionContext(input, resolvedCwd),
+        modelContextWindowCatalog: new Map(),
         availableSkills: [],
         supportedCommandsFingerprint: EMPTY_SUPPORTED_COMMANDS_FINGERPRINT,
         skillsLoaded: false,
@@ -913,10 +914,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       await this.writeMessage(context, { method: "initialized" });
       try {
         const modelListResponse = await this.sendRequest(context, "model/list", {});
-        const nextCatalog = readCodexModelContextWindowCatalog(modelListResponse);
-        if (nextCatalog.size > 0) {
-          this.modelContextWindowCatalog = new Map(nextCatalog);
-        }
+        context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
       } catch (error) {
         await Effect.logWarning("codex model/list did not expose context window metadata", {
           threadId,
@@ -1036,7 +1034,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? lookupModelContextWindowTokens({
               provider: "codex",
               model: normalizedModel,
-              catalog: this.modelContextWindowCatalog,
+              catalog: context.modelContextWindowCatalog,
             })
           : undefined;
       this.emitSessionConfigured(context, {
@@ -1204,10 +1202,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const modelContextWindowTokens = lookupModelContextWindowTokens({
         provider: "codex",
         model: nextConfiguredModel,
-        catalog: this.modelContextWindowCatalog,
+        catalog: context.modelContextWindowCatalog,
       });
+      const { modelContextWindowTokens: _previousLimit, ...configuredBase } =
+        context.configuredBase ?? {};
       this.emitSessionConfigured(context, {
-        ...context.configuredBase,
+        ...configuredBase,
         model: nextConfiguredModel,
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
       });

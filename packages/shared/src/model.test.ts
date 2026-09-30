@@ -190,9 +190,10 @@ describe("resolveModelSlug", () => {
     ]);
   });
 
-  it("makes GPT-6 Astra the Codex default and first catalog entry", () => {
-    expect(DEFAULT_MODEL_BY_PROVIDER.codex).toBe("gpt-6-astra");
+  it("makes GPT-6.1 Sol the Codex default and first catalog entry", () => {
+    expect(DEFAULT_MODEL_BY_PROVIDER.codex).toBe("gpt-6.1-sol");
     expect(getModelOptions("codex").map((option) => option.slug)).toEqual([
+      "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
@@ -470,6 +471,7 @@ describe("getEffectiveClaudeCodeEffort", () => {
 
 describe("estimateModelContextWindowTokens", () => {
   it("returns the configured context windows for known models", () => {
+    expect(estimateModelContextWindowTokens("gpt-6.1-sol")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-6-astra")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.6-sol")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.6")).toBe(1_050_000);
@@ -590,5 +592,23 @@ describe("estimateContextTokensAfterMessageUpdate", () => {
         nextMessageCharacters: 20,
       }),
     ).toBe(996);
+  });
+});
+
+describe("GPT-6.1 Sol", () => {
+  it("supports every Codex effort with High as the default", () => {
+    expect(getReasoningEffortOptions("codex", "gpt-6.1-sol")).toEqual([
+      "ultra",
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+    ]);
+    expect(resolveCodexReasoningEffortForModel("gpt-6.1-sol", "ultra")).toBe("ultra");
+    expect(getDefaultReasoningEffort("codex", "gpt-6.1-sol")).toBe("high");
+  });
+  it.each(["6.1", "gpt-6.1"])("normalizes %s to Sol", (alias) => {
+    expect(normalizeModelSlug(alias, "codex")).toBe("gpt-6.1-sol");
   });
 });

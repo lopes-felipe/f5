@@ -133,6 +133,7 @@ interface CodexModelMetadata {
 }
 
 const CODEX_MODEL_METADATA: Record<string, CodexModelMetadata> = {
+  "gpt-6.1-sol": { contextWindowTokens: 1_050_000 },
   "gpt-6-astra": {
     contextWindowTokens: 1_050_000,
     effortOptions: ["max", "xhigh", "high", "medium", "low"],
@@ -147,7 +148,7 @@ const CODEX_MODEL_METADATA: Record<string, CodexModelMetadata> = {
   "gpt-5.3-codex-spark": { contextWindowTokens: 400_000 },
   "gpt-5.2": { contextWindowTokens: 400_000 },
   "gpt-5.2-codex": { contextWindowTokens: 400_000 },
-};
+} satisfies Record<(typeof MODEL_OPTIONS_BY_PROVIDER.codex)[number]["slug"], CodexModelMetadata>;
 
 export function roughTokenEstimateFromCharacters(characters: number): number {
   return Math.max(0, Math.ceil(Math.max(0, characters) / 4));

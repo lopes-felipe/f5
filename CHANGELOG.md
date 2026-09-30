@@ -45,7 +45,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   overrides may fail at runtime; select a supported model or upgrade the executable to recover.
   Fable 5's default effort is now `high` (previously `max`); explicit effort is preserved.
   Auxiliary Claude generation now preserves `xhigh` and applies the `ultrathink` prompt prefix.
-- GPT-6 Astra support as the new Codex default model.
+- GPT-6.1 Sol and GPT-6 Astra support across Codex model pickers; GPT-6.1 Sol is the Codex
+  default and both require Codex CLI 0.153.0+. New `6.1` and `gpt-6.1` aliases select
+  GPT-6.1 Sol. Astra caps reasoning at Max; GPT-6.1 Sol keeps every effort through Ultra.
+  Older CLIs may reject these models when opening a thread or sending a turn; select another model
+  or upgrade Codex to recover.
 - Four runtime safety modes: Supervised, Auto-accept edits, Codex Auto review, and Full access,
   with provider-specific capability gating.
 - Durable per-thread next-turn queues with pause/resume, editing, reordering, run-now,
