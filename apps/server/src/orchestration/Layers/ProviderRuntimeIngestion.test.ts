@@ -1717,6 +1717,35 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.session?.activeTurnId).toBeNull();
   });
 
+  it("replaces an old window with the Sol estimate when configuration has no limit", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("evt-old-window"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { config: { model: "gpt-5.3-codex", modelContextWindowTokens: 400_000 } },
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) =>
+        thread.session?.modelContextWindowTokens === 400_000 &&
+        thread.modelContextWindowTokens === 400_000,
+    );
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("evt-sol-window"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { config: { model: "gpt-6.1-sol" } },
+    });
+    const thread = await waitForThread(harness.engine, (entry) => entry.model === "gpt-6.1-sol");
+    expect(thread.modelContextWindowTokens).toBe(1_050_000);
+    expect(thread.session?.modelContextWindowTokens).toBe(1_050_000);
+  });
+
   it("updates the thread model from provider session.configured payloads", async () => {
     const harness = await createHarness();
 

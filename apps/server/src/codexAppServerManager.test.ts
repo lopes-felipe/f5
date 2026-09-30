@@ -58,6 +58,12 @@ function createSendTurnHarness(input?: {
       sparkEnabled: true,
     },
     ...(input?.instructionContext ? { instructionContext: input.instructionContext } : {}),
+    modelContextWindowCatalog: new Map<string, number>(),
+    configuredBase: {
+      model: "gpt-5.3-codex",
+      modelContextWindowTokens: 400_000,
+      cwd: "/tmp/project",
+    } as Record<string, unknown>,
     resumedContextSent: input?.resumedContextSent ?? false,
   };
 
@@ -385,6 +391,7 @@ function createSkillsRefreshHarness() {
     instructionContext: {
       cwd: "/tmp/project",
     },
+    modelContextWindowCatalog: new Map<string, number>(),
     configuredBase: {
       model: "gpt-5.3-codex",
     },
@@ -705,6 +712,62 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it.each(["empty", "failed"])(
+    "isolates the catalog when a second session has %s model/list",
+    async (response) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-catalog-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const manager = new CodexAppServerManager();
+      const events: ProviderEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => void },
+        "assertSupportedCodexCliVersion",
+      ).mockImplementation(() => {});
+      let lists = 0;
+      vi.spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      ).mockImplementation(async (_context, method) => {
+        if (method === "model/list") {
+          if (lists++ === 0)
+            return { data: [{ id: "gpt-6.1-sol", limits: { contextWindowTokens: 872_000 } }] };
+          if (response === "failed") throw new Error("model/list unavailable");
+          return { data: [] };
+        }
+        if (method === "thread/start") return { thread: { id: "provider-thread" } };
+        return {};
+      });
+      try {
+        for (const id of ["first", "second"]) {
+          await manager.startSession({
+            threadId: asThreadId(id),
+            provider: "codex",
+            model: "gpt-6.1-sol",
+            cwd: directory,
+            runtimeMode: "full-access",
+            providerOptions: { codex: { binaryPath } },
+          });
+        }
+        const first = events.find(
+          (event) => event.method === "session/configured" && event.threadId === "first",
+        );
+        const second = events.find(
+          (event) => event.method === "session/configured" && event.threadId === "second",
+        );
+        expect(first?.payload).toMatchObject({ config: { modelContextWindowTokens: 872_000 } });
+        expect(second?.payload).toMatchObject({ config: { model: "gpt-6.1-sol" } });
+        expect((second?.payload as { config: Record<string, unknown> }).config).not.toHaveProperty(
+          "modelContextWindowTokens",
+        );
+      } finally {
+        manager.stopAll();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("uses sixty seconds only for thread open requests", () => {
     expect(codexRequestTimeoutMs("thread/start")).toBe(60_000);
     expect(codexRequestTimeoutMs("thread/resume")).toBe(60_000);
@@ -816,6 +879,48 @@ describe("startSession", () => {
 });
 
 describe("sendTurn", () => {
+  it.each([undefined, 872_000])(
+    "replaces the previous model limit with the new catalog limit %s",
+    async (limit) => {
+      const { manager, context, updateSession } = createSendTurnHarness();
+      updateSession.mockRestore();
+      context.modelContextWindowCatalog.set("gpt-5.3-codex", 400_000);
+      if (limit !== undefined) context.modelContextWindowCatalog.set("gpt-6.1-sol", limit);
+      const events: ProviderEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      await manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Switch",
+        model: "gpt-6.1-sol",
+      });
+      const expected = {
+        model: "gpt-6.1-sol",
+        cwd: "/tmp/project",
+        ...(limit !== undefined ? { modelContextWindowTokens: limit } : {}),
+      };
+      expect(context.configuredBase).toEqual(expected);
+      expect(context.session.model).toBe("gpt-6.1-sol");
+      expect(events.find((event) => event.method === "session/configured")?.payload).toEqual({
+        config: expected,
+      });
+    },
+  );
+
+  it("preserves the previous model and limit when turn/start fails", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    updateSession.mockRestore();
+    sendRequest.mockRejectedValueOnce(new Error("model unavailable"));
+    await expect(
+      manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Switch", model: "gpt-6.1-sol" }),
+    ).rejects.toThrow("model unavailable");
+    expect(context.session.model).toBe("gpt-5.3-codex");
+    expect(context.configuredBase).toEqual({
+      model: "gpt-5.3-codex",
+      modelContextWindowTokens: 400_000,
+      cwd: "/tmp/project",
+    });
+  });
+
   it("sends text and image user input items to turn/start", async () => {
     const { manager, context, requireSession, sendRequest, updateSession } =
       createSendTurnHarness();
