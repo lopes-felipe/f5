@@ -415,6 +415,25 @@ export function createCachedAbsolutePathComparisonNormalizer(
   };
 }
 
+/**
+ * User-facing warnings for path references that could not be attached. A missing
+ * path means the platform could not expose one (no desktop bridge); an invalid path
+ * was exposed but cannot be referenced. Shared by the composer and sidebar drops.
+ */
+export function attachedFileReferenceWarnings(result: {
+  readonly missingPathCount: number;
+  readonly invalidPathCount: number;
+}): string[] {
+  const warnings: string[] = [];
+  if (result.missingPathCount > 0) {
+    warnings.push("File attachments require the desktop app to resolve filesystem paths.");
+  }
+  if (result.invalidPathCount > 0) {
+    warnings.push("Some file attachments could not be added.");
+  }
+  return warnings;
+}
+
 export function resolveAttachedFileReferencePaths(input: {
   files: ReadonlyArray<File>;
   isElectron: boolean;

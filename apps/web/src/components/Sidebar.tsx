@@ -1,5 +1,6 @@
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import {
+  attachedFileReferenceWarnings,
   resolveAttachedFileReferencePaths,
   createCachedAbsolutePathComparisonNormalizer,
   identityAbsolutePathNormalizer,
@@ -796,12 +797,8 @@ export default function Sidebar() {
         ),
       });
       store.addFilePaths(thread.id, result.filePaths);
-      if (result.missingPathCount || result.invalidPathCount)
-        toastManager.add({
-          type: "warning",
-          title: "Some folders could not be attached",
-          description: "Folder references require a local desktop workspace.",
-        });
+      for (const warning of attachedFileReferenceWarnings(result))
+        toastManager.add({ type: "warning", title: warning });
     }
     void store.importImages(thread.id, files).then((result) => {
       if (result.failures.length)

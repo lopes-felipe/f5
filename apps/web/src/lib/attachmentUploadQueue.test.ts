@@ -76,6 +76,15 @@ it("runs two transfers, tracks queued work, reports progress and sends version/n
   await Promise.all(jobs);
   expect(getProtocolState().activeUploads).toBe(0);
 });
+it("still runs and releases uploads queued before server limits arrive", async () => {
+  resetProtocolStateForTests();
+  const job = uploadAttachment("", threadId, new File(["x"], "test.pdf"));
+  expect(FakeRequest.instances).toHaveLength(1);
+  expect(getProtocolState().activeUploads).toBe(1);
+  FakeRequest.instances[0]!.complete();
+  await job;
+  expect(getProtocolState().activeUploads).toBe(0);
+});
 it("cancels queued files immediately without issuing another request", async () => {
   const file = new File(["x"], "test.pdf");
   const first = uploadAttachment("", threadId, file);

@@ -716,6 +716,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     itemType: entry.itemType,
     requestKind: entry.requestKind,
     detail: entry.detail,
+    imagePath: entry.imagePath,
     command: entry.command,
     cwd: entry.cwd,
     readPaths: entry.readPaths ?? [],

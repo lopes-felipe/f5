@@ -301,6 +301,7 @@ import {
   LastInvokedScriptByProjectSchema,
   type PendingTurnDispatchRollback,
   PullRequestDialogState,
+  attachedFileReferenceWarnings,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
   revokeBlobPreviewUrl,
@@ -4000,14 +4001,7 @@ export default function ChatView({
       addComposerFilePathsToDraft(paths);
     }
 
-    const warnings: string[] = [];
-    if (missingPathCount > 0) {
-      warnings.push("File attachments require the desktop app to resolve filesystem paths.");
-    }
-    if (invalidPathCount > 0) {
-      warnings.push("Some file attachments could not be added.");
-    }
-    for (const warning of warnings) {
+    for (const warning of attachedFileReferenceWarnings({ missingPathCount, invalidPathCount })) {
       toastManager.add({
         type: "warning",
         title: warning,
@@ -4031,14 +4025,16 @@ export default function ChatView({
 
   const pasteAsTextUntilRef = useRef(0);
   const onComposerPaste = (event: React.ClipboardEvent<HTMLElement>) => {
+    // Paste as text is one-shot and wins over both folding and file import, even
+    // when the clipboard also carries files (e.g. a spreadsheet selection).
+    if (pasteAsTextUntilRef.current > Date.now()) {
+      pasteAsTextUntilRef.current = 0;
+      return;
+    }
     const files = Array.from(event.clipboardData.files);
     if (files.length === 0) {
       if (isConnecting) return;
       const text = event.clipboardData.getData("text/plain");
-      if (pasteAsTextUntilRef.current > Date.now()) {
-        pasteAsTextUntilRef.current = 0;
-        return;
-      }
       const folded = foldedPasteFile(
         text,
         prompt,

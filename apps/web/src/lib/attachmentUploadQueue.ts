@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import {
+  ATTACHMENT_CLIENT_UPLOAD_CONCURRENCY,
   F5_PROTOCOL_HEADER,
   F5_PROTOCOL_VERSION,
   AttachmentUpload,
@@ -45,8 +46,20 @@ export function setAttachmentSource(file: File, source: "pasted-text" | "snapsho
 const pending: PendingUpload[] = [];
 let active = 0;
 const clientId = crypto.randomUUID();
+/**
+ * Never throws: `pump` runs after a job is queued and from `finally`, so a missing
+ * bootstrap must not strand queued jobs or leak the protocol-upload guard. The
+ * server enforces its own limits and rejects uploads when they are disabled.
+ */
+function clientUploadConcurrency(): number {
+  try {
+    return Math.max(1, getServerAttachmentLimits().clientConcurrency);
+  } catch {
+    return ATTACHMENT_CLIENT_UPLOAD_CONCURRENCY;
+  }
+}
 function pump(): void {
-  while (pending.length && active < Math.max(1, getServerAttachmentLimits().clientConcurrency)) {
+  while (pending.length && active < clientUploadConcurrency()) {
     const next = pending.shift()!;
     active++;
     void next.run().finally(() => {

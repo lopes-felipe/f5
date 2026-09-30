@@ -168,7 +168,15 @@ export function processComposerImageBounded(
         return;
       }
       activeConversions++;
-      void processor(file, { signal })
+      // Start synchronously, but route a synchronous throw through the chain so
+      // the slot is always released and the queue keeps moving.
+      let conversion: Promise<CompressComposerImageResult>;
+      try {
+        conversion = processor(file, { signal });
+      } catch (error) {
+        conversion = Promise.reject(error);
+      }
+      void conversion
         .then(resolve, () => resolve({ ok: false, reason: "unreadable" }))
         .finally(() => {
           activeConversions--;
