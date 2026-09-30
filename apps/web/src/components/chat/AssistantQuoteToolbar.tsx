@@ -1,10 +1,34 @@
+import { TextQuoteIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "../ui/button";
+import { Popover, PopoverPopup } from "../ui/popover";
 import { Textarea } from "../ui/textarea";
 import {
   serializeAssistantQuote,
   type AssistantQuote,
 } from "./composer/ComposerAssistantQuoteNode";
+
+interface SelectionAnchor {
+  getBoundingClientRect: () => DOMRect;
+  contextElement: Element;
+}
+
+/**
+ * Positions the quote actions against the selected text. The range is a clone, so it keeps
+ * its geometry after focus moves into the comment box and replaces the document selection.
+ * A collapsed or detached range measures as an empty rect; the last real rect is kept then.
+ */
+export function createSelectionAnchor(range: Range, contextElement: Element): SelectionAnchor {
+  let lastRect = range.getBoundingClientRect();
+  return {
+    contextElement,
+    getBoundingClientRect() {
+      const rect = range.getBoundingClientRect();
+      if (rect.width > 0 || rect.height > 0) lastRect = rect;
+      return lastRect;
+    },
+  };
+}
 
 export function AssistantQuoteToolbar({
   onInsert,
@@ -18,7 +42,11 @@ export function AssistantQuoteToolbar({
   currentLength: number;
   maxLength: number;
 }) {
-  const [selection, setSelection] = useState<{ messageId: string; text: string } | null>(null);
+  const [selection, setSelection] = useState<{
+    messageId: string;
+    text: string;
+    anchor: SelectionAnchor;
+  } | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
@@ -41,13 +69,14 @@ export function AssistantQuoteToolbar({
       const anchor = messageElement(selected?.anchorNode);
       const focus = messageElement(selected?.focusNode);
       const text = selected?.toString().trim();
-      if (!anchor || anchor !== focus || !text) {
+      if (!selected || selected.rangeCount === 0 || !anchor || anchor !== focus || !text) {
         setSelection(null);
         return;
       }
       setSelection({
         messageId: anchor.getAttribute("data-message-id")!,
         text: text.slice(0, 4000),
+        anchor: createSelectionAnchor(selected.getRangeAt(0).cloneRange(), anchor),
       });
     };
     document.addEventListener("pointerup", capture);
@@ -58,13 +87,20 @@ export function AssistantQuoteToolbar({
     };
   }, [editing]);
   if (!selection) return null;
+  const dismiss = () => {
+    setSelection(null);
+    setComment("");
+    setEditing(false);
+    setAlreadyInserted(false);
+    setError("");
+  };
   const insert = async (send = false) => {
     if (busy || alreadyInserted) return;
     if (maxLength <= 0) {
       setError("Waiting for server capabilities. Reconnect before adding a quote.");
       return;
     }
-    const quote = { ...selection, comment };
+    const quote = { messageId: selection.messageId, text: selection.text, comment };
     if (currentLength + serializeAssistantQuote(quote).length + 2 > maxLength) {
       setError("This quote would exceed the message limit.");
       return;
@@ -90,73 +126,89 @@ export function AssistantQuoteToolbar({
     window.getSelection()?.removeAllRanges();
   };
   return (
-    <div
-      data-quote-toolbar
-      className="fixed bottom-28 right-6 z-40 max-w-sm rounded-xl border bg-popover p-3 shadow-xl"
-      role={editing ? "dialog" : "toolbar"}
-      aria-label="Quote assistant response"
+    <Popover
+      open
+      modal={false}
+      onOpenChange={(open, details) => {
+        if (open) return;
+        if (!editing) {
+          dismiss();
+          return;
+        }
+        // A stray click must not throw away a typed comment; Escape steps back to the action.
+        if (details.reason === "escape-key" && !busy) setEditing(false);
+      }}
     >
-      {!editing ? (
-        <Button size="sm" onClick={() => setEditing(true)}>
-          Quote reply
-        </Button>
-      ) : (
-        <>
-          <blockquote className="max-h-32 overflow-auto border-l-2 pl-2 text-xs whitespace-pre-wrap">
-            {selection.text}
-          </blockquote>
-          <Textarea
-            autoFocus
-            disabled={busy || alreadyInserted}
-            aria-label="Quote comment"
-            value={comment}
-            maxLength={4000}
-            onChange={(event) => setComment(event.target.value)}
-            onKeyDown={(event) => {
-              if (
-                (event.metaKey || event.ctrlKey) &&
-                event.key === "Enter" &&
-                !event.nativeEvent.isComposing
-              ) {
-                event.preventDefault();
-                event.stopPropagation();
-                void insert(true);
-              }
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                setEditing(false);
-              }
-            }}
-          />
-          {error && <p role="alert">{error}</p>}
-          <div className="mt-2 flex gap-2">
-            <Button size="sm" disabled={busy || alreadyInserted} onClick={() => void insert()}>
-              Add quote to composer
-            </Button>
-            <Button
-              size="sm"
+      <PopoverPopup
+        data-quote-toolbar
+        anchor={selection.anchor}
+        side={editing ? "bottom" : "top"}
+        align={editing ? "start" : "center"}
+        sideOffset={8}
+        tooltipStyle={!editing}
+        initialFocus={false}
+        className={editing ? "w-96" : "in-data-anchor-hidden:invisible"}
+        role={editing ? "dialog" : "toolbar"}
+        aria-label="Quote assistant response"
+      >
+        {!editing ? (
+          <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>
+            <TextQuoteIcon aria-hidden />
+            Quote reply
+          </Button>
+        ) : (
+          <>
+            <blockquote className="max-h-32 overflow-auto border-l-2 pl-2 text-xs whitespace-pre-wrap">
+              {selection.text}
+            </blockquote>
+            <Textarea
+              autoFocus
+              className="mt-2"
               disabled={busy || alreadyInserted}
-              variant="ghost"
-              onClick={() => setEditing(false)}
-            >
-              Back
-            </Button>
-            <Button
-              size="sm"
-              disabled={busy}
-              variant="ghost"
-              onClick={() => {
-                setSelection(null);
-                setComment("");
-                setEditing(false);
-                setAlreadyInserted(false);
+              aria-label="Quote comment"
+              value={comment}
+              maxLength={4000}
+              onChange={(event) => setComment(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  (event.metaKey || event.ctrlKey) &&
+                  event.key === "Enter" &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void insert(true);
+                }
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  setEditing(false);
+                }
               }}
-            >
-              {alreadyInserted ? "Close" : "Cancel"}
-            </Button>
-          </div>
-        </>
-      )}
-    </div>
+            />
+            {error && (
+              <p role="alert" className="mt-2 text-destructive-foreground text-xs">
+                {error}
+              </p>
+            )}
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" disabled={busy || alreadyInserted} onClick={() => void insert()}>
+                Add quote to composer
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || alreadyInserted}
+                variant="ghost"
+                onClick={() => setEditing(false)}
+              >
+                Back
+              </Button>
+              <Button size="sm" disabled={busy} variant="ghost" onClick={dismiss}>
+                {alreadyInserted ? "Close" : "Cancel"}
+              </Button>
+            </div>
+          </>
+        )}
+      </PopoverPopup>
+    </Popover>
   );
 }

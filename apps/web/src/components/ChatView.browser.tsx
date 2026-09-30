@@ -6530,6 +6530,7 @@ describe("ChatView timeline (full app)", () => {
     try {
       await page.getByText("Original answer", { exact: true }).click();
       const paragraph = document.querySelector('[data-message-role="assistant"] p')!;
+      paragraph.scrollIntoView({ block: "center" });
       const range = document.createRange();
       range.selectNodeContents(paragraph);
       window.getSelection()!.removeAllRanges();
@@ -6597,6 +6598,8 @@ describe("ChatView timeline (full app)", () => {
           return node!;
         });
         const text = paragraph.textContent!.trim().slice(0, 4000);
+        // Quote actions hide while their text is scrolled out of view, as a mouse selection is not.
+        paragraph.scrollIntoView({ block: "center" });
         const range = document.createRange();
         range.selectNodeContents(paragraph);
         const selection = window.getSelection()!;
