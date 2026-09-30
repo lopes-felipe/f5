@@ -57,3 +57,23 @@ Interactive fixture, 5 warm-ups and 30 measured repetitions, merged Phase 6 (`e4
 | Small-thread startup (process CPU) | 440.3 ms    | 610.5 ms    | informational                 |
 
 Two gates fail on **both** builds and are not introduced by this PR: `transport.pendingFrames` (4,148 / 2,000) and browser retained-heap growth ratio (9.3% baseline, 9.5% candidate, gate 5%; absolute growth passes at ~5 MiB / 10 MiB). Startup process CPU p95 rose while wall time fell; it has no stated gate, and this PR does not claim a performance improvement. No threshold is changed.
+
+## PR review follow-up
+
+Applied the review's eight findings and three notes. Each fix has regression coverage.
+
+- **Upload preflight:** it now allows `X-F5-File-Name` and `X-F5-Upload-Client`. The allowlist and `Access-Control-Allow-Headers` come from one list.
+- **Upload release:** a draft's uploads are released once the turn commits, either after bootstrap dispatch or after a settled queue submission. Failures before that keep the uploads so the restored draft can retry. A test sends a queued turn and checks that the staged bytes are gone.
+- **Asset CORS:** capability asset URLs send CORS without credentials to the desktop and dev renderer origins, so text and Markdown previews can `fetch` them.
+- **HTML preview CSP:** the passive-resource prefix uses the external request origin (Host plus TLS or forwarded scheme). A route test through `127.0.0.1` loads an allowed sibling stylesheet.
+- **Asset URL batches:** issuance settles per file and returns `null` for unreadable entries, so one bad path no longer hides the whole batch.
+- **Active previews:** they now carry a CSP that keeps scripts, `fetch`, images, frames and forms on the preview origin. The user guide documents the remaining navigation channel and the bearer nature of asset URLs.
+- **Attachment caching:** `/attachments/*` responses are again cached as `private, max-age=31536000, immutable`.
+- **Upload validation:** names are truncated at 255 UTF-16 units without splitting surrogate pairs, and declared MIME types over 100 characters fall back to `application/octet-stream`.
+- **Minor notes:**
+  - Ingress uses the server's shared upload service.
+  - The single-operator ownership assumption is documented where uploads are created.
+  - The inline-upload performance fixture is back to 8 × 1 MiB. It had grown to 100 MiB with the new attachment count.
+  - The 20 MiB WebSocket cap already bounds inline data-URL sends before decoding, so that path needed no change.
+
+After the fixes, format, lint, typecheck, the full suite and 133 real-Git tests all passed again. The server performance smoke run passed its upload gate (8 MiB decoded against a 80 MiB limit). It also reported `replay.pageEvents` 500 / 200; replay code is untouched by this PR.

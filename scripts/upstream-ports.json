@@ -4098,7 +4098,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/server/src/attachmentUploads.ts:119",
+        "apps/server/src/attachmentUploads.ts:132",
         "apps/web/src/lib/attachmentValidation.ts:5",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
@@ -8561,8 +8561,8 @@
       "disposition": "equivalent",
       "plannedWorkstream": "7b",
       "evidence": [
-        "apps/server/src/attachmentIngress.ts:341",
-        "apps/server/src/attachmentUploads.ts:287",
+        "apps/server/src/attachmentIngress.ts:343",
+        "apps/server/src/attachmentUploads.ts:301",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": [
@@ -9667,7 +9667,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7a",
       "evidence": [
-        "apps/server/src/assetHttp.ts:100",
+        "apps/server/src/assetHttp.ts:120",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -10699,7 +10699,7 @@
       "plannedWorkstream": "7b",
       "evidence": [
         "packages/contracts/src/attachmentUpload.ts:7",
-        "apps/server/src/attachmentUploads.ts:154",
+        "apps/server/src/attachmentUploads.ts:167",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -14124,7 +14124,7 @@
       "disposition": "ported",
       "plannedWorkstream": "7c",
       "evidence": [
-        "apps/server/src/assetHttp.ts:161",
+        "apps/server/src/assetHttp.ts:193",
         "docs/reviews/phase-seven-media-validation.md:1"
       ],
       "f5Shas": ["d4d6991e764631bc825a3e4061651d6ff1ab484f"]
@@ -18213,7 +18213,7 @@
       "disposition": "declined",
       "plannedWorkstream": "7c",
       "evidence": [
-        "docs/user/attachments-and-media.md:26",
+        "docs/user/attachments-and-media.md:28",
         "docs/reviews/phase-seven-media-validation.md:1"
       ]
     },
