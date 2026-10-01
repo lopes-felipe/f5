@@ -1,5 +1,5 @@
 import { CommandId, TurnId } from "@t3tools/contracts";
-import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Duration, Effect, Layer, PubSub, Schema, Stream } from "effect";
 
 import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
@@ -65,8 +65,6 @@ const make = Effect.gen(function* () {
       ),
       Effect.asVoid,
     );
-
-  let worker: DrainableWorker<CommandId>;
 
   const processDelivery = (deliveryId: CommandId) =>
     Effect.gen(function* () {
@@ -181,7 +179,18 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  worker = yield* makeDrainableWorker(processDelivery);
+  // ACP starts await the entire prompt. Steers must reach the adapter while
+  // that prompt is in flight; each lane retains its own delivery order.
+  const worker = yield* makeDrainableWorker(processDelivery);
+  const steerWorker = yield* makeDrainableWorker(processDelivery);
+  const enqueue = (delivery: { deliveryId: CommandId; event: { type: string } }) =>
+    (delivery.event.type === "thread.turn-steer-requested" ? steerWorker : worker).enqueue(
+      delivery.deliveryId,
+    );
+  const enqueueById = (deliveryId: CommandId) =>
+    repository
+      .getByCommandId(deliveryId)
+      .pipe(Effect.flatMap((delivery) => (delivery ? enqueue(delivery) : Effect.void)));
 
   const reconcileSending = Effect.gen(function* () {
     const sending = yield* repository.listSending;
@@ -227,7 +236,7 @@ const make = Effect.gen(function* () {
 
   const enqueueActionable = repository.listActionable.pipe(
     Effect.flatMap((deliveries) =>
-      Effect.forEach(deliveries, (delivery) => worker.enqueue(delivery.deliveryId), {
+      Effect.forEach(deliveries, (delivery) => enqueue(delivery), {
         discard: true,
       }),
     ),
@@ -284,9 +293,7 @@ const make = Effect.gen(function* () {
         event.type === "thread.turn-steer-requested") &&
       event.commandId !== null
         ? repository.getByCommandId(event.commandId).pipe(
-            Effect.flatMap((delivery) =>
-              delivery ? worker.enqueue(delivery.deliveryId) : Effect.void,
-            ),
+            Effect.flatMap((delivery) => (delivery ? enqueue(delivery) : Effect.void)),
             Effect.catchCause((cause) =>
               Effect.logError("failed to enqueue durable provider delivery", {
                 commandId: event.commandId,
@@ -298,7 +305,7 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.forkScoped);
     yield* Stream.runForEach(Stream.fromPubSub(delayed), ([deliveryId, delayMs]) =>
       Effect.sleep(Duration.millis(delayMs)).pipe(
-        Effect.andThen(worker.enqueue(deliveryId)),
+        Effect.andThen(enqueueById(deliveryId)),
         Effect.forkScoped,
         Effect.asVoid,
       ),
@@ -377,7 +384,7 @@ const make = Effect.gen(function* () {
           ),
         );
       }
-      yield* worker.enqueue(retried.deliveryId);
+      yield* enqueue(retried);
       return retried;
     }).pipe(
       Effect.mapError((error) =>
@@ -406,7 +413,9 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    // Starts can remain active while new steers arrive. Observe the steer lane
+    // after the start lane drains so shutdown also waits for those deliveries.
+    drain: worker.drain.pipe(Effect.andThen(steerWorker.drain)),
     outcomes: Stream.fromPubSub(outcomes),
     acknowledgeOutcome: (deliveryId) =>
       repository

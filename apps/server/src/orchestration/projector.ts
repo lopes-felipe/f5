@@ -1478,6 +1478,11 @@ export function projectEvent(
               checkpoints,
               messages,
               proposedPlans,
+              pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], {
+                ...event,
+                type: "thread.reverted",
+                payload: { ...payload, retainedTurnIds: [...retainedTurnIds] },
+              }),
               // TodoWrite tasks are stored as the latest runtime snapshot.
               // Revert clears them so discarded-turn tasks do not remain visible.
               tasks: [],

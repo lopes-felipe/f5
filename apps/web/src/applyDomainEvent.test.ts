@@ -617,6 +617,32 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.latestTurn?.turnId).toBe(turnId);
   });
 
+  for (const detailsLoaded of [true, false])
+    it(`drops questions from discarded turns when thread details are ${detailsLoaded ? "loaded" : "unloaded"}`, () => {
+      const pending = (turnId: string) => ({
+        requestId: ApprovalRequestId.makeUnsafe(`question:${turnId}`),
+        turnId: TurnId.makeUnsafe(turnId),
+        createdAt: "2026-04-01T09:00:00.000Z",
+        responseMode: "message" as const,
+        questions: [],
+      });
+      const kept = pending("kept-turn");
+      const state = makeState({
+        threads: [
+          makeThread({ detailsLoaded, pendingUserInputs: [kept, pending("discarded-turn")] }),
+        ],
+      });
+      const next = applyDomainEvent(
+        state,
+        makeEvent("thread.reverted", {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnCount: 1,
+          retainedTurnIds: [TurnId.makeUnsafe("kept-turn")],
+        }),
+      );
+      expect(next.threads[0]?.pendingUserInputs).toEqual([kept]);
+    });
+
   it("clears blocking questions on an otherwise unchanged terminal session event", () => {
     const event = makeEvent("thread.session-set", {
       threadId: ThreadId.makeUnsafe("thread-1"),

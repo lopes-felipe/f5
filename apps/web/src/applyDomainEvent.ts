@@ -1211,6 +1211,21 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "thread.reverted": {
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const pendingUserInputs = projectPendingUserInputs(thread.pendingUserInputs ?? [], {
+          ...event,
+          payload: {
+            ...event.payload,
+            retainedTurnIds:
+              event.payload.retainedTurnIds ??
+              thread.turnDiffSummaries
+                .filter(
+                  (summary) =>
+                    summary.checkpointTurnCount !== undefined &&
+                    summary.checkpointTurnCount <= event.payload.turnCount,
+                )
+                .map((summary) => summary.turnId),
+          },
+        });
         if (!detailGate.applyDetailMutations) {
           const nextSession =
             thread.session?.tokenUsageSource === undefined
@@ -1223,12 +1238,14 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             thread.estimatedContextTokens === null &&
             thread.estimatedThinkingTokens === null &&
             nextSession === thread.session &&
+            pendingUserInputs.length === (thread.pendingUserInputs?.length ?? 0) &&
             thread.lastInteractionAt === event.occurredAt
           ) {
             return thread;
           }
           return {
             ...thread,
+            pendingUserInputs,
             ...(nextSession !== thread.session ? { session: nextSession } : {}),
             estimatedContextTokens: null,
             estimatedThinkingTokens: null,
@@ -1298,6 +1315,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         }
         return {
           ...thread,
+          pendingUserInputs,
           turnDiffSummaries,
           messages,
           commandExecutions,

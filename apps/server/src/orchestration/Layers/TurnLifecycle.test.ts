@@ -1,3 +1,13 @@
+import { GitCore } from "../../git/Services/GitCore.ts";
+import { makeFakeGitCore } from "../../git/testDoubles.ts";
+import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
+import { ProviderTurnDeliveryWorkerLive } from "./ProviderTurnDeliveryWorker.ts";
+import { ProviderTurnDeliveryRepositoryLive } from "./ProviderTurnDeliveryRepository.ts";
+import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
+import { NextTurnQueueDispatcherLive } from "../../nextTurnQueue/Layers/NextTurnQueueDispatcher.ts";
+import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
@@ -10,10 +20,11 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -90,21 +101,21 @@ const interrupted = (threadId: ThreadId, turnId = "old-turn") =>
         },
       });
   });
-const question = (threadId: ThreadId, message = true) =>
+const question = (threadId: ThreadId, message = true, turnId = "old-turn") =>
   Effect.gen(function* () {
     const engine = yield* OrchestrationEngineService;
-    const requestId = ApprovalRequestId.makeUnsafe(`question:${threadId}`);
+    const requestId = ApprovalRequestId.makeUnsafe(`question:${threadId}:${turnId}`);
     yield* engine.dispatch({
       type: "thread.activity.append",
-      commandId: CommandId.makeUnsafe(`ask:${threadId}`),
+      commandId: CommandId.makeUnsafe(`ask:${threadId}:${turnId}`),
       threadId,
       createdAt: at,
       activity: {
-        id: EventId.makeUnsafe(`ask:${threadId}`),
+        id: EventId.makeUnsafe(`ask:${threadId}:${turnId}`),
         kind: "user-input.requested",
         tone: "info",
         summary: "Question",
-        turnId: TurnId.makeUnsafe("old-turn"),
+        turnId: TurnId.makeUnsafe(turnId),
         createdAt: at,
         payload: {
           requestId,
@@ -124,6 +135,179 @@ const question = (threadId: ThreadId, message = true) =>
     return requestId;
   });
 suite("durable turn lifecycle", (it) => {
+  it.effect(
+    "dispatches steering alongside an unresolved ACP start while keeping starts ordered",
+    () =>
+      Effect.gen(function* () {
+        const threadId = yield* seed("acp-steering");
+        const otherThreadId = yield* seed("acp-next-start");
+        const engine = yield* OrchestrationEngineService;
+        const store = yield* NextTurnQueueStore;
+        const startEntered = yield* Deferred.make<void>();
+        const finishPrompt = yield* Deferred.make<void>();
+        const steerEntered = yield* Deferred.make<void>();
+        const activeTurnId = TurnId.makeUnsafe("acp-active-turn");
+        const delivered: string[] = [];
+        let startFinished = false;
+        const reactor = Layer.succeed(ProviderCommandReactor, {
+          deliverTurnStart: (event: OrchestrationEvent) =>
+            Effect.gen(function* () {
+              delivered.push(event.type);
+              if (event.type === "thread.turn-steer-requested") {
+                assert.equal(startFinished, false);
+                yield* Deferred.succeed(steerEntered, undefined);
+                return { turnId: activeTurnId };
+              }
+              if (event.aggregateId === threadId) {
+                yield* engine.dispatch({
+                  type: "thread.session.set",
+                  commandId: CommandId.makeUnsafe("acp:running"),
+                  threadId,
+                  createdAt: at,
+                  session: {
+                    threadId,
+                    providerName: "codex",
+                    status: "running",
+                    runtimeMode: "full-access",
+                    activeTurnId,
+                    lastError: null,
+                    updatedAt: at,
+                  },
+                });
+                yield* Deferred.succeed(startEntered, undefined);
+                yield* Deferred.await(finishPrompt);
+                startFinished = true;
+              }
+              return { turnId: activeTurnId };
+            }),
+          recordTurnStartFailure: () => Effect.void,
+        } as never);
+        const command = (name: string, target = threadId) => ({
+          type: "thread.turn.start" as const,
+          commandId: CommandId.makeUnsafe(`acp:${name}`),
+          threadId: target,
+          message: {
+            messageId: MessageId.makeUnsafe(`acp-message:${name}`),
+            role: "user" as const,
+            text: name,
+            attachments: [],
+          },
+          provider: "codex" as const,
+          model: "gpt-5-codex",
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdAt: at,
+        });
+        const insert = (name: string, steer = false) =>
+          store.insertSubmission({
+            submissionId: CommandId.makeUnsafe(`acp-submission:${name}`),
+            itemId: CommandId.makeUnsafe(`acp-item:${name}`),
+            requestHash: name,
+            atHead: steer,
+            command: { ...command(name), ...(steer ? { expectedTurnId: activeTurnId } : {}) },
+          });
+        yield* Effect.gen(function* () {
+          const worker = yield* ProviderTurnDeliveryWorker;
+          const dispatcher = yield* NextTurnQueueDispatcher;
+          yield* worker.start;
+          yield* Effect.yieldNow;
+          yield* insert("original");
+          yield* dispatcher.notify(threadId);
+          yield* dispatcher.drain;
+          yield* Deferred.await(startEntered);
+          // Another start is durable, but must not overtake the unresolved prompt.
+          yield* engine.dispatch(command("next", otherThreadId));
+          yield* insert("steer", true);
+          yield* dispatcher.notify(threadId);
+          yield* dispatcher.drain;
+          yield* Deferred.await(steerEntered);
+          assert.deepEqual(delivered, [
+            "thread.turn-start-requested",
+            "thread.turn-steer-requested",
+          ]);
+          const draining = yield* worker.drain.pipe(Effect.forkChild);
+          assert.equal(draining.pollUnsafe(), undefined);
+          yield* Deferred.succeed(finishPrompt, undefined);
+          yield* Fiber.join(draining);
+          assert.deepEqual(delivered, [
+            "thread.turn-start-requested",
+            "thread.turn-steer-requested",
+            "thread.turn-start-requested",
+          ]);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(ProviderTurnDeliveryWorkerLive, NextTurnQueueDispatcherLive).pipe(
+              Layer.provide(reactor),
+              Layer.provide(
+                Layer.succeed(ProviderService, {
+                  readThread: () => Effect.succeed({ threadId, turns: [] }),
+                } as never),
+              ),
+              Layer.provide(Layer.succeed(GitCore, makeFakeGitCore().service)),
+              Layer.provide(
+                Layer.succeed(RuntimeReceiptBus, {
+                  publish: () => Effect.void,
+                  stream: Stream.empty,
+                }),
+              ),
+              Layer.provideMerge(ProviderTurnDeliveryRepositoryLive),
+            ),
+          ),
+        );
+      }),
+  );
+  it.effect(
+    "rewind removes discarded questions from memory, snapshots and replay, and rejects stale answers",
+    () =>
+      Effect.gen(function* () {
+        const threadId = yield* seed("rewind-question");
+        const kept = yield* question(threadId, true, "kept-turn");
+        const discarded = yield* question(threadId, true, "discarded-turn");
+        const engine = yield* OrchestrationEngineService;
+        yield* engine.dispatch({
+          type: "thread.revert.complete",
+          commandId: CommandId.makeUnsafe("revert:questions"),
+          threadId,
+          turnCount: 1,
+          retainedTurnIds: [TurnId.makeUnsafe("kept-turn")],
+          createdAt: at,
+        });
+        assert.deepEqual(
+          (yield* engine.getReadModel()).threads
+            .find((t) => t.id === threadId)!
+            .pendingUserInputs!.map((input) => input.requestId),
+          [kept],
+        );
+        const query = yield* ProjectionSnapshotQuery;
+        assert.deepEqual(
+          (yield* query.getSnapshot()).threads
+            .find((t) => t.id === threadId)!
+            .pendingUserInputs!.map((input) => input.requestId),
+          [kept],
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM projection_state WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs}`;
+        yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+        assert.deepEqual(
+          (yield* query.getSnapshot()).threads
+            .find((t) => t.id === threadId)!
+            .pendingUserInputs!.map((input) => input.requestId),
+          [kept],
+        );
+        const stale = yield* Effect.exit(
+          engine.dispatch({
+            type: "thread.user-input.respond",
+            commandId: CommandId.makeUnsafe("answer:discarded-question"),
+            threadId,
+            requestId: discarded,
+            answers: { "0": { answers: ["A"] } },
+            createdAt: at,
+          }),
+        );
+        assert.equal(stale._tag, "Failure");
+        assert.equal((yield* (yield* NextTurnQueueStore).listByThread(threadId)).items.length, 0);
+      }),
+  );
   it.effect(
     "enqueues each restart continuation once and retains ineligible markers until expiry",
     () =>

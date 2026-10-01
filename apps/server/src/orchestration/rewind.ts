@@ -69,8 +69,6 @@ export const makeConversationRewind = Effect.gen(function* () {
         if (!thread.worktreePath)
           return yield* fail("File rollback requires an isolated worktree.");
         const cwd = yield* Effect.tryPromise(() => realpath(workspace!));
-        if (cwd !== (yield* Effect.tryPromise(() => realpath(thread.worktreePath!))))
-          return yield* fail("The provider workspace differs from the worktree.");
         const owners = model.threads
           .filter((other) => other.id !== thread.id)
           .map(
@@ -109,6 +107,15 @@ export const makeConversationRewind = Effect.gen(function* () {
         const session = (yield* provider.listSessions()).find(
           (session) => session.threadId === thread.id,
         );
+        // readThread may recover a session. Validate its actual workspace under
+        // the lifecycle lock before preparing checkpoints or invoking rollback.
+        if (requiresWorkspace) {
+          if (!session?.cwd) return yield* fail("The provider workspace could not be verified.");
+          const providerCwd = yield* Effect.tryPromise(() => realpath(session.cwd!));
+          const worktreeCwd = yield* Effect.tryPromise(() => realpath(workspace!));
+          if (providerCwd !== worktreeCwd)
+            return yield* fail("The provider workspace differs from the worktree.");
+        }
         const cursor = session?.resumeCursor as { resume?: string; threadId?: string } | undefined;
         const identity = cursor?.resume ?? cursor?.threadId ?? snapshot.threadId;
         if (!op) {
@@ -157,11 +164,26 @@ export const makeConversationRewind = Effect.gen(function* () {
           op =
             (yield* sql<Operation>`SELECT * FROM rewind_operations WHERE operation_id = ${request.operationId}`)[0]!;
         }
-        if (op.provider_session_id !== identity)
-          return yield* fail("The provider session changed; verify the rewind before continuing.");
         const expected = JSON.parse(op.boundary_json) as string[];
         const verified = (ids: readonly string[]) =>
           JSON.stringify(ids) === JSON.stringify(expected);
+        if (op.provider_session_id !== identity) {
+          // Claude replaces its native session when rolling back all turns.
+          // Recovery can adopt that identity only after proving the empty boundary;
+          // a prepared operation has not attempted rollback and must still match.
+          if (
+            thread.session?.providerName !== "claudeAgent" ||
+            op.state === "prepared" ||
+            op.retained_count !== 0 ||
+            expected.length !== 0 ||
+            !verified(snapshot.turns.map((turn) => turn.id))
+          )
+            return yield* fail(
+              "The provider session changed; verify the rewind before continuing.",
+            );
+          yield* sql`UPDATE rewind_operations SET provider_session_id = ${identity} WHERE operation_id = ${op.operation_id}`;
+          op = { ...op, provider_session_id: identity };
+        }
         const keepFilesRef = CheckpointRef.makeUnsafe(`refs/f5/rewind/${request.operationId}`);
         if (op.state === "prepared") {
           if (caps.rollbackAffectsFiles && !request.restoreFiles)
@@ -184,7 +206,15 @@ export const makeConversationRewind = Effect.gen(function* () {
             return yield* fail(
               "The provider rewind boundary could not be verified. No rollback will be replayed automatically.",
             );
-          yield* update(op.operation_id, "provider-confirmed");
+          const confirmedSession = (yield* provider.listSessions()).find(
+            (session) => session.threadId === thread.id,
+          );
+          const confirmedCursor = confirmedSession?.resumeCursor as
+            | { resume?: string; threadId?: string }
+            | undefined;
+          const confirmedIdentity =
+            confirmedCursor?.resume ?? confirmedCursor?.threadId ?? after.threadId;
+          yield* sql`UPDATE rewind_operations SET provider_session_id = ${confirmedIdentity}, state = 'provider-confirmed', error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id}`;
         }
         if (op.state !== "files-confirmed") {
           if (request.restoreFiles || caps.rollbackAffectsFiles) {

@@ -6,6 +6,10 @@ export function projectPendingUserInputs(
   current: ReadonlyArray<PendingUserInput>,
   event: OrchestrationEvent,
 ): ReadonlyArray<PendingUserInput> {
+  if (event.type === "thread.reverted") {
+    const retained = new Set(event.payload.retainedTurnIds ?? []);
+    return current.filter((input) => input.turnId === null || retained.has(input.turnId));
+  }
   if (
     event.type === "thread.session-set" &&
     event.payload.session.activeTurnId === null &&

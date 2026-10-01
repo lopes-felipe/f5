@@ -18,6 +18,7 @@ const harness = (
   name: string,
   failure: "persist" | "disconnect" | "capture" | "interrupt" | null = null,
   worktreePath: string | null = null,
+  options: { providerCwd?: string; zeroTurnClaude?: boolean; failReadback?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -44,6 +45,7 @@ const harness = (
     let providerTurns = [TurnId.makeUnsafe("first"), TurnId.makeUnsafe("second")];
     let failPersist = failure === "persist";
     let failCapture = failure === "capture";
+    let failReadback = options.failReadback === true;
     const model = {
       snapshotSequence: 3,
       projects: [{ id: projectId, workspaceRoot: "/tmp/no-git-phase8" }],
@@ -52,7 +54,13 @@ const harness = (
           id: threadId,
           projectId,
           worktreePath,
-          session: { providerName: worktreePath ? "opencode" : "codex" },
+          session: {
+            providerName: options.zeroTurnClaude
+              ? "claudeAgent"
+              : worktreePath
+                ? "opencode"
+                : "codex",
+          },
           messages: [{ id: messageId, text: "Recovered source", attachments: [] }],
           checkpoints: [],
         },
@@ -69,8 +77,24 @@ const harness = (
             },
           }),
         readThread: () =>
-          Effect.sync(() => ({ threadId, turns: providerTurns.map((id) => ({ id, items: [] })) })),
-        listSessions: () => Effect.sync(() => [{ threadId, resumeCursor: { threadId: identity } }]),
+          Effect.suspend(() => {
+            if (rollbackCalls > 0 && failReadback) {
+              failReadback = false;
+              return Effect.fail(new Error("Readback unavailable"));
+            }
+            return Effect.succeed({
+              threadId,
+              turns: providerTurns.map((id) => ({ id, items: [] })),
+            });
+          }),
+        listSessions: () =>
+          Effect.sync(() => [
+            {
+              threadId,
+              cwd: options.providerCwd ?? worktreePath,
+              resumeCursor: { threadId: identity },
+            },
+          ]),
         rollbackConversation: ({ numTurns }: { numTurns: number }) =>
           Effect.suspend(() => {
             rollbackCalls++;
@@ -78,6 +102,7 @@ const harness = (
             if (failure === "interrupt") return Effect.never;
             if (failure === "disconnect") return Effect.fail(new Error("Disconnected"));
             providerTurns = providerTurns.slice(0, -numTurns);
+            if (options.zeroTurnClaude) identity = "replacement-claude-session";
             return Effect.void;
           }),
       } as never),
@@ -106,10 +131,14 @@ const harness = (
       Effect.provideService(ProjectionTurnRepository, {
         listByThreadId: () =>
           Effect.succeed([
-            { turnId: "first", pendingMessageId: "earlier", requestedAt: at },
+            {
+              turnId: "first",
+              pendingMessageId: options.zeroTurnClaude ? messageId : "earlier",
+              requestedAt: at,
+            },
             {
               turnId: "second",
-              pendingMessageId: messageId,
+              pendingMessageId: options.zeroTurnClaude ? "later" : messageId,
               requestedAt: "2026-09-30T12:01:00.000Z",
             },
           ]),
@@ -141,6 +170,53 @@ const harness = (
     };
   });
 layer("conversation rewind recovery", (it) => {
+  it.effect("rejects a provider cwd outside the isolated worktree before any file operation", () =>
+    Effect.gen(function* () {
+      const cwd = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-rewind-cwd-"))),
+        (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+      );
+      const h = yield* harness("rewind-wrong-cwd", null, cwd, { providerCwd: os.tmpdir() });
+      yield* h.rewind.run(h.request);
+      assert.equal(h.rollbackCalls(), 0);
+      assert.deepEqual(h.fileActions, []);
+      const sql = yield* SqlClient.SqlClient;
+      assert.equal(
+        (yield* sql`SELECT * FROM rewind_operations WHERE operation_id = ${h.operationId}`).length,
+        0,
+      );
+    }),
+  );
+  for (const failReadback of [false, true])
+    it.effect(
+      `recovers a replacement Claude session after zero-turn rollback and ${failReadback ? "readback" : "persistence"} failure`,
+      () =>
+        Effect.gen(function* () {
+          const h = yield* harness(`rewind-claude-zero:${failReadback}`, "persist", null, {
+            zeroTurnClaude: true,
+            failReadback,
+          });
+          yield* h.rewind.run(h.request);
+          const sql = yield* SqlClient.SqlClient;
+          assert.equal(
+            (yield* sql<{
+              state: string;
+            }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]
+              ?.state,
+            "reconciliation-required",
+          );
+          yield* h.rewind.recover;
+          // With a failed readback the first recovery reaches the injected save failure.
+          if (failReadback) yield* h.rewind.recover;
+          assert.equal(h.rollbackCalls(), 1);
+          const row = (yield* sql<{
+            state: string;
+            identity: string;
+          }>`SELECT state, provider_session_id AS identity FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]!;
+          assert.equal(row.state, "completed");
+          assert.equal(row.identity, "replacement-claude-session");
+        }),
+    );
   it.effect(
     "OpenCode keeps files by capturing before rollback and restoring after verified readback",
     () =>
@@ -268,6 +344,24 @@ layer("conversation rewind recovery", (it) => {
     }),
   );
 
+  it.effect("refuses a replacement Claude identity when the zero-turn boundary is not empty", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("rewind-claude-nonempty", "disconnect", null, {
+        zeroTurnClaude: true,
+      });
+      yield* h.rewind.run(h.request);
+      h.changeIdentity();
+      yield* h.rewind.recover;
+      assert.equal(h.rollbackCalls(), 1);
+      const sql = yield* SqlClient.SqlClient;
+      const row = (yield* sql<{
+        state: string;
+        identity: string;
+      }>`SELECT state, provider_session_id AS identity FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]!;
+      assert.equal(row.state, "reconciliation-required");
+      assert.equal(row.identity, "provider-session");
+    }),
+  );
   it.effect("refuses to reconcile a different provider session", () =>
     Effect.gen(function* () {
       const h = yield* harness("rewind-stale", "persist");

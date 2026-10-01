@@ -2171,6 +2171,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       if (
         event.type !== "thread.activity-appended" &&
         event.type !== "thread.user-input-resolved" &&
+        event.type !== "thread.reverted" &&
         event.type !== "thread.session-set"
       )
         return;
@@ -2197,7 +2198,20 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         if (decoded._tag === "Some") current.push(decoded.value);
         else yield* Effect.logWarning("Skipping invalid pending user input", { threadId });
       }
-      const next = projectPendingUserInputs(current, event);
+      const pendingEvent =
+        event.type === "thread.reverted" && event.payload.retainedTurnIds === undefined
+          ? {
+              ...event,
+              payload: {
+                ...event.payload,
+                retainedTurnIds: retainedProjectionTurns(
+                  yield* projectionTurnRepository.listByThreadId({ threadId }),
+                  event.payload.turnCount,
+                ).flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+              },
+            }
+          : event;
+      const next = projectPendingUserInputs(current, pendingEvent);
       for (const input of current)
         if (!next.some((candidate) => candidate.requestId === input.requestId)) {
           yield* sql`UPDATE projection_pending_user_inputs SET resolution = 'resolved' WHERE thread_id = ${threadId} AND request_id = ${input.requestId}`;

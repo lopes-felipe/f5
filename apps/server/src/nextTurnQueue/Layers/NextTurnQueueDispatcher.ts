@@ -157,6 +157,24 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               Effect.catch(() => Effect.succeed(false)),
             );
       const compacting = yield* Ref.get(automaticCompacting);
+      const dispatching = queue.items.filter((candidate) => candidate.status === "dispatching");
+      const expectedTurnId = item.command.expectedTurnId;
+      // ACP prompt delivery remains "sending" for the whole active turn.
+      // Permit steering alongside that start, but retain the barrier for other
+      // steers, unclaimed starts, mismatched turns and ambiguous deliveries.
+      const canSteerAlongsideStart =
+        expectedTurnId !== undefined &&
+        Option.getOrNull(sessionOption)?.activeTurnId === expectedTurnId &&
+        (yield* Effect.forEach(dispatching, (candidate) =>
+          deliveries.getByCommandId(candidate.command.commandId).pipe(
+            Effect.map(
+              (delivery) =>
+                delivery?.state === "sending" &&
+                delivery.event.type === "thread.turn-start-requested",
+            ),
+            Effect.mapError(storageError),
+          ),
+        )).every(Boolean);
       const gate = resolveNextTurnQueueGate({
         item,
         state: queue.state,
@@ -165,7 +183,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         pendingTurnStart: Option.getOrNull(pendingOption),
         runningTurn: Option.getOrNull(runningOption),
         terminalTurn: Option.getOrNull(terminalOption),
-        hasDispatchingItem: queue.items.some((candidate) => candidate.status === "dispatching"),
+        hasDispatchingItem: dispatching.length > 0 && !canSteerAlongsideStart,
         automaticCompaction: compacting.has(item.threadId),
         worktreeExists: thread?.branch ? null : worktreeExists,
       });
