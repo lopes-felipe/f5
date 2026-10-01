@@ -504,7 +504,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";
-  const projectionSnapshotExit = yield* Effect.exit(projectionSnapshotQuery.getBootstrapSnapshot());
+  const projectionSnapshotExit = yield* Effect.exit(
+    withStartupPhaseTiming(
+      "orchestration.snapshot.hydrate",
+      projectionSnapshotQuery.getBootstrapSnapshot(),
+    ),
+  );
   if (Exit.isSuccess(projectionSnapshotExit)) {
     const projectionSnapshot = projectionSnapshotExit.value;
     if (projectionSnapshot.snapshotSequence > 0) {

@@ -210,7 +210,11 @@ import {
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
-import { withStartupPhaseTiming } from "./startupTiming.ts";
+import {
+  formatStillStartingMessage,
+  getCurrentStartupPhase,
+  withStartupPhaseTiming,
+} from "./startupTiming.ts";
 import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
@@ -750,6 +754,14 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
     ? `${baseMessage}: ${compactedCauseMessage}`
     : baseMessage;
 }
+
+/**
+ * How long a route waits for the orchestration runtime before failing. Kept
+ * just under the web client's 60s request timeout (`REQUEST_TIMEOUT_MS` in
+ * apps/web/src/wsTransport.ts) so the client sees this message rather than a
+ * bare "Request timed out". Large profiles legitimately take 30-40s to start.
+ */
+const ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS = 55_000;
 
 interface OrchestrationRuntimeServices {
   readonly threadBackgroundWork: ThreadBackgroundWorkShape;
@@ -2118,6 +2130,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }),
     ),
   );
+  const orchestrationRuntimeStartedAtMs = Date.now();
   yield* startOrchestrationRuntime.pipe(Effect.forkIn(subscriptionsScope));
 
   const awaitOrchestrationRuntimeForBootstrap = Deferred.await(orchestrationRuntime).pipe(
@@ -2226,12 +2239,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }),
     ),
     Effect.timeoutOrElse({
-      duration: "30 seconds",
+      duration: Duration.millis(ORCHESTRATION_RUNTIME_ROUTE_WAIT_MS),
       onTimeout: () =>
-        Effect.fail(
-          new RouteRequestError({
-            message: "Orchestration runtime unavailable: startup timed out.",
-          }),
+        Effect.suspend(() =>
+          Effect.fail(
+            new RouteRequestError({
+              message: formatStillStartingMessage({
+                phase: getCurrentStartupPhase()?.phase ?? null,
+                elapsedMs: Date.now() - orchestrationRuntimeStartedAtMs,
+              }),
+            }),
+          ),
         ),
     }),
   );

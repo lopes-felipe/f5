@@ -97,6 +97,13 @@ type ProjectorName =
 
 interface ProjectorDefinition {
   readonly name: ProjectorName;
+  /**
+   * Event types this projector reacts to. When set, bootstrap catch-up reads
+   * only these types from the event store, so the payloads of every other event
+   * are never decoded. `apply` must still ignore other types, because the live
+   * path (`projectEvent`) passes it every event.
+   */
+  readonly eventTypes?: ReadonlyArray<OrchestrationEvent["type"]>;
   readonly apply: (
     event: OrchestrationEvent,
     attachmentSideEffects: AttachmentSideEffects,
@@ -107,6 +114,16 @@ interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly filesToDelete: Map<string, string>;
 }
+
+const makeAttachmentSideEffects = (): AttachmentSideEffects => ({
+  deletedThreadIds: new Set<string>(),
+  filesToDelete: new Map<string, string>(),
+});
+
+/** Events applied per SQLite transaction during bootstrap catch-up. */
+const BOOTSTRAP_BATCH_SIZE = 500;
+/** Log catch-up progress every this many batches. */
+const BOOTSTRAP_PROGRESS_LOG_EVERY_BATCHES = 20;
 
 const MAX_COMMAND_TRANSCRIPT_BYTES = 256 * 1024;
 const COMMAND_TRANSCRIPT_HEAD_BYTES = 96 * 1024;
@@ -2220,11 +2237,12 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         yield* sql`INSERT OR IGNORE INTO projection_pending_user_inputs(thread_id, request_id, payload_json) VALUES (${threadId}, ${input.requestId}, ${JSON.stringify(input)})`;
     }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.pendingUserInputs")));
 
+  // Adding a projector: on an existing install it has no cursor, so bootstrap
+  // replays the whole event log through it before the server can serve
+  // requests (millions of events on long-lived profiles). Give it `eventTypes`
+  // when it only reacts to a few event types, or ship a migration that seeds
+  // its `projection_state` row.
   const projectors: ReadonlyArray<ProjectorDefinition> = [
-    {
-      name: ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs,
-      apply: applyPendingUserInputsProjection,
-    },
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.projects,
       apply: applyProjectsProjection,
@@ -2294,25 +2312,45 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       apply: applyThreadsProjection,
     },
     {
+      // After `threads`: projection_pending_user_inputs.thread_id references
+      // projection_threads, so a from-scratch bootstrap must create threads first.
+      name: ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs,
+      // Must cover every type `applyPendingUserInputsProjection` handles.
+      eventTypes: [
+        "thread.activity-appended",
+        "thread.user-input-resolved",
+        "thread.reverted",
+        "thread.session-set",
+      ],
+      apply: applyPendingUserInputsProjection,
+    },
+    {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadPullRequests,
       apply: applyThreadPullRequestsProjection,
     },
   ];
 
-  const runProjectorForEvent = (projector: ProjectorDefinition, event: OrchestrationEvent) =>
+  /**
+   * Applies `events` (ascending sequence) and advances the projector cursor to
+   * `cursor` in one transaction, then runs the collected attachment cleanup.
+   */
+  const applyEventsInTransaction = (
+    projector: ProjectorDefinition,
+    events: ReadonlyArray<OrchestrationEvent>,
+    cursor: { readonly sequence: number; readonly occurredAt: string },
+  ) =>
     Effect.gen(function* () {
-      const attachmentSideEffects: AttachmentSideEffects = {
-        deletedThreadIds: new Set<string>(),
-        filesToDelete: new Map<string, string>(),
-      };
+      const attachmentSideEffects = makeAttachmentSideEffects();
 
       yield* sql.withTransaction(
-        projector.apply(event, attachmentSideEffects).pipe(
+        Effect.forEach(events, (event) => projector.apply(event, attachmentSideEffects), {
+          discard: true,
+        }).pipe(
           Effect.flatMap(() =>
             projectionStateRepository.upsert({
               projector: projector.name,
-              lastAppliedSequence: event.sequence,
-              updatedAt: event.occurredAt,
+              lastAppliedSequence: cursor.sequence,
+              updatedAt: cursor.occurredAt,
             }),
           ),
         ),
@@ -2322,30 +2360,116 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         Effect.catch((cause) =>
           Effect.logWarning("failed to apply projected attachment side-effects", {
             projector: projector.name,
-            sequence: event.sequence,
-            eventType: event.type,
+            sequence: cursor.sequence,
+            eventTypes: [...new Set(events.map((event) => event.type))],
             cause,
           }),
         ),
       );
     });
 
+  const runProjectorForEvent = (projector: ProjectorDefinition, event: OrchestrationEvent) =>
+    applyEventsInTransaction(projector, [event], {
+      sequence: event.sequence,
+      occurredAt: event.occurredAt,
+    });
+
+  const readEventHead = sql<{
+    readonly sequence: number;
+    readonly occurredAt: string;
+  }>`SELECT sequence, occurred_at AS "occurredAt" FROM orchestration_events ORDER BY sequence DESC LIMIT 1`.pipe(
+    Effect.map((rows) => rows[0] ?? null),
+  );
+
+  /**
+   * Catches one projector up to the end of the event log. Events are applied
+   * in batches of BOOTSTRAP_BATCH_SIZE per transaction, and projectors with
+   * `eventTypes` only read matching events. The cursor finishes at the log head
+   * even when the last events were filtered out, so the next start does not
+   * re-scan them.
+   */
   const bootstrapProjector = (projector: ProjectorDefinition) =>
-    projectionStateRepository
-      .getByProjector({
+    Effect.gen(function* () {
+      const stateRow = yield* projectionStateRepository.getByProjector({
         projector: projector.name,
-      })
-      .pipe(
-        Effect.flatMap((stateRow) =>
-          Stream.runForEach(
-            eventStore.readFromSequence(
-              Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
-              Number.MAX_SAFE_INTEGER,
-            ),
-            (event) => runProjectorForEvent(projector, event),
-          ),
-        ),
+      });
+      const startSequence = Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0;
+      const head = yield* readEventHead;
+      if (head === null || head.sequence <= startSequence) {
+        return;
+      }
+
+      const lag = head.sequence - startSequence;
+      const logProgress = lag > BOOTSTRAP_BATCH_SIZE * BOOTSTRAP_PROGRESS_LOG_EVERY_BATCHES;
+      const startedAt = Date.now();
+      if (logProgress) {
+        yield* Effect.log("projection bootstrap catch-up started").pipe(
+          Effect.annotateLogs({
+            projector: projector.name,
+            fromSequence: startSequence,
+            headSequence: head.sequence,
+            filteredEventTypes: projector.eventTypes?.length ?? null,
+          }),
+        );
+      }
+
+      let cursorSequence = startSequence;
+      let appliedEvents = 0;
+      let batches = 0;
+      yield* Stream.runForEach(
+        eventStore
+          .readFromSequence(
+            startSequence,
+            Number.MAX_SAFE_INTEGER,
+            projector.eventTypes === undefined ? undefined : { eventTypes: projector.eventTypes },
+          )
+          .pipe(Stream.grouped(BOOTSTRAP_BATCH_SIZE)),
+        (batch) =>
+          Effect.gen(function* () {
+            const last = batch[batch.length - 1]!;
+            yield* applyEventsInTransaction(projector, batch, {
+              sequence: last.sequence,
+              occurredAt: last.occurredAt,
+            });
+            cursorSequence = last.sequence;
+            appliedEvents += batch.length;
+            batches += 1;
+            if (logProgress && batches % BOOTSTRAP_PROGRESS_LOG_EVERY_BATCHES === 0) {
+              yield* Effect.log("projection bootstrap catch-up progress").pipe(
+                Effect.annotateLogs({
+                  projector: projector.name,
+                  cursorSequence,
+                  headSequence: head.sequence,
+                  appliedEvents,
+                  elapsedMs: Date.now() - startedAt,
+                }),
+              );
+            }
+          }),
       );
+
+      // Every event up to `head` was scanned, so a filtered projector can skip
+      // the trailing events it ignores. Never move the cursor backwards: the
+      // scan may have read past `head` if events were appended meanwhile.
+      if (cursorSequence < head.sequence) {
+        yield* projectionStateRepository.upsert({
+          projector: projector.name,
+          lastAppliedSequence: head.sequence,
+          updatedAt: head.occurredAt,
+        });
+      }
+
+      if (logProgress) {
+        yield* Effect.log("projection bootstrap catch-up completed").pipe(
+          Effect.annotateLogs({
+            projector: projector.name,
+            headSequence: head.sequence,
+            appliedEvents,
+            durationMs: Date.now() - startedAt,
+          }),
+        );
+      }
+    });
 
   const projectEvent: OrchestrationProjectionPipelineShape["projectEvent"] = (event) =>
     Effect.forEach(projectors, (projector) => runProjectorForEvent(projector, event), {

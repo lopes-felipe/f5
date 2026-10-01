@@ -16,6 +16,17 @@ import type { Effect, Stream } from "effect";
 import type { OrchestrationEventStoreError } from "../Errors.ts";
 
 /**
+ * Optional filters for {@link OrchestrationEventStoreShape.readFromSequence}.
+ */
+export interface ReadFromSequenceOptions {
+  /**
+   * Only emit events of these types. Non-matching rows are skipped in SQL, so
+   * their payloads are never decoded. An empty list emits nothing.
+   */
+  readonly eventTypes?: ReadonlyArray<OrchestrationEvent["type"]>;
+}
+
+/**
  * OrchestrationEventStoreShape - Service API for orchestration event persistence.
  */
 export interface OrchestrationEventStoreShape {
@@ -36,6 +47,7 @@ export interface OrchestrationEventStoreShape {
    *
    * @param sequenceExclusive - Sequence cursor (exclusive).
    * @param limit - Maximum number of events to emit.
+   * @param options - Optional filters, such as restricting to event types.
    * @returns Stream containing ordered events.
    *
    * Reads in fixed-size pages and normalizes non-integer/negative limits.
@@ -43,6 +55,7 @@ export interface OrchestrationEventStoreShape {
   readonly readFromSequence: (
     sequenceExclusive: number,
     limit?: number,
+    options?: ReadFromSequenceOptions,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
   /**
