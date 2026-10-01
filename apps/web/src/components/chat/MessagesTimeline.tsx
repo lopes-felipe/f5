@@ -42,7 +42,6 @@ import {
   SearchIcon,
   SquarePenIcon,
   TerminalIcon,
-  Undo2Icon,
   ZapIcon,
 } from "lucide-react";
 import { McpIcon, type Icon } from "../Icons";
@@ -57,6 +56,7 @@ import { CommandTranscriptCard } from "./CommandTranscriptCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
+import { UserMessageRevertMenu } from "./UserMessageRevertMenu";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import {
   buildTimelineEntryRowIndexMap,
@@ -943,8 +943,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           const terminalContexts = displayedUserMessage.contexts;
           const canRevertAgentWork = revertTurnCountByUserMessageId.has(row.message.id);
           return (
-            <div className="flex justify-end">
-              <div className="group relative max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3">
+            <div className="group/user-message flex flex-col items-end">
+              <div
+                className="max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3"
+                data-slot="user-message-bubble"
+              >
                 {userFiles.map((file) => (
                   <AttachmentFileChip key={file.id} file={file} />
                 ))}
@@ -1031,45 +1034,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     />
                   </>
                 )}
-                <div className="mt-1.5 flex items-center justify-end gap-2">
-                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
-                    {displayedUserMessage.copyText && (
-                      <MessageCopyButton text={displayedUserMessage.copyText} />
-                    )}
-                    {canRevertAgentWork ? (
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={isRevertingCheckpoint || isWorking || !canRestoreFiles}
-                        onClick={() => onRevertUserMessage(row.message.id, true)}
-                        title={
-                          canRestoreFiles
-                            ? "Revert files too"
-                            : "File rewind requires an isolated worktree"
-                        }
-                      >
-                        Revert files too
-                      </Button>
-                    ) : null}
-                    {canRevertAgentWork && (
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        disabled={isRevertingCheckpoint || isWorking}
-                        onClick={() => onRevertUserMessage(row.message.id)}
-                        title="Revert and keep changes"
-                      >
-                        <Undo2Icon className="size-3" />
-                        <span>Revert and keep changes</span>
-                      </Button>
-                    )}
-                  </div>
-                  <p className="text-right text-[10px] text-muted-foreground/30">
-                    {formatTimestamp(row.message.createdAt, timestampFormat)}
-                  </p>
+              </div>
+              <div className="mt-1 flex items-center gap-1 pr-1">
+                <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+                  {displayedUserMessage.copyText && (
+                    <MessageCopyButton text={displayedUserMessage.copyText} />
+                  )}
+                  {canRevertAgentWork && (
+                    <UserMessageRevertMenu
+                      disabled={isRevertingCheckpoint || isWorking}
+                      canRestoreFiles={canRestoreFiles === true}
+                      onRevert={(restoreFiles) =>
+                        restoreFiles
+                          ? onRevertUserMessage(row.message.id, true)
+                          : onRevertUserMessage(row.message.id)
+                      }
+                    />
+                  )}
                 </div>
+                <p className="text-[10px] text-muted-foreground/30">
+                  {formatTimestamp(row.message.createdAt, timestampFormat)}
+                </p>
               </div>
             </div>
           );
