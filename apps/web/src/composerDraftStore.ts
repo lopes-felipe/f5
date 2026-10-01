@@ -520,7 +520,16 @@ interface ComposerDraftStoreState {
   clearProjectDraftThreadId: (projectId: ProjectId) => void;
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   clearDraftThread: (threadId: ThreadId) => void;
-  placeRecoveredPrompt: (threadId: ThreadId, operationId: string, text: string) => void;
+  /**
+   * Puts a reverted prompt into the composer once per rewind operation.
+   * `replace` (the default) swaps out the current text; `append` adds it below.
+   */
+  placeRecoveredPrompt: (
+    threadId: ThreadId,
+    operationId: string,
+    text: string,
+    mode?: "replace" | "append",
+  ) => void;
   setPrompt: (threadId: ThreadId, prompt: string, mentions?: readonly ComposerMention[]) => void;
   setFilePaths: (threadId: ThreadId, filePaths: string[]) => void;
   setTerminalContexts: (threadId: ThreadId, contexts: TerminalContextDraft[]) => void;
@@ -1922,11 +1931,12 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           };
         });
       },
-      placeRecoveredPrompt: (threadId, operationId, text) => {
+      placeRecoveredPrompt: (threadId, operationId, text, mode = "replace") => {
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
           if (existing.recoveredRewindOperationIds?.includes(operationId)) return state;
-          const prompt = [existing.prompt, text].filter(Boolean).join("\n\n");
+          const prompt =
+            mode === "append" ? [existing.prompt, text].filter(Boolean).join("\n\n") : text;
           return {
             draftsByThreadId: {
               ...state.draftsByThreadId,

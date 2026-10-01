@@ -427,7 +427,15 @@ export const makeConversationRewind = Effect.gen(function* () {
                     ? "Conversation rewind preparation failed; retry is safe"
                     : "Conversation rewind requires reconciliation"
                   : "Conversation rewind could not start",
-                payload: { detail },
+                // The operation fields let clients tie the failure to its rewind
+                // (and hide it once resolved) and offer a keep-files retry.
+                payload: {
+                  detail,
+                  operationId: request.operationId,
+                  targetMessageId: request.targetMessageId,
+                  restoreFiles: request.restoreFiles,
+                  stage: op ? op.state : "preflight",
+                },
                 turnId: null,
                 createdAt: new Date().toISOString(),
               },

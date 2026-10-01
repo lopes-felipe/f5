@@ -87,6 +87,13 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
+/** Queue pauses the user or environment chose, which a conversation revert must not undo. */
+const QUEUE_PAUSES_KEPT_ACROSS_REVERT: ReadonlySet<string> = new Set([
+  "manual_pause",
+  "thread_archived",
+  "worktree_missing",
+]);
+
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queueStore = yield* Effect.serviceOption(NextTurnQueueStore);
@@ -395,8 +402,34 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   }
                 }
                 if (savedEvent.type === "thread.reverted" && savedEvent.payload.operationId) {
-                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${savedEvent.payload.threadId}`;
-                  yield* sql`UPDATE next_turn_queue_state SET pause_reason_code = 'thread_reverted', revision = revision + 1 WHERE thread_id = ${savedEvent.payload.threadId}`;
+                  const { operationId, threadId } = savedEvent.payload;
+                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${threadId}`;
+                  const saved = (yield* sql<{
+                    state: string | null;
+                  }>`SELECT queue_state_json AS state FROM rewind_requests WHERE operation_id = ${operationId}`)[0];
+                  const prior = saved?.state
+                    ? (JSON.parse(saved.state) as {
+                        paused: number;
+                        pause_reason_code: string | null;
+                        pause_detail: string | null;
+                      })
+                    : { paused: 0, pause_reason_code: null, pause_detail: null };
+                  const queued =
+                    yield* sql`SELECT 1 FROM next_turn_queue WHERE thread_id = ${threadId} AND deleted_at IS NULL LIMIT 1`;
+                  // A pause the user or the environment chose outlives the revert. Pauses
+                  // about turns (failed, interrupted, ...) described turns the revert just
+                  // deleted, so they go. Queued prompts were written against the discarded
+                  // conversation and wait for review; with nothing queued the queue runs.
+                  const next =
+                    prior.paused &&
+                    prior.pause_reason_code !== null &&
+                    QUEUE_PAUSES_KEPT_ACROSS_REVERT.has(prior.pause_reason_code)
+                      ? prior
+                      : queued.length > 0
+                        ? { paused: 1, pause_reason_code: "thread_reverted", pause_detail: null }
+                        : { paused: 0, pause_reason_code: null, pause_detail: null };
+                  // Only replaces the pause this rewind set; one set meanwhile survives.
+                  yield* sql`UPDATE next_turn_queue_state SET paused = ${next.paused}, pause_reason_code = ${next.pause_reason_code}, pause_detail = ${next.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required')`;
                   yield* sql`UPDATE rewind_operations SET state = 'completed', updated_at = ${savedEvent.occurredAt} WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'files-confirmed'`;
                   yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${savedEvent.payload.operationId}`;
                 }

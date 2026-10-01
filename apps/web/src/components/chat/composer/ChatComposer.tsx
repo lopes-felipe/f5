@@ -184,6 +184,8 @@ export interface ChatComposerProps {
   };
   isComposerSendBusy: boolean;
   composerSendBusyLabel: "Preparing image" | "Sending";
+  /** A conversation revert is running: typing stays allowed, sending waits for it. */
+  revertInProgress?: boolean | undefined;
   nextTurnQueueState: import("~/nextTurnQueueStore").NextTurnQueueThreadState;
   isServerThread: boolean;
   onInterrupt: () => Promise<void>;
@@ -291,6 +293,7 @@ export function ChatComposer({
   composerSendState,
   isComposerSendBusy,
   composerSendBusyLabel,
+  revertInProgress = false,
   nextTurnQueueState,
   isServerThread,
   onInterrupt,
@@ -623,9 +626,11 @@ export function ChatComposer({
                     ? "Type your own answer, or leave this blank to use the selected option"
                     : showPlanFollowUpPrompt && activeProposedPlan
                       ? "Add feedback to refine the plan, or leave this blank to implement it"
-                      : phase === "disconnected" && hasThreadStarted
-                        ? "Ask for follow-up changes or attach files"
-                        : "Ask anything, @tag files/folders, or use / for skills and slash commands"
+                      : revertInProgress
+                        ? "Reverting… you can type, sending resumes when it's done"
+                        : phase === "disconnected" && hasThreadStarted
+                          ? "Ask for follow-up changes or attach files"
+                          : "Ask anything, @tag files/folders, or use / for skills and slash commands"
               }
               disabled={isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked}
             />
@@ -968,8 +973,14 @@ export function ChatComposer({
                       hasSendableContent={composerSendState.hasSendableContent}
                       dispatchBlocked={isPendingTurnDispatchBlocked}
                       connecting={isConnecting}
-                      busy={isComposerSendBusy || isPreparingWorktree}
-                      busyLabel={isPreparingWorktree ? "Preparing worktree" : composerSendBusyLabel}
+                      busy={isComposerSendBusy || isPreparingWorktree || revertInProgress}
+                      busyLabel={
+                        isPreparingWorktree
+                          ? "Preparing worktree"
+                          : revertInProgress && !isComposerSendBusy
+                            ? "Reverting"
+                            : composerSendBusyLabel
+                      }
                       paused={nextTurnQueueState.snapshot?.paused ?? false}
                       runnableQueueCount={
                         nextTurnQueueState.snapshot?.paused

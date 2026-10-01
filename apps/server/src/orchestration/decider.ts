@@ -1621,6 +1621,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: "The conversation changed before rewinding.",
         });
+      if (
+        command.expectedLatestMessageId !== undefined &&
+        thread.messages.at(-1)?.id !== command.expectedLatestMessageId
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "New messages arrived after you chose to revert. Review them and try again.",
+        });
       return {
         ...withEventBase({
           aggregateKind: "thread",

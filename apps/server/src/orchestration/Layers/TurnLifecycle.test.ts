@@ -612,8 +612,101 @@ suite("durable turn lifecycle", (it) => {
             ? sql`SELECT 1 FROM rewind_operations WHERE operation_id = ${operationId}`
             : sql`SELECT 1 FROM rewind_requests WHERE operation_id = ${operationId}`
           ).pipe(Effect.map((rows) => rows.length > 0));
-        return { sql, operationId, setState, pauseQueue, queue, dispatch, exists };
+        const complete = () =>
+          engine.dispatch({
+            type: "thread.revert.complete",
+            commandId: CommandId.makeUnsafe(`rewind-complete:${operationId}`),
+            operationId: CommandId.makeUnsafe(operationId),
+            threadId,
+            turnCount: 0,
+            retainedTurnIds: [],
+            createdAt: at,
+          });
+        // The queue state the rewind replaced, as the engine saved it at request time.
+        const savePriorQueue = (reason: string | null) =>
+          sql`UPDATE rewind_requests SET queue_state_json = ${JSON.stringify({ paused: reason ? 1 : 0, pause_reason_code: reason, pause_detail: null })} WHERE operation_id = ${operationId}`;
+        const queueItem = () =>
+          sql`INSERT INTO next_turn_queue(item_id, thread_id, submission_id, command_id, message_id, position, command_json, created_at, updated_at) VALUES (${`${operationId}:item`}, ${threadId}, ${`${operationId}:submission`}, ${`${operationId}:command`}, 'queued-message', 0, '{}', ${at}, ${at})`;
+        return {
+          sql,
+          operationId,
+          setState,
+          pauseQueue,
+          queue,
+          dispatch,
+          exists,
+          complete,
+          queueItem,
+          savePriorQueue,
+        };
       });
+
+    it.effect("rewind complete: a manual pause from before the revert survives it", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-keeps-manual-pause");
+        yield* t.setState("files-confirmed");
+        yield* t.savePriorQueue("manual_pause");
+        yield* t.pauseQueue("rewind_in_progress");
+        yield* t.queueItem();
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 1, reason: "manual_pause" });
+      }),
+    );
+
+    it.effect("rewind complete: drops a pause about turns the revert deleted", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-drops-turn-pause");
+        yield* t.setState("files-confirmed");
+        yield* t.savePriorQueue("turn_failed");
+        yield* t.pauseQueue("rewind_in_progress");
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 0, reason: null });
+      }),
+    );
+
+    it.effect("rewind complete: a recheck that completes unblocks an empty queue", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-after-recheck");
+        yield* t.setState("files-confirmed");
+        // Recovery parked the rewind for reconciliation before the recheck finished it.
+        yield* t.pauseQueue("reconciliation_required");
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 0, reason: null });
+      }),
+    );
+
+    it.effect("rewind complete: a pause set while the rewind ran is left alone", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-keeps-new-pause");
+        yield* t.setState("files-confirmed");
+        yield* t.pauseQueue("manual_pause");
+        yield* t.queueItem();
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 1, reason: "manual_pause" });
+      }),
+    );
+
+    it.effect("rewind complete: an empty queue gets back the state the rewind replaced", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-empty-queue");
+        yield* t.setState("files-confirmed");
+        yield* t.pauseQueue("rewind_in_progress");
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 0, reason: null });
+        assert.equal(yield* t.exists("rewind_requests"), false);
+      }),
+    );
+
+    it.effect("rewind complete: queued prompts wait for review after the revert", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("complete-with-queue");
+        yield* t.setState("files-confirmed");
+        yield* t.pauseQueue("rewind_in_progress");
+        yield* t.queueItem();
+        yield* t.complete();
+        assert.deepEqual(yield* t.queue, { paused: 1, reason: "thread_reverted" });
+      }),
+    );
 
     it.effect("rewind cancel: unblocks a prepared rewind and restores the queue", () =>
       Effect.gen(function* () {
