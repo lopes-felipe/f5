@@ -112,6 +112,8 @@ export interface ProviderServiceShape {
   readonly rollbackConversation: (input: {
     readonly threadId: ThreadId;
     readonly numTurns: number;
+    /** Provider turn id of the first dropped turn; see ProviderAdapterShape.rollbackThread. */
+    readonly beforeTurnId?: string;
   }) => Effect.Effect<void, ProviderServiceError>;
 
   /**

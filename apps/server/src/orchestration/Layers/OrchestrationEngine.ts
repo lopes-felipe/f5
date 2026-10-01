@@ -348,8 +348,34 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     }
                 }
                 if (savedEvent.type === "thread.rewind-draft-resolved") {
-                  const draft =
-                    yield* sql`SELECT operation_id FROM rewind_operations WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'completed'`;
+                  const { operationId, threadId } = savedEvent.payload;
+                  const pending = (yield* sql<{
+                    target_message_id: string;
+                  }>`SELECT target_message_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'prepared'`)[0];
+                  if (pending) {
+                    // Cancel a rewind the provider never applied (`prepared` is only kept
+                    // when that is proven). Give the prompt's attachments back to its
+                    // message, restore the queue, and unblock the thread. The rewind's
+                    // conditional claim of `provider-pending` loses against this delete.
+                    yield* sql`INSERT OR IGNORE INTO attachment_owners(attachment_id, owner_kind, owner_id, created_at) SELECT attachment_id, 'message', ${pending.target_message_id}, ${savedEvent.occurredAt} FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId}`;
+                    yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'rewind_draft' AND owner_id = ${operationId}`;
+                    const saved = (yield* sql<{
+                      state: string | null;
+                    }>`SELECT queue_state_json AS state FROM rewind_requests WHERE operation_id = ${operationId}`)[0];
+                    const prior = saved?.state
+                      ? (JSON.parse(saved.state) as {
+                          paused: number;
+                          pause_reason_code: string | null;
+                          pause_detail: string | null;
+                        })
+                      : { paused: 0, pause_reason_code: null, pause_detail: null };
+                    yield* sql`UPDATE next_turn_queue_state SET paused = ${prior.paused}, pause_reason_code = ${prior.pause_reason_code}, pause_detail = ${prior.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required', 'thread_reverted')`;
+                    yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${operationId}`;
+                    yield* sql`DELETE FROM rewind_operations WHERE operation_id = ${operationId} AND state = 'prepared'`;
+                  }
+                  const draft = pending
+                    ? [pending]
+                    : yield* sql`SELECT operation_id FROM rewind_operations WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'completed'`;
                   if (!draft.length)
                     return yield* new OrchestrationCommandInvariantError({
                       commandType: envelope.command.type,

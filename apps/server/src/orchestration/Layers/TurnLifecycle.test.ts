@@ -578,6 +578,49 @@ suite("durable turn lifecycle", (it) => {
     }),
   );
 
+  it.effect("cancels a prepared rewind and unblocks the thread, but not an unverified one", () =>
+    Effect.gen(function* () {
+      const threadId = yield* seed("cancel-prepared-rewind");
+      const sql = yield* SqlClient.SqlClient;
+      const engine = yield* OrchestrationEngineService;
+      const insertOperation = (operationId: string, state: string) =>
+        sql`INSERT INTO rewind_operations(operation_id, thread_id, target_message_id, provider_session_id, mode, expected_revision, state, relative_count, retained_count, boundary_json, draft_json, error, created_at, updated_at) VALUES (${operationId}, ${threadId}, 'prompt-1', 'session', 'conversation', 0, ${state}, 1, 0, '[]', '{"text":"Prompt","attachments":[]}', 'rejected', ${at}, ${at})`;
+      const resolve = (operationId: string) =>
+        engine.dispatch({
+          type: "thread.rewind-draft.resolve",
+          commandId: CommandId.makeUnsafe(`rewind-cancel:${operationId}`),
+          operationId: CommandId.makeUnsafe(operationId),
+          threadId,
+          createdAt: at,
+        });
+
+      yield* insertOperation("rewind-unverified", "reconciliation-required");
+      const refused = yield* Effect.flip(resolve("rewind-unverified"));
+      assert.include(refused.message, "This rewind draft is not ready.");
+      yield* sql`DELETE FROM rewind_operations WHERE operation_id = 'rewind-unverified'`;
+
+      yield* insertOperation("rewind-prepared", "prepared");
+      yield* sql`INSERT INTO rewind_requests(operation_id, thread_id, payload_json, created_at, queue_state_json) VALUES ('rewind-prepared', ${threadId}, '{}', ${at}, ${JSON.stringify({ paused: 0, pause_reason_code: null, pause_detail: null })})`;
+      yield* sql`INSERT INTO next_turn_queue_state(thread_id, paused, pause_reason_code, revision, updated_at) VALUES (${threadId}, 1, 'reconciliation_required', 1, ${at}) ON CONFLICT(thread_id) DO UPDATE SET paused = 1, pause_reason_code = 'reconciliation_required'`;
+
+      yield* resolve("rewind-prepared");
+
+      assert.equal(
+        (yield* sql`SELECT 1 FROM rewind_operations WHERE operation_id = 'rewind-prepared'`).length,
+        0,
+      );
+      assert.equal(
+        (yield* sql`SELECT 1 FROM rewind_requests WHERE operation_id = 'rewind-prepared'`).length,
+        0,
+      );
+      const queue = (yield* sql<{
+        paused: number;
+        reason: string | null;
+      }>`SELECT paused, pause_reason_code AS reason FROM next_turn_queue_state WHERE thread_id = ${threadId}`)[0]!;
+      assert.equal(queue.paused, 0);
+      assert.equal(queue.reason, null);
+    }),
+  );
   it.effect("re-admits only a definitely rejected steer as a start using its original IDs", () =>
     Effect.gen(function* () {
       const threadId = yield* seed("steer-fallback-engine");

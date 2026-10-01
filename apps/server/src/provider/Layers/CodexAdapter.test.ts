@@ -19,6 +19,7 @@ import { Effect, Fiber, Layer, Option, Stream } from "effect";
 
 import {
   CodexAppServerManager,
+  CodexJsonRpcError,
   type CodexAppServerStartSessionInput,
   type CodexAppServerSendTurnInput,
 } from "../../codexAppServerManager.ts";
@@ -119,10 +120,12 @@ class FakeCodexManager extends CodexAppServerManager {
     turns: [],
   }));
 
-  public rollbackThreadImpl = vi.fn(async (_threadId: ThreadId, _numTurns: number) => ({
-    threadId: asThreadId("thread-1"),
-    turns: [],
-  }));
+  public rollbackThreadImpl = vi.fn(
+    async (_threadId: ThreadId, _numTurns: number, _beforeTurnId?: string) => ({
+      threadId: asThreadId("thread-1"),
+      turns: [],
+    }),
+  );
 
   public respondToRequestImpl = vi.fn(
     async (
@@ -163,8 +166,8 @@ class FakeCodexManager extends CodexAppServerManager {
     return this.readThreadImpl(threadId);
   }
 
-  override rollbackThread(threadId: ThreadId, numTurns: number) {
-    return this.rollbackThreadImpl(threadId, numTurns);
+  override rollbackThread(threadId: ThreadId, numTurns: number, beforeTurnId?: string) {
+    return this.rollbackThreadImpl(threadId, numTurns, beforeTurnId);
   }
 
   override respondToRequest(
@@ -321,6 +324,30 @@ validationLayer("CodexAdapterLive validation", (it) => {
         runtimeMode: "approval-required",
         timeoutMs: 5_000,
       });
+    }),
+  );
+
+  it.effect("forwards the revert boundary and labels errors with the method that failed", () =>
+    Effect.gen(function* () {
+      validationManager.rollbackThreadImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter.rollbackThread(asThreadId("thread-1"), 2, { beforeTurnId: "turn-2" });
+      assert.deepStrictEqual(validationManager.rollbackThreadImpl.mock.calls[0], [
+        asThreadId("thread-1"),
+        2,
+        "turn-2",
+      ]);
+
+      validationManager.rollbackThreadImpl.mockRejectedValueOnce(
+        new CodexJsonRpcError("thread/rollback", -32600, "Invalid request: unknown variant"),
+      );
+      const failure = yield* Effect.flip(adapter.rollbackThread(asThreadId("thread-1"), 1));
+      assert.equal(failure._tag, "ProviderAdapterRequestError");
+      assert.equal(
+        failure._tag === "ProviderAdapterRequestError" ? failure.method : "",
+        "thread/rollback",
+      );
     }),
   );
 });
@@ -617,6 +644,12 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         id: asEventId("evt-raw-response"),
         method: "rawResponseItem/completed",
         payload: { item: { type: "message" } },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        ...base,
+        id: asEventId("evt-thread-reverted"),
+        method: "thread/reverted",
+        payload: { threadId: "thread-1" },
       } satisfies ProviderEvent);
       lifecycleManager.emit("event", {
         ...base,

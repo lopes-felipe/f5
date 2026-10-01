@@ -62,7 +62,7 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
     case "rewind_in_progress":
       return "Rewinding the conversation.";
     case "reconciliation_required":
-      return "The provider rewind needs reconciliation.";
+      return "Queue paused until the unfinished rewind is resolved.";
     case "thread_reverted":
       return "Queue paused because this thread was reverted.";
     case "thread_compacting":
