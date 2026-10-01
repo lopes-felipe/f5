@@ -7,7 +7,7 @@ import {
   ThreadTurnStartCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
+import { Cause, Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   estimateModelContextWindowTokens,
@@ -114,6 +114,26 @@ interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly filesToDelete: Map<string, string>;
 }
+
+/**
+ * Event types the pending-user-inputs projector reacts to. Used both as its
+ * bootstrap filter and as the guard inside its `apply`, so handling a new type
+ * means adding it here, which also makes catch-up read it.
+ */
+const PENDING_USER_INPUT_EVENT_TYPES = [
+  "thread.activity-appended",
+  "thread.user-input-resolved",
+  "thread.reverted",
+  "thread.session-set",
+] as const satisfies ReadonlyArray<OrchestrationEvent["type"]>;
+
+type PendingUserInputEvent = Extract<
+  OrchestrationEvent,
+  { readonly type: (typeof PENDING_USER_INPUT_EVENT_TYPES)[number] }
+>;
+
+const isPendingUserInputEvent = (event: OrchestrationEvent): event is PendingUserInputEvent =>
+  (PENDING_USER_INPUT_EVENT_TYPES as ReadonlyArray<string>).includes(event.type);
 
 const makeAttachmentSideEffects = (): AttachmentSideEffects => ({
   deletedThreadIds: new Set<string>(),
@@ -2185,13 +2205,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
 
   const applyPendingUserInputsProjection = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
-      if (
-        event.type !== "thread.activity-appended" &&
-        event.type !== "thread.user-input-resolved" &&
-        event.type !== "thread.reverted" &&
-        event.type !== "thread.session-set"
-      )
-        return;
+      // Same list as the projector's `eventTypes`, so live projection and
+      // bootstrap catch-up cannot disagree about which events matter.
+      if (!isPendingUserInputEvent(event)) return;
       if (
         event.type === "thread.activity-appended" &&
         event.payload.activity.kind !== "user-input.requested" &&
@@ -2315,13 +2331,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       // After `threads`: projection_pending_user_inputs.thread_id references
       // projection_threads, so a from-scratch bootstrap must create threads first.
       name: ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs,
-      // Must cover every type `applyPendingUserInputsProjection` handles.
-      eventTypes: [
-        "thread.activity-appended",
-        "thread.user-input-resolved",
-        "thread.reverted",
-        "thread.session-set",
-      ],
+      eventTypes: PENDING_USER_INPUT_EVENT_TYPES,
       apply: applyPendingUserInputsProjection,
     },
     {
@@ -2343,9 +2353,22 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       const attachmentSideEffects = makeAttachmentSideEffects();
 
       yield* sql.withTransaction(
-        Effect.forEach(events, (event) => projector.apply(event, attachmentSideEffects), {
-          discard: true,
-        }).pipe(
+        Effect.forEach(
+          events,
+          (event) =>
+            projector.apply(event, attachmentSideEffects).pipe(
+              // A failure rolls back the whole batch, so name the event that caused it.
+              Effect.tapCause((cause) =>
+                Effect.logWarning("projector failed to apply event", {
+                  projector: projector.name,
+                  sequence: event.sequence,
+                  eventType: event.type,
+                  causePretty: Cause.pretty(cause),
+                }),
+              ),
+            ),
+          { discard: true },
+        ).pipe(
           Effect.flatMap(() =>
             projectionStateRepository.upsert({
               projector: projector.name,
@@ -2449,14 +2472,21 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       );
 
       // Every event up to `head` was scanned, so a filtered projector can skip
-      // the trailing events it ignores. Never move the cursor backwards: the
-      // scan may have read past `head` if events were appended meanwhile.
+      // the trailing events it ignores. The write only ever moves the cursor
+      // forward (MAX in SQL), so it cannot undo a newer cursor even if
+      // something else projected events while this scan ran. Today bootstrap
+      // finishes before the engine's command worker starts, so nothing does.
       if (cursorSequence < head.sequence) {
-        yield* projectionStateRepository.upsert({
-          projector: projector.name,
-          lastAppliedSequence: head.sequence,
-          updatedAt: head.occurredAt,
-        });
+        yield* sql`
+          INSERT INTO projection_state (projector, last_applied_sequence, updated_at)
+          VALUES (${projector.name}, ${head.sequence}, ${head.occurredAt})
+          ON CONFLICT (projector) DO UPDATE SET
+            updated_at = CASE
+              WHEN excluded.last_applied_sequence > last_applied_sequence THEN excluded.updated_at
+              ELSE updated_at
+            END,
+            last_applied_sequence = MAX(last_applied_sequence, excluded.last_applied_sequence)
+        `;
       }
 
       if (logProgress) {

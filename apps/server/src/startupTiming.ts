@@ -14,11 +14,21 @@ const activePhases = new Map<number, ActiveStartupPhase>();
  * Returns the most recently started startup phase that is still running, or
  * `null` when none is. Phases nest (for example `orchestration.runtime.start`
  * wraps `orchestration.projection.bootstrap`), so this is the innermost one.
+ *
+ * Best-effort and process-wide: it is only used to label "still starting"
+ * messages. If phases from two server instances overlap in one process (tests),
+ * the label may name the other instance's phase.
  */
 export function getCurrentStartupPhase(): ActiveStartupPhase | null {
+  // Ordered by start sequence (`id`), not by `startedAtMs`, so phases that
+  // start in the same millisecond still resolve to the innermost one.
+  let currentId = -1;
   let current: ActiveStartupPhase | null = null;
-  for (const phase of activePhases.values()) {
-    if (current === null || phase.startedAtMs >= current.startedAtMs) current = phase;
+  for (const [id, phase] of activePhases) {
+    if (id > currentId) {
+      currentId = id;
+      current = phase;
+    }
   }
   return current;
 }

@@ -2133,17 +2133,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const orchestrationRuntimeStartedAtMs = Date.now();
   yield* startOrchestrationRuntime.pipe(Effect.forkIn(subscriptionsScope));
 
-  const awaitOrchestrationRuntimeForBootstrap = Deferred.await(orchestrationRuntime).pipe(
-    Effect.timeoutOrElse({
-      duration: "30 seconds",
-      onTimeout: () =>
-        Effect.fail(
-          new ServerLifecycleError({
-            operation: "orchestrationRuntimeStartTimeout",
-          }),
-        ),
-    }),
-  );
+  // Server-internal waits (cwd auto-bootstrap, clone completion) have no
+  // client deadline, so they wait for startup to finish however long catch-up
+  // takes. Startup failures still surface: they fail the Deferred.
+  const awaitOrchestrationRuntimeForBootstrap = Deferred.await(orchestrationRuntime);
 
   const projectClones = yield* makeProjectCloneTracker({
     stateDir: serverConfig.stateDir,
@@ -3546,7 +3539,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.reviewPreviewDiff: {
         const body = stripRequestTag(request.body);
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForBootstrap;
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
         const readModel = yield* orchestrationEngine.getReadModel();
         return yield* getReviewPreviewDiff({ request: body, readModel });
       }
