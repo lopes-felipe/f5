@@ -103,14 +103,31 @@ export class PreviewArtifactStore {
     if (days !== null && !isValidRetentionDays(days)) {
       throw new Error("Preview artifact retention must be between 1 and 3650 days.");
     }
-    this.#retentionByScope.set(scope, days);
-    this.#applyRetention();
+    // Serialized with every expiry pass, so a pass that computed its cutoff
+    // under an older, shorter policy cannot run after a longer one applies.
+    await this.#withQuotaLock(async () => {
+      this.#retentionByScope.set(scope, days);
+      this.#applyRetention();
+      await this.#persistRetention();
+      await this.#removeExpiredArtifactsUnlocked();
+    });
+  }
+
+  /** Same-directory temp file and rename: a crash never leaves a torn policy file. */
+  async #persistRetention(): Promise<void> {
     await mkdir(this.#directory, { recursive: true });
-    await writeFile(
-      path.join(this.#directory, RETENTION_FILE),
-      JSON.stringify({ byScope: Object.fromEntries(this.#retentionByScope) }),
-    );
-    await this.#removeExpiredArtifacts();
+    const target = path.join(this.#directory, RETENTION_FILE);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(
+        temporary,
+        JSON.stringify({ byScope: Object.fromEntries(this.#retentionByScope) }),
+      );
+      await rename(temporary, target);
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
   }
 
   #applyRetention(): void {
@@ -337,6 +354,11 @@ export class PreviewArtifactStore {
   }
 
   async #removeExpiredArtifacts(): Promise<void> {
+    await this.#withQuotaLock(() => this.#removeExpiredArtifactsUnlocked());
+  }
+
+  /** Callers hold the quota lock; the cutoff is read under it. */
+  async #removeExpiredArtifactsUnlocked(): Promise<void> {
     const cutoff = this.#now() - this.#retentionMs;
     const files = await this.#storedFiles();
     await Promise.all(
