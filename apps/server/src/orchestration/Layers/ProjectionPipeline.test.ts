@@ -131,6 +131,162 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
+  it.effect("catches up a cursorless filtered projector in batches and ends at the log head", () =>
+    runWithProjectionPipelineLayer(
+      process.cwd(),
+      Effect.gen(function* () {
+        const pipeline = yield* OrchestrationProjectionPipeline;
+        const store = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = "2026-10-01T00:00:00.000Z";
+        const projectId = ProjectId.makeUnsafe("batched-bootstrap-project");
+        const threadId = ThreadId.makeUnsafe("batched-bootstrap-thread");
+        const common = {
+          occurredAt: now,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+        };
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("batched-project"),
+          type: "project.created",
+          aggregateKind: "project",
+          aggregateId: projectId,
+          payload: {
+            projectId,
+            title: "Batched",
+            workspaceRoot: "/tmp/batched",
+            defaultModel: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("batched-thread"),
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            projectId,
+            title: "Batched",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe("batched-question"),
+          type: "thread.activity-appended",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.makeUnsafe("batched-question"),
+              kind: "user-input.requested",
+              tone: "info",
+              summary: "Question",
+              turnId: TurnId.makeUnsafe("batched-turn"),
+              createdAt: now,
+              payload: {
+                requestId: "question:batched",
+                questions: [
+                  {
+                    id: "0",
+                    header: "Question",
+                    question: "Choose",
+                    options: [{ label: "A", description: "A" }],
+                    multiSelect: false,
+                  },
+                ],
+              },
+            },
+          },
+        });
+        // Trailing events the pending-user-inputs projector ignores, spanning
+        // several bootstrap batches. One statement keeps the test fast.
+        yield* sql`
+          WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 600)
+          INSERT INTO orchestration_events (
+            event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+            command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+          )
+          SELECT 'batched-message-' || n, 'thread', ${threadId}, 100 + n, 'thread.message-sent',
+            ${now}, NULL, NULL, NULL, 'server',
+            json_object(
+              'threadId', ${threadId}, 'messageId', 'batched-message-' || n, 'role', 'user',
+              'text', 'Message ' || n, 'turnId', NULL, 'streaming', json('false'),
+              'createdAt', ${now}, 'updatedAt', ${now}
+            ),
+            '{}'
+          FROM numbers
+        `;
+        const head = (yield* sql<{
+          head: number;
+        }>`SELECT MAX(sequence) AS head FROM orchestration_events`)[0]!.head;
+
+        // Count cursor writes per projector to observe the batch size.
+        yield* sql`CREATE TEMP TABLE cursor_writes (projector TEXT NOT NULL)`;
+        yield* sql`CREATE TEMP TRIGGER cursor_write_insert AFTER INSERT ON projection_state
+            BEGIN INSERT INTO cursor_writes VALUES (NEW.projector); END`;
+        yield* sql`CREATE TEMP TRIGGER cursor_write_update AFTER UPDATE ON projection_state
+            BEGIN INSERT INTO cursor_writes VALUES (NEW.projector); END`;
+        const cursorWrites = (projector: string) =>
+          sql<{
+            count: number;
+          }>`SELECT COUNT(*) AS count FROM cursor_writes WHERE projector = ${projector}`.pipe(
+            Effect.map((rows) => rows[0]?.count ?? 0),
+          );
+
+        yield* pipeline.bootstrap;
+
+        const cursors = yield* sql<{
+          projector: string;
+          lastAppliedSequence: number;
+        }>`SELECT projector, last_applied_sequence AS "lastAppliedSequence" FROM projection_state`;
+        assert.equal(cursors.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+        for (const cursor of cursors) assert.equal(cursor.lastAppliedSequence, head);
+        // 603 events at 500 per batch: two cursor writes, not one per event.
+        assert.equal(yield* cursorWrites(ORCHESTRATION_PROJECTOR_NAMES.threadMessages), 2);
+        // One batch holding the single matching event, then the move to the head.
+        assert.equal(yield* cursorWrites(ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs), 2);
+        const pending =
+          yield* sql`SELECT request_id FROM projection_pending_user_inputs WHERE thread_id = ${threadId} AND resolution IS NULL`;
+        assert.equal(pending.length, 1);
+
+        // A projector added to an existing install starts with no cursor and
+        // rebuilds the same rows from only the events it reads.
+        yield* sql`DELETE FROM projection_pending_user_inputs WHERE thread_id = ${threadId}`;
+        yield* sql`DELETE FROM projection_state WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs}`;
+        yield* pipeline.bootstrap;
+        const rebuilt =
+          yield* sql`SELECT request_id FROM projection_pending_user_inputs WHERE thread_id = ${threadId} AND resolution IS NULL`;
+        assert.equal(rebuilt.length, 1);
+        const rebuiltCursor = yield* sql<{
+          lastAppliedSequence: number;
+        }>`SELECT last_applied_sequence AS "lastAppliedSequence" FROM projection_state WHERE projector = ${ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs}`;
+        assert.equal(rebuiltCursor[0]?.lastAppliedSequence, head);
+
+        // Already at the head: bootstrap writes no cursors.
+        yield* sql`DELETE FROM cursor_writes`;
+        yield* pipeline.bootstrap;
+        const writesAtHead = yield* sql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM cursor_writes`;
+        assert.equal(writesAtHead[0]?.count, 0);
+      }),
+    ),
+  );
+
   it.effect("bootstraps more than 1,000 pending events and preserves a captured checkpoint", () =>
     Effect.gen(function* () {
       const pipeline = yield* OrchestrationProjectionPipeline;

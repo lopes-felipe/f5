@@ -61,6 +61,64 @@ layer("OrchestrationEventStore", (it) => {
     }),
   );
 
+  it.effect("filters replay by event type across pages without decoding other rows", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const baseline = yield* sql<{
+        sequence: number;
+      }>`SELECT COALESCE(MAX(sequence), 0) AS sequence FROM orchestration_events`;
+      const cursor = baseline[0]!.sequence;
+      const timestamp = "2026-10-01T00:00:00.000Z";
+      // Even rows are valid project.created events. Odd rows carry a payload that
+      // cannot decode as thread.message-sent, so reading one would fail the stream.
+      yield* sql`
+        WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 1200)
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        SELECT 'filter-' || n, 'project', 'filter-project', n,
+          CASE WHEN n % 2 = 0 THEN 'project.created' ELSE 'thread.message-sent' END,
+          ${timestamp}, NULL, NULL, NULL, 'server',
+          CASE WHEN n % 2 = 0 THEN ${JSON.stringify({
+            projectId: "filter-project",
+            title: "Filter",
+            workspaceRoot: "/tmp/filter",
+            defaultModel: null,
+            scripts: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })} ELSE '{"not":"a message"}' END,
+          '{}'
+        FROM numbers
+      `;
+      const filtered = yield* Stream.runCollect(
+        eventStore.readFromSequence(cursor, Number.MAX_SAFE_INTEGER, {
+          eventTypes: ["project.created"],
+        }),
+      );
+      const events = Array.from(filtered);
+      assert.equal(events.length, 600);
+      assert.isTrue(events.every((event) => event.type === "project.created"));
+      // AUTOINCREMENT does not reuse sequences freed by earlier tests, so check
+      // spacing rather than absolute values: every other row was skipped.
+      events.forEach((event, index) =>
+        assert.equal(event.sequence, events[0]!.sequence + index * 2),
+      );
+
+      const limited = yield* Stream.runCollect(
+        eventStore.readFromSequence(cursor, 501, { eventTypes: ["project.created"] }),
+      );
+      assert.equal(limited.length, 501);
+      const none = yield* Stream.runCollect(
+        eventStore.readFromSequence(cursor, Number.MAX_SAFE_INTEGER, { eventTypes: [] }),
+      );
+      assert.equal(none.length, 0);
+      yield* sql`DELETE FROM orchestration_events WHERE event_id LIKE 'filter-%'`;
+    }),
+  );
+
   it.effect("stores json columns as strings and replays decoded events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
