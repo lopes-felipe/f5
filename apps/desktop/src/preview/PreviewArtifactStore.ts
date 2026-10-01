@@ -1,11 +1,28 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, rename, rm, stat, type FileHandle } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 
 import type { PreviewArtifact } from "@t3tools/contracts";
 
 const DEFAULT_QUOTA_BYTES = 1024 * 1024 * 1024;
-const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RETENTION_MS = 7 * DAY_MS;
+/** Remembers the configured retention so startup expiry does not fall back to the default. */
+const RETENTION_FILE = ".retention.json";
+
+function isValidRetentionDays(days: unknown): days is number {
+  return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 3650;
+}
 const SCREENSHOT_MAX_BYTES = 25 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 250 * 1024 * 1024;
 const RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
@@ -59,7 +76,10 @@ interface StoredFile {
 export class PreviewArtifactStore {
   readonly #directory: string;
   readonly #quotaBytes: number;
-  readonly #retentionMs: number;
+  #retentionMs: number;
+  readonly #retentionFromOptions: boolean;
+  /** Retention days requested by each profile; null means the default. */
+  readonly #retentionByScope = new Map<string, number | null>();
   readonly #now: () => number;
   readonly #recordings = new Map<string, RecordingEntry>();
   #quotaOperationTail: Promise<void> = Promise.resolve();
@@ -68,7 +88,76 @@ export class PreviewArtifactStore {
     this.#directory = path.resolve(options.directory);
     this.#quotaBytes = options.quotaBytes ?? DEFAULT_QUOTA_BYTES;
     this.#retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
+    this.#retentionFromOptions = options.retentionMs !== undefined;
     this.#now = options.now ?? Date.now;
+  }
+
+  /**
+   * Screenshot and recording retention from one profile's storage settings.
+   * Null means that profile uses the built-in default. Artifacts are shared
+   * by every profile, so the longest retention any profile asked for applies:
+   * one profile's setting never expires artifacts another still keeps.
+   * Expired artifacts are removed right away.
+   */
+  async setRetention(scope: string, days: number | null): Promise<void> {
+    if (days !== null && !isValidRetentionDays(days)) {
+      throw new Error("Preview artifact retention must be between 1 and 3650 days.");
+    }
+    // Serialized with every expiry pass, so a pass that computed its cutoff
+    // under an older, shorter policy cannot run after a longer one applies.
+    await this.#withQuotaLock(async () => {
+      this.#retentionByScope.set(scope, days);
+      this.#applyRetention();
+      await this.#persistRetention();
+      await this.#removeExpiredArtifactsUnlocked();
+    });
+  }
+
+  /** Same-directory temp file and rename: a crash never leaves a torn policy file. */
+  async #persistRetention(): Promise<void> {
+    await mkdir(this.#directory, { recursive: true });
+    const target = path.join(this.#directory, RETENTION_FILE);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(
+        temporary,
+        JSON.stringify({ byScope: Object.fromEntries(this.#retentionByScope) }),
+      );
+      await rename(temporary, target);
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
+  }
+
+  #applyRetention(): void {
+    if (this.#retentionByScope.size === 0) {
+      this.#retentionMs = DEFAULT_RETENTION_MS;
+      return;
+    }
+    let longest = 0;
+    for (const days of this.#retentionByScope.values()) {
+      longest = Math.max(longest, days === null ? DEFAULT_RETENTION_MS : days * DAY_MS);
+    }
+    this.#retentionMs = longest;
+  }
+
+  async #loadSavedRetention(): Promise<void> {
+    const raw = await readFile(path.join(this.#directory, RETENTION_FILE), "utf8").catch(
+      () => null,
+    );
+    if (raw === null) return;
+    let byScope: unknown = null;
+    try {
+      byScope = (JSON.parse(raw) as { byScope?: unknown }).byScope;
+    } catch {
+      return;
+    }
+    if (typeof byScope !== "object" || byScope === null) return;
+    for (const [scope, days] of Object.entries(byScope)) {
+      if (days === null || isValidRetentionDays(days)) this.#retentionByScope.set(scope, days);
+    }
+    this.#applyRetention();
   }
 
   async initialize(): Promise<void> {
@@ -79,6 +168,7 @@ export class PreviewArtifactStore {
         .filter((entry) => entry.isFile() && entry.name.endsWith(".tmp"))
         .map((entry) => rm(path.join(this.#directory, entry.name), { force: true })),
     );
+    if (this.#retentionFromOptions === false) await this.#loadSavedRetention();
     await this.#removeExpiredArtifacts();
     await this.#enforceQuota(0);
   }
@@ -249,7 +339,9 @@ export class PreviewArtifactStore {
     const entries = await readdir(this.#directory, { withFileTypes: true }).catch(() => []);
     const files = await Promise.all(
       entries
-        .filter((entry) => entry.isFile() && !entry.name.endsWith(".tmp"))
+        .filter(
+          (entry) => entry.isFile() && !entry.name.endsWith(".tmp") && !entry.name.startsWith("."),
+        )
         .map(async (entry): Promise<StoredFile | null> => {
           const filePath = path.join(this.#directory, entry.name);
           const details = await stat(filePath).catch(() => null);
@@ -262,6 +354,11 @@ export class PreviewArtifactStore {
   }
 
   async #removeExpiredArtifacts(): Promise<void> {
+    await this.#withQuotaLock(() => this.#removeExpiredArtifactsUnlocked());
+  }
+
+  /** Callers hold the quota lock; the cutoff is read under it. */
+  async #removeExpiredArtifactsUnlocked(): Promise<void> {
     const cutoff = this.#now() - this.#retentionMs;
     const files = await this.#storedFiles();
     await Promise.all(

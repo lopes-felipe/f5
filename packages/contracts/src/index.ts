@@ -6,6 +6,7 @@ export * from "./terminal";
 export * from "./provider";
 export * from "./providerInstance";
 export * from "./nextTurnQueue";
+export * from "./worktreeSetup";
 export * from "./globalSearch";
 export * from "./workflowPlatform";
 export * from "./providerRuntime";

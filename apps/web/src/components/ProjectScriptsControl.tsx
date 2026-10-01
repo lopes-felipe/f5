@@ -88,6 +88,8 @@ export interface NewProjectScriptInput {
   command: string;
   icon: ProjectScriptIcon;
   runOnWorktreeCreate: boolean;
+  /** False when the agent waits for the setup script to finish. */
+  async: boolean;
   keybinding: string | null;
 }
 
@@ -179,6 +181,7 @@ export default function ProjectScriptsControl({
   const [icon, setIcon] = useState<ProjectScriptIcon>("play");
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   const [runOnWorktreeCreate, setRunOnWorktreeCreate] = useState(false);
+  const [agentWaits, setAgentWaits] = useState(false);
   const [keybinding, setKeybinding] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -295,6 +298,7 @@ export default function ProjectScriptsControl({
           command: trimmedCommand,
           icon,
           runOnWorktreeCreate,
+          async: !agentWaits,
           keybinding: keybindingRule?.key ?? null,
         } satisfies NewProjectScriptInput;
         if (editingScriptId) {
@@ -319,6 +323,7 @@ export default function ProjectScriptsControl({
       onUpdateScript,
       pendingScriptCommand,
       runOnWorktreeCreate,
+      agentWaits,
     ],
   );
 
@@ -329,6 +334,7 @@ export default function ProjectScriptsControl({
     setIcon("play");
     setIconPickerOpen(false);
     setRunOnWorktreeCreate(false);
+    setAgentWaits(false);
     setKeybinding("");
     setValidationError(null);
     setDialogOpen(true);
@@ -341,6 +347,7 @@ export default function ProjectScriptsControl({
     setIcon(script.icon);
     setIconPickerOpen(false);
     setRunOnWorktreeCreate(script.runOnWorktreeCreate);
+    setAgentWaits(script.async === false);
     setKeybinding(keybindingValueForCommand(keybindings, commandForProjectScript(script.id)) ?? "");
     setValidationError(null);
     setDialogOpen(true);
@@ -449,6 +456,7 @@ export default function ProjectScriptsControl({
           setCommand("");
           setIcon("play");
           setRunOnWorktreeCreate(false);
+          setAgentWaits(false);
           setKeybinding("");
           setValidationError(null);
         }}
@@ -549,6 +557,21 @@ export default function ProjectScriptsControl({
                   onCheckedChange={(checked) => setRunOnWorktreeCreate(Boolean(checked))}
                 />
               </label>
+              {runOnWorktreeCreate ? (
+                <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm">
+                  <span>
+                    Agent waits for this script
+                    <span className="block text-xs text-muted-foreground">
+                      Off: the agent starts while the script keeps running.
+                    </span>
+                  </span>
+                  <Switch
+                    aria-label="Agent waits for this script"
+                    checked={agentWaits}
+                    onCheckedChange={(checked) => setAgentWaits(Boolean(checked))}
+                  />
+                </label>
+              ) : null}
               {displayedValidationMessage ? (
                 <p className="text-sm text-destructive">{displayedValidationMessage}</p>
               ) : null}

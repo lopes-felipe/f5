@@ -19,6 +19,11 @@ import {
 
 export const MAX_QUEUED_TURNS_PER_THREAD = 20;
 
+/** A failed first send rolled back the thread it created; retry under a fresh thread id. */
+export const BOOTSTRAP_THREAD_DELETED_ERROR_CODE = "BootstrapThreadDeleted";
+/** A failed first send never created its thread; the draft may keep or rotate its id. */
+export const BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE = "BootstrapThreadNotCreated";
+
 export const NextTurnQueueItemStatus = Schema.Literals(["queued", "dispatching", "failed"]);
 export type NextTurnQueueItemStatus = typeof NextTurnQueueItemStatus.Type;
 
@@ -47,6 +52,10 @@ export const QueueReasonCode = Schema.Literals([
   "thread_deleted",
   "worktree_missing",
   "dispatch_rejected",
+  "worktree_setup",
+  "worktree_setup_failed",
+  "worktree_setup_cancelled",
+  "worktree_setup_cancelled_kept",
 ]);
 export type QueueReasonCode = typeof QueueReasonCode.Type;
 

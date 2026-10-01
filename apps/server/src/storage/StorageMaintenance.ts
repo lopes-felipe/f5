@@ -29,6 +29,7 @@ import { ServerConfig } from "../config.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
+import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { enumerateFiles, recursiveSize, sizeIfExists, type EnumeratedFile } from "./diskUsage.ts";
 import { probeLegacyState, type LegacyProbeResult } from "./legacyStateProbe.ts";
@@ -2264,55 +2265,93 @@ const makeStorageMaintenance = Effect.gen(function* () {
           continue;
         }
 
-        const allThreads = yield* queryThreadRows();
-        const remainingReferences = allThreads.filter(
-          (thread) =>
-            thread.deletedAt === null &&
-            thread.worktreePath !== null &&
-            pathsOverlap(targetPath, thread.worktreePath),
-        );
-        if (remainingReferences.length > 0) {
-          warnings.push(
-            warningFor(targetPath, "Skipped because a thread still references this worktree."),
-          );
-          completedTargets += 1;
-          continue;
-        }
-
-        const readiness = yield* inspectWorktreeRemovalReadiness({
+        // The reference re-check and the removal run under the worktree
+        // lifecycle lock, so a send, terminal open or recreation that claims
+        // the path meanwhile is seen before anything is removed.
+        const outcome = yield* withWorktreeLifecycleLock(
           targetPath,
-          metadataOperation: "StorageMaintenance.cleanup.inactiveF5Worktrees.cwd",
-          metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
-        });
-        warnings.push(...readiness.warnings);
-        if (readiness.disabledReason || !readiness.commandCwd) {
-          warnings.push(
-            warningFor(targetPath, readiness.disabledReason ?? GIT_WORKTREE_METADATA_UNRESOLVED),
-          );
-          completedTargets += 1;
-          continue;
-        }
+          Effect.gen(function* () {
+            const allThreads = yield* queryThreadRows();
+            const remainingReferences = allThreads.filter(
+              (thread) =>
+                thread.deletedAt === null &&
+                thread.worktreePath !== null &&
+                pathsOverlap(targetPath, thread.worktreePath),
+            );
+            if (remainingReferences.length > 0) {
+              return {
+                kind: "skipped" as const,
+                warnings: [
+                  warningFor(
+                    targetPath,
+                    "Skipped because a thread still references this worktree.",
+                  ),
+                ],
+              };
+            }
 
-        const before = yield* Effect.tryPromise({
-          try: () => recursiveSize(targetPath),
-          catch: (cause) =>
-            new StorageMaintenanceError({
-              operation: "StorageMaintenance.cleanup.inactiveF5Worktrees.size",
-              message: "Failed to size F5 worktree before deletion.",
-              cause,
-            }),
-        });
-        const removeExit = yield* Effect.exit(
-          git.removeWorktree({
-            cwd: readiness.commandCwd,
-            path: targetPath,
-            force: false,
+            const readiness = yield* inspectWorktreeRemovalReadiness({
+              targetPath,
+              metadataOperation: "StorageMaintenance.cleanup.inactiveF5Worktrees.cwd",
+              metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
+            });
+            if (readiness.disabledReason || !readiness.commandCwd) {
+              return {
+                kind: "skipped" as const,
+                warnings: [
+                  ...readiness.warnings,
+                  warningFor(
+                    targetPath,
+                    readiness.disabledReason ?? GIT_WORKTREE_METADATA_UNRESOLVED,
+                  ),
+                ],
+              };
+            }
+
+            const before = yield* Effect.tryPromise({
+              try: () => recursiveSize(targetPath),
+              catch: (cause) =>
+                new StorageMaintenanceError({
+                  operation: "StorageMaintenance.cleanup.inactiveF5Worktrees.size",
+                  message: "Failed to size F5 worktree before deletion.",
+                  cause,
+                }),
+            });
+            const removeExit = yield* Effect.exit(
+              git.removeWorktree({
+                cwd: readiness.commandCwd,
+                path: targetPath,
+                force: false,
+              }),
+            );
+            if (Exit.isFailure(removeExit)) {
+              return {
+                kind: "skipped" as const,
+                warnings: [
+                  ...readiness.warnings,
+                  warningFor(
+                    targetPath,
+                    `git worktree remove failed: ${Cause.pretty(removeExit.cause)}`,
+                  ),
+                ],
+              };
+            }
+            return {
+              kind: "removed" as const,
+              warnings: readiness.warnings,
+              bytes: before.bytes,
+            };
           }),
+        ).pipe(
+          Effect.catchTag("RepositoryLifecycleError", (error) =>
+            Effect.succeed({
+              kind: "skipped" as const,
+              warnings: [warningFor(targetPath, error.message)],
+            }),
+          ),
         );
-        if (Exit.isFailure(removeExit)) {
-          warnings.push(
-            warningFor(targetPath, `git worktree remove failed: ${Cause.pretty(removeExit.cause)}`),
-          );
+        warnings.push(...outcome.warnings);
+        if (outcome.kind === "skipped") {
           completedTargets += 1;
           continue;
         }
@@ -2320,7 +2359,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         perTargetReclaimed.push({
           id: target.id,
           path: targetPath,
-          reclaimedBytes: before.bytes,
+          reclaimedBytes: outcome.bytes,
         });
         completedTargets += 1;
       }

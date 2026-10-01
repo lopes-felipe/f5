@@ -261,6 +261,12 @@ export const ProjectScript = Schema.Struct({
   command: TrimmedNonEmptyString,
   icon: ProjectScriptIcon,
   runOnWorktreeCreate: Schema.Boolean,
+  /**
+   * Whether the agent may start while this setup script still runs. Absent
+   * means true, so scripts saved before the option existed keep running in
+   * the background.
+   */
+  async: Schema.optional(Schema.Boolean),
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
@@ -1183,6 +1189,12 @@ export const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
   projectCwd: TrimmedNonEmptyString,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Reject the send, before the thread exists, when no separate worktree can
+   * be prepared, instead of falling back to the project checkout. Multi-model
+   * fan-out sets it so parallel agents never share one checkout.
+   */
+  requireWorktree: Schema.optional(Schema.Boolean),
 });
 export type ThreadTurnStartBootstrapPrepareWorktree =
   typeof ThreadTurnStartBootstrapPrepareWorktree.Type;

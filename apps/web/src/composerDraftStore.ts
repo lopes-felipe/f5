@@ -511,6 +511,12 @@ interface ComposerDraftStoreState {
       interactionMode?: ProviderInteractionMode;
     },
   ) => void;
+  /**
+   * Moves a local draft (context, composer content and project mapping) to a
+   * new thread id. A failed first send whose thread was rolled back cannot be
+   * retried under the old id, which the server keeps as a deleted thread.
+   */
+  rekeyDraftThread: (fromThreadId: ThreadId, toThreadId: ThreadId) => boolean;
   clearProjectDraftThreadId: (projectId: ProjectId) => void;
   clearProjectDraftThreadById: (projectId: ProjectId, threadId: ThreadId) => void;
   clearDraftThread: (threadId: ThreadId) => void;
@@ -1714,6 +1720,43 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
           };
         });
+      },
+      rekeyDraftThread: (fromThreadId, toThreadId) => {
+        let moved = false;
+        set((state) => {
+          const draftThread = state.draftThreadsByThreadId[fromThreadId];
+          if (!draftThread || fromThreadId === toThreadId) return state;
+          moved = true;
+          const nextDraftThreadsByThreadId: Record<ThreadId, DraftThreadState> = {
+            ...state.draftThreadsByThreadId,
+            [toThreadId]: { ...draftThread, createdAt: new Date().toISOString() },
+          };
+          delete nextDraftThreadsByThreadId[fromThreadId];
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          const composerDraft = nextDraftsByThreadId[fromThreadId];
+          if (composerDraft !== undefined) {
+            nextDraftsByThreadId[toThreadId] = composerDraft;
+            delete nextDraftsByThreadId[fromThreadId];
+          }
+          const nextImageImportsByThreadId = { ...state.imageImportsByThreadId };
+          const imageImports = nextImageImportsByThreadId[fromThreadId];
+          if (imageImports !== undefined) {
+            nextImageImportsByThreadId[toThreadId] = imageImports;
+            delete nextImageImportsByThreadId[fromThreadId];
+          }
+          const nextProjectDraftThreadIdByProjectId: Record<string, ThreadId> = {};
+          for (const [key, threadId] of Object.entries(state.projectDraftThreadIdByProjectId)) {
+            nextProjectDraftThreadIdByProjectId[key] =
+              threadId === fromThreadId ? toThreadId : threadId;
+          }
+          return {
+            draftThreadsByThreadId: nextDraftThreadsByThreadId,
+            draftsByThreadId: nextDraftsByThreadId,
+            imageImportsByThreadId: nextImageImportsByThreadId,
+            projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
+          };
+        });
+        return moved;
       },
       setDraftThreadContext: (threadId, options) => {
         if (threadId.length === 0) {

@@ -1,11 +1,14 @@
 import "../../../index.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type {
-  NativeApi,
-  StorageCleanupCategoryUsage,
-  StorageCleanupResult,
-  StorageUsageReport,
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type NativeApi,
+  type StorageAutomationAuditResult,
+  type StorageAutomationDryRunResult,
+  type StorageCleanupCategoryUsage,
+  type StorageCleanupResult,
+  type StorageUsageReport,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -185,6 +188,59 @@ function createNativeApiMock(
   const confirm = vi.fn(async () => true);
   const onInvalidated = vi.fn(() => () => undefined);
   const onCleanupProgress = vi.fn(() => () => undefined);
+  const automationDryRun = vi.fn(
+    async (): Promise<StorageAutomationDryRunResult> => ({
+      storageCleanupEnabled: true,
+      generatedAt: NOW_ISO,
+      targets: [
+        {
+          job: "worktree-cleanup",
+          target: "f5/feature-a",
+          projectId: null,
+          threadId: null,
+          action: "remove",
+          reason: "idle for 31 days",
+        },
+        {
+          job: "worktree-cleanup",
+          target: "f5/feature-b",
+          projectId: null,
+          threadId: null,
+          action: "skip",
+          reason: "idle for 40 days, but ignored files other than node_modules/ (.env)",
+        },
+      ],
+    }),
+  );
+  const automationAudit = vi.fn(
+    async (): Promise<StorageAutomationAuditResult> => ({
+      entries: [
+        {
+          auditId: "audit-1",
+          operationId: "op-1",
+          job: "auto-pull",
+          policyVersion: 1,
+          target: "Project f5",
+          projectId: null,
+          threadId: null,
+          beforeRef: "a".repeat(40),
+          afterRef: "b".repeat(40),
+          result: "pulled",
+          reason: "fast-forwarded main",
+          createdAt: NOW_ISO,
+        },
+      ],
+    }),
+  );
+  // Deep-merges storageCleanup like the server, since the UI sends only changed fields.
+  const updateSettings = vi.fn(async (patch: Record<string, unknown>) => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    ...patch,
+    storageCleanup: {
+      ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+      ...(patch.storageCleanup as object | undefined),
+    },
+  }));
 
   nativeApiRef.current = {
     storage: {
@@ -193,13 +249,29 @@ function createNativeApiMock(
       cancelCleanup,
       onInvalidated,
       onCleanupProgress,
+      automationDryRun,
+      automationAudit,
+    },
+    server: {
+      getConfig: vi.fn(async () => ({ settings: DEFAULT_SERVER_SETTINGS })),
+      updateSettings,
     },
     dialogs: {
       confirm,
     },
   } as unknown as NativeApi;
 
-  return { getUsage, cleanup, cancelCleanup, confirm, onInvalidated, onCleanupProgress };
+  return {
+    getUsage,
+    cleanup,
+    cancelCleanup,
+    confirm,
+    onInvalidated,
+    onCleanupProgress,
+    automationDryRun,
+    automationAudit,
+    updateSettings,
+  };
 }
 
 async function renderWithQueryClient(element: React.ReactElement) {
@@ -225,6 +297,10 @@ async function renderStorageSettings(report = usageReport(), result?: StorageCle
   return { ...rendered, nativeApi };
 }
 
+function pressEnter(element: Element) {
+  element.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+}
+
 function getDisabledState(element: Element | null) {
   return (
     element?.hasAttribute("disabled") ||
@@ -237,6 +313,57 @@ describe("StorageSettings", () => {
   afterEach(() => {
     nativeApiRef.current = undefined;
     document.body.innerHTML = "";
+  });
+
+  it("saves automatic cleanup settings and previews targets with exact skip reasons", async () => {
+    const { screen, queryClient, nativeApi } = await renderStorageSettings();
+
+    try {
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Auto-pull: Pulled"));
+      expect(document.body.textContent).toContain("fast-forwarded main");
+
+      await page.getByRole("switch", { name: "Automatic storage cleanup" }).click();
+      await vi.waitFor(() =>
+        expect(nativeApi.updateSettings).toHaveBeenCalledWith({
+          storageCleanup: { enabled: true },
+        }),
+      );
+
+      await page.getByRole("button", { name: "Preview what would run" }).click();
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("Would remove: idle for 31 days");
+        expect(document.body.textContent).toContain(
+          "Skipped: idle for 40 days, but ignored files other than node_modules/ (.env)",
+        );
+      });
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("rejects an out-of-range retention without saving it", async () => {
+    const { screen, queryClient, nativeApi } = await renderStorageSettings();
+
+    try {
+      const input = page.getByRole("textbox", {
+        name: "Keep preview screenshots and recordings for",
+      });
+      await input.fill("9999");
+      pressEnter(input.element());
+      await vi.waitFor(() => expect(input.element().getAttribute("aria-invalid")).toBe("true"));
+      expect(nativeApi.updateSettings).not.toHaveBeenCalled();
+      await input.fill("14");
+      pressEnter(input.element());
+      await vi.waitFor(() =>
+        expect(nativeApi.updateSettings).toHaveBeenCalledWith({
+          storageCleanup: { previewArtifactRetentionDays: 14 },
+        }),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
   });
 
   it("renders usage sizes from the native API response", async () => {

@@ -8,6 +8,10 @@ import type {
 import type { ProjectionThread } from "../persistence/Services/ProjectionThreads.ts";
 import type { NextTurnQueueState } from "./Services/NextTurnQueueStore.ts";
 import { QUIESCENCE_WAIT_TIMEOUT_MS, STALE_PENDING_TURN_MS } from "./constants.ts";
+import type { WorktreeSetupGateState } from "../project/Services/WorktreeSetupGate.ts";
+
+export const WORKTREE_SETUP_INTERRUPTED_DETAIL =
+  "Worktree setup was interrupted before the agent started. Retry, work locally, or discard.";
 
 export type NextTurnQueueGate =
   | { readonly kind: "ready" }
@@ -30,6 +34,7 @@ export function resolveNextTurnQueueGate(input: {
   readonly hasDispatchingItem: boolean;
   readonly automaticCompaction: boolean;
   readonly worktreeExists: boolean | null;
+  readonly worktreeSetup?: WorktreeSetupGateState | undefined;
   readonly nowMs?: number | undefined;
 }): NextTurnQueueGate {
   if (input.thread === null || input.thread.deletedAt !== null) {
@@ -40,6 +45,16 @@ export function resolveNextTurnQueueGate(input: {
       kind: "wait",
       reasonCode: input.state.pauseReasonCode ?? "manual_pause",
       ...(input.state.pauseDetail ? { detail: input.state.pauseDetail } : {}),
+    };
+  }
+  if (input.worktreeSetup === "gating") {
+    return { kind: "wait", reasonCode: "worktree_setup" };
+  }
+  if (input.worktreeSetup === "orphaned") {
+    return {
+      kind: "autoPause",
+      reasonCode: "worktree_setup_failed",
+      detail: WORKTREE_SETUP_INTERRUPTED_DETAIL,
     };
   }
   if (input.thread.archivedAt !== null) {

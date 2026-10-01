@@ -144,6 +144,9 @@ export interface ChatComposerProps {
   onProviderModelSelect: React.ComponentProps<
     typeof ProviderInstanceModelPicker
   >["onInstanceModelChange"];
+  /** Multi-model fan-out for a new thread's first message (empty draft, git project). */
+  fanOutModels?: React.ComponentProps<typeof ProviderInstanceModelPicker>["selectedModels"];
+  onToggleFanOutModel?: React.ComponentProps<typeof ProviderInstanceModelPicker>["onToggleModel"];
   activePlan: import("~/session-logic").ActivePlanState | null;
   planSidebarOpen: boolean;
   canCompactConversation: boolean;
@@ -259,6 +262,8 @@ export function ChatComposer({
   isModelPickerOpen,
   setIsModelPickerOpen,
   onProviderModelSelect,
+  fanOutModels,
+  onToggleFanOutModel,
   activePlan,
   planSidebarOpen,
   canCompactConversation,
@@ -689,6 +694,8 @@ export function ChatComposer({
                   onOpenChange={setIsModelPickerOpen}
                   disabled={isPendingTurnDispatchBlocked}
                   onInstanceModelChange={onProviderModelSelect}
+                  {...(fanOutModels ? { selectedModels: fanOutModels } : {})}
+                  {...(onToggleFanOutModel ? { onToggleModel: onToggleFanOutModel } : {})}
                 />
 
                 {isComposerFooterCompact ? (

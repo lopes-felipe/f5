@@ -13,6 +13,8 @@ The initial project settings are:
 | Source control writing              | The global writing defaults                                |
 | Assistant streaming                 | The server streaming preference                            |
 | PR merge method                     | Last used, then squash, subject to repository capabilities |
+| Automatic worktree cleanup          | The global rules in Settings → Storage                     |
+| Auto-pull the default branch        | Off                                                        |
 
 Each field shows its source and an override has a Reset action. Reset all project overrides removes the project's override object. Overrides are stored by project ID in the profile's server settings and removed when the project is deleted. Updating one project's overrides replaces its complete override object, without changing other projects.
 
@@ -35,6 +37,8 @@ For example, a checked-in `f5.json` can contain:
   "prHubDefaultMergeMethod": "squash"
 }
 ```
+
+Automatic worktree cleanup and auto-pull are never read from `f5.json` or `t3.json`; only a global setting or a project override can turn them on. See [worktrees and storage automation](worktrees-and-storage-automation.md).
 
 `worktreeSubmodules` accepts `none`, `shallow` (top-level modules only), or `recursive`. Worktree creation and recreation initialize modules with local file transport disabled. Initialization failures produce a server warning and keep the created worktree available. Configuration is always read from the registered project root, including when a worktree is missing or checks out a different branch. Repository configuration is read as bounded regular files (64 KiB); symlinked files are not followed. Invalid checked-in fields fall back independently. Partial source-control writing objects inherit unspecified fields from the lower-precedence layer. Repository scripts and MCP configuration retain their existing explicit-approval rules.
 

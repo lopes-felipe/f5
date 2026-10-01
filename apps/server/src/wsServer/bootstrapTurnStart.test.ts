@@ -659,6 +659,7 @@ describe("dispatchBootstrapTurnStart", () => {
   });
 
   it("deletes a bootstrap-created thread when the final turn dispatch fails", async () => {
+    const dispositions: string[] = [];
     const dispatchedCommands: OrchestrationCommand[] = [];
     const dependencies = makeDependencies({
       dispatch: (command) =>
@@ -678,6 +679,7 @@ describe("dispatchBootstrapTurnStart", () => {
       Effect.runPromise(
         dispatchBootstrapTurnStart({
           ...dependencies,
+          onThreadRolledBack: (disposition) => dispositions.push(disposition),
           command: makeTurnStartCommand({
             bootstrap: {
               createThread: {
@@ -701,6 +703,47 @@ describe("dispatchBootstrapTurnStart", () => {
       "thread.turn.start",
       "thread.delete",
     ]);
+    // The client may retry the draft under a fresh thread id.
+    expect(dispositions).toEqual(["deleted"]);
+  });
+
+  it("reports a definitely uncommitted thread create as not created", async () => {
+    const dispositions: string[] = [];
+    const dependencies = makeDependencies({
+      dispatch: (command) =>
+        command.type === "thread.create"
+          ? Effect.fail(
+              new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "thread already exists",
+              }),
+            )
+          : Effect.succeed({ sequence: 1 }),
+    });
+
+    await expect(
+      Effect.runPromise(
+        dispatchBootstrapTurnStart({
+          ...dependencies,
+          onThreadRolledBack: (disposition) => dispositions.push(disposition),
+          command: makeTurnStartCommand({
+            bootstrap: {
+              createThread: {
+                projectId: PROJECT_ID,
+                title: "New thread",
+                model: "gpt-5-codex",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            },
+          }),
+        }),
+      ),
+    ).rejects.toThrow("thread already exists");
+    expect(dispositions).toEqual(["not-created"]);
   });
 
   it("restores prior thread metadata and removes the created worktree for existing-thread failures", async () => {

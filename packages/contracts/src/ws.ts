@@ -155,6 +155,8 @@ import {
 } from "./server";
 import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
 import {
+  StorageAutomationAuditInput,
+  StorageAutomationDryRunInput,
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
@@ -218,6 +220,7 @@ import {
   NextTurnQueueUpdateInput,
 } from "./nextTurnQueue";
 import { GlobalSearchQueryInput } from "./globalSearch";
+import { WorktreeSetupThreadInput, WorktreeSetupUpdatedPayload } from "./worktreeSetup";
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
@@ -334,6 +337,9 @@ export const WS_METHODS = {
   storageGetUsage: "storage.getUsage",
   storageCleanup: "storage.cleanup",
   storageCancelCleanup: "storage.cancelCleanup",
+  // Automatic cleanup and auto-pull: read-only preview and the audit trail
+  storageAutomationDryRun: "storage.automationDryRun",
+  storageAutomationAudit: "storage.automationAudit",
 
   // Durable per-thread next-turn queue
   nextTurnQueueList: "nextTurnQueue.list",
@@ -353,6 +359,12 @@ export const WS_METHODS = {
   nextTurnQueueRecheckDelivery: "nextTurnQueue.recheckDelivery",
   nextTurnQueueRetryDelivery: "nextTurnQueue.retryDelivery",
   nextTurnQueueDiscardDelivery: "nextTurnQueue.discardDelivery",
+
+  // Background worktree setup for a new thread's first send
+  worktreeSetupSubscribe: "worktreeSetup.subscribe",
+  worktreeSetupCancel: "worktreeSetup.cancel",
+  worktreeSetupRetry: "worktreeSetup.retry",
+  worktreeSetupWorkLocally: "worktreeSetup.workLocally",
 
   // Cross-project full-text search
   globalSearchQuery: "globalSearch.query",
@@ -397,6 +409,7 @@ export const WS_CHANNELS = {
   storageCleanupProgress: "storage.cleanupProgress",
   nextTurnQueueUpdated: "nextTurnQueue.updated",
   nextTurnQueueSummaryUpdated: "nextTurnQueue.summaryUpdated",
+  worktreeSetupUpdated: "worktreeSetup.updated",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -624,6 +637,8 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageGetUsage, StorageGetUsageRequest),
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
+  tagRequestBody(WS_METHODS.storageAutomationDryRun, StorageAutomationDryRunInput),
+  tagRequestBody(WS_METHODS.storageAutomationAudit, StorageAutomationAuditInput),
   tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnQueueSubmitInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSummary, NextTurnQueueSummaryInput),
@@ -641,6 +656,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.nextTurnQueueRecheckDelivery, NextTurnQueueRecheckDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueRetryDelivery, NextTurnQueueRetryDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueDiscardDelivery, NextTurnQueueDiscardDeliveryInput),
+  tagRequestBody(WS_METHODS.worktreeSetupSubscribe, WorktreeSetupThreadInput),
+  tagRequestBody(WS_METHODS.worktreeSetupCancel, WorktreeSetupThreadInput),
+  tagRequestBody(WS_METHODS.worktreeSetupRetry, WorktreeSetupThreadInput),
+  tagRequestBody(WS_METHODS.worktreeSetupWorkLocally, WorktreeSetupThreadInput),
   tagRequestBody(WS_METHODS.globalSearchQuery, GlobalSearchQueryInput),
   tagRequestBody(WS_METHODS.workflowPlatformListTemplates, Schema.Struct({})),
   WorkflowPlatformCreateRunInput.mapMembers(
@@ -770,6 +789,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
+  readonly [WS_CHANNELS.worktreeSetupUpdated]: WorktreeSetupUpdatedPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [PR_HUB_WS_CHANNELS.changed]: typeof PrHubChanged.Type;
   readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisoriesChanged.Type;
@@ -848,6 +868,10 @@ export const WsPushNextTurnQueueSummaryUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   NextTurnQueueSummary,
 );
+export const WsPushWorktreeSetupUpdated = makeWsPushSchema(
+  WS_CHANNELS.worktreeSetupUpdated,
+  WorktreeSetupUpdatedPayload,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -876,6 +900,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.storageCleanupProgress,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
+  WS_CHANNELS.worktreeSetupUpdated,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
@@ -900,6 +925,7 @@ export const WsPush = Schema.Union([
   WsPushStorageCleanupProgress,
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
+  WsPushWorktreeSetupUpdated,
   WsPushOrchestrationDomainEvent,
   WsPushPrHubChanged,
   WsPushPrHubAdvisoriesUpdated,

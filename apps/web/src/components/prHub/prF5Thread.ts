@@ -2,6 +2,7 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
+  type ClientThreadTurnStartCommand,
   type NativeApi,
   type PrHubAdvisory,
   type PrHubUnresolvedThreadsResult,
@@ -250,9 +251,10 @@ export async function createPrF5Thread(input: {
       createdAt,
     });
   } else {
-    await input.api.orchestration.dispatchCommand({
+    const commandId = newCommandId();
+    const command: ClientThreadTurnStartCommand = {
       type: "thread.turn.start",
-      commandId: newCommandId(),
+      commandId,
       threadId,
       message: {
         messageId: newMessageId(),
@@ -284,7 +286,20 @@ export async function createPrF5Thread(input: {
         },
       },
       createdAt,
+    };
+    // First sends go through durable admission like every other send.
+    const submission = await input.api.nextTurnQueue.submit({
+      submissionId: commandId,
+      command,
+      intent: "auto",
     });
+    if (
+      submission.disposition === "canceled" ||
+      submission.disposition === "cleared" ||
+      submission.disposition === "rejected"
+    ) {
+      throw new Error(submission.detail ?? "The pull request thread was not started.");
+    }
   }
 
   return { threadId, worktreePath: prepared.worktreePath };

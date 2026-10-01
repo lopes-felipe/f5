@@ -156,6 +156,9 @@ import type {
   PreviewViewportSize,
 } from "./previewAutomation";
 import type {
+  StorageAutomationAuditInput,
+  StorageAutomationAuditResult,
+  StorageAutomationDryRunResult,
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
@@ -186,6 +189,12 @@ import type {
   NextTurnQueueUpdateInput,
   TurnSubmissionResult,
 } from "./nextTurnQueue";
+import type {
+  WorktreeSetupActionResult,
+  WorktreeSetupSubscribeResult,
+  WorktreeSetupThreadInput,
+  WorktreeSetupUpdatedPayload,
+} from "./worktreeSetup";
 import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
 import type { AgentsSnapshot } from "./backgroundWork";
 import type {
@@ -464,6 +473,8 @@ export interface DesktopPreviewBridge {
   setViewport: (tabId: string, viewport: PreviewViewportSize | null) => Promise<boolean>;
   setColorScheme: (tabId: string, colorScheme: DesktopPreviewColorScheme) => Promise<boolean>;
   captureScreenshot: (tabId: string) => Promise<PreviewArtifact>;
+  /** Screenshot and recording retention in days; null restores the default. */
+  setArtifactRetention?: (days: number | null) => Promise<void>;
   recording?: {
     start: (tabId: string) => Promise<DesktopPreviewRecordingStartResult>;
     appendChunk: (recordingId: string, chunk: ArrayBuffer) => Promise<void>;
@@ -652,6 +663,9 @@ export interface NativeApi {
     getUsage: (input?: StorageGetUsageRequest) => Promise<StorageUsageReport>;
     cleanup: (input: StorageCleanupRequest) => Promise<StorageCleanupResult>;
     cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
+    /** What automatic cleanup and auto-pull would do now, with exact skip reasons. */
+    automationDryRun: () => Promise<StorageAutomationDryRunResult>;
+    automationAudit: (input?: StorageAutomationAuditInput) => Promise<StorageAutomationAuditResult>;
     onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
     onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
   };
@@ -675,6 +689,14 @@ export interface NativeApi {
     discardDelivery: (input: NextTurnQueueDiscardDeliveryInput) => Promise<NextTurnQueueSnapshot>;
     onUpdated: (callback: (payload: NextTurnQueueSnapshot) => void) => () => void;
     onSummaryUpdated: (callback: (payload: NextTurnQueueSummary) => void) => () => void;
+  };
+  worktreeSetup: {
+    /** Current snapshot (null when nothing is tracked); updates arrive on `onUpdated`. */
+    subscribe: (input: WorktreeSetupThreadInput) => Promise<WorktreeSetupSubscribeResult>;
+    cancel: (input: WorktreeSetupThreadInput) => Promise<WorktreeSetupActionResult>;
+    retry: (input: WorktreeSetupThreadInput) => Promise<WorktreeSetupActionResult>;
+    workLocally: (input: WorktreeSetupThreadInput) => Promise<WorktreeSetupActionResult>;
+    onUpdated: (callback: (payload: WorktreeSetupUpdatedPayload) => void) => () => void;
   };
   globalSearch: {
     query: (input: GlobalSearchQueryInput) => Promise<GlobalSearchQueryResult>;

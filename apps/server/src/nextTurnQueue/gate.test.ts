@@ -58,6 +58,28 @@ describe("resolveNextTurnQueueGate", () => {
     expect(gate()).toEqual({ kind: "ready" });
   });
 
+  it("waits while a worktree setup is still preparing the first turn", () => {
+    expect(gate({ worktreeSetup: "gating" })).toEqual({
+      kind: "wait",
+      reasonCode: "worktree_setup",
+    });
+  });
+
+  it("pauses a first turn whose worktree setup was interrupted", () => {
+    expect(gate({ worktreeSetup: "orphaned" })).toEqual(
+      expect.objectContaining({ kind: "autoPause", reasonCode: "worktree_setup_failed" }),
+    );
+  });
+
+  it("keeps a setup failure pause ahead of the worktree setup gate", () => {
+    expect(
+      gate({
+        worktreeSetup: "gating",
+        state: { ...state, paused: true, pauseReasonCode: "worktree_setup_failed" },
+      }),
+    ).toEqual({ kind: "wait", reasonCode: "worktree_setup_failed" });
+  });
+
   it("waits for a pending turn-start barrier", () => {
     expect(gate({ pendingTurnStart: { requestedAt: "2026-01-01T00:09:00.000Z" } })).toEqual({
       kind: "wait",

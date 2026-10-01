@@ -31,6 +31,7 @@ import { toastManager } from "../../ui/toast";
 
 export { STORAGE_SETTINGS_DESCRIPTORS } from "./StorageSettings.descriptors";
 import { getServerHttpOrigin } from "../../../lib/serverHttpOrigin";
+import { StorageAutomationSettings } from "../StorageAutomationSettings";
 import {
   StorageActionConfirmDialog,
   type StorageConfirmAction,
@@ -555,6 +556,7 @@ export function StorageSettings() {
 
   return (
     <>
+      <StorageAutomationSettings />
       <section
         className="rounded-2xl border border-border bg-card p-5"
         data-settings-search-target="storage.backup"

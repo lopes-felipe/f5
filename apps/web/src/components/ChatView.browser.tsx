@@ -3204,10 +3204,10 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         () => {
-          const dispatchRequests = wsRequests.filter(
-            (request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand,
-          );
+          // First sends go through the durable queue, bootstrap included.
+          const dispatchRequests = getDispatchCommandRequests();
           expect(dispatchRequests).toHaveLength(1);
+          expect(dispatchRequests[0]?._tag).toBe(WS_METHODS.nextTurnQueueSubmit);
 
           const dispatchCommand = dispatchRequests[0]?.command as
             | {
@@ -3430,9 +3430,7 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         () => {
-          const dispatchRequest = wsRequests.find(
-            (request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand,
-          );
+          const dispatchRequest = getDispatchCommandRequests("thread.turn.start")[0];
           const command = dispatchRequest?.command as
             | {
                 type?: unknown;
@@ -4824,8 +4822,9 @@ describe("ChatView timeline (full app)", () => {
           ...nextFixture.serverConfig,
           keybindings: [createModKeybinding("chat.newBackground", "enter")],
         };
+        // First sends go through the durable queue; hold its admission.
         nextFixture.resolveWsRequest = (body) =>
-          body._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+          body._tag === WS_METHODS.nextTurnQueueSubmit &&
           getSubmittedTurnCommand(body)?.type === "thread.turn.start"
             ? new Promise((resolve) => {
                 admit = resolve;
@@ -4848,8 +4847,13 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(() =>
         expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1),
       );
+      const submission = getDispatchCommandRequests("thread.turn.start")[0]!;
+      expect(submission._tag).toBe(WS_METHODS.nextTurnQueueSubmit);
       expect(mounted.router.state.location.pathname).toBe(`/${THREAD_ID}`);
-      admit({ type: "result", result: { sequence: 1 } });
+      admit({
+        type: "result",
+        result: { disposition: "started", submissionId: submission.submissionId, sequence: 1 },
+      });
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/"));
     } finally {
       await mounted.cleanup();

@@ -2,6 +2,22 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const STORAGE_SETTINGS_DESCRIPTORS = [
   {
+    id: "storage.automation",
+    category: "storage",
+    label: "Automatic cleanup",
+    description: "Remove idle worktrees and old logs automatically, with a preview and history.",
+    keywords: ["worktree", "cleanup", "retention", "logs", "screenshots", "recordings", "audit"],
+    targetSelector: '[data-settings-search-target="storage.automation"]',
+  },
+  {
+    id: "storage.auto-pull",
+    category: "storage",
+    label: "Auto-pull default branches",
+    description: "Fast-forward clean default-branch checkouts in the background.",
+    keywords: ["git", "pull", "fetch", "main", "fast-forward", "sync"],
+    targetSelector: '[data-settings-search-target="storage.auto-pull"]',
+  },
+  {
     id: "storage.backup",
     category: "storage",
     label: "Backup and restore",

@@ -1,5 +1,6 @@
 import { resolveTextGenerationProvider } from "./serverSettings";
 import {
+  type WorktreeCleanupRules,
   DEFAULT_SERVER_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectId,
@@ -8,6 +9,16 @@ import {
   type ServerSettings,
   type ThreadEnvMode,
 } from "@t3tools/contracts";
+
+/**
+ * Project-scoped keys that only the user can set (global or per-project
+ * override). A checked-in `f5.json` must not opt a machine into automation
+ * that removes worktrees or pulls branches.
+ */
+const USER_ONLY_PROJECT_SETTING_KEYS: ReadonlySet<string> = new Set([
+  "worktreeCleanup",
+  "autoPullDefaultBranch",
+]);
 
 /** Resolve only the approved project-scoped keys. Explicit false and null are values. */
 export function resolveProjectSettings(input: {
@@ -26,7 +37,7 @@ export function resolveProjectSettings(input: {
   for (const key of PROJECT_SCOPED_SERVER_SETTING_KEYS) {
     let value: unknown = global[key];
     let source: ProjectSettingsResult["sources"][typeof key] = input.global ? "global" : "default";
-    if (input.checkedIn?.[key] !== undefined) {
+    if (input.checkedIn?.[key] !== undefined && !USER_ONLY_PROJECT_SETTING_KEYS.has(key)) {
       value =
         key === "sourceControlWriting"
           ? { ...global.sourceControlWriting, ...input.checkedIn.sourceControlWriting }
@@ -51,4 +62,23 @@ export function resolveProjectSettings(input: {
     Object.assign(sources, { [key]: source });
   }
   return { settings: resolveTextGenerationProvider(settings), sources, overrides };
+}
+
+/**
+ * The worktree cleanup rules in effect for already project-resolved settings,
+ * or null when automatic cleanup is off for that project.
+ */
+export function resolveWorktreeCleanupRules(settings: ServerSettings): WorktreeCleanupRules | null {
+  if (!settings.storageCleanup.enabled) return null;
+  const policy = settings.worktreeCleanup;
+  const rules =
+    policy?.mode === "off"
+      ? null
+      : policy?.mode === "custom"
+        ? policy.rules
+        : settings.storageCleanup.worktree;
+  if (!rules) return null;
+  return rules.afterDays !== null || rules.onMerge || rules.onDelete || rules.unchanged
+    ? rules
+    : null;
 }

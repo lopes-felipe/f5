@@ -1,4 +1,5 @@
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
+import { usePreviewArtifactRetentionSync } from "../hooks/usePreviewArtifactRetentionSync";
 import { useMigrateClientSettings } from "../hooks/useMigrateClientSettings";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import {
@@ -115,6 +116,7 @@ export function applyProviderAdvisoriesToServerConfig(
 function RootRouteView() {
   useMigrateClientSettings();
   useAppearanceSettingsSync();
+  usePreviewArtifactRetentionSync();
   const { resolvedTheme } = useTheme();
   useThemePaletteSync(resolvedTheme);
 
