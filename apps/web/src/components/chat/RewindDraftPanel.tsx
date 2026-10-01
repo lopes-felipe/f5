@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CircleAlertIcon, HistoryIcon, LoaderCircleIcon } from "lucide-react";
 import { CommandId, type RewindDraft, type ThreadId } from "@t3tools/contracts";
 import { readNativeApi } from "~/nativeApi";
 import {
@@ -7,6 +8,8 @@ import {
   useComposerDraftStore,
 } from "~/composerDraftStore";
 import { getServerHttpOrigin } from "~/lib/serverHttpOrigin";
+import { cn } from "~/lib/utils";
+import { Button } from "../ui/button";
 
 export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draft: RewindDraft }) {
   const [busy, setBusy] = useState(false);
@@ -144,42 +147,61 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
     }
   };
   if (resolved) return null;
+  const StateIcon =
+    draft.state === "completed"
+      ? HistoryIcon
+      : draft.state === "prepared"
+        ? LoaderCircleIcon
+        : CircleAlertIcon;
   return (
     <section
-      className="mb-2 rounded-lg border border-border p-3 text-sm"
+      className="mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border/70 bg-card/95 px-3 py-2.5 text-sm shadow-sm"
       aria-label="Recovered rewind draft"
     >
-      <p>{draft.state === "completed" ? "Recovered prompt" : `Rewind: ${draft.state}`}</p>
-      <p className="my-2 line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">
-        {draft.text}
-      </p>
-      {draft.state === "completed" ? (
-        <div className="flex gap-3 text-xs">
-          <button disabled={busy} type="button" onClick={() => void finish(true)}>
-            Use recovered draft
-          </button>
-          <button disabled={busy} type="button" onClick={() => void finish(false)}>
-            Discard
-          </button>
-        </div>
-      ) : null}
-      {draft.state === "prepared" || draft.state === "reconciliation-required" ? (
-        <div className="flex gap-3 text-xs">
-          {draft.targetMessageId ? (
-            <button type="button" disabled={busy} onClick={() => void recheck()}>
-              {draft.state === "prepared" ? "Retry rewind" : "Recheck rewind"}
-            </button>
+      <div className="flex items-center gap-2">
+        <StateIcon
+          aria-hidden
+          className={cn(
+            "size-3.5 shrink-0 text-muted-foreground",
+            draft.state === "prepared" && "animate-spin",
+            draft.state === "reconciliation-required" && "text-warning-foreground",
+          )}
+        />
+        <span className="font-medium text-xs">
+          {draft.state === "completed" ? "Recovered prompt" : `Rewind: ${draft.state}`}
+        </span>
+        <div className="ml-auto flex items-center gap-1.5">
+          {draft.state === "completed" ? (
+            <>
+              <Button size="xs" variant="ghost" disabled={busy} onClick={() => void finish(false)}>
+                Discard
+              </Button>
+              <Button size="xs" disabled={busy} onClick={() => void finish(true)}>
+                Use draft
+              </Button>
+            </>
           ) : null}
           {draft.state === "prepared" ? (
-            <button type="button" disabled={busy} onClick={() => void cancel()}>
+            <Button size="xs" variant="ghost" disabled={busy} onClick={() => void cancel()}>
               Cancel rewind
-            </button>
+            </Button>
+          ) : null}
+          {(draft.state === "prepared" || draft.state === "reconciliation-required") &&
+          draft.targetMessageId ? (
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => void recheck()}>
+              {draft.state === "prepared" ? "Retry rewind" : "Recheck rewind"}
+            </Button>
           ) : null}
         </div>
+      </div>
+      {draft.text ? (
+        <p className="mt-2 line-clamp-3 whitespace-pre-wrap rounded-md bg-muted/40 px-2 py-1.5 text-xs text-muted-foreground">
+          {draft.text}
+        </p>
       ) : null}
-      {draft.error ? <p className="mt-2 text-xs text-destructive">{draft.error}</p> : null}
+      {draft.error ? <p className="mt-1.5 text-xs text-destructive">{draft.error}</p> : null}
       {error ? (
-        <p role="alert" className="mt-2 text-xs text-destructive">
+        <p role="alert" className="mt-1.5 text-xs text-destructive">
           {error}
         </p>
       ) : null}
