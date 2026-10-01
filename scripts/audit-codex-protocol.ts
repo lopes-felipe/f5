@@ -73,15 +73,17 @@ async function main(): Promise<void> {
       "--experimental",
     ]);
 
-    const [notificationSource, requestSource, itemSource] = await Promise.all([
+    const [notificationSource, requestSource, itemSource, clientRequestSource] = await Promise.all([
       readFile(path.join(outputDirectory, "ServerNotification.ts"), "utf8"),
       readFile(path.join(outputDirectory, "ServerRequest.ts"), "utf8"),
       readFile(path.join(outputDirectory, "v2", "ThreadItem.ts"), "utf8"),
+      readFile(path.join(outputDirectory, "ClientRequest.ts"), "utf8"),
     ]);
     const actual = {
       notifications: extractCodexTaggedUnionValues(notificationSource, "method"),
       requests: extractCodexTaggedUnionValues(requestSource, "method"),
       items: extractCodexTaggedUnionValues(itemSource, "type"),
+      clientRequests: extractCodexTaggedUnionValues(clientRequestSource, "method"),
     };
     const report = diffCodexProtocolSurface(actual);
     const installedProtocolVersion = parseCodexCliVersion(installedVersion);
@@ -95,12 +97,26 @@ async function main(): Promise<void> {
     printDrift("Notifications", actual.notifications.length, report.notifications);
     printDrift("Server requests", actual.requests.length, report.requests);
     printDrift("Thread items", actual.items.length, report.items);
+    console.log(
+      `Client requests used by F5: ${report.clientRequests.unsupported.length} unsupported`,
+    );
+    for (const group of report.clientRequests.unsupported) {
+      console.log(`  ! ${group}`);
+    }
+    for (const fallback of report.clientRequests.usingFallback) {
+      console.log(`  ~ ${fallback} (fallback)`);
+    }
 
     if (hasVersionMismatch) {
       console.error(
         installedProtocolVersion
           ? `Codex version mismatch: expected ${CODEX_PROTOCOL_BASELINE_VERSION}, received ${installedProtocolVersion}.`
           : `Unable to parse a Codex version from: ${installedVersion}`,
+      );
+    }
+    if (report.clientRequests.unsupported.length > 0) {
+      console.error(
+        "This CLI rejects requests F5 sends. Add a fallback or update the client before supporting it.",
       );
     }
     if (report.hasDrift) {

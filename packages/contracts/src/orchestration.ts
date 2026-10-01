@@ -1311,11 +1311,20 @@ export const ThreadConversationRevertCommand = Schema.Struct({
   expectedRevision: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
+/**
+ * `resolve` (the default) releases a completed rewind's recovered draft.
+ * `cancel` abandons a rewind the provider never applied; it is rejected once the
+ * operation has moved past `prepared`, so it can never discard a completed draft.
+ */
+export const RewindDraftResolveIntent = Schema.Literals(["resolve", "cancel"]);
+export type RewindDraftResolveIntent = typeof RewindDraftResolveIntent.Type;
+
 const ThreadRewindDraftResolveCommand = Schema.Struct({
   type: Schema.Literal("thread.rewind-draft.resolve"),
   commandId: CommandId,
   operationId: CommandId,
   threadId: ThreadId,
+  intent: Schema.optional(RewindDraftResolveIntent),
   createdAt: IsoDateTime,
 });
 
@@ -2344,7 +2353,11 @@ export const OrchestrationEvent = Schema.Union([
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.rewind-draft-resolved"),
-    payload: Schema.Struct({ operationId: CommandId, threadId: ThreadId }),
+    payload: Schema.Struct({
+      operationId: CommandId,
+      threadId: ThreadId,
+      intent: Schema.optional(RewindDraftResolveIntent),
+    }),
   }),
   Schema.Struct({
     ...EventBaseFields,

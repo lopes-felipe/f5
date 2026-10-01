@@ -47,6 +47,10 @@ export interface ProviderThreadSnapshot {
   readonly turns: ReadonlyArray<ProviderThreadTurnSnapshot>;
 }
 
+export interface ProviderRollbackOptions {
+  readonly beforeTurnId?: string;
+}
+
 export interface ProviderOneOffPromptInput {
   readonly threadId: ThreadId;
   /** Required when modelSelection is absent. */
@@ -156,10 +160,15 @@ export interface ProviderAdapterShape<TError> {
 
   /**
    * Roll back a provider thread by N turns.
+   *
+   * `beforeTurnId` names the provider turn that is dropped together with every
+   * later turn. Providers with an absolute revert API (Codex `thread/revert`)
+   * use it so a retried request cannot remove extra turns; others ignore it.
    */
   readonly rollbackThread: (
     threadId: ThreadId,
     numTurns: number,
+    options?: ProviderRollbackOptions,
   ) => Effect.Effect<ProviderThreadSnapshot, TError>;
 
   /**

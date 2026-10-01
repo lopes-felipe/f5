@@ -192,6 +192,33 @@ export const CODEX_SERVER_REQUEST_DISPOSITIONS = {
   execCommandApproval: "canonical",
 } as const satisfies Record<CodexServerRequestMethod, CodexProtocolDisposition>;
 
+/**
+ * Client requests F5 sends to the app-server. Each group lists the methods that
+ * can serve one need, preferred first; F5 falls back down the list when the CLI
+ * rejects a method as unknown. The audit fails when no method in a group exists,
+ * so a renamed or removed method is caught before users hit it.
+ */
+export const CODEX_CLIENT_REQUEST_METHODS = [
+  ["initialize"],
+  ["thread/start"],
+  ["thread/resume"],
+  ["turn/start"],
+  ["turn/steer"],
+  ["turn/interrupt"],
+  ["thread/turns/list", "thread/read"],
+  ["thread/revert", "thread/rollback"],
+  ["model/list"],
+  ["skills/list"],
+  ["account/read"],
+  ["account/usage/read"],
+  ["account/rateLimits/read"],
+  ["config/read"],
+  ["config/batchWrite"],
+  ["config/mcpServer/reload"],
+  ["mcpServer/oauth/login"],
+  ["mcpServerStatus/list"],
+] as const satisfies ReadonlyArray<readonly [string, ...string[]]>;
+
 export const CODEX_THREAD_ITEM_TYPES = [
   "userMessage",
   "hookPrompt",

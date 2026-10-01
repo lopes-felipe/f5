@@ -132,6 +132,7 @@ const PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY = 2_048;
 const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
+  beforeTurnId: Schema.optional(TrimmedNonEmptyString),
 });
 
 const ProviderConversationCompactionInputSchema = Schema.Struct({
@@ -1568,7 +1569,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.thread_id": input.threadId,
             "provider.num_turns": input.numTurns,
           });
-          yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
+          yield* routed.adapter.rollbackThread(
+            routed.threadId,
+            input.numTurns,
+            input.beforeTurnId !== undefined ? { beforeTurnId: input.beforeTurnId } : undefined,
+          );
           const session = (yield* routed.adapter.listSessions()).find(
             (session) => session.threadId === input.threadId,
           );

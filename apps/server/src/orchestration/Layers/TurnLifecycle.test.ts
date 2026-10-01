@@ -578,6 +578,101 @@ suite("durable turn lifecycle", (it) => {
     }),
   );
 
+  {
+    let commandCounter = 0;
+    const setup = (name: string) =>
+      Effect.gen(function* () {
+        const threadId = yield* seed(name);
+        const sql = yield* SqlClient.SqlClient;
+        const engine = yield* OrchestrationEngineService;
+        const operationId = `rewind:${name}`;
+        const setState = (state: string) =>
+          sql`INSERT INTO rewind_operations(operation_id, thread_id, target_message_id, provider_session_id, mode, expected_revision, state, relative_count, retained_count, boundary_json, draft_json, error, created_at, updated_at) VALUES (${operationId}, ${threadId}, 'prompt-1', 'session', 'conversation', 0, ${state}, 1, 0, '[]', '{"text":"Prompt","attachments":[]}', 'rejected', ${at}, ${at}) ON CONFLICT(operation_id) DO UPDATE SET state = ${state}`;
+        const pauseQueue = (reason: string) =>
+          sql`INSERT INTO next_turn_queue_state(thread_id, paused, pause_reason_code, revision, updated_at) VALUES (${threadId}, 1, ${reason}, 1, ${at}) ON CONFLICT(thread_id) DO UPDATE SET paused = 1, pause_reason_code = ${reason}`;
+        const queue = sql<{
+          paused: number;
+          reason: string | null;
+        }>`SELECT paused, pause_reason_code AS reason FROM next_turn_queue_state WHERE thread_id = ${threadId}`.pipe(
+          Effect.map((rows) => rows[0]!),
+        );
+        // Each click gets a fresh command id, as the panel does.
+        const dispatch = (intent?: "cancel") =>
+          engine.dispatch({
+            type: "thread.rewind-draft.resolve",
+            commandId: CommandId.makeUnsafe(`${operationId}:click:${commandCounter++}`),
+            operationId: CommandId.makeUnsafe(operationId),
+            threadId,
+            ...(intent ? { intent } : {}),
+            createdAt: at,
+          });
+        yield* sql`INSERT INTO rewind_requests(operation_id, thread_id, payload_json, created_at, queue_state_json) VALUES (${operationId}, ${threadId}, '{}', ${at}, ${JSON.stringify({ paused: 0, pause_reason_code: null, pause_detail: null })})`;
+        const exists = (table: "rewind_operations" | "rewind_requests") =>
+          (table === "rewind_operations"
+            ? sql`SELECT 1 FROM rewind_operations WHERE operation_id = ${operationId}`
+            : sql`SELECT 1 FROM rewind_requests WHERE operation_id = ${operationId}`
+          ).pipe(Effect.map((rows) => rows.length > 0));
+        return { sql, operationId, setState, pauseQueue, queue, dispatch, exists };
+      });
+
+    it.effect("rewind cancel: unblocks a prepared rewind and restores the queue", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("cancel-prepared");
+        yield* t.setState("prepared");
+        yield* t.pauseQueue("reconciliation_required");
+        yield* t.dispatch("cancel");
+        assert.equal(yield* t.exists("rewind_operations"), false);
+        assert.equal(yield* t.exists("rewind_requests"), false);
+        assert.deepEqual(yield* t.queue, { paused: 0, reason: null });
+      }),
+    );
+
+    it.effect("rewind cancel: a rejected cancel does not block a later one", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("cancel-after-reject");
+        yield* t.setState("reconciliation-required");
+        const refused = yield* Effect.flip(t.dispatch("cancel"));
+        assert.include(refused.message, "can no longer be cancelled");
+        // A Recheck proves the history unchanged and returns the rewind to prepared.
+        yield* t.setState("prepared");
+        yield* t.dispatch("cancel");
+        assert.equal(yield* t.exists("rewind_operations"), false);
+      }),
+    );
+
+    it.effect("rewind cancel: never discards a completed rewind draft", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("cancel-completed");
+        yield* t.setState("completed");
+        const refused = yield* Effect.flip(t.dispatch("cancel"));
+        assert.include(refused.message, "can no longer be cancelled");
+        const row = (yield* t.sql<{
+          resolved: string | null;
+        }>`SELECT draft_resolved_at AS resolved FROM rewind_operations WHERE operation_id = ${t.operationId}`)[0]!;
+        assert.equal(row.resolved, null);
+      }),
+    );
+
+    it.effect("rewind cancel: a plain resolve does not cancel a prepared rewind", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("resolve-prepared");
+        yield* t.setState("prepared");
+        const refused = yield* Effect.flip(t.dispatch());
+        assert.include(refused.message, "This rewind draft is not ready.");
+        assert.equal(yield* t.exists("rewind_operations"), true);
+      }),
+    );
+
+    it.effect("rewind cancel: keeps a pause the rewind did not set", () =>
+      Effect.gen(function* () {
+        const t = yield* setup("cancel-keeps-other-pause");
+        yield* t.setState("prepared");
+        yield* t.pauseQueue("thread_reverted");
+        yield* t.dispatch("cancel");
+        assert.deepEqual(yield* t.queue, { paused: 1, reason: "thread_reverted" });
+      }),
+    );
+  }
   it.effect("re-admits only a definitely rejected steer as a start using its original IDs", () =>
     Effect.gen(function* () {
       const threadId = yield* seed("steer-fallback-engine");

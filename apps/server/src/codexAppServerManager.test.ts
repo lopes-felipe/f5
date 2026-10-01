@@ -20,6 +20,7 @@ import {
   CodexJsonRpcError,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
+  isUnknownMethodError,
   legacyCodexApprovalDecision,
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
@@ -2240,29 +2241,185 @@ describe("thread checkpoint control", () => {
     expect(sendRequest.mock.calls.at(-1)?.[1]).toBe("thread/turns/list");
   });
 
-  it("rolls back turns via thread/rollback and resets session running state", async () => {
+  const page = (...ids: string[]) => ({
+    data: ids.map((id) => ({ id, items: [], itemsView: "full" })),
+    nextCursor: null,
+  });
+  // Shape returned by Codex 0.159.2: metadata only, history comes from thread/turns/list.
+  const revertResponse = (threadId = "thread_1") => ({
+    thread: { id: threadId, turns: [] },
+    turnsBackwardsCursor: null,
+    itemsBackwardsCursor: null,
+  });
+
+  it("reverts via thread/revert before the named turn and returns the paged read-back", async () => {
     const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
-    sendRequest.mockResolvedValue({
-      thread: {
-        id: "thread_1",
-        turns: [],
-      },
-    });
+    sendRequest.mockResolvedValueOnce(revertResponse()).mockResolvedValueOnce(page("turn_1"));
 
-    const result = await manager.rollbackThread(asThreadId("thread_1"), 2);
+    const result = await manager.rollbackThread(asThreadId("thread_1"), 2, "turn_2");
 
-    expect(sendRequest).toHaveBeenCalledWith(context, "thread/rollback", {
-      threadId: "thread_1",
-      numTurns: 2,
-    });
+    expect(sendRequest.mock.calls.map((call) => [call[1], call[2]])).toEqual([
+      ["thread/revert", { threadId: "thread_1", beforeTurnId: "turn_2" }],
+      [
+        "thread/turns/list",
+        { threadId: "thread_1", limit: 50, sortDirection: "asc", itemsView: "full" },
+      ],
+    ]);
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "ready",
       activeTurnId: undefined,
     });
-    expect(result).toEqual({
+    expect(result).toEqual({ threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] });
+  });
+
+  it("derives the revert boundary from the read-back when no turn id is given", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest
+      .mockResolvedValueOnce(page("turn_1", "turn_2", "turn_3"))
+      .mockResolvedValueOnce(revertResponse())
+      .mockResolvedValueOnce(page("turn_1"));
+
+    await manager.rollbackThread(asThreadId("thread_1"), 2);
+
+    expect(sendRequest.mock.calls[1]?.[1]).toBe("thread/revert");
+    expect(sendRequest.mock.calls[1]?.[2]).toEqual({
       threadId: "thread_1",
-      turns: [],
+      beforeTurnId: "turn_2",
     });
+  });
+
+  it("adopts a reloaded provider thread id returned by thread/revert", async () => {
+    const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
+    sendRequest
+      .mockResolvedValueOnce(revertResponse("thread_reloaded"))
+      .mockResolvedValueOnce(page());
+
+    await manager.rollbackThread(asThreadId("thread_1"), 1, "turn_1");
+
+    expect(updateSession).toHaveBeenCalledWith(context, {
+      status: "ready",
+      activeTurnId: undefined,
+      resumeCursor: { threadId: "thread_reloaded" },
+    });
+  });
+
+  it.each([
+    new CodexJsonRpcError("thread/revert", -32601, "method not found"),
+    new CodexJsonRpcError(
+      "thread/revert",
+      -32600,
+      "Invalid request: unknown variant `thread/revert`, expected one of `initialize`, `thread/rollback`",
+    ),
+  ])("falls back to thread/rollback on older CLIs and caches it: %s", async (unknownMethod) => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const legacy = { thread: { id: "thread_1", turns: [{ id: "turn_1", items: [] }] } };
+    sendRequest
+      .mockRejectedValueOnce(unknownMethod)
+      .mockResolvedValueOnce(page("turn_1", "turn_2", "turn_3"))
+      .mockResolvedValueOnce(legacy)
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockResolvedValueOnce(legacy);
+
+    const result = await manager.rollbackThread(asThreadId("thread_1"), 2, "turn_2");
+    await manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2");
+
+    // Each count-based rollback is preceded by a boundary check; revert is not retried.
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "thread/revert",
+      "thread/turns/list",
+      "thread/rollback",
+      "thread/turns/list",
+      "thread/rollback",
+    ]);
+    expect(sendRequest).toHaveBeenNthCalledWith(3, context, "thread/rollback", {
+      threadId: "thread_1",
+      numTurns: 2,
+    });
+    expect(result).toEqual({ threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] });
+  });
+
+  it("refuses a count-based rollback when the boundary turn is no longer at the end", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    // An earlier rollback already dropped turn_2 and turn_3.
+    sendRequest.mockResolvedValueOnce(page("turn_1"));
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 2, "turn_2")).rejects.toThrow(
+      "refusing a count-based rollback",
+    );
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual(["thread/turns/list"]);
+  });
+
+  it("refuses further count-based rollbacks after one got no response", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    sendRequest
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockRejectedValueOnce(new Error("Timed out waiting for thread/rollback."));
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "Timed out",
+    );
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "may still apply",
+    );
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "thread/turns/list",
+      "thread/rollback",
+    ]);
+  });
+
+  it("keeps count-based rollback available after a definite rejection", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    sendRequest
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockRejectedValueOnce(new CodexJsonRpcError("thread/rollback", -32600, "thread busy"))
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockResolvedValueOnce({ thread: { id: "thread_1", turns: [{ id: "turn_1", items: [] }] } });
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "thread busy",
+    );
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).resolves.toEqual({
+      threadId: "thread_1",
+      turns: [{ id: "turn_1", items: [] }],
+    });
+  });
+
+  it("does not fall back when thread/revert rejects the thread itself", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockRejectedValueOnce(
+      new CodexJsonRpcError(
+        "thread/revert",
+        -32600,
+        "Invalid request: ephemeral threads do not support thread/revert",
+      ),
+    );
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_1")).rejects.toThrow(
+      "ephemeral threads do not support thread/revert",
+    );
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual(["thread/revert"]);
+  });
+});
+
+describe("isUnknownMethodError", () => {
+  it("only matches an unknown-method rejection of the named method", () => {
+    const unknownVariant = new CodexJsonRpcError(
+      "thread/rollback",
+      -32600,
+      "Invalid request: unknown variant `thread/rollback`, expected one of `thread/revert`",
+    );
+    expect(isUnknownMethodError(unknownVariant, "thread/rollback")).toBe(true);
+    expect(isUnknownMethodError(unknownVariant, "thread/revert")).toBe(false);
+    expect(
+      isUnknownMethodError(
+        new CodexJsonRpcError("thread/revert", -32600, "Invalid request: missing field"),
+        "thread/revert",
+      ),
+    ).toBe(false);
+    expect(isUnknownMethodError(new Error("thread/revert failed"), "thread/revert")).toBe(false);
   });
 });
 

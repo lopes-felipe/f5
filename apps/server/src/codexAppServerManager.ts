@@ -138,6 +138,10 @@ interface CodexSessionContext {
   nextRequestId: number;
   stopping: boolean;
   turnPaginationUnsupported?: boolean;
+  /** Set once the CLI rejects `thread/revert` as unknown; rollback then uses `thread/rollback`. */
+  revertUnsupported?: boolean;
+  /** Set when a count-based `thread/rollback` got no response and may still apply. */
+  unsettledCountRollback?: boolean;
 }
 
 interface JsonRpcError {
@@ -153,6 +157,19 @@ export class CodexJsonRpcError extends Error {
   ) {
     super(`${method} failed: ${message}`);
   }
+}
+
+/**
+ * True when the app-server rejected `method` because it does not know it.
+ * Older servers answer -32601; newer ones fail request decoding with
+ * "unknown variant `<method>`" instead. Either way nothing was executed.
+ */
+export function isUnknownMethodError(error: unknown, method: string): boolean {
+  return (
+    error instanceof CodexJsonRpcError &&
+    error.method === method &&
+    (error.code === -32601 || error.message.includes(`unknown variant \`${method}\``))
+  );
 }
 
 interface JsonRpcRequest {
@@ -1399,11 +1416,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       try {
         return await this.readPaginatedThread(context, providerThreadId);
       } catch (error) {
-        if (
-          !(error instanceof CodexJsonRpcError) ||
-          error.method !== "thread/turns/list" ||
-          error.code !== -32601
-        ) {
+        if (!isUnknownMethodError(error, "thread/turns/list")) {
           throw error;
         }
         context.turnPaginationUnsupported = true;
@@ -1475,7 +1488,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return { threadId: providerThreadId, turns };
   }
 
-  async rollbackThread(threadId: ThreadId, numTurns: number): Promise<CodexThreadSnapshot> {
+  /**
+   * Drops the last `numTurns` turns from the provider thread.
+   *
+   * Current CLIs only expose `thread/revert`, which takes the id of the first
+   * dropped turn. Naming the turn makes the request absolute, so a retry can
+   * never remove more history than intended. CLIs that predate `thread/revert`
+   * fall back to the count-based `thread/rollback`.
+   */
+  async rollbackThread(
+    threadId: ThreadId,
+    numTurns: number,
+    beforeTurnId?: string,
+  ): Promise<CodexThreadSnapshot> {
     const context = this.requireSession(threadId);
     const providerThreadId = readResumeThreadId({
       threadId: context.session.threadId,
@@ -1489,10 +1514,82 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error("numTurns must be an integer >= 1.");
     }
 
-    const response = await this.sendRequest(context, "thread/rollback", {
-      threadId: providerThreadId,
-      numTurns,
-    });
+    if (!context.revertUnsupported) {
+      let revertTurnId = beforeTurnId;
+      if (revertTurnId === undefined) {
+        const snapshot = await this.readThread(threadId);
+        if (numTurns > snapshot.turns.length) {
+          throw new Error(
+            `Cannot drop ${numTurns} turns from a thread with ${snapshot.turns.length} turns.`,
+          );
+        }
+        revertTurnId = snapshot.turns[snapshot.turns.length - numTurns]!.id;
+      }
+      let revertResponse: unknown;
+      let revertSupported = true;
+      try {
+        revertResponse = await this.sendRequest(context, "thread/revert", {
+          threadId: providerThreadId,
+          beforeTurnId: revertTurnId,
+        });
+      } catch (error) {
+        if (!isUnknownMethodError(error, "thread/revert")) {
+          throw error;
+        }
+        context.revertUnsupported = true;
+        revertSupported = false;
+      }
+      if (revertSupported) {
+        // The response carries thread metadata only (`turns` is always empty).
+        // Adopt a reloaded thread id, then hydrate the retained history.
+        const revertedThreadId = normalizeProviderThreadId(
+          this.readString(this.readObject(revertResponse)?.thread, "id"),
+        );
+        this.updateSession(context, {
+          status: "ready",
+          activeTurnId: undefined,
+          ...(revertedThreadId && revertedThreadId !== providerThreadId
+            ? {
+                resumeCursor: {
+                  ...this.readObject(context.session.resumeCursor),
+                  threadId: revertedThreadId,
+                },
+              }
+            : {}),
+        });
+        return this.readThread(threadId);
+      }
+    }
+
+    // `thread/rollback` drops turns by count, so it must never be sent twice for one
+    // rewind. A request that got no response may still be applied later, so this
+    // session refuses further count-based rollbacks until it is replaced.
+    if (context.unsettledCountRollback) {
+      throw new Error(
+        "An earlier thread/rollback for this session never answered and may still apply. Restart the Codex session before retrying.",
+      );
+    }
+    if (beforeTurnId !== undefined) {
+      const snapshot = await this.readThread(threadId);
+      if (snapshot.turns.at(-numTurns)?.id !== beforeTurnId) {
+        throw new Error(
+          "Thread history no longer ends with the turns to drop; refusing a count-based rollback.",
+        );
+      }
+    }
+
+    let response: unknown;
+    try {
+      response = await this.sendRequest(context, "thread/rollback", {
+        threadId: providerThreadId,
+        numTurns,
+      });
+    } catch (error) {
+      // A JSON-RPC error is a definite rejection. Anything else (timeout, closed
+      // transport) leaves the outcome unknown.
+      if (!(error instanceof CodexJsonRpcError)) context.unsettledCountRollback = true;
+      throw error;
+    }
     this.updateSession(context, {
       status: "ready",
       activeTurnId: undefined,

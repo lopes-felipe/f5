@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { CheckpointRef, CommandId, EventId, type OrchestrationEvent } from "@t3tools/contracts";
-import { Cause, Effect, Semaphore } from "effect";
+import { Cause, Effect, Exit, Semaphore } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
@@ -25,7 +26,41 @@ interface Operation {
   relative_count: number;
   retained_count: number;
   boundary_json: string;
+  error: string | null;
 }
+export interface RewindRunOptions {
+  /**
+   * True when the run comes from an explicit user request (rewind, Retry, Recheck).
+   * Only such runs may re-send a rollback that read-back proved was never applied;
+   * startup recovery only verifies.
+   */
+  readonly userInitiated?: boolean;
+}
+
+const MAX_REWIND_ERROR_LENGTH = 400;
+const sameIds = (left: readonly string[], right: readonly string[]) =>
+  left.length === right.length && left.every((id, index) => id === right[index]);
+
+/** Short, user-facing description of a rewind failure. The full cause is only logged. */
+export const describeRewindFailure = (cause: Cause.Cause<unknown>): string => {
+  const error = Cause.squash(cause);
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("only supports paginated threads") ||
+    message.includes("ephemeral threads do not support")
+  )
+    return "Codex can't rewind this conversation because of how its history is stored. Nothing was changed.";
+  const unknownMethod = /unknown variant `([^`]+)`/.exec(message);
+  if (unknownMethod)
+    return `The installed provider CLI does not support ${unknownMethod[1]}. Update the CLI and retry.`;
+  if (error instanceof Error && error.name === "TimeoutError")
+    return "The rewind timed out before the provider confirmed it.";
+  const firstLine = message.split("\n")[0]!.trim();
+  return firstLine.length > MAX_REWIND_ERROR_LENGTH
+    ? `${firstLine.slice(0, MAX_REWIND_ERROR_LENGTH - 1)}…`
+    : firstLine;
+};
+
 const contains = (parent: string, child: string) => {
   const relative = path.relative(parent, child);
   return (
@@ -34,7 +69,11 @@ const contains = (parent: string, child: string) => {
   );
 };
 
-/** Relative rollback is performed once. Recovery verifies readback before doing anything else. */
+/**
+ * A rollback is only re-sent after read-back proves the provider history is
+ * unchanged, and only on an explicit user request. Recovery verifies read-back
+ * before doing anything else and never re-sends.
+ */
 export const makeConversationRewind = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const provider = yield* ProviderService;
@@ -46,7 +85,17 @@ export const makeConversationRewind = Effect.gen(function* () {
     sql`UPDATE rewind_operations SET state = ${state}, error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${id}`;
   // Startup recovery and new requests share serialization, including no-Git rewinds.
   const gate = yield* Semaphore.make(1);
-  const execute = (request: Request) =>
+  const listHistory = (threadId: Request["threadId"]) =>
+    turns
+      .listByThreadId({ threadId })
+      .pipe(
+        Effect.map((rows) =>
+          rows
+            .filter((turn) => turn.turnId !== null)
+            .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt)),
+        ),
+      );
+  const execute = (request: Request, options: RewindRunOptions) =>
     Effect.gen(function* () {
       const model = yield* engine.getReadModel();
       const thread = model.threads.find((thread) => thread.id === request.threadId);
@@ -103,6 +152,17 @@ export const makeConversationRewind = Effect.gen(function* () {
           yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${request.operationId}`;
           return;
         }
+        // A prepared operation with an error already failed once. Leave the retry
+        // (or cancel) to the user instead of re-sending it on every startup.
+        if (op?.state === "prepared" && op.error !== null && !options.userInitiated) return;
+        // Cancel deletes the operation and its request together. A Retry that was
+        // queued behind the rewind gate must not recreate the operation afterwards.
+        if (
+          !op &&
+          (yield* sql`SELECT 1 FROM rewind_requests WHERE operation_id = ${request.operationId}`)
+            .length === 0
+        )
+          return;
         const snapshot = yield* provider.readThread(thread.id);
         const session = (yield* provider.listSessions()).find(
           (session) => session.threadId === thread.id,
@@ -118,10 +178,15 @@ export const makeConversationRewind = Effect.gen(function* () {
         }
         const cursor = session?.resumeCursor as { resume?: string; threadId?: string } | undefined;
         const identity = cursor?.resume ?? cursor?.threadId ?? snapshot.threadId;
+        const history = yield* listHistory(thread.id);
         if (!op) {
-          const history = (yield* turns.listByThreadId({ threadId: thread.id }))
-            .filter((turn) => turn.turnId !== null)
-            .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+          if (
+            (yield* sql`SELECT operation_id FROM rewind_operations WHERE thread_id = ${thread.id} AND state <> 'completed'`)
+              .length > 0
+          )
+            return yield* fail(
+              "Another rewind of this conversation is still pending. Retry or cancel it first.",
+            );
           const target = history.findIndex(
             (turn) => turn.pendingMessageId === request.targetMessageId,
           );
@@ -177,29 +242,115 @@ export const makeConversationRewind = Effect.gen(function* () {
             op.retained_count !== 0 ||
             expected.length !== 0 ||
             !verified(snapshot.turns.map((turn) => turn.id))
-          )
+          ) {
+            // Kept in its current state on purpose: from `reconciliation-required` this
+            // check can never pass, so the thread would stay blocked with no Cancel. A
+            // `prepared` rewind sent nothing, so Cancel only restores the prior state.
+            yield* Effect.logWarning("rewind found a different provider session", {
+              threadId: request.threadId,
+              operationId: request.operationId,
+              state: op.state,
+              expectedSession: op.provider_session_id,
+              actualSession: identity,
+            });
             return yield* fail(
               "The provider session changed; verify the rewind before continuing.",
             );
+          }
           yield* sql`UPDATE rewind_operations SET provider_session_id = ${identity} WHERE operation_id = ${op.operation_id}`;
           op = { ...op, provider_session_id: identity };
         }
         const keepFilesRef = CheckpointRef.makeUnsafe(`refs/f5/rewind/${request.operationId}`);
-        if (op.state === "prepared") {
-          if (caps.rollbackAffectsFiles && !request.restoreFiles)
+        // The thread stays blocked while a rewind is open, so the projection still
+        // holds the turns being dropped. Prepare proved they equal the provider tail.
+        const removed = history
+          .slice(op.retained_count)
+          .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId as string]));
+        const original = removed.length === op.relative_count ? [...expected, ...removed] : null;
+        // True only when the provider history is exactly what it was before the rewind.
+        const untouched = (ids: readonly string[]) => original !== null && sameIds(ids, original);
+        const currentIds = snapshot.turns.map((turn) => turn.id as string);
+        let state = op.state;
+        if (
+          (state === "provider-pending" || state === "reconciliation-required") &&
+          untouched(currentIds)
+        ) {
+          // The read-back taken at the start of this run proves the rollback never
+          // took effect, so the operation is as safe to retry as a prepared one.
+          if (!options.userInitiated) {
+            // Recovery only records the finding; re-sending is left to the user. The
+            // queue says the rewind is waiting on them, not that it is still running.
+            const parked =
+              "The provider did not apply this rewind, so nothing was changed. Retry or cancel it.";
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE rewind_operations SET state = 'prepared', error = ${parked}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op!.operation_id}`;
+                yield* sql`UPDATE next_turn_queue_state SET paused = 1, pause_reason_code = 'reconciliation_required', pause_detail = ${parked}, revision = revision + 1 WHERE thread_id = ${request.threadId}`;
+              }),
+            );
+            return;
+          }
+          yield* update(op.operation_id, "prepared");
+          state = "prepared";
+        }
+        if (state === "prepared" && !verified(currentIds)) {
+          if (!untouched(currentIds)) {
+            // Stays `prepared` on purpose: this history can never verify, so in
+            // `reconciliation-required` the thread would stay blocked with no Cancel.
+            // Nothing was sent, so Cancel only restores the pre-rewind state; the
+            // divergence predates the rewind. Keep the evidence in the log.
+            yield* Effect.logWarning("rewind found provider history changed after prepare", {
+              threadId: request.threadId,
+              operationId: request.operationId,
+              providerTurnIds: currentIds,
+              expectedTurnIds: original,
+            });
+            return yield* fail(
+              "The provider history changed after this rewind was prepared. Cancel the rewind and start it again.",
+            );
+          }
+          const captureKeepFiles = caps.rollbackAffectsFiles && !request.restoreFiles;
+          if (captureKeepFiles)
             yield* checkpoints.captureCheckpoint({ cwd: workspace!, checkpointRef: keepFilesRef });
           // Persist before the external call. A process death here requires readback,
-          // even when the provider never received the relative rollback.
-          yield* update(op.operation_id, "provider-pending");
-          yield* provider.rollbackConversation({
-            threadId: thread.id,
-            numTurns: op.relative_count,
-          });
+          // even when the provider never received the rollback. The conditional claim
+          // also loses cleanly against a concurrent cancel.
+          const claimed =
+            yield* sql`UPDATE rewind_operations SET state = 'provider-pending', error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id} AND state = 'prepared' RETURNING operation_id`;
+          if (claimed.length === 0) {
+            // The user cancelled while this run was preparing. Cancel already restored
+            // the queue and released the thread, so this is not a failure.
+            if (captureKeepFiles)
+              yield* checkpoints.deleteCheckpointRefs({
+                cwd: workspace!,
+                checkpointRefs: [keepFilesRef],
+              });
+            return;
+          }
+          state = "provider-pending";
+          const attempt = yield* Effect.exit(
+            provider.rollbackConversation({
+              threadId: thread.id,
+              numTurns: op.relative_count,
+              ...(removed[0] !== undefined ? { beforeTurnId: removed[0] } : {}),
+            }),
+          );
+          if (Exit.isFailure(attempt)) {
+            // A rejected request usually changed nothing. Prove it before marking the
+            // operation retryable; anything else still needs reconciliation.
+            const readback = yield* Effect.exit(provider.readThread(thread.id));
+            if (
+              Exit.isSuccess(readback) &&
+              untouched(readback.value.turns.map((turn) => turn.id as string))
+            )
+              yield* update(op.operation_id, "prepared");
+            return yield* Effect.failCause(attempt.cause);
+          }
         }
         if (
-          op.state === "prepared" ||
-          op.state === "provider-pending" ||
-          op.state === "reconciliation-required"
+          state === "prepared" ||
+          state === "provider-pending" ||
+          state === "reconciliation-required"
         ) {
           const after = yield* provider.readThread(thread.id);
           if (!verified(after.turns.map((turn) => turn.id)))
@@ -216,7 +367,7 @@ export const makeConversationRewind = Effect.gen(function* () {
             confirmedCursor?.resume ?? confirmedCursor?.threadId ?? after.threadId;
           yield* sql`UPDATE rewind_operations SET provider_session_id = ${confirmedIdentity}, state = 'provider-confirmed', error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id}`;
         }
-        if (op.state !== "files-confirmed") {
+        if (state !== "files-confirmed") {
           if (request.restoreFiles || caps.rollbackAffectsFiles) {
             const ref = request.restoreFiles
               ? checkpointRefForThreadTurn(thread.id, op.retained_count)
@@ -232,9 +383,7 @@ export const makeConversationRewind = Effect.gen(function* () {
           commandId: CommandId.makeUnsafe(`rewind-complete:${request.operationId}`),
           threadId: thread.id,
           turnCount: op.retained_count,
-          retainedTurnIds: (yield* turns.listByThreadId({ threadId: thread.id }))
-            .filter((turn) => turn.turnId !== null)
-            .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+          retainedTurnIds: (yield* listHistory(thread.id))
             .slice(0, op.retained_count)
             .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
           createdAt: new Date().toISOString(),
@@ -257,21 +406,20 @@ export const makeConversationRewind = Effect.gen(function* () {
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
           if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
-          const detail = Cause.pretty(cause);
-          yield* sql`UPDATE rewind_operations SET state = CASE WHEN state = 'prepared' THEN 'prepared' ELSE 'reconciliation-required' END, error = ${detail}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${request.operationId} AND thread_id = ${request.threadId} AND target_message_id = ${request.targetMessageId} AND state <> 'completed'`;
+          const detail = describeRewindFailure(cause);
+          const failedAt = new Date().toISOString();
+          yield* sql`UPDATE rewind_operations SET state = CASE WHEN state = 'prepared' THEN 'prepared' ELSE 'reconciliation-required' END, error = ${detail}, updated_at = ${failedAt} WHERE operation_id = ${request.operationId} AND thread_id = ${request.threadId} AND target_message_id = ${request.targetMessageId} AND state <> 'completed'`;
           const op =
             (yield* sql<Operation>`SELECT * FROM rewind_operations WHERE operation_id = ${request.operationId}`)[0];
+          // Unique per attempt so every Retry/Recheck surfaces its own result.
+          const failureId = `rewind-failed:${request.operationId}:${op?.state ?? "preflight"}:${randomUUID()}`;
           yield* engine
             .dispatch({
               type: "thread.activity.append",
-              commandId: CommandId.makeUnsafe(
-                `rewind-failed:${request.operationId}:${op?.state ?? "preflight"}`,
-              ),
+              commandId: CommandId.makeUnsafe(failureId),
               threadId: request.threadId,
               activity: {
-                id: EventId.makeUnsafe(
-                  `rewind-failed:${request.operationId}:${op?.state ?? "preflight"}`,
-                ),
+                id: EventId.makeUnsafe(failureId),
                 kind: "conversation.rewind.failed",
                 tone: "error",
                 summary: op
@@ -302,30 +450,38 @@ export const makeConversationRewind = Effect.gen(function* () {
             yield* Effect.logError("Conversation rewind preflight failed", {
               threadId: request.threadId,
               detail,
+              cause: Cause.pretty(cause),
             });
             return;
           }
           if (op.state === "completed")
             yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${request.operationId}`;
           if (op?.state === "completed") {
-            yield* Effect.logWarning("Rewind completed; checkpoint cleanup failed", { detail });
+            yield* Effect.logWarning("Rewind completed; checkpoint cleanup failed", {
+              detail,
+              cause: Cause.pretty(cause),
+            });
             return;
           }
           yield* sql`UPDATE next_turn_queue_state SET paused = 1, pause_reason_code = ${op ? "reconciliation_required" : "thread_reverted"}, pause_detail = ${detail}, revision = revision + 1 WHERE thread_id = ${request.threadId}`;
           yield* Effect.logError("conversation rewind requires attention", {
             threadId: request.threadId,
             operationId: request.operationId,
+            state: op.state,
             detail,
+            cause: Cause.pretty(cause),
           });
         }),
       ),
     );
-  const run = (request: Request) => gate.withPermit(execute(request));
+  const run = (request: Request, options: RewindRunOptions = { userInitiated: true }) =>
+    gate.withPermit(execute(request, options));
   const recover = Effect.gen(function* () {
     const requests = yield* sql<{
       readonly payload: string;
     }>`SELECT payload_json AS payload FROM rewind_requests ORDER BY created_at`;
-    for (const request of requests) yield* run(JSON.parse(request.payload) as Request);
+    for (const request of requests)
+      yield* run(JSON.parse(request.payload) as Request, { userInitiated: false });
   });
   return { run, recover };
 });

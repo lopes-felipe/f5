@@ -776,7 +776,8 @@ const make = Effect.gen(function* () {
 
   const processDomainEvent = Effect.fnUntraced(function* (event: OrchestrationEvent) {
     if (event.type === "thread.conversation-revert-requested") {
-      yield* conversationRewind.run(event.payload);
+      // Each revert-requested event is an explicit user action (rewind, Retry, Recheck).
+      yield* conversationRewind.run(event.payload, { userInitiated: true });
       return;
     }
     if (event.type === "thread.turn-start-requested" || event.type === "thread.message-sent") {

@@ -57,6 +57,7 @@ import {
 import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import {
   CodexAppServerManager,
+  CodexJsonRpcError,
   type CodexAppServerStartSessionInput,
   isSyntheticOneOffThreadId,
 } from "../../codexAppServerManager.ts";
@@ -2173,6 +2174,12 @@ function mapToRuntimeEvents(
     if (disposition !== undefined) {
       return [];
     }
+    // Newer CLIs announce `thread/revert` results. F5 verifies the retained
+    // history through its own read-back, so the notification is state-only.
+    // It is listed here until the protocol baseline moves past 0.144.3.
+    if (event.method === "thread/reverted") {
+      return [];
+    }
 
     if (!event.method.startsWith("codex/event/")) {
       return [
@@ -2425,7 +2432,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         })),
       );
 
-    const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns) => {
+    const rollbackThread: CodexAdapterShape["rollbackThread"] = (threadId, numTurns, options) => {
       if (!Number.isInteger(numTurns) || numTurns < 1) {
         return Effect.fail(
           new ProviderAdapterValidationError({
@@ -2437,8 +2444,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       }
 
       return Effect.tryPromise({
-        try: () => manager.rollbackThread(threadId, numTurns),
-        catch: (cause) => toRequestError(threadId, "thread/rollback", cause),
+        try: () => manager.rollbackThread(threadId, numTurns, options?.beforeTurnId),
+        catch: (cause) =>
+          toRequestError(
+            threadId,
+            cause instanceof CodexJsonRpcError ? cause.method : "thread/revert",
+            cause,
+          ),
       }).pipe(
         Effect.map((snapshot) => ({
           threadId,

@@ -601,6 +601,11 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           );
           return;
         case "thread.conversation-revert-requested":
+          // The engine pauses with `rewind_in_progress` in the same transaction as the
+          // request; the rewind itself then records success or failure. Pausing here as
+          // `thread_reverted` would claim a revert happened before it did.
+          yield* notify(threadId);
+          return;
         case "thread.checkpoint-revert-requested":
           yield* pauseForEvent(
             threadId,

@@ -118,6 +118,31 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
       setBusy(false);
     }
   };
+  // Only offered for `prepared` rewinds: the server keeps that state only when the
+  // provider history is untouched, so cancelling cannot leave it half-rewound. The
+  // `cancel` intent makes the server reject it once the rewind has moved on, and a
+  // fresh command id per click keeps one rejected attempt from blocking later ones.
+  const cancel = async () => {
+    const api = readNativeApi();
+    if (!api || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.rewind-draft.resolve",
+        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+        operationId: draft.operationId,
+        threadId,
+        intent: "cancel",
+        createdAt: new Date().toISOString(),
+      });
+      setResolved(true);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
   if (resolved) return null;
   return (
     <section
@@ -138,11 +163,19 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
           </button>
         </div>
       ) : null}
-      {(draft.state === "prepared" || draft.state === "reconciliation-required") &&
-      draft.targetMessageId ? (
-        <button type="button" disabled={busy} onClick={() => void recheck()}>
-          {draft.state === "prepared" ? "Retry rewind" : "Recheck rewind"}
-        </button>
+      {draft.state === "prepared" || draft.state === "reconciliation-required" ? (
+        <div className="flex gap-3 text-xs">
+          {draft.targetMessageId ? (
+            <button type="button" disabled={busy} onClick={() => void recheck()}>
+              {draft.state === "prepared" ? "Retry rewind" : "Recheck rewind"}
+            </button>
+          ) : null}
+          {draft.state === "prepared" ? (
+            <button type="button" disabled={busy} onClick={() => void cancel()}>
+              Cancel rewind
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {draft.error ? <p className="mt-2 text-xs text-destructive">{draft.error}</p> : null}
       {error ? (

@@ -16,9 +16,21 @@ const layer = it.layer(SqlitePersistenceMemory);
 const at = "2026-09-30T12:00:00.000Z";
 const harness = (
   name: string,
-  failure: "persist" | "disconnect" | "capture" | "interrupt" | null = null,
+  failure:
+    | "persist"
+    | "disconnect"
+    | "capture"
+    | "interrupt"
+    | "reject-once"
+    | "scramble"
+    | null = null,
   worktreePath: string | null = null,
-  options: { providerCwd?: string; zeroTurnClaude?: boolean; failReadback?: boolean } = {},
+  options: {
+    providerCwd?: string;
+    zeroTurnClaude?: boolean;
+    failReadback?: boolean;
+    cancelDuringCapture?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -40,6 +52,9 @@ const harness = (
     };
     yield* sql`INSERT INTO rewind_requests(operation_id, thread_id, payload_json, created_at) VALUES (${operationId}, ${threadId}, ${JSON.stringify(request)}, ${at})`;
     const fileActions: string[] = [];
+    const beforeTurnIds: Array<string | undefined> = [];
+    const deletedRefs: string[] = [];
+    const activityCommandIds: string[] = [];
     let rollbackCalls = 0;
     let identity = "provider-session";
     let providerTurns = [TurnId.makeUnsafe("first"), TurnId.makeUnsafe("second")];
@@ -95,12 +110,29 @@ const harness = (
               resumeCursor: { threadId: identity },
             },
           ]),
-        rollbackConversation: ({ numTurns }: { numTurns: number }) =>
+        rollbackConversation: ({
+          numTurns,
+          beforeTurnId,
+        }: {
+          numTurns: number;
+          beforeTurnId?: string;
+        }) =>
           Effect.suspend(() => {
             rollbackCalls++;
+            beforeTurnIds.push(beforeTurnId);
             fileActions.push("rollback");
             if (failure === "interrupt") return Effect.never;
             if (failure === "disconnect") return Effect.fail(new Error("Disconnected"));
+            if (failure === "reject-once" && rollbackCalls === 1)
+              return Effect.fail(
+                new Error(
+                  "thread/revert failed: Invalid request: unknown variant `thread/revert`, expected one of `initialize`\n    at handleResponse (codexAppServerManager.ts:1)",
+                ),
+              );
+            if (failure === "scramble") {
+              providerTurns = [TurnId.makeUnsafe("first"), TurnId.makeUnsafe("unexpected")];
+              return Effect.fail(new Error("Disconnected"));
+            }
             providerTurns = providerTurns.slice(0, -numTurns);
             if (options.zeroTurnClaude) identity = "replacement-claude-session";
             return Effect.void;
@@ -116,7 +148,15 @@ const harness = (
                   return Effect.fail(new Error("Checkpoint capture failed"));
                 }
                 fileActions.push("capture");
-                return Effect.void;
+                // Simulates the engine's Cancel landing while the run is preparing.
+                return options.cancelDuringCapture
+                  ? sql`DELETE FROM rewind_operations WHERE operation_id = ${operationId}`.pipe(
+                      Effect.andThen(
+                        sql`DELETE FROM rewind_requests WHERE operation_id = ${operationId}`,
+                      ),
+                      Effect.asVoid,
+                    )
+                  : Effect.void;
               })
             : Effect.die("conversation-only must not access Git"),
         restoreCheckpoint: () =>
@@ -126,7 +166,10 @@ const harness = (
                 return true;
               })
             : Effect.die("conversation-only must not restore files"),
-        deleteCheckpointRefs: () => Effect.void,
+        deleteCheckpointRefs: ({ checkpointRefs }: { checkpointRefs: readonly string[] }) =>
+          Effect.sync(() => {
+            deletedRefs.push(...checkpointRefs);
+          }),
       } as never),
       Effect.provideService(ProjectionTurnRepository, {
         listByThreadId: () =>
@@ -145,8 +188,10 @@ const harness = (
       } as never),
       Effect.provideService(OrchestrationEngineService, {
         getReadModel: () => Effect.succeed(model),
-        dispatch: (command: { type: string }) =>
+        dispatch: (command: { type: string; commandId: string }) =>
           Effect.suspend(() => {
+            if (command.type === "thread.activity.append")
+              activityCommandIds.push(command.commandId);
             if (command.type !== "thread.revert.complete") return Effect.succeed({ sequence: 4 });
             if (failPersist) {
               failPersist = false;
@@ -163,6 +208,9 @@ const harness = (
       request,
       operationId,
       fileActions,
+      beforeTurnIds,
+      activityCommandIds,
+      deletedRefs,
       rollbackCalls: () => rollbackCalls,
       changeIdentity: () => {
         identity = "different-session";
@@ -311,14 +359,138 @@ layer("conversation rewind recovery", (it) => {
         );
       }),
   );
-  it.effect("keeps a disconnected rollback paused and never blindly replays it", () =>
+  it.effect(
+    "keeps a failed rollback with untouched history retryable, but only replays it on user request",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("rewind-disconnect", "disconnect");
+        const sql = yield* SqlClient.SqlClient;
+        const row = () =>
+          sql<{
+            state: string;
+            error: string | null;
+          }>`SELECT state, error FROM rewind_operations WHERE operation_id = ${h.operationId}`.pipe(
+            Effect.map((rows) => rows[0]!),
+          );
+        yield* h.rewind.run(h.request);
+        assert.equal((yield* row()).state, "prepared");
+        assert.equal((yield* row()).error, "Disconnected");
+        yield* h.rewind.recover;
+        assert.equal(h.rollbackCalls(), 1);
+        yield* h.rewind.run(h.request);
+        assert.equal(h.rollbackCalls(), 2);
+        assert.equal((yield* row()).state, "prepared");
+        // Each attempt surfaces its own failure activity.
+        assert.equal(h.activityCommandIds.length, 2);
+        assert.notEqual(h.activityCommandIds[0], h.activityCommandIds[1]);
+      }),
+  );
+  it.effect("sends the first dropped provider turn and stores a short error", () =>
     Effect.gen(function* () {
-      const h = yield* harness("rewind-disconnect", "disconnect");
+      const h = yield* harness("rewind-reject-once", "reject-once");
+      const sql = yield* SqlClient.SqlClient;
+      yield* h.rewind.run(h.request);
+      const failed = (yield* sql<{
+        state: string;
+        error: string;
+      }>`SELECT state, error FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]!;
+      assert.equal(failed.state, "prepared");
+      assert.equal(
+        failed.error,
+        "The installed provider CLI does not support thread/revert. Update the CLI and retry.",
+      );
+      const queue = (yield* sql<{
+        reason: string | null;
+      }>`SELECT pause_reason_code AS reason FROM next_turn_queue_state WHERE thread_id = ${h.request.threadId}`)[0]!;
+      assert.equal(queue.reason, "reconciliation_required");
+      yield* h.rewind.run(h.request);
+      assert.equal(h.rollbackCalls(), 2);
+      assert.deepEqual(h.beforeTurnIds, ["second", "second"]);
+      assert.equal(
+        (yield* sql<{
+          state: string;
+        }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]?.state,
+        "completed",
+      );
+    }),
+  );
+  it.effect(
+    "rechecks a stuck reconciliation with untouched history: recovery parks it, the user's recheck completes it",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("rewind-stuck-recheck", "reject-once");
+        const sql = yield* SqlClient.SqlClient;
+        yield* h.rewind.run(h.request);
+        // Rows written before this fix landed in reconciliation-required.
+        yield* sql`UPDATE rewind_operations SET state = 'reconciliation-required' WHERE operation_id = ${h.operationId}`;
+        yield* h.rewind.recover;
+        assert.equal(h.rollbackCalls(), 1);
+        assert.equal(
+          (yield* sql<{
+            state: string;
+          }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]?.state,
+          "prepared",
+        );
+        // The queue reflects that the rewind now waits on the user.
+        const queue = (yield* sql<{
+          paused: number;
+          reason: string | null;
+          detail: string | null;
+        }>`SELECT paused, pause_reason_code AS reason, pause_detail AS detail FROM next_turn_queue_state WHERE thread_id = ${h.request.threadId}`)[0]!;
+        assert.equal(queue.paused, 1);
+        assert.equal(queue.reason, "reconciliation_required");
+        assert.include(queue.detail ?? "", "did not apply this rewind");
+        yield* sql`UPDATE rewind_operations SET state = 'reconciliation-required' WHERE operation_id = ${h.operationId}`;
+        yield* h.rewind.run(h.request);
+        assert.equal(h.rollbackCalls(), 2);
+        assert.equal(
+          (yield* sql<{
+            state: string;
+          }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]?.state,
+          "completed",
+        );
+      }),
+  );
+  it.effect("does not recreate a cancelled rewind when a queued Retry runs afterwards", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("rewind-retry-after-cancel", "reject-once");
+      const sql = yield* SqlClient.SqlClient;
+      yield* h.rewind.run(h.request);
+      const activitiesAfterFailure = h.activityCommandIds.length;
+      // Cancel removes the operation and its request together.
+      yield* sql`DELETE FROM rewind_operations WHERE operation_id = ${h.operationId}`;
+      yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${h.operationId}`;
+      yield* h.rewind.run(h.request);
+      assert.equal(h.rollbackCalls(), 1);
+      assert.equal(
+        (yield* sql`SELECT 1 FROM rewind_operations WHERE operation_id = ${h.operationId}`).length,
+        0,
+      );
+      assert.equal(h.activityCommandIds.length, activitiesAfterFailure);
+    }),
+  );
+  it.effect("exits quietly and drops the keep-files ref when Cancel wins the claim", () =>
+    Effect.gen(function* () {
+      const cwd = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-rewind-cancel-claim-"))),
+        (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+      );
+      const h = yield* harness("rewind-cancel-claim", null, cwd, { cancelDuringCapture: true });
+      yield* h.rewind.run(h.request);
+      assert.equal(h.rollbackCalls(), 0);
+      assert.deepEqual(h.fileActions, ["capture"]);
+      assert.deepEqual(h.deletedRefs, [`refs/f5/rewind/${h.operationId}`]);
+      assert.deepEqual(h.activityCommandIds, []);
+    }),
+  );
+  it.effect("keeps an ambiguous provider history in reconciliation and never replays it", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("rewind-scramble", "scramble");
+      const sql = yield* SqlClient.SqlClient;
       yield* h.rewind.run(h.request);
       yield* h.rewind.recover;
       yield* h.rewind.run(h.request);
       assert.equal(h.rollbackCalls(), 1);
-      const sql = yield* SqlClient.SqlClient;
       assert.equal(
         (yield* sql<{
           state: string;
@@ -358,7 +530,9 @@ layer("conversation rewind recovery", (it) => {
         state: string;
         identity: string;
       }>`SELECT state, provider_session_id AS identity FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]!;
-      assert.equal(row.state, "reconciliation-required");
+      // The failed rollback left the history untouched, so the rewind stays retryable;
+      // the replacement identity is still never adopted.
+      assert.equal(row.state, "prepared");
       assert.equal(row.identity, "provider-session");
     }),
   );
