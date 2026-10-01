@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { inspect } from "node:util";
 import { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Data, Effect, Exit, Layer, Option, PlatformError, PubSub, Scope, Stream } from "effect";
@@ -22,6 +23,8 @@ import { ServerConfig, type ServerConfigShape } from "./config";
 import { makeServerRuntimeServicesLayer } from "./serverLayers";
 
 import {
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+  type WorktreeSetupSnapshot,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
@@ -492,6 +495,7 @@ class MockTerminalManager implements TerminalManagerShape {
       };
     });
 
+  readonly listSessions: TerminalManagerShape["listSessions"] = Effect.succeed([]);
   readonly dispose: TerminalManagerShape["dispose"] = Effect.void;
 }
 
@@ -1487,6 +1491,15 @@ describe("WebSocket Server", () => {
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
+      const worktreeSetupModule = await vi.importActual<
+        typeof import("./project/Services/WorktreeSetup.ts")
+      >("./project/Services/WorktreeSetup.ts");
+      const storageCleanupWorkerModule = await vi.importActual<
+        typeof import("./storage/StorageCleanupWorker.ts")
+      >("./storage/StorageCleanupWorker.ts");
+      const defaultBranchAutoPullModule = await vi.importActual<
+        typeof import("./git/DefaultBranchAutoPull.ts")
+      >("./git/DefaultBranchAutoPull.ts");
       const pendingRuntimeLayer = Layer.mergeAll(
         Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
           getReadModel: () => Effect.die(new Error("unused in pending-runtime ws test")),
@@ -1525,6 +1538,16 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(worktreeSetupModule.WorktreeSetup, {
+          startup: Effect.void,
+          changes: Stream.empty,
+        } as any),
+        Layer.succeed(storageCleanupWorkerModule.StorageCleanupWorker, {
+          start: Effect.void,
+        } as any),
+        Layer.succeed(defaultBranchAutoPullModule.DefaultBranchAutoPull, {
+          start: Effect.void,
+        } as any),
         Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
           start: Effect.void,
           notify: () => Effect.void,
@@ -1685,6 +1708,15 @@ describe("WebSocket Server", () => {
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
+      const worktreeSetupModule = await vi.importActual<
+        typeof import("./project/Services/WorktreeSetup.ts")
+      >("./project/Services/WorktreeSetup.ts");
+      const storageCleanupWorkerModule = await vi.importActual<
+        typeof import("./storage/StorageCleanupWorker.ts")
+      >("./storage/StorageCleanupWorker.ts");
+      const defaultBranchAutoPullModule = await vi.importActual<
+        typeof import("./git/DefaultBranchAutoPull.ts")
+      >("./git/DefaultBranchAutoPull.ts");
       const nextTurnQueueDispatcherModule = await vi.importActual<
         typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
       >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
@@ -1787,6 +1819,16 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(worktreeSetupModule.WorktreeSetup, {
+          startup: Effect.void,
+          changes: Stream.empty,
+        } as any),
+        Layer.succeed(storageCleanupWorkerModule.StorageCleanupWorker, {
+          start: Effect.void,
+        } as any),
+        Layer.succeed(defaultBranchAutoPullModule.DefaultBranchAutoPull, {
+          start: Effect.void,
+        } as any),
         Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
           start: Effect.void,
           notify: () => Effect.void,
@@ -2905,6 +2947,723 @@ describe("WebSocket Server", () => {
         attachments: [expect.objectContaining({ id: attachmentId, name: "first-image.png" })],
       }),
     );
+  });
+
+  describe("first sends through nextTurnQueue.submit", () => {
+    function makeGitRepo(prefix: string): string {
+      const repo = makeTempDir(prefix);
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { cwd: repo, stdio: "pipe" }).toString().trim();
+      git("init", "--initial-branch=main");
+      git("config", "user.email", "test@example.com");
+      git("config", "user.name", "Test");
+      fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+      git("add", ".");
+      git("commit", "-m", "init");
+      return repo;
+    }
+
+    class RecordingTerminalManager extends MockTerminalManager {
+      readonly opened: Array<{ terminalId: string; cwd: string }> = [];
+      constructor() {
+        super();
+        const baseOpen = this.open;
+        (this as { open: TerminalManagerShape["open"] }).open = (input) => {
+          this.opened.push({ terminalId: input.terminalId ?? "default", cwd: input.cwd });
+          return baseOpen(input);
+        };
+      }
+    }
+
+    type Variant = {
+      readonly name: string;
+      readonly worktree: boolean;
+      readonly setupScript: boolean;
+    };
+    const variants: ReadonlyArray<Variant> = [
+      { name: "create-thread only", worktree: false, setupScript: false },
+      {
+        name: "create-thread with a setup script but no worktree",
+        worktree: false,
+        setupScript: true,
+      },
+      { name: "create-thread and prepare-worktree", worktree: true, setupScript: false },
+      {
+        name: "create-thread, prepare-worktree and run-setup-script",
+        worktree: true,
+        setupScript: true,
+      },
+    ];
+
+    async function readSetup(ws: WebSocket, threadId: string) {
+      return (await sendRequest(ws, WS_METHODS.worktreeSetupSubscribe, { threadId }))
+        .result as WorktreeSetupSnapshot | null;
+    }
+
+    async function waitForSetup(
+      ws: WebSocket,
+      threadId: string,
+      predicate: (snapshot: WorktreeSetupSnapshot | null) => boolean,
+      timeoutMs = 10_000,
+    ): Promise<WorktreeSetupSnapshot | null> {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const snapshot = await readSetup(ws, threadId);
+        if (predicate(snapshot)) return snapshot;
+        if (Date.now() > deadline) {
+          throw new Error(`Worktree setup did not settle: ${JSON.stringify(snapshot)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+
+    async function runFirstSend(route: "dispatch" | "submit", variant: Variant) {
+      const stateDir = makeTempDir(`t3code-ws-first-send-${route}-`);
+      const repo = makeGitRepo(`t3code-ws-first-send-repo-${route}-`);
+      const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+      const terminalManager = new RecordingTerminalManager();
+      server = await createTestServer({
+        cwd: repo,
+        stateDir,
+        providerLayer: Layer.succeed(ProviderService, makeTurnCapturingProviderService(sentTurns)),
+        terminalManager,
+      });
+      const addr = server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const createdAt = "2026-10-01T00:00:00.000Z";
+      const projectId = "project-first-send";
+      const threadId = "thread-first-send";
+      expect(
+        (
+          await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+            type: "project.create",
+            commandId: "command-first-send-project",
+            projectId,
+            title: "First send",
+            workspaceRoot: repo,
+            defaultModel: "gpt-5-codex",
+            createdAt,
+          })
+        ).error,
+      ).toBeUndefined();
+      if (variant.setupScript) {
+        expect(
+          (
+            await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+              type: "project.meta.update",
+              commandId: "command-first-send-scripts",
+              projectId,
+              scripts: [
+                {
+                  id: "setup",
+                  name: "Setup",
+                  command: "echo setup",
+                  icon: "play",
+                  runOnWorktreeCreate: true,
+                },
+              ],
+            })
+          ).error,
+        ).toBeUndefined();
+      }
+      const command = {
+        type: "thread.turn.start",
+        commandId: "command-first-send-turn",
+        threadId,
+        message: {
+          messageId: "message-first-send",
+          role: "user",
+          text: "Start here.",
+          attachments: [],
+        },
+        provider: "codex",
+        assistantDeliveryMode: "streaming",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        bootstrap: {
+          createThread: {
+            projectId,
+            title: "New thread",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: variant.worktree ? null : "main",
+            worktreePath: null,
+            createdAt,
+          },
+          ...(variant.worktree
+            ? { prepareWorktree: { projectCwd: repo, baseBranch: "main", branch: "f5/first-send" } }
+            : {}),
+          ...(variant.setupScript ? { runSetupScript: true } : {}),
+        },
+        createdAt,
+      };
+      const response =
+        route === "dispatch"
+          ? await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, command)
+          : await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+              submissionId: "command-first-send-turn",
+              command,
+              intent: "auto",
+            });
+      expect(response.error).toBeUndefined();
+      await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
+      const readThread = async () =>
+        (
+          (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+            .result as OrchestrationReadModel
+        ).threads.find((entry) => entry.id === threadId);
+      // The title derived from the first message lands asynchronously; compare
+      // both routes after it settles rather than racing it under load.
+      let thread = await readThread();
+      for (let attempt = 0; thread?.title === "New thread" && attempt < 50; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        thread = await readThread();
+      }
+      const worktreesDir = path.join(path.dirname(stateDir), "worktrees");
+      const relative = (value: string | null | undefined) =>
+        value == null
+          ? null
+          : value.startsWith(worktreesDir)
+            ? `<worktrees>${value.slice(worktreesDir.length).replace(path.basename(repo), "<repo>")}`
+            : value === repo
+              ? "<repo>"
+              : value;
+      const outcome = {
+        title: thread?.title,
+        branch: thread?.branch,
+        worktreePath: relative(thread?.worktreePath),
+        worktreeExists: thread?.worktreePath ? fs.existsSync(thread.worktreePath) : null,
+        messages: thread?.messages.map((message) => ({ role: message.role, text: message.text })),
+        terminals: terminalManager.opened.map((entry) => ({
+          terminalId: entry.terminalId,
+          cwd: relative(entry.cwd),
+        })),
+        sentTurnThread: sentTurns[0]?.threadId,
+      };
+      const setup = await waitForSetup(ws, threadId, (snapshot) => snapshot?.phase !== "running");
+      for (const ws of connections.splice(0)) ws.close();
+      await closeTestServer();
+      server = null;
+      return { outcome, result: response.result, setup };
+    }
+
+    it.each(variants)("matches the direct dispatch route for $name", async (variant) => {
+      const direct = await runFirstSend("dispatch", variant);
+      const queued = await runFirstSend("submit", variant);
+      // Worktree setup runs the script as an owned process instead of a terminal.
+      expect({ ...queued.outcome, terminals: [] }).toEqual({ ...direct.outcome, terminals: [] });
+      expect(direct.outcome.worktreeExists).toBe(variant.worktree ? true : null);
+      expect(direct.outcome.terminals).toHaveLength(
+        variant.worktree && variant.setupScript ? 1 : 0,
+      );
+      expect(queued.outcome.terminals).toHaveLength(0);
+      if (variant.worktree) {
+        // A worktree first send is queued behind its background setup.
+        expect(queued.result).toEqual(
+          expect.objectContaining({
+            disposition: "queued",
+            submissionId: "command-first-send-turn",
+          }),
+        );
+        await vi.waitFor(() => expect(queued.setup).not.toBeNull());
+        expect(queued.setup?.stages.find((stage) => stage.id === "setup-script")?.status).toBe(
+          variant.setupScript ? "done" : "skipped",
+        );
+      } else {
+        expect(queued.result).toEqual(
+          expect.objectContaining({
+            disposition: "started",
+            submissionId: "command-first-send-turn",
+            sequence: expect.any(Number),
+          }),
+        );
+        expect(queued.setup).toBeNull();
+      }
+    });
+
+    it("replays a resubmitted first send instead of creating the thread twice", async () => {
+      const stateDir = makeTempDir("t3code-ws-first-send-replay-");
+      const repo = makeGitRepo("t3code-ws-first-send-replay-repo-");
+      const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+      server = await createTestServer({
+        cwd: repo,
+        stateDir,
+        providerLayer: Layer.succeed(ProviderService, makeTurnCapturingProviderService(sentTurns)),
+      });
+      const addr = server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const createdAt = new Date().toISOString();
+      await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "project.create",
+        commandId: "command-replay-project",
+        projectId: "project-replay",
+        title: "Replay",
+        workspaceRoot: repo,
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      });
+      const submit = {
+        submissionId: "submission-replay",
+        intent: "auto",
+        command: {
+          type: "thread.turn.start",
+          commandId: "submission-replay",
+          threadId: "thread-replay",
+          message: { messageId: "message-replay", role: "user", text: "Once.", attachments: [] },
+          provider: "codex",
+          assistantDeliveryMode: "streaming",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          bootstrap: {
+            createThread: {
+              projectId: "project-replay",
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            },
+          },
+          createdAt,
+        },
+      };
+      // Two sockets: the test helper reads one response stream per socket.
+      const [otherWs] = await connectAndAwaitWelcome(port);
+      connections.push(otherWs);
+      const [first, second] = await Promise.all([
+        sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, submit),
+        sendRequest(otherWs, WS_METHODS.nextTurnQueueSubmit, submit),
+      ]);
+      const third = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, submit);
+      expect(first.error).toBeUndefined();
+      expect(second.result).toEqual(first.result);
+      expect(third.result).toEqual(first.result);
+      await vi.waitFor(() => expect(sentTurns).toHaveLength(1));
+      const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+        .result as OrchestrationReadModel;
+      expect(snapshot.threads.filter((entry) => entry.id === "thread-replay")).toHaveLength(1);
+      expect(snapshot.threads.find((entry) => entry.id === "thread-replay")?.messages).toHaveLength(
+        1,
+      );
+    });
+
+    describe("background worktree setup", () => {
+      function addOriginRemote(repo: string): void {
+        const bare = makeTempDir("t3code-ws-setup-origin-");
+        execFileSync("git", ["init", "--bare", "--initial-branch=main", bare], { stdio: "pipe" });
+        execFileSync("git", ["remote", "add", "origin", bare], { cwd: repo, stdio: "pipe" });
+        execFileSync("git", ["push", "-u", "origin", "main"], { cwd: repo, stdio: "pipe" });
+      }
+
+      async function startServer(options: {
+        readonly repo: string;
+        readonly stateDir?: string;
+        readonly persistenceLayer?: Parameters<typeof createTestServer>[0] extends infer O
+          ? O extends { persistenceLayer?: infer P }
+            ? P
+            : never
+          : never;
+        readonly sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>;
+      }) {
+        server = await createTestServer({
+          cwd: options.repo,
+          ...(options.stateDir ? { stateDir: options.stateDir } : {}),
+          ...(options.persistenceLayer ? { persistenceLayer: options.persistenceLayer } : {}),
+          providerLayer: Layer.succeed(
+            ProviderService,
+            makeTurnCapturingProviderService(options.sentTurns),
+          ),
+        });
+        const addr = server.address();
+        const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+        const [ws] = await connectAndAwaitWelcome(port);
+        connections.push(ws);
+        return ws;
+      }
+
+      async function createProject(
+        ws: WebSocket,
+        repo: string,
+        script?: { readonly command: string; readonly async?: boolean },
+      ) {
+        const createdAt = new Date().toISOString();
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: `command-setup-project-${crypto.randomUUID()}`,
+          projectId: "project-setup",
+          title: "Setup",
+          workspaceRoot: repo,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        });
+        if (script) {
+          await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+            type: "project.meta.update",
+            commandId: `command-setup-scripts-${crypto.randomUUID()}`,
+            projectId: "project-setup",
+            scripts: [
+              {
+                id: "setup",
+                name: "Setup",
+                command: script.command,
+                icon: "play",
+                runOnWorktreeCreate: true,
+                ...(script.async === undefined ? {} : { async: script.async }),
+              },
+            ],
+          });
+        }
+      }
+
+      function firstSend(input: {
+        readonly repo: string;
+        readonly threadId: string;
+        readonly baseBranch?: string;
+        readonly requireWorktree?: boolean;
+      }) {
+        const createdAt = new Date().toISOString();
+        return {
+          submissionId: `submission-${input.threadId}`,
+          intent: "auto",
+          command: {
+            type: "thread.turn.start",
+            commandId: `submission-${input.threadId}`,
+            threadId: input.threadId,
+            message: {
+              messageId: `message-${input.threadId}`,
+              role: "user",
+              text: "Build it.",
+              attachments: [],
+            },
+            provider: "codex",
+            assistantDeliveryMode: "streaming",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            bootstrap: {
+              createThread: {
+                projectId: "project-setup",
+                title: "New thread",
+                model: "gpt-5-codex",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                createdAt,
+              },
+              prepareWorktree: {
+                projectCwd: input.repo,
+                baseBranch: input.baseBranch ?? "main",
+                branch: `f5/${input.threadId}`,
+                ...(input.requireWorktree ? { requireWorktree: true } : {}),
+              },
+              runSetupScript: true,
+            },
+            createdAt,
+          },
+        };
+      }
+
+      const branchExists = (repo: string, branch: string) => {
+        try {
+          execFileSync("git", ["rev-parse", "--verify", `refs/heads/${branch}`], {
+            cwd: repo,
+            stdio: "pipe",
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      it("rejects a required worktree before creating the thread", async () => {
+        const repo = makeTempDir("t3code-ws-setup-required-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo);
+        const response = await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-required", requireWorktree: true }),
+        );
+        expect(response.error).toEqual(
+          expect.objectContaining({ code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE }),
+        );
+        const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        expect(snapshot.threads.some((entry) => entry.id === "thread-required")).toBe(false);
+      });
+
+      it("pauses the queue when setup fails, then runs the turn in the project checkout", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-fail-");
+        addOriginRemote(repo);
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo);
+        const response = await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-fail", baseBranch: "missing-base" }),
+        );
+        expect(response.result).toEqual(expect.objectContaining({ disposition: "queued" }));
+        const failed = await waitForSetup(ws, "thread-fail", (entry) => entry?.phase === "failed");
+        expect(failed?.error).toContain("missing-base");
+        const queue = (
+          await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-fail" })
+        ).result as { readonly paused: boolean; readonly reasonCode: string | null };
+        expect(queue).toEqual(
+          expect.objectContaining({ paused: true, reasonCode: "worktree_setup_failed" }),
+        );
+        expect(sentTurns).toHaveLength(0);
+
+        const local = await sendRequest(ws, WS_METHODS.worktreeSetupWorkLocally, {
+          threadId: "thread-fail",
+        });
+        expect(local.error).toBeUndefined();
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
+        const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        expect(
+          snapshot.threads.find((entry) => entry.id === "thread-fail")?.worktreePath,
+        ).toBeNull();
+      });
+
+      it("retries a failed setup and starts the turn once the worktree is ready", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-retry-");
+        addOriginRemote(repo);
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo);
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-retry", baseBranch: "later" }),
+        );
+        await waitForSetup(ws, "thread-retry", (entry) => entry?.phase === "failed");
+        execFileSync("git", ["branch", "later"], { cwd: repo, stdio: "pipe" });
+
+        const retried = await sendRequest(ws, WS_METHODS.worktreeSetupRetry, {
+          threadId: "thread-retry",
+        });
+        expect(retried.error).toBeUndefined();
+        const done = await waitForSetup(ws, "thread-retry", (entry) => entry?.phase === "done");
+        expect(done?.agentStarted).toBe(true);
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
+        expect(sentTurns[0]?.threadId).toBe("thread-retry");
+        const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        const thread = snapshot.threads.find((entry) => entry.id === "thread-retry");
+        expect(thread?.worktreePath).toBe(done?.worktreePath);
+        expect(thread?.branch).toBe("f5/thread-retry");
+      });
+
+      it("fans one prompt out to three models in three separate worktrees", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-fanout-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo);
+        const threadIds = ["thread-fan-a", "thread-fan-b", "thread-fan-c"];
+        const responses = await Promise.all(
+          threadIds.map(async (threadId) => {
+            const [socket] = await connectAndAwaitWelcome(
+              (server!.address() as { port: number }).port,
+            );
+            connections.push(socket);
+            return sendRequest(
+              socket,
+              WS_METHODS.nextTurnQueueSubmit,
+              firstSend({ repo, threadId, requireWorktree: true }),
+            );
+          }),
+        );
+        for (const response of responses) {
+          expect(response.result).toEqual(expect.objectContaining({ disposition: "queued" }));
+        }
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(3), { timeout: 15_000 });
+        const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+          .result as OrchestrationReadModel;
+        const worktrees = threadIds.map(
+          (threadId) => snapshot.threads.find((entry) => entry.id === threadId)?.worktreePath,
+        );
+        expect(new Set(worktrees).size).toBe(3);
+        for (const worktree of worktrees) expect(worktree && fs.existsSync(worktree)).toBe(true);
+      });
+
+      it("cancel mid-setup removes the clean worktree and the branch it created", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-cancel-clean-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo, { command: "sleep 30", async: false });
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-cancel-clean" }),
+        );
+        const running = await waitForSetup(
+          ws,
+          "thread-cancel-clean",
+          (entry) =>
+            entry?.stages.find((stage) => stage.id === "setup-script")?.status === "running",
+        );
+        const worktreePath = running?.worktreePath;
+        expect(worktreePath && fs.existsSync(worktreePath)).toBe(true);
+
+        const cancelled = await sendRequest(ws, WS_METHODS.worktreeSetupCancel, {
+          threadId: "thread-cancel-clean",
+        });
+        expect(cancelled.error).toBeUndefined();
+        expect((cancelled.result as { snapshot: WorktreeSetupSnapshot }).snapshot.phase).toBe(
+          "cancelled",
+        );
+        expect(fs.existsSync(worktreePath!)).toBe(false);
+        expect(branchExists(repo, "f5/thread-cancel-clean")).toBe(false);
+        const queue = (
+          await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-cancel-clean" })
+        ).result as { readonly paused: boolean; readonly reasonCode: string | null };
+        expect(queue).toEqual(
+          expect.objectContaining({ paused: true, reasonCode: "worktree_setup_cancelled" }),
+        );
+        expect(sentTurns).toHaveLength(0);
+      });
+
+      it("cancel after the setup script wrote files keeps the worktree and branch", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-cancel-kept-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo, {
+          command: "echo generated > generated.txt && sleep 30",
+          async: false,
+        });
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-cancel-kept" }),
+        );
+        const running = await waitForSetup(
+          ws,
+          "thread-cancel-kept",
+          (entry) =>
+            entry?.worktreePath != null &&
+            fs.existsSync(path.join(entry.worktreePath, "generated.txt")),
+        );
+        const cancelled = await sendRequest(ws, WS_METHODS.worktreeSetupCancel, {
+          threadId: "thread-cancel-kept",
+        });
+        const settled = (cancelled.result as { snapshot: WorktreeSetupSnapshot }).snapshot;
+        expect(settled.phase).toBe("cancelled_kept");
+        expect(settled.error).toContain("may contain changes");
+        expect(fs.existsSync(path.join(running!.worktreePath!, "generated.txt"))).toBe(true);
+        expect(branchExists(repo, "f5/thread-cancel-kept")).toBe(true);
+        const queue = (
+          await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-cancel-kept" })
+        ).result as { readonly reasonCode: string | null };
+        expect(queue.reasonCode).toBe("worktree_setup_cancelled_kept");
+        expect(sentTurns).toHaveLength(0);
+      });
+
+      it("marks a setup that was running at shutdown as failed and removes nothing", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-restart-");
+        const stateDir = makeTempDir("t3code-ws-setup-restart-state-");
+        const dbPath = path.join(stateDir, "state.sqlite");
+        const persistence = () =>
+          makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        let ws = await startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
+        await createProject(ws, repo, { command: "sleep 30", async: false });
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-restart" }),
+        );
+        const running = await waitForSetup(
+          ws,
+          "thread-restart",
+          (entry) =>
+            entry?.stages.find((stage) => stage.id === "setup-script")?.status === "running",
+        );
+        // Let the throttled activity write land before the restart.
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        for (const socket of connections.splice(0)) socket.close();
+        await closeTestServer();
+        server = null;
+
+        ws = await startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
+        const failed = await waitForSetup(
+          ws,
+          "thread-restart",
+          (entry) => entry?.phase === "failed",
+        );
+        expect(failed?.error).toContain("restart");
+        expect(fs.existsSync(running!.worktreePath!)).toBe(true);
+        const queue = (
+          await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-restart" })
+        ).result as { readonly paused: boolean; readonly reasonCode: string | null };
+        expect(queue).toEqual(
+          expect.objectContaining({ paused: true, reasonCode: "worktree_setup_failed" }),
+        );
+        expect(sentTurns).toHaveLength(0);
+      });
+    });
+
+    it("reports a first send whose thread was not created so the client can retry", async () => {
+      const stateDir = makeTempDir("t3code-ws-first-send-rollback-");
+      const repo = makeGitRepo("t3code-ws-first-send-rollback-repo-");
+      server = await createTestServer({ cwd: repo, stateDir });
+      const addr = server.address();
+      const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+      const [ws] = await connectAndAwaitWelcome(port);
+      connections.push(ws);
+      const createdAt = new Date().toISOString();
+      await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+        type: "project.create",
+        commandId: "command-rollback-project",
+        projectId: "project-rollback",
+        title: "Rollback",
+        workspaceRoot: repo,
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      });
+      const response = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+        submissionId: "submission-rollback",
+        intent: "auto",
+        command: {
+          type: "thread.turn.start",
+          commandId: "submission-rollback",
+          threadId: "thread-rollback",
+          message: { messageId: "message-rollback", role: "user", text: "Go.", attachments: [] },
+          provider: "codex",
+          assistantDeliveryMode: "streaming",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          bootstrap: {
+            createThread: {
+              // An unknown project makes thread creation fail before it commits.
+              projectId: "project-missing",
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            },
+          },
+          createdAt,
+        },
+      });
+      expect(response.error).toEqual(
+        expect.objectContaining({ code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE }),
+      );
+      const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+        .result as OrchestrationReadModel;
+      expect(snapshot.threads.some((entry) => entry.id === "thread-rollback")).toBe(false);
+    });
   });
 
   it("rejects an invalid bootstrap attachment before creating the thread", async () => {

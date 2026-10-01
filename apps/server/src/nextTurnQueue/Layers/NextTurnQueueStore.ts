@@ -500,6 +500,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
 
             const at = now();
             yield* ensureState(input.command.threadId, at);
+            if (input.worktreeBlockToken !== undefined) {
+              yield* sql`
+                UPDATE next_turn_queue_state
+                SET worktree_block_token = ${input.worktreeBlockToken}, updated_at = ${at}
+                WHERE thread_id = ${input.command.threadId}
+              `;
+            }
             if (input.atHead) {
               yield* sql`
                 UPDATE next_turn_queue
@@ -595,6 +602,17 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(normalizeError)),
+
+    recordStartedSubmission: (input) =>
+      sql`
+        INSERT OR IGNORE INTO turn_submissions (
+          submission_id, thread_id, request_hash, item_id, message_id,
+          disposition, result_sequence, created_at, settled_at
+        ) VALUES (
+          ${input.submissionId}, ${input.threadId}, ${input.requestHash}, NULL,
+          ${input.messageId}, 'started', ${input.sequence}, ${now()}, ${now()}
+        )
+      `.pipe(Effect.asVoid, Effect.mapError(normalizeError)),
 
     settleSubmission: ({ submissionId, result }) =>
       (result.disposition === "started" || result.disposition === "steered"
@@ -739,6 +757,30 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               { concurrency: 1, discard: true },
             );
             yield* bumpRevision(input.threadId, at);
+          }),
+        )
+        .pipe(Effect.mapError(normalizeError)),
+
+    setWorktreeBlockToken: (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* ensureState(input.threadId);
+            const at = now();
+            yield* input.expectedToken === undefined
+              ? sql`
+                  UPDATE next_turn_queue_state
+                  SET worktree_block_token = ${input.token}, revision = revision + 1,
+                      updated_at = ${at}
+                  WHERE thread_id = ${input.threadId}
+                `
+              : sql`
+                  UPDATE next_turn_queue_state
+                  SET worktree_block_token = ${input.token}, revision = revision + 1,
+                      updated_at = ${at}
+                  WHERE thread_id = ${input.threadId}
+                    AND worktree_block_token IS ${input.expectedToken}
+                `;
           }),
         )
         .pipe(Effect.mapError(normalizeError)),

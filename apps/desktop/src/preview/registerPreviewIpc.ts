@@ -34,6 +34,7 @@ export const PREVIEW_IPC_CHANNELS = {
   setViewport: "desktop-preview:set-viewport",
   setColorScheme: "desktop-preview:set-color-scheme",
   captureScreenshot: "desktop-preview:capture-screenshot",
+  setArtifactRetention: "desktop-preview:set-artifact-retention",
   recordingStart: "desktop-preview:recording-start",
   recordingAppend: "desktop-preview:recording-append",
   recordingStop: "desktop-preview:recording-stop",
@@ -64,6 +65,7 @@ export interface PreviewIpcOperations {
   readonly setViewport: (tabId: string, viewport: PreviewViewportSize | null) => unknown;
   readonly setColorScheme: (tabId: string, colorScheme: DesktopPreviewColorScheme) => unknown;
   readonly captureScreenshot: (tabId: string) => unknown;
+  readonly setArtifactRetention: (days: number | null) => unknown;
   readonly recordingStart: (tabId: string) => unknown;
   readonly recordingAppend: (recordingId: string, chunk: Uint8Array) => unknown;
   readonly recordingStop: (recordingId: string) => unknown;
@@ -140,6 +142,17 @@ export function registerPreviewIpc(
       operations[operationName](nonEmptyString(tabId, "Preview tab id")),
     );
   }
+  replaceHandler(
+    ipcMain,
+    channels.setArtifactRetention,
+    operationsForSender,
+    (operations, days) => {
+      if (days !== null && (typeof days !== "number" || !Number.isInteger(days))) {
+        throw new Error("Preview artifact retention is invalid.");
+      }
+      return operations.setArtifactRetention(days);
+    },
+  );
   replaceHandler(
     ipcMain,
     channels.automationSnapshot,

@@ -72,7 +72,16 @@ interface BootstrapTurnStartBaseDependencies {
   >;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
   readonly worktreesDir?: string | undefined;
+  /**
+   * Reports how a failed bootstrap left the thread it was asked to create:
+   * `deleted` after a confirmed rollback, `not-created` when creation never
+   * committed. Ambiguous failures report nothing, so a client never reuses or
+   * abandons a thread id it cannot be sure about.
+   */
+  readonly onThreadRolledBack?: ((disposition: BootstrapThreadDisposition) => void) | undefined;
 }
+
+export type BootstrapThreadDisposition = "deleted" | "not-created";
 
 export type BootstrapTurnStartDependencies = BootstrapTurnStartBaseDependencies &
   (
@@ -290,6 +299,10 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           attachmentsPersisted = false;
         }
 
+        if (bootstrap.createThread && !createdThread && failureStage === "thread-create") {
+          input.onThreadRolledBack?.("not-created");
+        }
+
         if (createdThread) {
           const deleteThread = yield* runCleanupStep(
             error,
@@ -303,6 +316,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           if (!deleteThread.ok) {
             return yield* deleteThread.error;
           }
+          input.onThreadRolledBack?.("deleted");
           if (createdWorktree) {
             const removeWorktree = yield* runCleanupStep(
               error,

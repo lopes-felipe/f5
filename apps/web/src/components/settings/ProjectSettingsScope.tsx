@@ -1,4 +1,5 @@
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
+import { WorktreeCleanupRulesEditor } from "./WorktreeCleanupRulesEditor";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   isKnownProviderKind,
@@ -226,6 +227,51 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
             <option value="rebase">Rebase</option>
           </select>
         </div>
+        <div className="block">
+          Automatic worktree cleanup {badge("worktreeCleanup")}
+          <select
+            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
+            aria-label="Automatic worktree cleanup"
+            value={settings.worktreeCleanup?.mode ?? "global"}
+            onChange={(event) =>
+              set(
+                "worktreeCleanup",
+                event.target.value === "off"
+                  ? { mode: "off" }
+                  : event.target.value === "custom"
+                    ? { mode: "custom", rules: settings.storageCleanup.worktree }
+                    : null,
+              )
+            }
+          >
+            <option value="global">Use the global rules</option>
+            <option value="off">Off for this project</option>
+            <option value="custom">Custom rules</option>
+          </select>
+          {!settings.storageCleanup.enabled ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Automatic storage cleanup is off in Storage settings, so no rule runs.
+            </p>
+          ) : null}
+          {settings.worktreeCleanup?.mode === "custom" ? (
+            <div className="mt-2">
+              <WorktreeCleanupRulesEditor
+                rules={settings.worktreeCleanup.rules}
+                onChange={(rules) => set("worktreeCleanup", { mode: "custom", rules })}
+              />
+            </div>
+          ) : null}
+        </div>
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>Auto-pull the default branch</span>
+          <input
+            type="checkbox"
+            aria-label="Auto-pull the default branch"
+            checked={settings.autoPullDefaultBranch}
+            onChange={(event) => set("autoPullDefaultBranch", event.target.checked)}
+          />
+        </label>
+        {badge("autoPullDefaultBranch")}
         <div>
           Text generation model {badge("textGenerationModelSelection")}
           <select

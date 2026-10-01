@@ -114,6 +114,15 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     driver: ProviderDriverKind,
     model: ModelSlug,
   ) => void;
+  /** Models chosen for multi-model fan-out; more than one shows a combined trigger. */
+  selectedModels?: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly model: string;
+  }>;
+  /** Shift-click toggles a model for fan-out instead of replacing the selection. */
+  onToggleModel?:
+    | ((instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => void)
+    | undefined;
 }) {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -264,7 +273,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     if (props.disabled && isOpen) setOpen(false);
   }, [isOpen, props.disabled, setOpen]);
 
-  const selectModel = (item: InstanceModelItem) => {
+  const selectModel = (item: InstanceModelItem, additive = false) => {
     if (props.disabled || !isSelectable(item.instance)) return;
     const resolved = resolveSelectableModel(
       item.instance.driverKind,
@@ -272,9 +281,20 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       props.modelOptionsByInstance.get(item.instance.instanceId) ?? [],
     );
     if (!resolved) return;
+    if (additive && props.onToggleModel) {
+      // Fan-out selection keeps the picker open so several models can be added.
+      props.onToggleModel(item.instance.instanceId, item.instance.driverKind, resolved);
+      return;
+    }
     props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
     setOpen(false);
   };
+  const fanOutCount = props.selectedModels?.length ?? 0;
+  const isFanOutSelected = (item: InstanceModelItem) =>
+    fanOutCount > 1 &&
+    (props.selectedModels ?? []).some(
+      (entry) => entry.instanceId === item.instance.instanceId && entry.model === item.slug,
+    );
 
   const toggleFavorite = (item: InstanceModelItem) => {
     const key = modelKey(item.instance.instanceId, item.slug);
@@ -357,11 +377,17 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
           ) : null}
           <Tooltip>
             <TooltipTrigger render={<span className="min-w-0 flex-1 truncate" />}>
-              {selectedInstance && !selectedInstance.isDefault
-                ? `${selectedInstance.displayName} · ${triggerTitle}`
-                : triggerTitle}
+              {fanOutCount > 1
+                ? `${fanOutCount} models`
+                : selectedInstance && !selectedInstance.isDefault
+                  ? `${selectedInstance.displayName} · ${triggerTitle}`
+                  : triggerTitle}
             </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+            <TooltipPopup side="top">
+              {fanOutCount > 1
+                ? `${(props.selectedModels ?? []).map((entry) => entry.model).join(", ")} · each starts its own thread and worktree`
+                : triggerLabel}
+            </TooltipPopup>
           </Tooltip>
           <ChevronDownIcon className="size-3 shrink-0 opacity-60" />
         </span>
@@ -434,7 +460,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                       if (event.key === "Enter" && items[0]) {
                         event.preventDefault();
                         event.stopPropagation();
-                        selectModel(items[0]);
+                        selectModel(items[0], event.shiftKey);
                         return;
                       }
                       event.stopPropagation();
@@ -499,7 +525,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                               <button
                                 type="button"
                                 className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-not-allowed"
-                                onClick={() => selectModel(item)}
+                                onClick={(event) => selectModel(item, event.shiftKey)}
+                                aria-pressed={fanOutCount > 1 ? isFanOutSelected(item) : undefined}
                                 disabled={Boolean(reason)}
                                 title={reason ?? undefined}
                               >
@@ -514,8 +541,13 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 <span className="min-w-0 flex-1">
                                   <span className="flex items-center gap-2 text-xs font-medium">
                                     <span className="truncate">{getDisplayModelName(item)}</span>
-                                    {item.instance.instanceId === activeInstanceId &&
-                                    item.slug === props.model ? (
+                                    {isFanOutSelected(item) ? (
+                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-[10px] uppercase text-primary">
+                                        Selected
+                                      </span>
+                                    ) : fanOutCount <= 1 &&
+                                      item.instance.instanceId === activeInstanceId &&
+                                      item.slug === props.model ? (
                                       <span className="rounded border border-primary/30 bg-primary/10 px-1 text-[10px] uppercase text-primary">
                                         Active
                                       </span>

@@ -102,6 +102,23 @@ export interface GitRemote {
   readonly url: string | null;
 }
 
+/** Synchronous progress callbacks; they run on git's output stream and must not block. */
+export interface GitWorktreeProgress {
+  /** Git has registered the directory, so a cancel from here on must remove it. */
+  readonly onWorktreeClaimed?: (path: string) => void;
+  readonly onCheckoutProgress?: (progress: {
+    readonly percent: number;
+    readonly completed: number;
+    readonly total: number;
+  }) => void;
+  readonly onSubmodulesStarted?: () => void;
+  readonly onSubmoduleLine?: (line: string) => void;
+  readonly onSubmodulesFinished?: (result: {
+    readonly status: "done" | "skipped" | "warning";
+    readonly detail: string | null;
+  }) => void;
+}
+
 /**
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
@@ -187,8 +204,63 @@ export interface GitCoreShape {
   readonly createWorktree: (
     input: GitCreateWorktreeInput & {
       submodules?: import("@t3tools/contracts").WorktreeSubmodules;
+      /** Live checkout and submodule progress, for the worktree setup card. */
+      progress?: GitWorktreeProgress;
     },
   ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError>;
+
+  /** Resolve the absolute git-common-dir shared by every worktree of a repository. */
+  readonly resolveCommonDir: (cwd: string) => Effect.Effect<string, GitCommandError>;
+
+  /** `git worktree prune` under the cross-profile repository lock. */
+  readonly pruneWorktrees: (cwd: string) => Effect.Effect<void, GitCommandError>;
+
+  /** Resolve a revision to a commit SHA, or null when it does not name a commit. */
+  readonly resolveCommit: (
+    cwd: string,
+    revision: string,
+  ) => Effect.Effect<string | null, GitCommandError>;
+
+  /** A merge, rebase, cherry-pick, revert or bisect in progress in this checkout, or null. */
+  readonly readOperationInProgress: (
+    cwd: string,
+  ) => Effect.Effect<
+    "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | null,
+    GitCommandError
+  >;
+
+  /** `merge-base --is-ancestor`: true when `ancestor` is reachable from `descendant`. */
+  readonly isAncestor: (
+    cwd: string,
+    ancestor: string,
+    descendant: string,
+  ) => Effect.Effect<boolean, GitCommandError>;
+
+  /**
+   * Deletes `refs/heads/<branch>` only while it still points at `expectedSha`
+   * (an atomic compare-and-delete). Returns false when the branch moved.
+   */
+  readonly deleteBranchIfAt: (input: {
+    readonly cwd: string;
+    readonly branch: string;
+    readonly expectedSha: string;
+  }) => Effect.Effect<boolean, GitCommandError>;
+
+  /** Reads a small file from a revision without checking it out. Null when absent. */
+  readonly readFileAtRevision: (input: {
+    readonly cwd: string;
+    readonly revision: string;
+    readonly path: string;
+    readonly maxBytes: number;
+  }) => Effect.Effect<string | null, GitCommandError>;
+
+  /** Ignored untracked entries (directories collapsed), bounded. */
+  readonly listIgnoredEntries: (
+    cwd: string,
+  ) => Effect.Effect<
+    { readonly entries: ReadonlyArray<string>; readonly truncated: boolean },
+    GitCommandError
+  >;
 
   /**
    * Report whether the repository has at least one configured remote.

@@ -7,6 +7,22 @@ import { resolveProjectSettings } from "./projectSettings";
 import { applyServerSettingsPatch } from "./serverSettings";
 const id = ProjectId.makeUnsafe("project-test");
 describe("project settings", () => {
+  it("ignores checked-in values for storage automation keys", () => {
+    const result = resolveProjectSettings({
+      projectId: id,
+      checkedIn: {
+        autoPullDefaultBranch: true,
+        worktreeCleanup: {
+          mode: "custom",
+          rules: { afterDays: 1, onMerge: true, onDelete: true, unchanged: true },
+        },
+      },
+      sourceFile: "f5.json",
+    });
+    expect(result.settings.autoPullDefaultBranch).toBe(false);
+    expect(result.settings.worktreeCleanup).toBeNull();
+    expect(result.sources.autoPullDefaultBranch).toBe("default");
+  });
   it("resolves override, legacy, file, global and built-in defaults in order", () => {
     const global = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" as const };
     expect(resolveProjectSettings({ projectId: id }).sources.defaultThreadEnvMode).toBe("default");

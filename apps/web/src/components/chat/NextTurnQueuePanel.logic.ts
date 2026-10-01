@@ -80,6 +80,14 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
       return "Waiting for turn post-processing to finish.";
     case "thread_deleted":
       return "This thread was deleted.";
+    case "worktree_setup":
+      return "Waiting for the worktree setup to finish.";
+    case "worktree_setup_failed":
+      return fallback ?? "Worktree setup failed. Retry it, work locally, or discard.";
+    case "worktree_setup_cancelled":
+      return fallback ?? "Worktree setup was cancelled.";
+    case "worktree_setup_cancelled_kept":
+      return fallback ?? "Setup cancelled; worktree kept because it may contain changes.";
     case null:
       return fallback;
   }

@@ -1,3 +1,7 @@
+import { WorktreeSetupLive } from "./project/Layers/WorktreeSetup.ts";
+import { DefaultBranchAutoPullLive } from "./git/DefaultBranchAutoPull.ts";
+import { StorageCleanupWorkerLive } from "./storage/StorageCleanupWorker.ts";
+import { WorktreeSetupGateLive } from "./project/Services/WorktreeSetupGate.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
 import { PrHubRepositoryLive } from "./prHub/Layers/PrHubRepository.ts";
 import { PrHubJobCoordinatorLive } from "./prHub/Layers/PrHubJobCoordinator.ts";
@@ -367,7 +371,10 @@ export function makeServerOrchestrationRuntimeLayer() {
       Layer.provideMerge(OrchestrationEventStoreLive),
     ),
   );
+  // One gate instance is shared by the queue dispatcher and the setup service.
+  const worktreeSetupGateLayer = WorktreeSetupGateLive;
   const nextTurnQueueDispatcherLayer = NextTurnQueueDispatcherLive.pipe(
+    Layer.provideMerge(worktreeSetupGateLayer),
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(ProjectionThreadRepositoryLive),
     Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
@@ -439,6 +446,19 @@ export function makeServerOrchestrationRuntimeLayer() {
   const projectSetupScriptRunnerLayer = ProjectSetupScriptRunnerLive.pipe(
     Layer.provideMerge(orchestrationLayer),
   );
+  const worktreeSetupLayer = WorktreeSetupLive.pipe(
+    Layer.provideMerge(worktreeSetupGateLayer),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(gitCoreLayer),
+  );
+  const storageCleanupWorkerLayer = StorageCleanupWorkerLive.pipe(
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(gitCoreLayer),
+  );
+  const defaultBranchAutoPullLayer = DefaultBranchAutoPullLive.pipe(
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(gitCoreLayer),
+  );
 
   return Layer.mergeAll(
     orchestrationLayer,
@@ -452,5 +472,8 @@ export function makeServerOrchestrationRuntimeLayer() {
     projectSetupScriptRunnerLayer,
     nextTurnQueueDispatcherLayer,
     providerTurnDeliveryWorkerLayer,
+    worktreeSetupLayer,
+    storageCleanupWorkerLayer,
+    defaultBranchAutoPullLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

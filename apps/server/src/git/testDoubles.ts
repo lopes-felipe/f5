@@ -50,6 +50,14 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "fetchRemoteBranch",
       "setBranchUpstream",
       "removeWorktree",
+      "resolveCommonDir",
+      "pruneWorktrees",
+      "resolveCommit",
+      "readOperationInProgress",
+      "isAncestor",
+      "deleteBranchIfAt",
+      "readFileAtRevision",
+      "listIgnoredEntries",
       "renameBranch",
       "createBranch",
       "checkoutBranch",
@@ -113,6 +121,14 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     fetchRemoteBranch: () => Effect.void,
     setBranchUpstream: () => Effect.void,
     removeWorktree: () => Effect.void,
+    resolveCommonDir: (cwd) => Effect.succeed(`${cwd}/.git`),
+    pruneWorktrees: () => Effect.void,
+    resolveCommit: () => Effect.succeed("0123456789abcdef0123456789abcdef01234567"),
+    readOperationInProgress: () => Effect.succeed(null),
+    isAncestor: () => Effect.succeed(false),
+    deleteBranchIfAt: () => Effect.succeed(true),
+    readFileAtRevision: () => Effect.succeed(null),
+    listIgnoredEntries: () => Effect.succeed({ entries: [], truncated: false }),
     renameBranch: (input) => Effect.succeed({ branch: input.newBranch }),
     createBranch: () => Effect.void,
     checkoutBranch: () => Effect.void,
@@ -213,6 +229,38 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     removeWorktree: (input) => {
       record("removeWorktree", [input]);
       return implementations.removeWorktree(input);
+    },
+    resolveCommonDir: (cwd) => {
+      record("resolveCommonDir", [cwd]);
+      return implementations.resolveCommonDir(cwd);
+    },
+    pruneWorktrees: (cwd) => {
+      record("pruneWorktrees", [cwd]);
+      return implementations.pruneWorktrees(cwd);
+    },
+    resolveCommit: (cwd, revision) => {
+      record("resolveCommit", [cwd, revision]);
+      return implementations.resolveCommit(cwd, revision);
+    },
+    readOperationInProgress: (cwd) => {
+      record("readOperationInProgress", [cwd]);
+      return implementations.readOperationInProgress(cwd);
+    },
+    isAncestor: (cwd, ancestor, descendant) => {
+      record("isAncestor", [cwd, ancestor, descendant]);
+      return implementations.isAncestor(cwd, ancestor, descendant);
+    },
+    deleteBranchIfAt: (input) => {
+      record("deleteBranchIfAt", [input]);
+      return implementations.deleteBranchIfAt(input);
+    },
+    readFileAtRevision: (input) => {
+      record("readFileAtRevision", [input]);
+      return implementations.readFileAtRevision(input);
+    },
+    listIgnoredEntries: (cwd) => {
+      record("listIgnoredEntries", [cwd]);
+      return implementations.listIgnoredEntries(cwd);
     },
     renameBranch: (input) => {
       record("renameBranch", [input]);

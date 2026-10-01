@@ -211,6 +211,59 @@ const SourceControlWritingSettingsPatch = Schema.Struct({
 export const WorktreeSubmodules = Schema.Literals(["none", "shallow", "recursive"]);
 export type WorktreeSubmodules = typeof WorktreeSubmodules.Type;
 
+/** Days, or null for "never". */
+export const StorageRetentionDays = Schema.NullOr(
+  Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3650 })),
+);
+export type StorageRetentionDays = typeof StorageRetentionDays.Type;
+
+/**
+ * When an idle managed worktree may be removed. Removal keeps the branch and
+ * the thread's worktree path, so resuming the thread recreates the checkout.
+ */
+export const WorktreeCleanupRules = Schema.Struct({
+  /** Remove after the thread has been idle this many days. */
+  afterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
+  /** Remove once HEAD is in the default branch and the branch's PR is merged. */
+  onMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Remove once the thread is deleted. */
+  onDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Remove when HEAD has no commits beyond the default branch. */
+  unchanged: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+});
+export type WorktreeCleanupRules = typeof WorktreeCleanupRules.Type;
+
+/** A project's worktree cleanup policy; absent or null inherits the global rules. */
+export const WorktreeCleanup = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("off") }),
+  Schema.Struct({ mode: Schema.Literal("custom"), rules: WorktreeCleanupRules }),
+]);
+export type WorktreeCleanup = typeof WorktreeCleanup.Type;
+
+export const StorageCleanupSettings = Schema.Struct({
+  /** Master switch for automatic cleanup. Off by default. */
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  worktree: WorktreeCleanupRules.pipe(Schema.withDecodingDefault(() => ({}))),
+  providerLogsAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
+  /** Desktop preview screenshots and recordings; null keeps the 7-day default. */
+  previewArtifactRetentionDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
+});
+export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
+
+const StorageCleanupSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  worktree: Schema.optionalKey(
+    Schema.Struct({
+      afterDays: Schema.optionalKey(StorageRetentionDays),
+      onMerge: Schema.optionalKey(Schema.Boolean),
+      onDelete: Schema.optionalKey(Schema.Boolean),
+      unchanged: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  providerLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
+  previewArtifactRetentionDays: Schema.optionalKey(StorageRetentionDays),
+});
+
 export const ProjectSettingsOverrides = Schema.Struct({
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -222,6 +275,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   prHubDefaultMergeMethod: Schema.optionalKey(
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
+  worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
@@ -262,6 +317,11 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  storageCleanup: StorageCleanupSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  /** Project-scopable worktree cleanup policy; null uses `storageCleanup.worktree`. */
+  worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
+  /** Fast-forward clean default branches in the background. Off by default. */
+  autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -384,6 +444,9 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
+  storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
+  worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),
@@ -424,6 +487,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "sourceControlWriting",
   "enableAssistantStreaming",
   "prHubDefaultMergeMethod",
+  "worktreeCleanup",
+  "autoPullDefaultBranch",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 export const ProjectSettingSource = Schema.Literals([

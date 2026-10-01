@@ -71,6 +71,10 @@ export class PreviewRuntime {
     return this.#artifactStore.initialize();
   }
 
+  setArtifactRetention(days: number | null): Promise<void> {
+    return this.#artifactStore.setRetention(days);
+  }
+
   ensureTab(tabId: unknown): PreviewTabEntry | null {
     if (typeof tabId !== "string" || tabId.trim().length === 0) return null;
     let entry = this.tabs.get(tabId) ?? null;

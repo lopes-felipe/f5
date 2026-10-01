@@ -3,6 +3,8 @@ import { recoverRestartTurnMarkers } from "../restartTurns.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { EventId as importEventIdFactory } from "@t3tools/contracts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { WorktreeSetupGate } from "../../project/Services/WorktreeSetupGate.ts";
 import {
   CommandId,
   MAX_QUEUED_TURNS_PER_THREAD,
@@ -95,6 +97,11 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const deliveries = yield* ProviderTurnDeliveryRepository;
   const fileSystem = yield* FileSystem.FileSystem;
   const git = yield* GitCore;
+  const worktreeSetupGate = yield* Effect.serviceOption(WorktreeSetupGate);
+  const readWorktreeSetupGate = (threadId: ThreadId, token: string | null) =>
+    Option.isSome(worktreeSetupGate)
+      ? worktreeSetupGate.value.check(threadId, token)
+      : Effect.succeed(token === null ? ("none" as const) : ("orphaned" as const));
 
   const changesPubSub = yield* PubSub.unbounded<ThreadId>();
   const summaryChangesPubSub = yield* PubSub.unbounded<void>();
@@ -186,6 +193,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         hasDispatchingItem: dispatching.length > 0 && !canSteerAlongsideStart,
         automaticCompaction: compacting.has(item.threadId),
         worktreeExists: thread?.branch ? null : worktreeExists,
+        worktreeSetup: yield* readWorktreeSetupGate(item.threadId, queue.state.worktreeBlockToken),
       });
       if (gate.kind !== "ready" || worktreeExists !== false || !thread?.worktreePath) return gate;
       const model = yield* engine.getReadModel();
@@ -336,6 +344,36 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* publishSnapshotIfChanged(threadId);
         return;
       }
+      // A running worktree setup holds its path lock; check its gate first so
+      // this worker shard never blocks behind a long checkout or script.
+      if ((yield* readWorktreeSetupGate(threadId, queue.state.worktreeBlockToken)) === "gating") {
+        yield* publishSnapshotIfChanged(threadId);
+        yield* settleWaiter(item.itemId, {
+          disposition: "queued",
+          submissionId: item.submissionId,
+          itemId: item.itemId,
+          snapshot: yield* getSnapshot(threadId),
+        });
+        return;
+      }
+      // Gate check through acceptance runs under the worktree lifecycle lock so
+      // cleanup, setup cancellation and recreation cannot interleave with a start.
+      const lockPath = Option.getOrNull(
+        yield* threads.getById({ threadId }).pipe(Effect.mapError(storageError)),
+      )?.worktreePath;
+      const start = startFromGate(item);
+      yield* lockPath
+        ? withWorktreeLifecycleLock(lockPath, start).pipe(
+            Effect.catchTag("RepositoryLifecycleError", (error) =>
+              Effect.fail(storageError(error)),
+            ),
+          )
+        : start;
+    });
+
+  const startFromGate = (item: NextTurnQueueItem): Effect.Effect<void, NextTurnQueueError> =>
+    Effect.gen(function* () {
+      const threadId = item.threadId;
       const gate = yield* readGate(item, true);
       if (gate.kind === "drop") {
         yield* store.deleteForThread(threadId);

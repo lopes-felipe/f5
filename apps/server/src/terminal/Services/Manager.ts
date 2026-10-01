@@ -26,6 +26,13 @@ export class TerminalError extends Schema.TaggedErrorClass<TerminalError>()("Ter
   cause: Schema.optional(Schema.Defect),
 }) {}
 
+export interface TerminalSessionSummary {
+  readonly threadId: string;
+  readonly terminalId: string;
+  readonly cwd: string;
+  readonly status: TerminalSessionStatus;
+}
+
 export interface TerminalSessionState {
   threadId: string;
   terminalId: string;
@@ -109,6 +116,12 @@ export interface TerminalManagerShape {
    * When `terminalId` is omitted, closes all sessions for the thread.
    */
   readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
+
+  /**
+   * Live terminal sessions with their working directory. Worktree cleanup and
+   * setup cancellation treat a starting or running terminal as a claim.
+   */
+  readonly listSessions: Effect.Effect<ReadonlyArray<TerminalSessionSummary>>;
 
   /**
    * Subscribe to terminal runtime events.

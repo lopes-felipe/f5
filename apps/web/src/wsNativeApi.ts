@@ -9,7 +9,8 @@ import {
   type GitStatusInvalidatedPayload,
   type McpStatusUpdatedPayload,
   type NextTurnQueueSnapshot,
-  type NextTurnQueueSummary,
+  type WorktreeSetupUpdatedPayload,
+  NextTurnQueueSummary,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   OrchestrationRetryWorkflowResult,
@@ -75,6 +76,7 @@ const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload)
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
+const worktreeSetupUpdatedListeners = new Set<(payload: WorktreeSetupUpdatedPayload) => void>();
 const prHubChangedListeners = new Set<(payload: PrHubChanged) => void>();
 const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisoriesChanged) => void>();
 const agentsSnapshotUpdatedListeners = new Set<(payload: AgentsSnapshot) => void>();
@@ -354,6 +356,16 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  transport.subscribe(WS_CHANNELS.worktreeSetupUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of worktreeSetupUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
   transport.subscribe(WS_CHANNELS.nextTurnQueueSummaryUpdated, (message) => {
     const payload = message.data;
     for (const listener of nextTurnQueueSummaryUpdatedListeners) {
@@ -602,6 +614,8 @@ export function createWsNativeApi(): NativeApi {
       getUsage: (input = {}) => transport.request(WS_METHODS.storageGetUsage, input),
       cleanup: (input) => transport.request(WS_METHODS.storageCleanup, input, { timeoutMs: null }),
       cancelCleanup: (input) => transport.request(WS_METHODS.storageCancelCleanup, input),
+      automationDryRun: () => transport.request(WS_METHODS.storageAutomationDryRun, {}),
+      automationAudit: (input = {}) => transport.request(WS_METHODS.storageAutomationAudit, input),
       onInvalidated: (callback) => {
         storageInvalidatedListeners.add(callback);
         return () => {
@@ -612,6 +626,18 @@ export function createWsNativeApi(): NativeApi {
         storageCleanupProgressListeners.add(callback);
         return () => {
           storageCleanupProgressListeners.delete(callback);
+        };
+      },
+    },
+    worktreeSetup: {
+      subscribe: (input) => transport.request(WS_METHODS.worktreeSetupSubscribe, input),
+      cancel: (input) => transport.request(WS_METHODS.worktreeSetupCancel, input),
+      retry: (input) => transport.request(WS_METHODS.worktreeSetupRetry, input),
+      workLocally: (input) => transport.request(WS_METHODS.worktreeSetupWorkLocally, input),
+      onUpdated: (callback) => {
+        worktreeSetupUpdatedListeners.add(callback);
+        return () => {
+          worktreeSetupUpdatedListeners.delete(callback);
         };
       },
     },

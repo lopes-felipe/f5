@@ -212,6 +212,7 @@ import {
 } from "~/projectScripts";
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
+import { wasBootstrapThreadRolledBack } from "~/lib/bootstrapErrors";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
 import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
@@ -273,6 +274,12 @@ import { RewindDraftPanel } from "./chat/RewindDraftPanel";
 import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
+import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeSetupCard";
+import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
+import { runFanOut, toggleFanOutModel, type FanOutModel } from "./chat/fanOut";
+
+const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
+import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueueStore";
 
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
@@ -2452,6 +2459,44 @@ export default function ChatView({
   }, [activeProjectCwd, activeThreadWorktreePath]);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = branchesQuery.data?.worktreeMissing || (branchesQuery.data?.isRepo ?? true);
+  const worktreeSetup = useWorktreeSetup(
+    isServerThread && activeThread ? activeThread.id : null,
+    activeThread?.activities,
+  );
+  const [worktreeSetupBusy, setWorktreeSetupBusy] = useState(false);
+  const createProjectDraftThread = useCreateProjectBackedDraftThread();
+  const runWorktreeSetupAction = useCallback(
+    async (action: "cancel" | "retry" | "workLocally") => {
+      const api = readNativeApi();
+      if (!api || !worktreeSetup) return;
+      const setupThreadId = worktreeSetup.threadId;
+      // Discarding a settled setup deletes the still-empty thread; keep its text.
+      const discardedText =
+        action === "cancel" && worktreeSetup.phase !== "running"
+          ? (useNextTurnQueueStore
+              .getState()
+              .byThreadId[setupThreadId]?.snapshot?.items.find(
+                (item) => item.itemId === worktreeSetup.itemId,
+              )?.command.message.text ?? null)
+          : null;
+      setWorktreeSetupBusy(true);
+      try {
+        await api.worktreeSetup[action]({ threadId: setupThreadId });
+        if (discardedText !== null && activeProject) {
+          const draft = await createProjectDraftThread(activeProject.id);
+          useComposerDraftStore.getState().setPrompt(draft.threadId, discardedText);
+        }
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: error instanceof Error ? error.message : "Worktree setup action failed.",
+        });
+      } finally {
+        setWorktreeSetupBusy(false);
+      }
+    },
+    [activeProject, createProjectDraftThread, worktreeSetup],
+  );
   const onOpenFileChangeDiff = useCallback(
     (fileChangeId: OrchestrationFileChangeId, filePath?: string) => {
       void navigate({
@@ -2920,6 +2965,7 @@ export default function ChatView({
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
+        ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = input.runOnWorktreeCreate
         ? [
@@ -2949,12 +2995,14 @@ export default function ChatView({
         throw new Error("Script not found.");
       }
 
+      const { async: _previousAsync, ...existingWithoutAsync } = existingScript;
       const updatedScript: ProjectScript = {
-        ...existingScript,
+        ...existingWithoutAsync,
         name: input.name,
         command: input.command,
         icon: input.icon,
         runOnWorktreeCreate: input.runOnWorktreeCreate,
+        ...(input.runOnWorktreeCreate && !input.async ? { async: false } : {}),
       };
       const nextScripts = activeProject.scripts.map((script) =>
         script.id === scriptId
@@ -3494,7 +3542,11 @@ export default function ChatView({
       preparingWorktree: boolean;
       localDispatch: ReturnType<typeof createLocalDispatchSnapshot>;
       failureMessage: string;
-      onNonTransportFailure?: (message: string, rollback: PendingTurnDispatchRollback) => void;
+      onNonTransportFailure?: (
+        message: string,
+        rollback: PendingTurnDispatchRollback,
+        error: unknown,
+      ) => void;
       onStarted?: () => void;
       onQueued?: () => void;
       intent?: SendIntent;
@@ -3526,43 +3578,44 @@ export default function ChatView({
             createdAtMs: Date.now(),
           });
         }
-        const result = input.command.bootstrap
-          ? await input.api.orchestration.dispatchCommand(input.command)
-          : await input.api.nextTurnQueue
-              .submit({
-                submissionId: input.command.commandId,
-                command: input.command,
-                intent:
-                  input.intent === "send-now"
-                    ? "queue-head"
-                    : input.intent === "steer" ||
-                        ((input.intent === undefined || input.intent === "auto") &&
-                          phase === "running" &&
-                          settings.followUpBehavior === "steer")
-                      ? "steer"
-                      : (input.intent ?? "auto"),
-              })
-              .then(async (submission) => {
-                if (submission.disposition === "queued") {
-                  const snapshot =
-                    input.intent === "send-now"
-                      ? await input.api.nextTurnQueue.promote({
-                          itemId: submission.itemId,
-                          interruptActive: input.interruptActiveForSendNow ?? false,
-                          expectedRevision: submission.snapshot.revision,
-                        })
-                      : submission.snapshot;
-                  useNextTurnQueueStore.getState().applySnapshot(snapshot);
-                  rememberAcceptedTurnMentions(input.command.commandId);
-                  clearPendingTurnDispatch({ commandId: input.command.commandId });
-                  input.onQueued?.();
-                  return null;
-                }
-                if (submission.disposition !== "started" && submission.disposition !== "steered") {
-                  throw new Error(submission.detail ?? "The turn was not accepted.");
-                }
-                return { sequence: submission.sequence };
-              });
+        // Every send, including a new thread's first one, goes through durable
+        // queue admission. The submission id makes a retried send idempotent.
+        const result = await input.api.nextTurnQueue
+          .submit({
+            submissionId: input.command.commandId,
+            command: input.command,
+            intent: input.command.bootstrap
+              ? "auto"
+              : input.intent === "send-now"
+                ? "queue-head"
+                : input.intent === "steer" ||
+                    ((input.intent === undefined || input.intent === "auto") &&
+                      phase === "running" &&
+                      settings.followUpBehavior === "steer")
+                  ? "steer"
+                  : (input.intent ?? "auto"),
+          })
+          .then(async (submission) => {
+            if (submission.disposition === "queued") {
+              const snapshot =
+                input.intent === "send-now"
+                  ? await input.api.nextTurnQueue.promote({
+                      itemId: submission.itemId,
+                      interruptActive: input.interruptActiveForSendNow ?? false,
+                      expectedRevision: submission.snapshot.revision,
+                    })
+                  : submission.snapshot;
+              useNextTurnQueueStore.getState().applySnapshot(snapshot);
+              rememberAcceptedTurnMentions(input.command.commandId);
+              clearPendingTurnDispatch({ commandId: input.command.commandId });
+              input.onQueued?.();
+              return null;
+            }
+            if (submission.disposition !== "started" && submission.disposition !== "steered") {
+              throw new Error(submission.detail ?? "The turn was not accepted.");
+            }
+            return { sequence: submission.sequence };
+          });
         if (result === null) {
           return { ok: true as const, disposition: "queued" as const };
         }
@@ -3606,7 +3659,7 @@ export default function ChatView({
         useNextTurnQueueStore
           .getState()
           .removeOptimistic(input.command.threadId, input.command.commandId);
-        input.onNonTransportFailure?.(message, input.rollback);
+        input.onNonTransportFailure?.(message, input.rollback, error);
         return { ok: false as const, transportFailure: false as const };
       }
     },
@@ -4629,15 +4682,48 @@ export default function ChatView({
       setComposerTrigger(null);
     }
 
+    if (fanOutModels.length > 1 && isLocalDraftThread) {
+      try {
+        await sendToFanOutModels({
+          api,
+          draftThreadId: threadIdForSend,
+          projectId: activeProject.id,
+          projectCwd: activeProject.cwd,
+          projectModel: activeProject.model,
+          projectScripts: activeProject.scripts,
+          baseBranch: activeThread.branch,
+          createdAt: activeThread.createdAt,
+          images: composerImagesSnapshot,
+          text: outgoingMessageText,
+          ...(skillCall !== undefined ? { skillCall } : {}),
+          titleSourceText,
+          messageCreatedAt,
+          rollback,
+        });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
+    }
+
     const restoreDraftAfterFailure = (
       message: string,
       failureRollback: PendingTurnDispatchRollback,
+      error?: unknown,
     ) => {
       removeOptimisticMessage(messageIdForSend);
       if (composerMatchesClearedState()) {
         restoreComposerRollback(failureRollback);
       }
       toastManager.add({ type: "error", title: message });
+      // The server keeps a rolled-back thread id as deleted, so the draft moves
+      // to a fresh id and the user can simply send again.
+      if (isLocalDraftThread && wasBootstrapThreadRolledBack(error)) {
+        const freshThreadId = newThreadId();
+        if (useComposerDraftStore.getState().rekeyDraftThread(threadIdForSend, freshThreadId)) {
+          void navigate({ to: "/$threadId", params: { threadId: freshThreadId }, replace: true });
+        }
+      }
     };
 
     try {
@@ -4702,8 +4788,8 @@ export default function ChatView({
           },
         ]);
       };
-      // Bootstrap turns do not pass through durable queue admission, so keep
-      // their existing optimistic timeline behavior while the direct RPC is in flight.
+      // A first send creates its thread inside the submit request, so its bubble
+      // is shown right away instead of waiting for the admission result.
       if (bootstrap) addOptimisticTimelineMessage();
       await dispatchPendingTurnStartCommand({
         api,
@@ -4723,6 +4809,12 @@ export default function ChatView({
         },
         onQueued: () => {
           onAdmitted?.();
+          if (bootstrap) {
+            // The worktree is being prepared in the background; the queued
+            // message shows in the queue panel next to the setup card.
+            removeOptimisticMessage(messageIdForSend);
+            return;
+          }
           toastManager.add({ type: "success", title: "Turn added to the queue." });
         },
       });
@@ -5214,24 +5306,16 @@ export default function ChatView({
       sendInFlightRef.current = false;
     };
 
-    await api.orchestration
-      .dispatchCommand({
-        type: "thread.create",
-        commandId: newCommandId(),
-        threadId: nextThreadId,
-        projectId: activeProject.id,
-        title: nextThreadTitle,
-        model: nextThreadModel,
-        runtimeMode,
-        interactionMode: "default",
-        branch: activeThread.branch,
-        worktreePath: activeThread.worktreePath,
-        createdAt,
-      })
-      .then(() => {
-        return api.orchestration.dispatchCommand({
+    // One bootstrap submit creates the thread and starts its first turn, so a
+    // failure rolls the new thread back on the server instead of leaving it empty.
+    const implementationCommandId = newCommandId();
+    await api.nextTurnQueue
+      .submit({
+        submissionId: implementationCommandId,
+        intent: "auto",
+        command: {
           type: "thread.turn.start",
-          commandId: newCommandId(),
+          commandId: implementationCommandId,
           threadId: nextThreadId,
           message: {
             messageId: newMessageId(),
@@ -5254,8 +5338,29 @@ export default function ChatView({
             : "buffered",
           runtimeMode,
           interactionMode: "default",
+          bootstrap: {
+            createThread: {
+              projectId: activeProject.id,
+              title: nextThreadTitle,
+              model: nextThreadModel,
+              runtimeMode,
+              interactionMode: "default",
+              branch: activeThread.branch,
+              worktreePath: activeThread.worktreePath,
+              createdAt,
+            },
+          },
           createdAt,
-        });
+        },
+      })
+      .then((submission) => {
+        if (
+          submission.disposition === "canceled" ||
+          submission.disposition === "cleared" ||
+          submission.disposition === "rejected"
+        ) {
+          throw new Error(submission.detail ?? "The implementation thread was not started.");
+        }
       })
       .then(() => api.orchestration.getStartupSnapshot({ detailThreadId: nextThreadId }))
       .then((startup) => {
@@ -5272,13 +5377,6 @@ export default function ChatView({
         });
       })
       .catch(async (err) => {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.delete",
-            commandId: newCommandId(),
-            threadId: nextThreadId,
-          })
-          .catch(() => undefined);
         await api.orchestration
           .getStartupSnapshot()
           .then(({ snapshot }) => {
@@ -5443,6 +5541,187 @@ export default function ChatView({
       setComposerDraftProviderInstance,
     ],
   );
+  // Multi-model fan-out: only a new thread's first message, in a git project.
+  const [fanOutByThreadId, setFanOutByThreadId] = useState<
+    Readonly<Record<string, ReadonlyArray<FanOutModel>>>
+  >({});
+  const fanOutGuardRef = useRef(new Set<string>());
+  const canFanOut = isLocalDraftThread && isGitRepo && !hasThreadStarted;
+  const fanOutModels = canFanOut ? (fanOutByThreadId[threadId] ?? EMPTY_FAN_OUT) : EMPTY_FAN_OUT;
+  const clearFanOut = useCallback((id: ThreadId) => {
+    setFanOutByThreadId((current) => {
+      if (!(id in current)) return current;
+      const { [id]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
+  const onComposerModelSelect = useCallback(
+    (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
+      // A regular click returns to a single model.
+      clearFanOut(threadId);
+      onProviderModelSelect(instanceId, driver, model);
+    },
+    [clearFanOut, onProviderModelSelect, threadId],
+  );
+  const onToggleFanOutModel = useCallback(
+    (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
+      if (!canFanOut || isPendingTurnDispatchBlocked) return;
+      const current: FanOutModel = {
+        instanceId: selectedProviderInstanceId,
+        driver: ProviderDriverKind.make(selectedProvider),
+        model: selectedModel,
+      };
+      const next = toggleFanOutModel(fanOutModels, current, { instanceId, driver, model });
+      if (next.length <= 1) {
+        clearFanOut(threadId);
+        const only = next[0];
+        if (only) onProviderModelSelect(only.instanceId, only.driver, only.model as ModelSlug);
+        return;
+      }
+      setFanOutByThreadId((existing) => ({ ...existing, [threadId]: next }));
+    },
+    [
+      canFanOut,
+      clearFanOut,
+      fanOutModels,
+      isPendingTurnDispatchBlocked,
+      onProviderModelSelect,
+      selectedModel,
+      selectedProvider,
+      selectedProviderInstanceId,
+      threadId,
+    ],
+  );
+  const sendToFanOutModels = async (input: {
+    readonly api: NativeApiClient;
+    readonly draftThreadId: ThreadId;
+    readonly projectId: ProjectId;
+    readonly projectCwd: string;
+    readonly projectModel: string | null | undefined;
+    readonly projectScripts: ProjectScript[];
+    readonly baseBranch: string | null;
+    readonly createdAt: string;
+    readonly images: ReadonlyArray<ComposerImageAttachment>;
+    readonly text: string;
+    readonly skillCall?: NonNullable<PendingTurnStartCommand["message"]["skillCall"]>;
+    readonly titleSourceText: string;
+    readonly messageCreatedAt: string;
+    readonly rollback: PendingTurnDispatchRollback;
+  }) => {
+    if (!input.baseBranch) {
+      if (composerMatchesClearedState()) restoreComposerRollback(input.rollback);
+      setStoreThreadError(
+        input.draftThreadId,
+        "Select a base branch before sending to several models.",
+      );
+      return;
+    }
+    const baseBranch = input.baseBranch;
+    const outcome = await runFanOut({
+      draftThreadId: input.draftThreadId,
+      targets: fanOutModels,
+      guard: fanOutGuardRef.current,
+      newThreadId,
+      buildCommand: async (target, childThreadId) => {
+        // Each thread owns its own copy of every upload.
+        const attachments = await Promise.all(
+          input.images.map(async (image) => ({
+            type: "upload" as const,
+            uploadId: await ensureComposerUpload(childThreadId, image),
+          })),
+        );
+        const modelSelection = createModelSelection(target.instanceId, target.model);
+        const bootstrap = buildFirstSendBootstrap({
+          isLocalDraftThread: true,
+          projectId: input.projectId,
+          projectCwd: input.projectCwd,
+          projectModel: input.projectModel,
+          projectScripts: input.projectScripts,
+          selectedModel: target.model,
+          selectedModelSelection: modelSelection,
+          runtimeMode,
+          interactionMode,
+          thread: { branch: baseBranch, worktreePath: null, createdAt: input.createdAt },
+          baseBranchForWorktree: baseBranch,
+        });
+        const provider = providerKindForDriver(target.driver) ?? selectedProvider;
+        return {
+          type: "thread.turn.start",
+          commandId: newCommandId(),
+          threadId: childThreadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: input.text,
+            // Runtime skill syntax is provider specific.
+            ...(input.skillCall !== undefined && provider === selectedProvider
+              ? { skillCall: input.skillCall }
+              : {}),
+            attachments,
+          },
+          model: target.model,
+          modelSelection,
+          provider,
+          titleGenerationModel: selectedThreadTitleModel,
+          titleGenerationModelSelection: selectedThreadTitleModelSelection,
+          titleSourceText: input.titleSourceText,
+          assistantDeliveryMode: projectSettings.enableAssistantStreaming
+            ? "streaming"
+            : "buffered",
+          runtimeMode,
+          interactionMode,
+          ...(bootstrap
+            ? {
+                bootstrap: {
+                  ...bootstrap,
+                  ...(bootstrap.prepareWorktree
+                    ? { prepareWorktree: { ...bootstrap.prepareWorktree, requireWorktree: true } }
+                    : {}),
+                },
+              }
+            : {}),
+          createdAt: input.messageCreatedAt,
+        } satisfies PendingTurnStartCommand;
+      },
+      submit: (command) =>
+        input.api.nextTurnQueue.submit({
+          submissionId: command.commandId,
+          command,
+          intent: "auto",
+        }),
+    });
+    if (outcome.failed.length === 0) {
+      // Every thread claimed its own upload copies; the draft's are no longer needed.
+      const draftUploadIds = input.images
+        .filter((image) => image.uploadId && image.uploadThreadId === input.draftThreadId)
+        .map((image) => image.uploadId!);
+      if (draftUploadIds.length > 0) {
+        await input.api.attachments
+          .releaseUploads({ threadId: input.draftThreadId, uploadIds: draftUploadIds })
+          .catch(() => undefined);
+      }
+      clearFanOut(input.draftThreadId);
+      for (const key of fanOutGuardRef.current) {
+        if (key.startsWith(`${input.draftThreadId}\u0000`)) fanOutGuardRef.current.delete(key);
+      }
+      toastManager.add({
+        type: "success",
+        title: `Started ${outcome.started.length + outcome.skipped.length} threads, each in its own worktree.`,
+      });
+      return;
+    }
+    if (composerMatchesClearedState()) restoreComposerRollback(input.rollback);
+    toastManager.add({
+      type: "error",
+      title:
+        outcome.started.length > 0
+          ? `Started ${outcome.started.length} of ${fanOutModels.length} threads. Send again to retry the rest.`
+          : "Could not start the threads.",
+      description: outcome.failed
+        .map((failure) => `${failure.target.model}: ${failure.message}`)
+        .join("\n"),
+    });
+  };
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (isPendingTurnDispatchBlocked) {
@@ -6337,6 +6616,36 @@ export default function ChatView({
               <div
                 className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}
               >
+                {isServerThread &&
+                worktreeSetup &&
+                shouldShowWorktreeSetupCard(worktreeSetup, {
+                  firstTurnQueued:
+                    nextTurnQueueState.snapshot?.items.some(
+                      (item) => item.itemId === worktreeSetup.itemId,
+                    ) ?? false,
+                }) ? (
+                  <WorktreeSetupCard
+                    snapshot={worktreeSetup}
+                    busy={worktreeSetupBusy}
+                    onCancel={
+                      worktreeSetup.agentStarted
+                        ? null
+                        : () => void runWorktreeSetupAction("cancel")
+                    }
+                    onRetry={
+                      worktreeSetup.phase === "failed" ||
+                      worktreeSetup.phase === "cancelled" ||
+                      worktreeSetup.phase === "cancelled_kept"
+                        ? () => void runWorktreeSetupAction("retry")
+                        : null
+                    }
+                    onWorkLocally={
+                      worktreeSetup.agentStarted || worktreeSetup.phase === "done"
+                        ? null
+                        : () => void runWorktreeSetupAction("workLocally")
+                    }
+                  />
+                ) : null}
                 {isServerThread ? (
                   <NextTurnQueuePanel
                     turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
@@ -6460,7 +6769,8 @@ export default function ChatView({
                   terminalState={terminalState}
                   isModelPickerOpen={isModelPickerOpen}
                   setIsModelPickerOpen={setIsModelPickerOpen}
-                  onProviderModelSelect={onProviderModelSelect}
+                  onProviderModelSelect={onComposerModelSelect}
+                  {...(canFanOut ? { fanOutModels, onToggleFanOutModel: onToggleFanOutModel } : {})}
                   activePlan={activePlan}
                   planSidebarOpen={planSidebarOpen}
                   canCompactConversation={canCompactConversation}

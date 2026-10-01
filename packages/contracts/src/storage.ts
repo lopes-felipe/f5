@@ -1,5 +1,68 @@
 import { Schema } from "effect";
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas";
+
+// ── Automatic storage cleanup and default-branch auto-pull ───────────────
+
+export const StorageAutomationJob = Schema.Literals([
+  "worktree-cleanup",
+  "provider-logs",
+  "auto-pull",
+]);
+export type StorageAutomationJob = typeof StorageAutomationJob.Type;
+
+/** One target an automatic job would act on, or skip with an exact reason. */
+export const StorageAutomationTarget = Schema.Struct({
+  job: StorageAutomationJob,
+  /** Redacted: relative to the managed worktrees directory, or a project label. */
+  target: Schema.String,
+  projectId: Schema.NullOr(ProjectId),
+  threadId: Schema.NullOr(ThreadId),
+  action: Schema.Literals(["remove", "pull", "skip"]),
+  reason: Schema.String,
+});
+export type StorageAutomationTarget = typeof StorageAutomationTarget.Type;
+
+export const StorageAutomationDryRunInput = Schema.Struct({});
+export type StorageAutomationDryRunInput = typeof StorageAutomationDryRunInput.Type;
+
+export const StorageAutomationDryRunResult = Schema.Struct({
+  storageCleanupEnabled: Schema.Boolean,
+  generatedAt: IsoDateTime,
+  targets: Schema.Array(StorageAutomationTarget),
+});
+export type StorageAutomationDryRunResult = typeof StorageAutomationDryRunResult.Type;
+
+export const StorageAutomationAuditEntry = Schema.Struct({
+  auditId: Schema.String,
+  operationId: Schema.String,
+  job: StorageAutomationJob,
+  policyVersion: NonNegativeInt,
+  target: Schema.String,
+  projectId: Schema.NullOr(Schema.String),
+  threadId: Schema.NullOr(Schema.String),
+  beforeRef: Schema.NullOr(Schema.String),
+  afterRef: Schema.NullOr(Schema.String),
+  result: Schema.Literals(["removed", "pulled", "skipped", "failed"]),
+  reason: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+});
+export type StorageAutomationAuditEntry = typeof StorageAutomationAuditEntry.Type;
+
+export const StorageAutomationAuditInput = Schema.Struct({
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
+});
+export type StorageAutomationAuditInput = typeof StorageAutomationAuditInput.Type;
+
+export const StorageAutomationAuditResult = Schema.Struct({
+  entries: Schema.Array(StorageAutomationAuditEntry),
+});
+export type StorageAutomationAuditResult = typeof StorageAutomationAuditResult.Type;
 
 export const StorageCleanupCategoryId = Schema.Literals([
   "purgeDeletedThreads",

@@ -111,6 +111,7 @@ function makeTerminalManagerMocks() {
       }),
     close: () => Effect.void,
     subscribe: () => Effect.succeed(() => undefined),
+    listSessions: Effect.succeed([]),
     dispose: Effect.void,
   };
 

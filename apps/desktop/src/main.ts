@@ -2676,6 +2676,7 @@ function registerIpcHandlers(): void {
       setColorScheme: (tabId, colorScheme) =>
         previewRuntime.setColorScheme(scopeTabId(tabId), colorScheme),
       captureScreenshot: (tabId) => previewRuntime.captureScreenshot(scopeTabId(tabId)),
+      setArtifactRetention: (days) => previewRuntime.setArtifactRetention(days),
       recordingStart: async (tabId) => {
         const scopedTabId = scopeTabId(tabId);
         const recording = await previewRuntime.startRecording(scopedTabId);

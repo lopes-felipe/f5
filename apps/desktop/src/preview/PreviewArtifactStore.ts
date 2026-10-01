@@ -1,11 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readdir, rename, rm, stat, type FileHandle } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 
 import type { PreviewArtifact } from "@t3tools/contracts";
 
 const DEFAULT_QUOTA_BYTES = 1024 * 1024 * 1024;
-const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_RETENTION_MS = 7 * DAY_MS;
+/** Remembers the configured retention so startup expiry does not fall back to the default. */
+const RETENTION_FILE = ".retention.json";
 const SCREENSHOT_MAX_BYTES = 25 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 250 * 1024 * 1024;
 const RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
@@ -59,7 +72,8 @@ interface StoredFile {
 export class PreviewArtifactStore {
   readonly #directory: string;
   readonly #quotaBytes: number;
-  readonly #retentionMs: number;
+  #retentionMs: number;
+  readonly #retentionFromOptions: boolean;
   readonly #now: () => number;
   readonly #recordings = new Map<string, RecordingEntry>();
   #quotaOperationTail: Promise<void> = Promise.resolve();
@@ -68,7 +82,38 @@ export class PreviewArtifactStore {
     this.#directory = path.resolve(options.directory);
     this.#quotaBytes = options.quotaBytes ?? DEFAULT_QUOTA_BYTES;
     this.#retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
+    this.#retentionFromOptions = options.retentionMs !== undefined;
     this.#now = options.now ?? Date.now;
+  }
+
+  /**
+   * Screenshot and recording retention from the storage settings. Null
+   * restores the built-in default. Expired artifacts are removed right away.
+   */
+  async setRetention(days: number | null): Promise<void> {
+    if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+      throw new Error("Preview artifact retention must be between 1 and 3650 days.");
+    }
+    this.#retentionMs = days === null ? DEFAULT_RETENTION_MS : days * DAY_MS;
+    await mkdir(this.#directory, { recursive: true });
+    await writeFile(path.join(this.#directory, RETENTION_FILE), JSON.stringify({ days }));
+    await this.#removeExpiredArtifacts();
+  }
+
+  async #loadSavedRetention(): Promise<void> {
+    const raw = await readFile(path.join(this.#directory, RETENTION_FILE), "utf8").catch(
+      () => null,
+    );
+    if (raw === null) return;
+    let days: unknown = null;
+    try {
+      days = (JSON.parse(raw) as { days?: unknown }).days;
+    } catch {
+      return;
+    }
+    if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 3650) {
+      this.#retentionMs = days * DAY_MS;
+    }
   }
 
   async initialize(): Promise<void> {
@@ -79,6 +124,7 @@ export class PreviewArtifactStore {
         .filter((entry) => entry.isFile() && entry.name.endsWith(".tmp"))
         .map((entry) => rm(path.join(this.#directory, entry.name), { force: true })),
     );
+    if (this.#retentionFromOptions === false) await this.#loadSavedRetention();
     await this.#removeExpiredArtifacts();
     await this.#enforceQuota(0);
   }
@@ -249,7 +295,9 @@ export class PreviewArtifactStore {
     const entries = await readdir(this.#directory, { withFileTypes: true }).catch(() => []);
     const files = await Promise.all(
       entries
-        .filter((entry) => entry.isFile() && !entry.name.endsWith(".tmp"))
+        .filter(
+          (entry) => entry.isFile() && !entry.name.endsWith(".tmp") && !entry.name.startsWith("."),
+        )
         .map(async (entry): Promise<StoredFile | null> => {
           const filePath = path.join(this.#directory, entry.name);
           const details = await stat(filePath).catch(() => null);

@@ -8,9 +8,12 @@ import { makeProjectCloneTracker } from "./project/ProjectCloneTracker.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
 import {
+  BOOTSTRAP_THREAD_DELETED_ERROR_CODE,
+  BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   F5_PROTOCOL_HEADER,
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
+  type TurnSubmissionResult,
 } from "@t3tools/contracts";
 import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
 import { GithubCliImport } from "./git/GithubCliImport";
@@ -200,7 +203,12 @@ import {
   websocketConnectionsTotal,
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
-import { dispatchBootstrapTurnStart } from "./wsServer/bootstrapTurnStart.ts";
+import {
+  type BootstrapThreadDisposition,
+  dispatchBootstrapTurnStart,
+} from "./wsServer/bootstrapTurnStart.ts";
+import { WorktreeSetup, type WorktreeSetupShape } from "./project/Services/WorktreeSetup.ts";
+import { withWorktreeLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
 import {
   WEB_SOCKET_MAX_PAYLOAD_BYTES,
@@ -226,6 +234,15 @@ import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts"
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
+import {
+  StorageCleanupWorker,
+  type StorageCleanupWorkerShape,
+} from "./storage/StorageCleanupWorker.ts";
+import { listStorageAutomationAudit } from "./storage/automationAudit.ts";
+import {
+  DefaultBranchAutoPull,
+  type DefaultBranchAutoPullShape,
+} from "./git/DefaultBranchAutoPull.ts";
 import { makePreviewManager } from "./preview/Manager.ts";
 import { scanLocalServers, OwnedPreviewUrls } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
@@ -764,6 +781,9 @@ interface OrchestrationRuntimeServices {
   readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
   readonly storageMaintenance: StorageMaintenanceShape;
   readonly nextTurnQueueDispatcher: NextTurnQueueDispatcherShape;
+  readonly worktreeSetup: WorktreeSetupShape;
+  readonly storageCleanupWorker: StorageCleanupWorkerShape;
+  readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
 
 export const createServer = Effect.fn(function* (): Effect.fn.Return<
@@ -1120,6 +1140,182 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   }) {
     yield* persistPreparedAttachmentIngress(prepared.attachmentIngress);
     return prepared.command;
+  });
+
+  /**
+   * Creates the thread, prepares its worktree and setup script, and starts the
+   * first turn. A failure that rolled the new thread back is reported with a
+   * `BootstrapThread*` error code so the client can retry under a fresh id.
+   */
+  interface InflightBootstrap {
+    readonly requestHash: string;
+    readonly done: Deferred.Deferred<void>;
+    outcome:
+      | { readonly kind: "result"; readonly value: TurnSubmissionResult | null }
+      | { readonly kind: "error"; readonly message: string; readonly code?: string };
+  }
+  const inflightBootstraps = new Map<string, InflightBootstrap>();
+  const singleFlightBootstrap = <
+    A extends TurnSubmissionResult | null,
+    E extends { readonly message: string },
+    R,
+  >(
+    submissionId: string,
+    requestHash: string,
+    run: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | RouteRequestError, R> =>
+    Effect.gen(function* () {
+      const existing = inflightBootstraps.get(submissionId);
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          return yield* new RouteRequestError({
+            message: "That send identifier was already used for different content.",
+            code: "NextTurnQueueIdempotencyConflictError",
+          });
+        }
+        yield* Deferred.await(existing.done);
+        const outcome = existing.outcome;
+        if (outcome.kind === "result") return outcome.value as A;
+        return yield* new RouteRequestError({
+          message: outcome.message,
+          ...(outcome.code !== undefined ? { code: outcome.code } : {}),
+        });
+      }
+      const entry: InflightBootstrap = {
+        requestHash,
+        done: yield* Deferred.make<void>(),
+        outcome: { kind: "error", message: "The send was interrupted." },
+      };
+      inflightBootstraps.set(submissionId, entry);
+      return yield* run.pipe(
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            entry.outcome = { kind: "result", value: result };
+          }),
+        ),
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            const code = (error as { readonly code?: unknown }).code;
+            entry.outcome = {
+              kind: "error",
+              message: error.message,
+              ...(typeof code === "string" ? { code } : {}),
+            };
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => inflightBootstraps.delete(submissionId)).pipe(
+            Effect.andThen(Deferred.succeed(entry.done, undefined)),
+          ),
+        ),
+      );
+    });
+
+  /**
+   * Starts background worktree setup for a first send. Returns null when the
+   * project cannot host a separate worktree and the send may run in the
+   * project checkout; a send that requires a worktree is rejected instead,
+   * before any thread exists.
+   */
+  const startWorktreeSetupSubmission = (input: {
+    readonly command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>;
+    readonly submissionId: CommandId;
+    readonly requestHash: string;
+    readonly worktreeSetup: WorktreeSetupShape;
+  }) =>
+    Effect.gen(function* () {
+      const prepared = yield* prepareTurnStartCommand({ command: input.command });
+      const result = yield* input.worktreeSetup
+        .start({
+          command: prepared.command,
+          submissionId: input.submissionId,
+          requestHash: input.requestHash,
+          persistAttachments: persistPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+            Effect.asVoid,
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+          discardAttachments: discardPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+        })
+        .pipe(
+          Effect.tapError(() =>
+            discardPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          ),
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                ...(error.code !== undefined ? { code: error.code } : {}),
+              }),
+          ),
+        );
+      if (result.kind === "unavailable") {
+        yield* discardPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        if (input.command.bootstrap?.prepareWorktree?.requireWorktree === true) {
+          return yield* new RouteRequestError({
+            message: result.detail,
+            code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+          });
+        }
+        return null;
+      }
+      yield* releaseSentUploads(input.command.threadId, input.command.message.attachments);
+      return result.result;
+    });
+
+  const runBootstrapTurnStart = Effect.fnUntraced(function* (input: {
+    readonly command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>;
+    readonly orchestrationEngine: OrchestrationEngineShape;
+    readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
+  }) {
+    const prepared = yield* prepareTurnStartCommand({ command: input.command });
+    let rolledBack: BootstrapThreadDisposition | null = null;
+    return yield* dispatchBootstrapTurnStart({
+      command: prepared.command,
+      orchestrationEngine: input.orchestrationEngine,
+      git: { ...git, createWorktree: createConfiguredWorktree },
+      ...(prepared.attachmentIngress.attachments.length > 0
+        ? {
+            persistAttachments: persistPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+              Effect.asVoid,
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+            discardAttachments: discardPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          }
+        : {}),
+      projectSetupScriptRunner: input.projectSetupScriptRunner,
+      worktreesDir: serverConfig.worktreesDir,
+      onThreadRolledBack: (disposition) => {
+        rolledBack = disposition;
+      },
+    }).pipe(
+      Effect.mapError((error) =>
+        rolledBack === null
+          ? error
+          : new RouteRequestError({
+              message: error.message,
+              code:
+                rolledBack === "deleted"
+                  ? BOOTSTRAP_THREAD_DELETED_ERROR_CODE
+                  : BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+            }),
+      ),
+    );
   });
 
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
@@ -1998,6 +2194,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         NextTurnQueueDispatcher,
       );
+      const worktreeSetup = ServiceMap.get(orchestrationRuntimeServices, WorktreeSetup);
+      const storageCleanupWorker = ServiceMap.get(
+        orchestrationRuntimeServices,
+        StorageCleanupWorker,
+      );
+      const defaultBranchAutoPull = ServiceMap.get(
+        orchestrationRuntimeServices,
+        DefaultBranchAutoPull,
+      );
 
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
@@ -2073,8 +2278,23 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
       ).pipe(Effect.forkIn(subscriptionsScope));
 
+      yield* Stream.runForEach(worktreeSetup.changes, (payload) =>
+        pushBus.publishAll(WS_CHANNELS.worktreeSetupUpdated, payload).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to publish worktree setup progress", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      ).pipe(Effect.forkIn(subscriptionsScope));
+
+      // Before the queue dispatcher starts, so a setup that was running at
+      // shutdown is already recorded as failed when its queue is examined.
+      yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
+      yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
+      yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
@@ -2090,6 +2310,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         projectSetupScriptRunner,
         storageMaintenance,
         nextTurnQueueDispatcher,
+        worktreeSetup,
+        storageCleanupWorker,
+        defaultBranchAutoPull,
       }).pipe(Effect.orDie);
 
       // Fire-and-forget cleanup: clear stale `worktreePath` projections whose
@@ -2601,31 +2824,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           yield* awaitOrchestrationRuntimeForRoute;
         const { command } = request.body;
         if (command.type === "thread.turn.start" && command.bootstrap) {
-          const prepared = yield* prepareTurnStartCommand({ command });
-          const dispatched = yield* dispatchBootstrapTurnStart({
-            command: prepared.command,
+          const dispatched = yield* runBootstrapTurnStart({
+            command,
             orchestrationEngine,
-            git: { ...git, createWorktree: createConfiguredWorktree },
-            ...(prepared.attachmentIngress.attachments.length > 0
-              ? {
-                  persistAttachments: persistPreparedAttachmentIngress(
-                    prepared.attachmentIngress,
-                  ).pipe(
-                    Effect.asVoid,
-                    Effect.provideService(FileSystem.FileSystem, fileSystem),
-                    Effect.provideService(Path.Path, path),
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                  ),
-                  discardAttachments: discardPreparedAttachmentIngress(
-                    prepared.attachmentIngress,
-                  ).pipe(
-                    Effect.provideService(FileSystem.FileSystem, fileSystem),
-                    Effect.provideService(SqlClient.SqlClient, sql),
-                  ),
-                }
-              : {}),
             projectSetupScriptRunner,
-            worktreesDir: serverConfig.worktreesDir,
           });
           yield* releaseSentUploads(command.threadId, command.message.attachments);
           return dispatched;
@@ -3725,7 +3927,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.terminalOpen: {
         const body = stripRequestTag(request.body);
-        return yield* terminalManager.open(body);
+        // Opening a terminal inside a worktree is serialized with cleanup and
+        // setup cancellation, which treat a live terminal as a claim.
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
+          (entry) => entry.id === body.threadId,
+        );
+        const worktreePath = thread?.worktreePath ?? null;
+        return yield* worktreePath
+          ? withWorktreeLifecycleLock(worktreePath, terminalManager.open(body)).pipe(
+              Effect.catchTag("RepositoryLifecycleError", (error) =>
+                Effect.fail(new RouteRequestError({ message: error.message })),
+              ),
+            )
+          : terminalManager.open(body);
       }
 
       case WS_METHODS.terminalWrite: {
@@ -4075,6 +4290,54 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.storageAutomationDryRun: {
+        const { storageCleanupWorker, defaultBranchAutoPull } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const cleanup = yield* storageCleanupWorker.dryRun;
+        const pulls = yield* defaultBranchAutoPull.dryRun;
+        return { ...cleanup, targets: [...cleanup.targets, ...pulls] };
+      }
+
+      case WS_METHODS.storageAutomationAudit: {
+        const body = stripRequestTag(request.body);
+        const entries = yield* listStorageAutomationAudit(body.limit ?? 100).pipe(
+          Effect.mapError(
+            (error) => new RouteRequestError({ message: `Cannot read audit: ${error.message}` }),
+          ),
+        );
+        return { entries };
+      }
+
+      case WS_METHODS.worktreeSetupSubscribe: {
+        const body = stripRequestTag(request.body);
+        const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeSetup.get(body.threadId);
+      }
+
+      case WS_METHODS.worktreeSetupCancel:
+      case WS_METHODS.worktreeSetupRetry:
+      case WS_METHODS.worktreeSetupWorkLocally: {
+        const body = stripRequestTag(request.body);
+        const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;
+        const action =
+          request.body._tag === WS_METHODS.worktreeSetupCancel
+            ? worktreeSetup.cancel
+            : request.body._tag === WS_METHODS.worktreeSetupRetry
+              ? worktreeSetup.retry
+              : worktreeSetup.workLocally;
+        const snapshot = yield* action(body.threadId).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+                ...(error.code !== undefined ? { code: error.code } : {}),
+              }),
+          ),
+        );
+        yield* publishNextTurnQueueSnapshot(body.threadId).pipe(Effect.ignoreCause({ log: true }));
+        return { snapshot };
+      }
+
       case WS_METHODS.nextTurnQueueList: {
         const body = stripRequestTag(request.body);
         return yield* getNextTurnQueueSnapshot(body.threadId).pipe(
@@ -4087,17 +4350,81 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.nextTurnQueueSubmit: {
         const body = stripRequestTag(request.body);
-        if (body.command.bootstrap !== undefined) {
-          return yield* new RouteRequestError({
-            message: "Queued turns require an existing thread and cannot contain bootstrap work.",
-            code: "NextTurnQueueBootstrapNotAllowedError",
-          });
-        }
         const requestHash = canonicalRequestHash(body.command);
         const existingSubmission = yield* nextTurnQueueStore
           .getBySubmissionId(body.submissionId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        const {
+          nextTurnQueueDispatcher,
+          orchestrationEngine,
+          projectSetupScriptRunner,
+          worktreeSetup,
+        } = yield* awaitOrchestrationRuntimeForRoute;
+        if (
+          body.command.bootstrap?.createThread !== undefined &&
+          body.command.bootstrap.prepareWorktree !== undefined &&
+          existingSubmission === null
+        ) {
+          // A new thread in a worktree: the thread and its queued first turn are
+          // created now, and the worktree is prepared in the background while
+          // the queue waits. The client gets `queued` right away.
+          const started = yield* singleFlightBootstrap(
+            body.submissionId,
+            requestHash,
+            startWorktreeSetupSubmission({
+              command: body.command,
+              submissionId: body.submissionId,
+              requestHash,
+              worktreeSetup,
+            }),
+          );
+          if (started !== null) return started;
+          // No usable repository or base: fall through to the project checkout.
+        }
+        if (body.command.bootstrap !== undefined && existingSubmission === null) {
+          // A first send creates its thread here, so it cannot be admitted to
+          // the thread's queue first. The submission is recorded once the turn
+          // starts; a retry with the same id then replays the result above.
+          // A retry that arrives while the first attempt still runs joins it
+          // instead of racing it into a second thread.
+          const fallbackCommand =
+            body.command.bootstrap.prepareWorktree === undefined ||
+            body.command.bootstrap.createThread === undefined
+              ? body.command
+              : {
+                  ...body.command,
+                  bootstrap: {
+                    createThread: body.command.bootstrap.createThread,
+                  },
+                };
+          return yield* singleFlightBootstrap(
+            body.submissionId,
+            requestHash,
+            Effect.gen(function* () {
+              const dispatched = yield* runBootstrapTurnStart({
+                command: fallbackCommand,
+                orchestrationEngine,
+                projectSetupScriptRunner,
+              });
+              yield* nextTurnQueueStore
+                .recordStartedSubmission({
+                  submissionId: body.submissionId,
+                  threadId: body.command.threadId,
+                  requestHash,
+                  messageId: body.command.message.messageId,
+                  sequence: dispatched.sequence,
+                })
+                .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+              yield* releaseSentUploads(body.command.threadId, body.command.message.attachments);
+              yield* nextTurnQueueDispatcher.notify(body.command.threadId);
+              return {
+                disposition: "started" as const,
+                submissionId: body.submissionId,
+                sequence: dispatched.sequence,
+              };
+            }),
+          );
+        }
         if (existingSubmission !== null) {
           if (existingSubmission.requestHash !== requestHash) {
             return yield* mapNextTurnQueueRouteError(

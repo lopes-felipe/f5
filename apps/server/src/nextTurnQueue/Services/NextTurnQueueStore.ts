@@ -68,6 +68,8 @@ export interface NextTurnQueueStoreShape {
     readonly itemId: CommandId;
     readonly command: ThreadTurnStartCommand;
     readonly atHead: boolean;
+    /** Holds the turn for a running worktree setup, written atomically with the insert. */
+    readonly worktreeBlockToken?: string | undefined;
   }) => Effect.Effect<
     | { readonly kind: "created"; readonly item: NextTurnQueueItem }
     | { readonly kind: "replay"; readonly submission: NextTurnQueueSubmissionRecord },
@@ -79,6 +81,18 @@ export interface NextTurnQueueStoreShape {
     expectedRevision: number,
     expectedTurnId: import("@t3tools/contracts").TurnId,
   ) => Effect.Effect<NextTurnQueueItem, NextTurnQueueError>;
+  /**
+   * Records a bootstrap send that started its thread's first turn directly,
+   * so a resubmission with the same id replays the result instead of
+   * creating the thread twice.
+   */
+  readonly recordStartedSubmission: (input: {
+    readonly submissionId: CommandId;
+    readonly threadId: ThreadId;
+    readonly requestHash: string;
+    readonly messageId: string;
+    readonly sequence: number;
+  }) => Effect.Effect<void, NextTurnQueueError>;
   readonly settleSubmission: (input: {
     readonly submissionId: CommandId;
     readonly result: TurnSubmissionResult;
@@ -96,6 +110,15 @@ export interface NextTurnQueueStoreShape {
     readonly threadId: ThreadId;
     readonly orderedItemIds: ReadonlyArray<CommandId>;
     readonly expectedRevision: number;
+  }) => Effect.Effect<void, NextTurnQueueError>;
+  /**
+   * Writes (or clears, with null) the worktree setup block token. With
+   * `expectedToken`, only replaces a token that still matches.
+   */
+  readonly setWorktreeBlockToken: (input: {
+    readonly threadId: ThreadId;
+    readonly token: string | null;
+    readonly expectedToken?: string | null | undefined;
   }) => Effect.Effect<void, NextTurnQueueError>;
   readonly setPaused: (input: {
     readonly threadId: ThreadId;

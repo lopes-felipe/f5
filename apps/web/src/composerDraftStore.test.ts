@@ -974,6 +974,33 @@ describe("composerDraftStore project draft thread mapping", () => {
     });
   });
 
+  it("moves a failed bootstrap draft to a fresh thread id without losing its prompt", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId, {
+      branch: "feature/test",
+      worktreePath: null,
+      envMode: "worktree",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    store.setPrompt(threadId, "keep this prompt");
+
+    expect(store.rekeyDraftThread(threadId, otherThreadId)).toBe(true);
+
+    const next = useComposerDraftStore.getState();
+    expect(next.getDraftThread(threadId)).toBeNull();
+    expect(next.getDraftThread(otherThreadId)).toMatchObject({
+      projectId,
+      branch: "feature/test",
+      envMode: "worktree",
+    });
+    expect(next.draftsByThreadId[otherThreadId]?.prompt).toBe("keep this prompt");
+    expect(next.draftsByThreadId[threadId]).toBeUndefined();
+    expect(next.getDraftThreadByProjectId(projectId, { envMode: "worktree" })?.threadId).toBe(
+      otherThreadId,
+    );
+    expect(next.rekeyDraftThread(threadId, otherThreadId)).toBe(false);
+  });
+
   it("stores and reads project draft thread ids via actions", () => {
     const store = useComposerDraftStore.getState();
     expect(store.getDraftThreadByProjectId(projectId)).toBeNull();

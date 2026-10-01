@@ -38,6 +38,7 @@ const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for
 const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop-preview:set-viewport";
 const PREVIEW_SET_COLOR_SCHEME_CHANNEL = "desktop-preview:set-color-scheme";
 const PREVIEW_CAPTURE_SCREENSHOT_CHANNEL = "desktop-preview:capture-screenshot";
+const PREVIEW_SET_ARTIFACT_RETENTION_CHANNEL = "desktop-preview:set-artifact-retention";
 const PREVIEW_RECORDING_START_CHANNEL = "desktop-preview:recording-start";
 const PREVIEW_RECORDING_APPEND_CHANNEL = "desktop-preview:recording-append";
 const PREVIEW_RECORDING_STOP_CHANNEL = "desktop-preview:recording-stop";
@@ -130,6 +131,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     setColorScheme: (tabId, colorScheme) =>
       ipcRenderer.invoke(PREVIEW_SET_COLOR_SCHEME_CHANNEL, tabId, colorScheme),
     captureScreenshot: (tabId) => ipcRenderer.invoke(PREVIEW_CAPTURE_SCREENSHOT_CHANNEL, tabId),
+    setArtifactRetention: (days) =>
+      ipcRenderer.invoke(PREVIEW_SET_ARTIFACT_RETENTION_CHANNEL, days),
     recording: {
       start: (tabId) => ipcRenderer.invoke(PREVIEW_RECORDING_START_CHANNEL, tabId),
       appendChunk: (recordingId, chunk) =>

@@ -18,7 +18,8 @@ import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref, Schema } f
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
 import { GitService } from "../Services/GitService.ts";
-import { GitCore, type GitCoreShape } from "../Services/GitCore.ts";
+import { GitCore, type GitCoreShape, type GitWorktreeProgress } from "../Services/GitCore.ts";
+import { makeProgressLineSplitter, parseCheckoutProgressLine } from "../progressLines.ts";
 import {
   isPullRequestTrackingAlias,
   parseRemoteNamesInGitOrder,
@@ -61,6 +62,7 @@ interface ExecuteGitOptions {
   allowNonZeroExit?: boolean | undefined;
   fallbackErrorMessage?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
+  onStderrChunk?: ((chunk: Uint8Array) => void) | undefined;
 }
 
 function parseBranchAb(value: string): { ahead: number; behind: number } {
@@ -252,6 +254,7 @@ const makeGitCore = Effect.gen(function* () {
         cwd,
         args,
         ...(options.env ? { env: options.env } : {}),
+        ...(options.onStderrChunk ? { onStderrChunk: options.onStderrChunk } : {}),
         allowNonZeroExit: true,
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       })
@@ -1145,7 +1148,12 @@ const makeGitCore = Effect.gen(function* () {
       Effect.mapError((error) =>
         Schema.is(GitCommandError)(error)
           ? error
-          : createGitCommandError("GitCore.ensureWorktree", input.cwd, [], String(error)),
+          : createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              error instanceof Error ? error.message : String(error),
+            ),
       ),
     );
 
@@ -1394,10 +1402,15 @@ const makeGitCore = Effect.gen(function* () {
         ["rev-parse", "HEAD"],
         true,
       ).pipe(Effect.map((stdout) => stdout.trim()));
-      yield* executeGit("GitCore.pullCurrentBranch.pull", cwd, ["pull", "--ff-only"], {
-        timeoutMs: 30_000,
-        fallbackErrorMessage: "git pull failed",
-      });
+      // Serialized with automatic default-branch pulls in other F5 profiles.
+      yield* withRepositoryLock(
+        "GitCore.pullCurrentBranch",
+        cwd,
+        executeGit("GitCore.pullCurrentBranch.pull", cwd, ["pull", "--ff-only"], {
+          timeoutMs: 30_000,
+          fallbackErrorMessage: "git pull failed",
+        }),
+      );
       const afterSha = yield* runGitStdout(
         "GitCore.pullCurrentBranch.afterSha",
         cwd,
@@ -1653,30 +1666,77 @@ const makeGitCore = Effect.gen(function* () {
   const initializeSubmodules = (
     worktreePath: string,
     submodules?: import("@t3tools/contracts").WorktreeSubmodules,
+    progress?: GitWorktreeProgress,
   ) =>
     Effect.gen(function* () {
-      if (submodules !== "none") {
-        yield* executeGit(
-          "GitCore.createWorktree.submodules",
-          worktreePath,
-          [
-            "-c",
-            "protocol.file.allow=never",
-            "submodule",
-            "update",
-            "--init",
-            ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
-          ],
-          { timeoutMs: 300_000, fallbackErrorMessage: "Unable to initialize worktree submodules" },
-        ).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Worktree created, but submodule initialization failed", {
-              error: error.message,
-            }),
-          ),
-        );
+      if (submodules === "none") {
+        progress?.onSubmodulesFinished?.({ status: "skipped", detail: "disabled in settings" });
+        return;
       }
+      const gitmodules = yield* fileSystem
+        .exists(`${worktreePath}/.gitmodules`)
+        .pipe(Effect.catch(() => Effect.succeed(false)));
+      if (!gitmodules) {
+        progress?.onSubmodulesFinished?.({ status: "skipped", detail: "none" });
+        return;
+      }
+      progress?.onSubmodulesStarted?.();
+      const lines = makeProgressLineSplitter((line) => progress?.onSubmoduleLine?.(line));
+      yield* executeGit(
+        "GitCore.createWorktree.submodules",
+        worktreePath,
+        [
+          "-c",
+          "protocol.file.allow=never",
+          "submodule",
+          "update",
+          "--init",
+          ...((submodules ?? "recursive") === "recursive" ? ["--recursive"] : []),
+        ],
+        {
+          timeoutMs: 300_000,
+          fallbackErrorMessage: "Unable to initialize worktree submodules",
+          ...(progress?.onSubmoduleLine ? { onStderrChunk: lines } : {}),
+        },
+      ).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => progress?.onSubmodulesFinished?.({ status: "done", detail: null })),
+        ),
+        Effect.catch((error) =>
+          Effect.sync(() =>
+            progress?.onSubmodulesFinished?.({ status: "warning", detail: error.message }),
+          ).pipe(
+            Effect.andThen(
+              Effect.logWarning("Worktree created, but submodule initialization failed", {
+                error: error.message,
+              }),
+            ),
+          ),
+        ),
+      );
     });
+
+  const resolveCommonDir: GitCoreShape["resolveCommonDir"] = (cwd) =>
+    runGitStdout("GitCore.resolveCommonDir", cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ]).pipe(Effect.map((stdout) => stdout.trim()));
+
+  /** Runs a shared-repository mutation under the cross-profile lock for `cwd`'s repository. */
+  const withRepositoryLock = <A>(
+    operation: string,
+    cwd: string,
+    effect: Effect.Effect<A, GitCommandError>,
+  ): Effect.Effect<A, GitCommandError> =>
+    resolveCommonDir(cwd).pipe(
+      Effect.flatMap((commonDir) => withRepositoryLifecycleLock(baseDir, commonDir, effect)),
+      Effect.mapError((error) =>
+        Schema.is(GitCommandError)(error)
+          ? error
+          : createGitCommandError(operation, cwd, [], error.message),
+      ),
+    );
 
   const createWorktree: GitCoreShape["createWorktree"] = (input) =>
     Effect.gen(function* () {
@@ -1689,32 +1749,81 @@ const makeGitCore = Effect.gen(function* () {
           branch: targetBranch,
         });
       const baseRefName = input.baseRefName ?? input.branch;
-      yield* runGitStdout(
-        "GitCore.createWorktree.verifyBaseRef",
-        input.cwd,
-        ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
-        true,
-      ).pipe(
-        Effect.filterOrFail(
-          (stdout) => /^[0-9a-f]{40,64}$/iu.test(stdout.trim()),
-          () =>
-            createGitCommandError(
-              "GitCore.createWorktree.verifyBaseRef",
-              input.cwd,
-              ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
-              `Cannot resolve worktree base ref '${baseRefName}'.`,
+      const create = Effect.gen(function* () {
+        yield* runGitStdout(
+          "GitCore.createWorktree.verifyBaseRef",
+          input.cwd,
+          ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
+          true,
+        ).pipe(
+          Effect.filterOrFail(
+            (stdout) => /^[0-9a-f]{40,64}$/iu.test(stdout.trim()),
+            () =>
+              createGitCommandError(
+                "GitCore.createWorktree.verifyBaseRef",
+                input.cwd,
+                ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
+                `Cannot resolve worktree base ref '${baseRefName}'.`,
+              ),
+          ),
+        );
+        const progress = input.progress;
+        // `worktree add` has no --progress flag: GIT_PROGRESS_DELAY=0 makes git
+        // print checkout progress even though stderr is a pipe.
+        const args = [
+          "worktree",
+          "add",
+          ...(input.newBranch ? ["-b", input.newBranch] : []),
+          worktreePath,
+          baseRefName,
+        ];
+        let claimed = false;
+        const claim = () => {
+          if (claimed) return;
+          claimed = true;
+          progress?.onWorktreeClaimed?.(worktreePath);
+        };
+        yield* executeGit("GitCore.createWorktree", input.cwd, args, {
+          timeoutMs: 300_000,
+          fallbackErrorMessage: "git worktree add failed",
+          ...(progress
+            ? {
+                env: { ...process.env, GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
+                onStderrChunk: makeProgressLineSplitter((line) => {
+                  // "Preparing worktree" is printed once git has registered the path.
+                  if (line.startsWith("Preparing worktree")) claim();
+                  const checkout = parseCheckoutProgressLine(line);
+                  if (checkout) {
+                    claim();
+                    progress.onCheckoutProgress?.(checkout);
+                  }
+                }),
+              }
+            : {}),
+        }).pipe(
+          Effect.tapError(() =>
+            // A failed add may still have registered the directory.
+            fileSystem.exists(worktreePath).pipe(
+              Effect.map((exists) => {
+                if (exists) claim();
+              }),
+              Effect.ignore,
             ),
+          ),
+        );
+        claim();
+        yield* initializeSubmodules(worktreePath, input.submodules, progress);
+      });
+      yield* withWorktreeLifecycleLock(
+        worktreePath,
+        withRepositoryLock("GitCore.createWorktree", input.cwd, create),
+      ).pipe(
+        Effect.mapError((error) =>
+          Schema.is(GitCommandError)(error)
+            ? error
+            : createGitCommandError("GitCore.createWorktree", input.cwd, [], error.message),
         ),
       );
-      const args = input.newBranch
-        ? ["worktree", "add", "-b", input.newBranch, worktreePath, baseRefName]
-        : ["worktree", "add", worktreePath, baseRefName];
-
-      yield* executeGit("GitCore.createWorktree", input.cwd, args, {
-        timeoutMs: 300_000,
-        fallbackErrorMessage: "git worktree add failed",
-      });
-      yield* initializeSubmodules(worktreePath, input.submodules);
 
       return {
         worktree: {
@@ -1723,6 +1832,130 @@ const makeGitCore = Effect.gen(function* () {
         },
       };
     });
+
+  const resolveCommit: GitCoreShape["resolveCommit"] = (cwd, revision) =>
+    executeGit(
+      "GitCore.resolveCommit",
+      cwd,
+      ["rev-parse", "--verify", "--quiet", "--end-of-options", `${revision}^{commit}`],
+      { allowNonZeroExit: true },
+    ).pipe(
+      Effect.map((result) => {
+        const sha = result.stdout.trim();
+        return result.code === 0 && /^[0-9a-f]{40,64}$/iu.test(sha) ? sha : null;
+      }),
+    );
+
+  const OPERATION_MARKERS = [
+    ["MERGE_HEAD", "merge"],
+    ["rebase-merge", "rebase"],
+    ["rebase-apply", "rebase"],
+    ["CHERRY_PICK_HEAD", "cherry-pick"],
+    ["REVERT_HEAD", "revert"],
+    ["BISECT_LOG", "bisect"],
+  ] as const;
+
+  const readOperationInProgress: GitCoreShape["readOperationInProgress"] = (cwd) =>
+    runGitStdout("GitCore.readOperationInProgress", cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      ...OPERATION_MARKERS.flatMap(([marker]) => ["--git-path", marker]),
+    ]).pipe(
+      Effect.flatMap((stdout) => {
+        const paths = stdout.split("\n").map((line) => line.trim());
+        return Effect.forEach(OPERATION_MARKERS, ([, operation], index) => {
+          const markerPath = paths[index];
+          return markerPath
+            ? fileSystem.exists(markerPath).pipe(
+                Effect.orElseSucceed(() => true),
+                Effect.map((present) => (present ? operation : null)),
+              )
+            : Effect.succeed(null);
+        });
+      }),
+      Effect.map((found) => found.find((operation) => operation !== null) ?? null),
+    );
+
+  const isAncestor: GitCoreShape["isAncestor"] = (cwd, ancestor, descendant) =>
+    executeGit("GitCore.isAncestor", cwd, ["merge-base", "--is-ancestor", ancestor, descendant], {
+      allowNonZeroExit: true,
+    }).pipe(
+      Effect.flatMap((result) =>
+        result.code === 0
+          ? Effect.succeed(true)
+          : result.code === 1
+            ? Effect.succeed(false)
+            : Effect.fail(
+                createGitCommandError(
+                  "GitCore.isAncestor",
+                  cwd,
+                  ["merge-base", "--is-ancestor"],
+                  result.stderr.trim() || `merge-base exited with ${result.code}`,
+                ),
+              ),
+      ),
+    );
+
+  const deleteBranchIfAt: GitCoreShape["deleteBranchIfAt"] = (input) =>
+    withRepositoryLock(
+      "GitCore.deleteBranchIfAt",
+      input.cwd,
+      executeGit(
+        "GitCore.deleteBranchIfAt",
+        input.cwd,
+        ["update-ref", "-d", `refs/heads/${input.branch}`, input.expectedSha],
+        { allowNonZeroExit: true },
+      ).pipe(Effect.map((result) => result.code === 0)),
+    );
+
+  const readFileAtRevision: GitCoreShape["readFileAtRevision"] = (input) =>
+    executeGit(
+      "GitCore.readFileAtRevision",
+      input.cwd,
+      ["cat-file", "-s", `${input.revision}:${input.path}`],
+      { allowNonZeroExit: true },
+    ).pipe(
+      Effect.flatMap((size) => {
+        const bytes = Number(size.stdout.trim());
+        if (size.code !== 0 || !Number.isFinite(bytes) || bytes > input.maxBytes) {
+          return Effect.succeed(null);
+        }
+        return executeGit(
+          "GitCore.readFileAtRevision",
+          input.cwd,
+          ["cat-file", "blob", `${input.revision}:${input.path}`],
+          { allowNonZeroExit: true },
+        ).pipe(Effect.map((blob) => (blob.code === 0 ? blob.stdout : null)));
+      }),
+    );
+
+  const IGNORED_LISTING_MAX_BYTES = 64 * 1024;
+  const listIgnoredEntries: GitCoreShape["listIgnoredEntries"] = (cwd) =>
+    git
+      .execute({
+        operation: "GitCore.listIgnoredEntries",
+        cwd,
+        args: ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+        maxOutputBytes: IGNORED_LISTING_MAX_BYTES,
+      })
+      .pipe(
+        Effect.map((result) => ({
+          entries: result.stdout.split("\0").filter((entry) => entry.length > 0),
+          truncated: false,
+        })),
+        Effect.catch((error) =>
+          error.detail.includes("output exceeded")
+            ? Effect.succeed({ entries: [], truncated: true })
+            : Effect.fail(error),
+        ),
+      );
+
+  const pruneWorktrees: GitCoreShape["pruneWorktrees"] = (cwd) =>
+    withRepositoryLock(
+      "GitCore.pruneWorktrees",
+      cwd,
+      runGit("GitCore.pruneWorktrees", cwd, ["worktree", "prune"]),
+    );
 
   const fetchRemoteBranchCommit: GitCoreShape["fetchRemoteBranchCommit"] = (input) =>
     Effect.gen(function* () {
@@ -1849,7 +2082,7 @@ const makeGitCore = Effect.gen(function* () {
       input.branch,
     ]);
 
-  const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
+  const removeWorktreeUnlocked = (input: Parameters<GitCoreShape["removeWorktree"]>[0]) =>
     Effect.gen(function* () {
       if (
         !(yield* fileSystem
@@ -1919,6 +2152,18 @@ const makeGitCore = Effect.gen(function* () {
         ),
       );
     });
+
+  const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
+    withWorktreeLifecycleLock(
+      resolvePath(input.cwd, input.path),
+      withRepositoryLock("GitCore.removeWorktree", input.cwd, removeWorktreeUnlocked(input)),
+    ).pipe(
+      Effect.mapError((error) =>
+        Schema.is(GitCommandError)(error)
+          ? error
+          : createGitCommandError("GitCore.removeWorktree", input.cwd, [], error.message),
+      ),
+    );
 
   const renameBranch: GitCoreShape["renameBranch"] = (input) =>
     Effect.gen(function* () {
@@ -2073,6 +2318,14 @@ const makeGitCore = Effect.gen(function* () {
     fetchRemoteBranch,
     setBranchUpstream,
     removeWorktree,
+    resolveCommonDir,
+    pruneWorktrees,
+    resolveCommit,
+    readOperationInProgress,
+    isAncestor,
+    deleteBranchIfAt,
+    readFileAtRevision,
+    listIgnoredEntries,
     renameBranch,
     createBranch,
     checkoutBranch,

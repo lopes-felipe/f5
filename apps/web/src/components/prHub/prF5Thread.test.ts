@@ -118,12 +118,19 @@ function makeApi() {
     worktreePath: "/tmp/f5-pr-1",
   }));
   const dispatchCommand = vi.fn(async () => ({ sequence: 1 }));
+  const submit = vi.fn(async (input: { submissionId: string }) => ({
+    disposition: "started" as const,
+    submissionId: input.submissionId,
+    sequence: 1,
+  }));
   return {
     api: {
       git: { preparePullRequestThread },
       orchestration: { dispatchCommand },
+      nextTurnQueue: { submit },
     } as unknown as NativeApi,
     dispatchCommand,
+    submit,
     preparePullRequestThread,
   };
 }
@@ -183,17 +190,21 @@ describe("PR Hub F5 threads", () => {
       providers: [provider],
     });
 
-    expect(harness.dispatchCommand).toHaveBeenCalledTimes(1);
-    expect(harness.dispatchCommand).toHaveBeenCalledWith(
+    expect(harness.dispatchCommand).not.toHaveBeenCalled();
+    expect(harness.submit).toHaveBeenCalledTimes(1);
+    expect(harness.submit).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: "thread.turn.start",
-        runtimeMode: "approval-required",
-        bootstrap: {
-          createThread: expect.objectContaining({
-            worktreePath: "/tmp/f5-pr-1",
-            runtimeMode: "approval-required",
-          }),
-        },
+        intent: "auto",
+        command: expect.objectContaining({
+          type: "thread.turn.start",
+          runtimeMode: "approval-required",
+          bootstrap: {
+            createThread: expect.objectContaining({
+              worktreePath: "/tmp/f5-pr-1",
+              runtimeMode: "approval-required",
+            }),
+          },
+        }),
       }),
     );
   });

@@ -44,6 +44,7 @@ import {
   TerminalManager,
   TerminalManagerShape,
   TerminalSessionState,
+  type TerminalSessionSummary,
   TerminalStartInput,
 } from "../Services/Manager";
 
@@ -479,6 +480,15 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
       this.updateSubprocessPollingState();
     });
+  }
+
+  listSessions(): TerminalSessionSummary[] {
+    return [...this.sessions.values()].map((session) => ({
+      threadId: session.threadId,
+      terminalId: session.terminalId,
+      cwd: session.cwd,
+      status: session.status,
+    }));
   }
 
   dispose(): void {
@@ -1278,6 +1288,7 @@ export const TerminalManagerLive = Layer.effect(
             runtime.off("event", listener);
           };
         }),
+      listSessions: Effect.sync(() => runtime.listSessions()),
       dispose: Effect.sync(() => runtime.dispose()),
     } satisfies TerminalManagerShape;
   }),

@@ -157,13 +157,18 @@ export function applyServerSettingsPatch(
     else overrides = { ...overrides, [id]: value };
   }
   const next = { ...deepMerge(current, rest), projectSettingsOverrides: overrides };
-  const nextWithReplacements =
+  const nextWithInstances =
     patch.providerInstances !== undefined
       ? {
           ...next,
           providerInstances: patch.providerInstances,
         }
       : next;
+  // A cleanup policy is a tagged union: switching modes must not merge fields.
+  const nextWithReplacements =
+    patch.worktreeCleanup !== undefined
+      ? { ...nextWithInstances, worktreeCleanup: patch.worktreeCleanup }
+      : nextWithInstances;
   const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithReplacements, patch);
   let result = nextWithSecrets;
   for (const key of ["textGenerationModelSelection", "sessionNotesModelSelection"] as const) {

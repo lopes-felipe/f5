@@ -24,6 +24,38 @@ afterEach(() => {
 });
 
 describe("PreviewArtifactStore", () => {
+  it("applies a shorter retention from settings and removes expired artifacts", async () => {
+    const now = Date.UTC(2026, 0, 10);
+    const { directory, store } = makeStore({ now: () => now });
+    await store.initialize();
+    await store.captureScreenshot({ png: new Uint8Array([1]), width: 1, height: 1 });
+    const [file] = fs.readdirSync(directory);
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(directory, file!), threeDaysAgo, threeDaysAgo);
+
+    const artifacts = () => fs.readdirSync(directory).filter((name) => !name.startsWith("."));
+    await store.setRetention(null);
+    expect(artifacts()).toHaveLength(1);
+    await store.setRetention(2);
+    expect(artifacts()).toHaveLength(0);
+    await expect(store.setRetention(0)).rejects.toThrow(/between 1 and 3650/);
+  });
+
+  it("keeps a configured retention across restarts", async () => {
+    const now = Date.UTC(2026, 0, 10);
+    const { directory, store } = makeStore({ now: () => now });
+    await store.initialize();
+    await store.setRetention(30);
+    await store.captureScreenshot({ png: new Uint8Array([1]), width: 1, height: 1 });
+    const artifact = fs.readdirSync(directory).find((name) => !name.startsWith("."))!;
+    const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(path.join(directory, artifact), tenDaysAgo, tenDaysAgo);
+
+    const restarted = new PreviewArtifactStore({ directory, now: () => now });
+    await restarted.initialize();
+    expect(fs.readdirSync(directory)).toContain(artifact);
+  });
+
   it("atomically stores screenshots behind opaque ids", async () => {
     const { directory, store } = makeStore();
     await store.initialize();

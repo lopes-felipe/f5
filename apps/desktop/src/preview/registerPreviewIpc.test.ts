@@ -39,6 +39,7 @@ function makeHarness() {
     setViewport: vi.fn(() => true),
     setColorScheme: vi.fn(() => true),
     captureScreenshot: vi.fn(),
+    setArtifactRetention: vi.fn(),
     recordingStart: vi.fn(),
     recordingAppend: vi.fn(),
     recordingStop: vi.fn(),
@@ -87,6 +88,17 @@ describe("registerPreviewIpc", () => {
       height: 812,
       revision: 7,
     });
+  });
+
+  it("passes artifact retention through and rejects non-integer days", () => {
+    const { invoke, operations } = makeHarness();
+    invoke(PREVIEW_IPC_CHANNELS.setArtifactRetention, 14);
+    invoke(PREVIEW_IPC_CHANNELS.setArtifactRetention, null);
+    expect(operations.setArtifactRetention).toHaveBeenNthCalledWith(1, 14);
+    expect(operations.setArtifactRetention).toHaveBeenNthCalledWith(2, null);
+    expect(() => invoke(PREVIEW_IPC_CHANNELS.setArtifactRetention, "14")).toThrow(
+      "Preview artifact retention is invalid.",
+    );
   });
 
   it("rejects unknown preview color schemes before they reach the runtime", () => {
