@@ -100,10 +100,16 @@
     {
       "upstreamSha": "0150c6a53b409ba3bcb45645709b649cf8708354",
       "subject": "feat(web): start new threads with multiple models in separate worktrees (#12179)",
-      "reason": "Phase 9d (multi-model fan-out): feat(web): start new threads with multiple models in separate worktrees. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9d: Shift+click selects up to six models; each gets its own thread, worktree (requireWorktree) and upload copies, submitted three at a time with a retry guard. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9d",
+      "evidence": [
+        "apps/web/src/components/chat/fanOut.ts:1",
+        "apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:1",
+        "apps/server/src/wsServer.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "016cdb9622359967afe80a27c538056ef1e7b857",
@@ -215,10 +221,15 @@
     {
       "upstreamSha": "0310cbf9f46ca94e9df0231a3440bca08ac44709",
       "subject": "fix: keep worktree setup visible after leaving and reopening the thread (#11836)",
-      "reason": "Phase 9c (worktree setup progress): fix: keep worktree setup visible after leaving and reopening the thread. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: The setup card is rebuilt from the persisted activity and live updates, so it stays visible after leaving and reopening the thread. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/web/src/hooks/useWorktreeSetup.ts:1",
+        "apps/web/src/components/chat/WorktreeSetupCard.browser.tsx:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "035058a23e651ea5f407c9ab73cf5329cc40c102",
@@ -1226,10 +1237,15 @@
     {
       "upstreamSha": "0f5a1513e09fb41e0d0f86157aff64cc3657975d",
       "subject": "fix(web): stop the worktree setup card from flashing and shifting (#12015)",
-      "reason": "Phase 9c (worktree setup progress): fix(web): stop the worktree setup card from flashing and shifting. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Snapshots are ordered by sequence and the card's visibility rule ignores stale or settled states, avoiding flashes and layout shifts. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/web/src/hooks/useWorktreeSetup.ts:1",
+        "apps/web/src/components/chat/WorktreeSetupCard.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "0f602b3372b300ae94084bd3fe7dbaadaa58ba3a",
@@ -3426,10 +3442,16 @@
     {
       "upstreamSha": "2c19283afed1e3b69a9af33360980527aeb37494",
       "subject": "feat(server): persist the worktree setup send and progress on the thread (#11852)",
-      "reason": "Phase 9c (worktree setup progress): feat(server): persist the worktree setup send and progress on the thread. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: The queued first send is gated by a durable worktree block token, and setup progress persists as a thread activity, so both survive reconnects and restarts. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/server/src/nextTurnQueue/gate.ts:1",
+        "apps/server/src/project/Services/WorktreeSetupGate.ts:1",
+        "apps/server/src/project/Layers/WorktreeSetup.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "2c199aacac3244adc93c5f4a9c838683e93946dd",
@@ -4682,10 +4704,15 @@
     {
       "upstreamSha": "3bee4c286e586c2eb7f8d196a65b4b5ea6a95241",
       "subject": "fix(server): settle cancelled worktree setup before rollback (#12176)",
-      "reason": "Phase 9c (worktree setup progress): fix(server): settle cancelled worktree setup before rollback. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Cancel pauses the queue and stops the running stage before releasing created artifacts, and checks for an already-accepted turn before rolling back. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/server/src/project/Layers/WorktreeSetup.ts:1",
+        "apps/server/src/wsServer.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "3bf74eb6dce3e1372cfafc2ca84825f4b13bae6a",
@@ -6490,10 +6517,12 @@
     {
       "upstreamSha": "5623089aea68ca62811f51321686c259fa4c810f",
       "subject": "fix(server): disable color probes in worktree setup (#11843)",
-      "reason": "Phase 9c (worktree setup progress): fix(server): disable color probes in worktree setup. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: The setup script runs as an owned process with NO_COLOR and FORCE_COLOR=0, and ANSI output is stripped from the tail. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": ["apps/server/src/project/ownedSetupScript.ts:1"],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "564719165e9131ab2aa55e9c805b860a415690da",
@@ -6701,10 +6730,15 @@
     {
       "upstreamSha": "584450a1f198c8592d28947a0a7a060d28013298",
       "subject": "fix(web): compact the worktree setup glass popover (#12802)",
-      "reason": "Phase 9c (worktree setup progress): fix(web): compact the worktree setup glass popover. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: f5 shows setup as a compact card above the composer with a five-line script tail rather than upstream's glass popover; same information, f5 layout. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/web/src/components/chat/WorktreeSetupCard.tsx:1",
+        "packages/contracts/src/worktreeSetup.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "585ce2c2ab396e4c3c5ffcfc422449c07896ddf9",
@@ -7160,10 +7194,16 @@
     {
       "upstreamSha": "5ea6439816470288d3f2b6b43635fea41fbbb101",
       "subject": "feat(web): inline worktree setup rows and async setup scripts (#11832)",
-      "reason": "Phase 9c (worktree setup progress): feat(web): inline worktree setup rows and async setup scripts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Setup stages render inline in the setup card, and project scripts gain an 'Agent waits for this script' toggle; other setup scripts run alongside the agent. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/web/src/components/chat/WorktreeSetupCard.tsx:1",
+        "apps/web/src/components/ProjectScriptsControl.tsx:1",
+        "packages/contracts/src/orchestration.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "5eab021a5185e492b6b021f83564143d5263e8a6",
@@ -8761,10 +8801,16 @@
     {
       "upstreamSha": "73b206f4bf99e7e98ae144a9d9edbf7cb2700fc1",
       "subject": "feat(web): show each worktree setup step and let users cancel it (#11372)",
-      "reason": "Phase 9c (worktree setup progress): feat(web): show each worktree setup step and let users cancel it. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Background worktree setup reports fetch, checkout (with progress), submodule, setup-script and agent stages, with cancel that removes only clean, unclaimed artifacts it created. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/server/src/project/Layers/WorktreeSetup.ts:1",
+        "apps/web/src/components/chat/WorktreeSetupCard.tsx:1",
+        "apps/server/src/git/progressLines.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "73b2e8fdd47807fcc0fc5bfe4928187035b71242",
@@ -10150,10 +10196,16 @@
     {
       "upstreamSha": "8824f8f24f8b81fd6aed6f228a57a1d4013d01d9",
       "subject": "fix(web): retry failed thread bootstraps with a fresh id (#7664)",
-      "reason": "Phase 9b: fix(web): retry failed thread bootstraps with a fresh id. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 9b: A failed first-send bootstrap reports whether the thread was not created or was rolled back and deleted; the draft moves to a fresh thread id so sending again works. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9b",
+      "evidence": [
+        "apps/web/src/lib/bootstrapErrors.ts:1",
+        "apps/web/src/composerDraftStore.ts:1",
+        "apps/server/src/wsServer/bootstrapTurnStart.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "8829e2f9b960eb31dc62ddab256d5da82c5077a6",
@@ -12257,10 +12309,16 @@
     {
       "upstreamSha": "a40aef4ccbc10b7bcd7bc817151db8d5a9b1c257",
       "subject": "fix(server): a draft can retry its first send after a failed bootstrap (#8226)",
-      "reason": "Phase 9b: fix(server): a draft can retry its first send after a failed bootstrap. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 9b: First sends, including thread and worktree bootstrap, go through nextTurnQueue.submit with single-flight replay, so a draft can retry after a failed bootstrap without duplicating the thread or turn. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9b",
+      "evidence": [
+        "apps/server/src/wsServer.ts:1",
+        "apps/server/src/wsServer/bootstrapTurnStart.test.ts:1",
+        "apps/server/src/wsServer.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "a434677eca737771dd64703545c13eb11ba92ce2",
@@ -12862,10 +12920,12 @@
     {
       "upstreamSha": "ae53072af0560c0606202b87b5fdb7e52d48ac5c",
       "subject": "fix(web): keep the composer ready during background worktree setup (#11883)",
-      "reason": "Phase 9c (worktree setup progress): fix(web): keep the composer ready during background worktree setup. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: A worktree first send returns 'queued' immediately and the composer stays usable while setup runs in the background. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": ["apps/server/src/wsServer.ts:1", "apps/web/src/components/ChatView.tsx:1"],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "ae67c5b8159cb49a68c16f96f7bb64a2e3c6b1c6",
@@ -13744,10 +13804,15 @@
     {
       "upstreamSha": "ba3cb0773859334fe9f75016295bb3893c9e6044",
       "subject": "feat(projects): automatically pull clean default branches (#9277)",
-      "reason": "Phase 9f (default-branch auto-pull): feat(projects): automatically pull clean default branches. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9f: Off-by-default auto-pull fast-forwards clean default-branch project roots every 15 minutes under the path lock and a background cross-profile repository lock, with dry run and audit records. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9f",
+      "evidence": [
+        "apps/server/src/git/DefaultBranchAutoPull.ts:1",
+        "apps/server/src/git/DefaultBranchAutoPull.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "ba46f922a271942d42faf305ff833af89cb5c3a1",
@@ -14676,10 +14741,17 @@
     {
       "upstreamSha": "c4ca1b0f94e56bd93899704f03015d51948a6b4d",
       "subject": "feat(settings): add automatic storage cleanup per machine and project (#11598)",
-      "reason": "Phase 9e (storage cleanup): feat(settings): add automatic storage cleanup per machine and project. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9e: Off-by-default storage cleanup removes idle F5 worktrees by project-scopable rules (never forced, branch kept, all claims re-checked under the lifecycle lock) and old provider logs, with dry run, redacted audit records and configurable preview-artifact retention. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9e"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9e",
+      "evidence": [
+        "apps/server/src/storage/StorageCleanupWorker.ts:1",
+        "apps/server/src/storage/StorageCleanupWorker.test.ts:1",
+        "apps/server/src/storage/automationAudit.ts:1",
+        "apps/web/src/components/settings/StorageAutomationSettings.tsx:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "c50b0b4ef8d61ffe3de1cfa6249f906709f7da1f",
@@ -16435,10 +16507,16 @@
     {
       "upstreamSha": "dd6ba84dc96f83000388e14b90f6533d5f63315d",
       "subject": "fix(server): fall back when new worktrees are unavailable (#6208)",
-      "reason": "Phase 9c (worktree setup progress): fix(server): fall back when new worktrees are unavailable. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: When a worktree cannot be prepared, the send falls back to the project root unless the request requires a worktree; failed setups offer Work locally. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/server/src/wsServer.ts:1",
+        "apps/server/src/project/Layers/WorktreeSetup.ts:1",
+        "apps/server/src/wsServer.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "dd7bc147f799f290eb58578a7f81643ecf9ad52e",
@@ -17801,10 +17879,12 @@
     {
       "upstreamSha": "ef84bc9873a6c4565fbeb64dce3f552570e95a2d",
       "subject": "fix(chat): smooth worktree setup status (#8922)",
-      "reason": "Phase 9c (worktree setup progress): fix(chat): smooth worktree setup status. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Progress pushes are throttled to 100 ms and persistence to 500 ms, keeping status updates smooth. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": ["apps/server/src/project/Layers/WorktreeSetup.ts:1"],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "efb96939fbb135b9f4de3bff19447200b178b23a",
@@ -18007,10 +18087,15 @@
     {
       "upstreamSha": "f14f41b894448298a86865c9114e6700245356e7",
       "subject": "fix(web): preserve composer draft during worktree setup (#9197)",
-      "reason": "Phase 9c (worktree setup progress): fix(web): preserve composer draft during worktree setup. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9c: Discarding a cancelled or failed setup deletes the empty thread and restores the message into a new draft. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9c",
+      "evidence": [
+        "apps/web/src/components/ChatView.tsx:1",
+        "apps/server/src/project/Layers/WorktreeSetup.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "f15680bd3c08a154bacb9b4d163cc8608a310970",
@@ -18458,10 +18543,16 @@
     {
       "upstreamSha": "f6db4206258b0ef30e8dd8949627acfd209bf338",
       "subject": "fix(web): reset automatic pull to default (#9763)",
-      "reason": "Phase 9f (default-branch auto-pull): fix(web): reset automatic pull to default. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 9f: Auto-pull is project-scopable with the standard per-project Reset, and a checked-in f5.json cannot turn it on. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "9f"
+      "disposition": "equivalent",
+      "plannedWorkstream": "9f",
+      "evidence": [
+        "apps/web/src/components/settings/ProjectSettingsScope.tsx:1",
+        "packages/shared/src/projectSettings.ts:1",
+        "packages/shared/src/projectSettings.test.ts:1"
+      ],
+      "f5Shas": ["3228773cd3bb602c81b219716c1f440b5db3f792"]
     },
     {
       "upstreamSha": "f6f2be32d8bc072e87753e41ad77c7c67e8b0b95",
