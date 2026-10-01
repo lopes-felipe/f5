@@ -242,10 +242,21 @@ export const makeConversationRewind = Effect.gen(function* () {
             op.retained_count !== 0 ||
             expected.length !== 0 ||
             !verified(snapshot.turns.map((turn) => turn.id))
-          )
+          ) {
+            // Kept in its current state on purpose: from `reconciliation-required` this
+            // check can never pass, so the thread would stay blocked with no Cancel. A
+            // `prepared` rewind sent nothing, so Cancel only restores the prior state.
+            yield* Effect.logWarning("rewind found a different provider session", {
+              threadId: request.threadId,
+              operationId: request.operationId,
+              state: op.state,
+              expectedSession: op.provider_session_id,
+              actualSession: identity,
+            });
             return yield* fail(
               "The provider session changed; verify the rewind before continuing.",
             );
+          }
           yield* sql`UPDATE rewind_operations SET provider_session_id = ${identity} WHERE operation_id = ${op.operation_id}`;
           op = { ...op, provider_session_id: identity };
         }
@@ -284,8 +295,10 @@ export const makeConversationRewind = Effect.gen(function* () {
         }
         if (state === "prepared" && !verified(currentIds)) {
           if (!untouched(currentIds)) {
-            // Nothing was sent, so Cancel stays safe, but the thread keeps going with a
-            // projection that differs from the provider. Keep the evidence in the log.
+            // Stays `prepared` on purpose: this history can never verify, so in
+            // `reconciliation-required` the thread would stay blocked with no Cancel.
+            // Nothing was sent, so Cancel only restores the pre-rewind state; the
+            // divergence predates the rewind. Keep the evidence in the log.
             yield* Effect.logWarning("rewind found provider history changed after prepare", {
               threadId: request.threadId,
               operationId: request.operationId,
