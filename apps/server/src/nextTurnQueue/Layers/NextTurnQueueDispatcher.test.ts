@@ -7,7 +7,7 @@ import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/cont
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
-import { Effect, Layer, Option, Stream } from "effect";
+import { Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
@@ -20,6 +20,7 @@ import { ProjectionThreadRepository } from "../../persistence/Services/Projectio
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { NextTurnQueueDispatcher } from "../Services/NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStore } from "../Services/NextTurnQueueStore.ts";
 import { NextTurnQueueDispatcherLive } from "./NextTurnQueueDispatcher.ts";
@@ -305,6 +306,32 @@ layer("NextTurnQueueDispatcher", (it) => {
       yield* dispatcher.drain;
       assert.deepEqual(dispatched, []);
       assert.equal((yield* dispatcher.getSnapshot(threadId)).paused, false);
+    }),
+  );
+
+  it.effect("starts a project-root turn only while holding the project root's lifecycle lock", () =>
+    Effect.gen(function* () {
+      dispatched.length = 0;
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const threadId = ThreadId.makeUnsafe("project-root-lock-thread");
+      yield* seedThread(threadId);
+      yield* insert(7, threadId);
+      // Stands in for a default-branch auto-pull of the project root.
+      const locked = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const holder = yield* withWorktreeLifecycleLock(
+        process.cwd(),
+        Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(locked);
+      yield* dispatcher.notify(threadId);
+      // Real time (it.effect uses a test clock) for the worker to reach the lock.
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)));
+      assert.deepEqual(dispatched, []);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(holder);
+      yield* dispatcher.drain;
+      assert.deepEqual(dispatched, [CommandId.makeUnsafe("dispatcher-command-7")]);
     }),
   );
 

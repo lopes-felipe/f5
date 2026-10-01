@@ -356,11 +356,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         });
         return;
       }
-      // Gate check through acceptance runs under the worktree lifecycle lock so
-      // cleanup, setup cancellation and recreation cannot interleave with a start.
-      const lockPath = Option.getOrNull(
+      // Gate check through acceptance runs under the lifecycle lock of the
+      // directory the turn works in, so cleanup, setup cancellation,
+      // recreation and default-branch auto-pull cannot interleave with a start.
+      // A thread without a worktree works in its project root.
+      const thread = Option.getOrNull(
         yield* threads.getById({ threadId }).pipe(Effect.mapError(storageError)),
-      )?.worktreePath;
+      );
+      const lockPath =
+        thread?.worktreePath ??
+        (thread
+          ? ((yield* engine.getReadModel()).projects.find(
+              (project) => project.id === thread.projectId,
+            )?.workspaceRoot ?? null)
+          : null);
       const start = startFromGate(item);
       yield* lockPath
         ? withWorktreeLifecycleLock(lockPath, start).pipe(

@@ -3590,6 +3590,44 @@ describe("WebSocket Server", () => {
         expect(sentTurns).toHaveLength(0);
       });
 
+      it("cancel keeps a worktree whose only new file is gitignored", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-cancel-ignored-");
+        fs.writeFileSync(path.join(repo, ".gitignore"), ".env\n");
+        execFileSync("git", ["add", ".gitignore"], { cwd: repo, stdio: "pipe" });
+        execFileSync(
+          "git",
+          ["-c", "user.name=F5", "-c", "user.email=f5@example.com", "commit", "-qm", "ignore"],
+          { cwd: repo, stdio: "pipe" },
+        );
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo, {
+          command: "echo SECRET=1 > .env && sleep 30",
+          async: false,
+        });
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-cancel-ignored" }),
+        );
+        const running = await waitForSetup(
+          ws,
+          "thread-cancel-ignored",
+          (entry) =>
+            entry?.worktreePath != null && fs.existsSync(path.join(entry.worktreePath, ".env")),
+        );
+        // `git status` reports the tree clean; only the ignored-file check keeps it.
+        const cancelled = await sendRequest(ws, WS_METHODS.worktreeSetupCancel, {
+          threadId: "thread-cancel-ignored",
+        });
+        const settled = (cancelled.result as { snapshot: WorktreeSetupSnapshot }).snapshot;
+        expect(settled.phase).toBe("cancelled_kept");
+        expect(settled.error).toContain(".env");
+        expect(fs.readFileSync(path.join(running!.worktreePath!, ".env"), "utf8")).toBe(
+          "SECRET=1\n",
+        );
+      });
+
       it("marks a setup that was running at shutdown as failed and removes nothing", async () => {
         const repo = makeGitRepo("t3code-ws-setup-restart-");
         const stateDir = makeTempDir("t3code-ws-setup-restart-state-");

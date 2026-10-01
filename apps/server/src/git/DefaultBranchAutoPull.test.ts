@@ -16,11 +16,13 @@ import {
   makeWorld,
   project,
   pushUpstreamCommit,
+  thread,
   type AutomationWorld,
 } from "../storage/storageAutomation.testHarness.ts";
 import { DefaultBranchAutoPull, DefaultBranchAutoPullLive } from "./DefaultBranchAutoPull.ts";
 
-describe("DefaultBranchAutoPull", () => {
+// Real repositories and many git calls per case: allow for loaded CI runners.
+describe("DefaultBranchAutoPull", { timeout: 60_000 }, () => {
   const cleanups: Array<() => Promise<unknown>> = [];
   afterEach(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -126,6 +128,20 @@ describe("DefaultBranchAutoPull", () => {
           world.sessions.push({ threadId: "thread-1", cwd: repo.root, status: "ready" });
           expect(yield* reason()).toBe("an agent session is open in the project root");
           world.sessions.length = 0;
+
+          // A turn accepted in the root has no provider session yet, but still blocks.
+          world.threads.push(
+            thread({ id: "thread-root", projectId: "project-1", worktreePath: null }),
+          );
+          world.pendingTurnStarts.add("thread-root");
+          expect(yield* reason()).toBe("an agent turn is starting or running in the project root");
+          world.pendingTurnStarts.clear();
+          world.threads[0] = {
+            ...world.threads[0]!,
+            session: { status: "running", activeTurnId: "turn-1" },
+          } as (typeof world.threads)[number];
+          expect(yield* reason()).toBe("an agent turn is starting or running in the project root");
+          world.threads.length = 0;
 
           const results = yield* autoPull.runOnce;
           expect(results[0]!.action).toBe("pull");

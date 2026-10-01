@@ -1777,11 +1777,20 @@ const makeGitCore = Effect.gen(function* () {
           worktreePath,
           baseRefName,
         ];
+        // Checked under the lifecycle lock: a path that already existed is never
+        // claimed by a failed add, so cleanup cannot remove a worktree it did
+        // not create.
+        const existedBefore = yield* fileSystem
+          .exists(worktreePath)
+          .pipe(Effect.orElseSucceed(() => true));
         let claimed = false;
         const claim = () => {
           if (claimed) return;
           claimed = true;
           progress?.onWorktreeClaimed?.(worktreePath);
+        };
+        const claimIfNew = () => {
+          if (!existedBefore) claim();
         };
         yield* executeGit("GitCore.createWorktree", input.cwd, args, {
           timeoutMs: 300_000,
@@ -1791,10 +1800,10 @@ const makeGitCore = Effect.gen(function* () {
                 env: { ...process.env, GIT_PROGRESS_DELAY: "0", LC_ALL: "C" },
                 onStderrChunk: makeProgressLineSplitter((line) => {
                   // "Preparing worktree" is printed once git has registered the path.
-                  if (line.startsWith("Preparing worktree")) claim();
+                  if (line.startsWith("Preparing worktree")) claimIfNew();
                   const checkout = parseCheckoutProgressLine(line);
                   if (checkout) {
-                    claim();
+                    claimIfNew();
                     progress.onCheckoutProgress?.(checkout);
                   }
                 }),
@@ -1802,15 +1811,17 @@ const makeGitCore = Effect.gen(function* () {
             : {}),
         }).pipe(
           Effect.tapError(() =>
-            // A failed add may still have registered the directory.
+            // A failed add may still have created the directory it was given.
             fileSystem.exists(worktreePath).pipe(
               Effect.map((exists) => {
-                if (exists) claim();
+                if (exists) claimIfNew();
               }),
               Effect.ignore,
             ),
           ),
         );
+        // A successful add made this a worktree of the repository, even in a
+        // directory that existed (empty) beforehand.
         claim();
         yield* initializeSubmodules(worktreePath, input.submodules, progress);
       });

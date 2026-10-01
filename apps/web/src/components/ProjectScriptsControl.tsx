@@ -456,6 +456,7 @@ export default function ProjectScriptsControl({
           setCommand("");
           setIcon("play");
           setRunOnWorktreeCreate(false);
+          setAgentWaits(false);
           setKeybinding("");
           setValidationError(null);
         }}

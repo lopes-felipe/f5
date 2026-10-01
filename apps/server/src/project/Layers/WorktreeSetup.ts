@@ -46,7 +46,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isDefinitelyUncommittedDispatchError } from "../../wsServer/bootstrapTurnStart.ts";
 import { startOwnedSetupScript, type OwnedSetupScript } from "../ownedSetupScript.ts";
-import { foreignClaims, readWorktreeClaims } from "../worktreeClaims.ts";
+import { foreignClaims, ignoredFilesBlockRemoval, readWorktreeClaims } from "../worktreeClaims.ts";
 import {
   WorktreeSetup,
   WorktreeSetupError,
@@ -768,6 +768,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             const status = yield* git.statusDetails(worktreePath).pipe(Effect.option);
             if (Option.isNone(status) || status.value.hasWorkingTreeChanges) {
               return { kept: CANCELLED_KEPT_DETAIL };
+            }
+            // `git status` hides ignored files, which `worktree remove` would delete.
+            const ignored = yield* ignoredFilesBlockRemoval(git, worktreePath);
+            if (ignored !== null) {
+              return { kept: `Setup cancelled; worktree kept because it has ${ignored}.` };
             }
             const claims = yield* readWorktreeClaims(worktreePath).pipe(
               Effect.provideServices(services),

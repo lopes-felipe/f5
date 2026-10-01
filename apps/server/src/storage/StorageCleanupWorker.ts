@@ -28,7 +28,11 @@ import {
   withWorktreeLifecycleLock,
 } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { readProjectSettings } from "../project/projectSettings.ts";
-import { foreignClaims, readWorktreeClaims } from "../project/worktreeClaims.ts";
+import {
+  foreignClaims,
+  ignoredFilesBlockRemoval,
+  readWorktreeClaims,
+} from "../project/worktreeClaims.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
@@ -65,10 +69,7 @@ const STARTUP_DELAY = "30 seconds";
 const CLEANUP_INTERVAL = "1 hour";
 const EVALUATION_CONCURRENCY = 2;
 
-/** `node_modules/` (at any depth) is reproducible; every other ignored entry is not. */
-export function blockingIgnoredEntries(entries: ReadonlyArray<string>): ReadonlyArray<string> {
-  return entries.filter((entry) => !/(^|\/)node_modules\/?$/.test(entry));
-}
+export { blockingIgnoredEntries } from "../project/worktreeClaims.ts";
 
 /** Which rule makes a worktree eligible, or null when none applies. */
 export function matchWorktreeCleanupRule(input: {
@@ -172,14 +173,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       // Removing a detached worktree drops its HEAD reflog, which can leave
       // commits that no branch contains unreachable.
       if (status.value.branch === null) return "HEAD is detached";
-      const ignored = yield* git.listIgnoredEntries(worktreePath).pipe(Effect.option);
-      if (Option.isNone(ignored)) return "ignored files could not be listed";
-      if (ignored.value.truncated) return "too many ignored files to check";
-      const blocking = blockingIgnoredEntries(ignored.value.entries);
-      if (blocking.length > 0) {
-        return `ignored files other than node_modules/ (${blocking.slice(0, 3).join(", ")})`;
-      }
-      return null;
+      return yield* ignoredFilesBlockRemoval(git, worktreePath);
     });
 
   const evaluate = (input: {

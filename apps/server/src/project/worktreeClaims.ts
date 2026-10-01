@@ -1,6 +1,7 @@
 import type { ThreadId } from "@t3tools/contracts";
 import { Effect } from "effect";
 
+import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { canonicalWorktreePath } from "../git/worktreePaths.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -86,6 +87,29 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     sessions: liveSessions,
   } satisfies WorktreeClaims;
 });
+
+/** `node_modules/` (at any depth) is reproducible; every other ignored entry is not. */
+export function blockingIgnoredEntries(entries: ReadonlyArray<string>): ReadonlyArray<string> {
+  return entries.filter((entry) => !/(^|\/)node_modules\/?$/.test(entry));
+}
+
+/**
+ * Why ignored files make removing `worktreePath` unsafe, or null when they do
+ * not. `git worktree remove` refuses on tracked changes and untracked files but
+ * silently deletes ignored ones (a `.env`, a local database), so every removal
+ * path checks this as well as `git status`.
+ */
+export const ignoredFilesBlockRemoval = (git: GitCoreShape, worktreePath: string) =>
+  git.listIgnoredEntries(worktreePath).pipe(
+    Effect.map(({ entries, truncated }) => {
+      if (truncated) return "too many ignored files to check";
+      const blocking = blockingIgnoredEntries(entries);
+      return blocking.length > 0
+        ? `ignored files other than node_modules/ (${blocking.slice(0, 3).join(", ")})`
+        : null;
+    }),
+    Effect.orElseSucceed(() => "ignored files could not be listed"),
+  );
 
 /** Claims held by anything other than `ownThreadId` and the given owned terminals. */
 export function foreignClaims(

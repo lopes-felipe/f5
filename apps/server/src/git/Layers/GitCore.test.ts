@@ -1,7 +1,9 @@
 import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, Layer, Metric } from "effect";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { GitCoreLive } from "./GitCore.ts";
@@ -722,6 +724,52 @@ it.each(["none", "shallow", "recursive"] as const)(
     }
   },
 );
+
+describe("failed worktree add", () => {
+  const failAdd = (createDir: boolean) =>
+    makeScriptedGitService((input) => {
+      if (input.args[0] === "worktree" && input.args[1] === "add") {
+        if (createDir) mkdirSync(input.args[input.args.length - 2]!, { recursive: true });
+        return { code: 128, stderr: "fatal: worktree add failed\n" };
+      }
+      return { stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "" };
+    });
+  const attempt = async (path: string, createDir: boolean) => {
+    const claimed: string[] = [];
+    const core = await makeCore(failAdd(createDir).service);
+    const exit = await Effect.runPromise(
+      core
+        .createWorktree({
+          cwd: process.cwd(),
+          branch: "main",
+          path,
+          progress: { onWorktreeClaimed: (claimedPath) => claimed.push(claimedPath) },
+        })
+        .pipe(Effect.exit),
+    );
+    expect(exit._tag).toBe("Failure");
+    return claimed;
+  };
+
+  it("never claims a path that existed before the add", async () => {
+    const existing = mkdtempSync(join(tmpdir(), "f5-existing-worktree-"));
+    try {
+      expect(await attempt(existing, false)).toEqual([]);
+    } finally {
+      rmSync(existing, { recursive: true, force: true });
+    }
+  });
+
+  it("claims a new path the failed add left behind", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "f5-new-worktree-"));
+    const target = join(parent, "worktree");
+    try {
+      expect(await attempt(target, true)).toEqual([target]);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
 
 it("skips submodule initialization when the checkout has no .gitmodules", async () => {
   const scripted = makeScriptedGitService((input) => ({

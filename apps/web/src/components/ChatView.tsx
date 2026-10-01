@@ -276,7 +276,7 @@ import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
 import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeSetupCard";
 import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
-import { runFanOut, toggleFanOutModel, type FanOutModel } from "./chat/fanOut";
+import { runFanOut, toggleFanOutModel, type FanOutAttempt, type FanOutModel } from "./chat/fanOut";
 
 const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
 import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
@@ -5546,6 +5546,8 @@ export default function ChatView({
     Readonly<Record<string, ReadonlyArray<FanOutModel>>>
   >({});
   const fanOutGuardRef = useRef(new Set<string>());
+  // Unconfirmed fan-out submissions, resent unchanged on retry.
+  const fanOutAttemptsRef = useRef(new Map<string, FanOutAttempt>());
   const canFanOut = isLocalDraftThread && isGitRepo && !hasThreadStarted;
   const fanOutModels = canFanOut ? (fanOutByThreadId[threadId] ?? EMPTY_FAN_OUT) : EMPTY_FAN_OUT;
   const clearFanOut = useCallback((id: ThreadId) => {
@@ -5621,6 +5623,8 @@ export default function ChatView({
       draftThreadId: input.draftThreadId,
       targets: fanOutModels,
       guard: fanOutGuardRef.current,
+      attempts: fanOutAttemptsRef.current,
+      isDefinitelyNotStarted: wasBootstrapThreadRolledBack,
       newThreadId,
       buildCommand: async (target, childThreadId) => {
         // Each thread owns its own copy of every upload.

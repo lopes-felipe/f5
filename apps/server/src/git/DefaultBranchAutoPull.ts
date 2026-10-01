@@ -3,13 +3,14 @@ import type {
   ServerSettings,
   StorageAutomationTarget,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Schedule, ServiceMap, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schedule, ServiceMap, Stream } from "effect";
 import type { Scope } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import {
   RepositoryBusyError,
   withRepositoryLifecycleLock,
@@ -64,6 +65,7 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
   const settingsService = yield* ServerSettingsService;
   const engine = yield* OrchestrationEngineService;
   const git = yield* GitCore;
+  const turns = yield* ProjectionTurnRepository;
 
   const candidates = (global: ServerSettings) =>
     Effect.gen(function* () {
@@ -84,9 +86,38 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
       return result;
     });
 
-  /** The exact reason a root must not be pulled now, or null. */
-  const blockReason = (root: string) =>
+  /**
+   * A thread of this project that works in the project root (no worktree) and
+   * has a turn running or accepted but not yet started. A pending start has no
+   * provider session yet, so session claims alone would miss it.
+   */
+  const rootTurnInFlight = (candidate: Candidate) =>
     Effect.gen(function* () {
+      const model = yield* engine.getReadModel();
+      for (const thread of model.threads) {
+        if (thread.projectId !== candidate.project.id || thread.deletedAt !== null) continue;
+        if (thread.worktreePath !== null) continue;
+        const session = thread.session;
+        if (
+          session &&
+          (session.activeTurnId !== null ||
+            session.status === "starting" ||
+            session.status === "running")
+        ) {
+          return true;
+        }
+        const pending = yield* turns
+          .getPendingTurnStartByThreadId({ threadId: thread.id })
+          .pipe(Effect.orElseSucceed(() => Option.some(null)));
+        if (Option.isSome(pending)) return true;
+      }
+      return false;
+    });
+
+  /** The exact reason a root must not be pulled now, or null. */
+  const blockReason = (candidate: Candidate) =>
+    Effect.gen(function* () {
+      const root = candidate.root;
       const details = yield* git.statusDetails(root);
       if (details.branch === null) return { reason: "HEAD is detached", details };
       const defaultBranch = yield* git.readDefaultBranch(root);
@@ -106,6 +137,9 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
       const claims = yield* readWorktreeClaims(root).pipe(Effect.provideServices(services));
       if (claims.sessions.length > 0) {
         return { reason: "an agent session is open in the project root", details };
+      }
+      if (yield* rootTurnInFlight(candidate)) {
+        return { reason: "an agent turn is starting or running in the project root", details };
       }
       return { reason: null, details };
     });
@@ -130,7 +164,7 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
   });
 
   const evaluate = (candidate: Candidate) =>
-    blockReason(candidate.root).pipe(
+    blockReason(candidate).pipe(
       Effect.map(({ reason, details }) => toTarget(candidate, reason, details.behindCount)),
       Effect.catchCause((cause) =>
         Effect.succeed(toTarget(candidate, `git state could not be read: ${firstLine(cause)}`, 0)),
@@ -154,7 +188,7 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
           config.baseDir,
           commonDir,
           Effect.gen(function* () {
-            const { reason } = yield* blockReason(candidate.root);
+            const { reason } = yield* blockReason(candidate);
             if (reason !== null) return toTarget(candidate, reason, 0);
             const before = yield* git.resolveCommit(candidate.root, "HEAD");
             const result = yield* git.pullCurrentBranch(candidate.root);

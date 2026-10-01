@@ -51,11 +51,26 @@ export interface FanOutOutcome {
   readonly skipped: ReadonlyArray<FanOutModel>;
 }
 
+/** A submission whose outcome is unknown, kept so a retry resends the same one. */
+export interface FanOutAttempt {
+  readonly threadId: ThreadId;
+  readonly command: ClientThreadTurnStartCommand;
+}
+
 export async function runFanOut(input: {
   readonly draftThreadId: ThreadId;
   readonly targets: ReadonlyArray<FanOutModel>;
   /** Keys of models that already started for this draft; updated in place on success. */
   readonly guard: Set<string>;
+  /**
+   * Submissions sent but not confirmed, by guard key; updated in place. When a
+   * response is lost the server may still have started the thread, so a retry
+   * resends the identical command (same thread and submission id), which the
+   * server replays instead of starting a second agent.
+   */
+  readonly attempts: Map<string, FanOutAttempt>;
+  /** True when `error` proves the submission did not start a thread. */
+  readonly isDefinitelyNotStarted: (error: unknown) => boolean;
   readonly newThreadId: () => ThreadId;
   readonly buildCommand: (
     target: FanOutModel,
@@ -78,19 +93,33 @@ export async function runFanOut(input: {
   const worker = async () => {
     while (next < pending.length) {
       const target = pending[next++]!;
-      const threadId = input.newThreadId();
+      const key = fanOutGuardKey(input.draftThreadId, target);
+      let attempt = input.attempts.get(key);
       try {
-        const command = await input.buildCommand(target, threadId);
-        const result = await input.submit(command);
+        if (!attempt) {
+          const threadId = input.newThreadId();
+          attempt = { threadId, command: await input.buildCommand(target, threadId) };
+          input.attempts.set(key, attempt);
+        }
+        let result: TurnSubmissionResult;
+        try {
+          result = await input.submit(attempt.command);
+        } catch (error) {
+          // Keep the attempt unless the server proved nothing started.
+          if (input.isDefinitelyNotStarted(error)) input.attempts.delete(key);
+          throw error;
+        }
         if (
           result.disposition === "canceled" ||
           result.disposition === "cleared" ||
           result.disposition === "rejected"
         ) {
+          input.attempts.delete(key);
           throw new Error(result.detail ?? `The ${target.model} thread was not started.`);
         }
-        input.guard.add(fanOutGuardKey(input.draftThreadId, target));
-        started.push({ target, threadId });
+        input.attempts.delete(key);
+        input.guard.add(key);
+        started.push({ target, threadId: attempt.threadId });
       } catch (error) {
         failed.push({
           target,

@@ -11,7 +11,7 @@ import type {
   ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Option, Stream } from "effect";
 
 import { ServerConfig } from "../config.ts";
 import { GitCoreLive } from "../git/Layers/GitCore.ts";
@@ -19,6 +19,7 @@ import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager, type TerminalSessionSummary } from "../terminal/Services/Manager.ts";
@@ -32,6 +33,8 @@ export interface AutomationWorld {
   terminals: TerminalSessionSummary[];
   sessions: Array<{ threadId: string; cwd: string; status: string }>;
   queuedThreadIds: Set<string>;
+  /** Threads with a turn start accepted but not yet delivered to the provider. */
+  pendingTurnStarts: Set<string>;
   /** Incremented on every read-model read, so race tests can tell when a pass reached removal. */
   readModelReads: number;
 }
@@ -42,6 +45,7 @@ export const makeWorld = (): AutomationWorld => ({
   terminals: [],
   sessions: [],
   queuedThreadIds: new Set(),
+  pendingTurnStarts: new Set(),
   readModelReads: 0,
 });
 
@@ -144,12 +148,19 @@ export function automationLayer(
     listByThread: (threadId: string) =>
       Effect.sync(() => ({ items: world.queuedThreadIds.has(threadId) ? [{}] : [] })),
   } as never);
+  const turns = Layer.succeed(ProjectionTurnRepository, {
+    getPendingTurnStartByThreadId: ({ threadId }: { readonly threadId: string }) =>
+      Effect.sync(() =>
+        world.pendingTurnStarts.has(threadId) ? Option.some({ threadId }) : Option.none(),
+      ),
+  } as never);
   return Layer.mergeAll(
     GitCoreLive.pipe(Layer.provideMerge(GitServiceLive)),
     engine,
     terminals,
     providers,
     queue,
+    turns,
     ServerSettingsService.layerTest(settings as never),
     SqlitePersistenceMemory,
   ).pipe(

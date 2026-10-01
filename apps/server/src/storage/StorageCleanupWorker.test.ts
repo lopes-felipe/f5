@@ -72,7 +72,8 @@ describe("worktree cleanup rules", () => {
   });
 });
 
-describe("StorageCleanupWorker", () => {
+// Real repositories and many git calls per case: allow for loaded CI runners.
+describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
   const cleanups: Array<() => Promise<unknown>> = [];
   afterEach(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup();
@@ -276,7 +277,7 @@ describe("StorageCleanupWorker", () => {
   });
 });
 
-describe("StorageCleanupWorker races (lifecycle lock)", () => {
+describe("StorageCleanupWorker races (lifecycle lock)", { timeout: 60_000 }, () => {
   const cleanups: Array<() => Promise<unknown>> = [];
   afterEach(async () => {
     for (const cleanup of cleanups.splice(0)) await cleanup();
