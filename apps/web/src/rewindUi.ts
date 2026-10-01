@@ -5,7 +5,9 @@ import { toastManager } from "./components/ui/toast";
 import {
   applyRewindUiEvent,
   EMPTY_REWIND_UI_STATE,
+  reconcileRewindUi,
   withoutKey,
+  type RewindThreadSnapshot,
   type LandedRewind,
   type PendingRewind,
   type RewindPromptPreview,
@@ -56,6 +58,19 @@ export const rewindUi = {
         ? { ...state.hiddenDraftOperationIds, [operationId]: true as const }
         : withoutKey(state.hiddenDraftOperationIds, operationId),
     }));
+  },
+  /** Drops a reopen request once the timeline has seen it, so it never replays. */
+  consumeReopen(threadId: ThreadId, nonce: number): void {
+    useRewindUiStore.setState((state) =>
+      state.reopenByThreadId[threadId]?.nonce === nonce
+        ? { reopenByThreadId: withoutKey(state.reopenByThreadId, threadId) }
+        : state,
+    );
+  },
+  reconcile(snapshot: RewindThreadSnapshot, now = Date.now()): void {
+    const current = useRewindUiStore.getState();
+    const next = reconcileRewindUi(current, snapshot, now);
+    if (next !== current) useRewindUiStore.setState(next);
   },
   requestReopen(threadId: ThreadId, messageId: MessageId, restoreFiles: boolean): void {
     reopenNonce += 1;

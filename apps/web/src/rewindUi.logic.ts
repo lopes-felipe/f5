@@ -90,6 +90,77 @@ function readFailurePayload(payload: unknown): {
   };
 }
 
+/** The server gives up on a rewind after 30s; past this, a pending entry with no server trace is stale. */
+export const PENDING_REWIND_STALE_MS = 45_000;
+/** How long a landed revert may wait for its real draft before it is presumed resolved elsewhere. */
+export const LANDED_REWIND_STALE_MS = 15_000;
+
+export interface RewindThreadSnapshot {
+  readonly threadId: ThreadId;
+  readonly messageIds: ReadonlySet<string>;
+  readonly drafts: ReadonlyArray<{ readonly operationId: string; readonly inFlight: boolean }>;
+}
+
+/**
+ * Checks this store against what the server's snapshot says. Live events can be
+ * missed (reconnects, a restart mid-rewind, a swallowed failure activity), and
+ * without this a pending revert would keep the thread "Reverting" until reload.
+ */
+export function reconcileRewindUi(
+  state: RewindUiState,
+  snapshot: RewindThreadSnapshot,
+  now: number,
+): RewindUiState {
+  const { threadId } = snapshot;
+  let next = state;
+  const pending = state.pendingByThreadId[threadId];
+  if (pending) {
+    const draft = snapshot.drafts.find((entry) => entry.operationId === pending.operationId);
+    if (!snapshot.messageIds.has(pending.targetMessageId)) {
+      // The target was pruned, so the revert landed even if we missed the event.
+      next = {
+        ...next,
+        pendingByThreadId: withoutKey(next.pendingByThreadId, threadId),
+        landedByThreadId: {
+          ...next.landedByThreadId,
+          [threadId]: { ...pending, landedAt: new Date(now).toISOString() },
+        },
+      };
+    } else if (
+      (draft && !draft.inFlight) ||
+      (!draft && now - Date.parse(pending.requestedAt) > PENDING_REWIND_STALE_MS)
+    ) {
+      // Parked on an error (the panel explains it) or long gone without a trace.
+      next = { ...next, pendingByThreadId: withoutKey(next.pendingByThreadId, threadId) };
+    }
+  }
+  const landed = next.landedByThreadId[threadId];
+  if (
+    landed &&
+    (snapshot.drafts.some((entry) => entry.operationId === landed.operationId) ||
+      now - Date.parse(landed.landedAt) > LANDED_REWIND_STALE_MS)
+  ) {
+    // The real draft took over, or it was resolved while we weren't listening.
+    next = { ...next, landedByThreadId: withoutKey(next.landedByThreadId, threadId) };
+  }
+  return next;
+}
+
+/** Milliseconds until `reconcileRewindUi` could next change this thread's entries, if ever. */
+export function nextRewindUiExpiry(
+  state: RewindUiState,
+  threadId: ThreadId,
+  now: number,
+): number | null {
+  const deadlines: number[] = [];
+  const pending = state.pendingByThreadId[threadId];
+  if (pending) deadlines.push(Date.parse(pending.requestedAt) + PENDING_REWIND_STALE_MS);
+  const landed = state.landedByThreadId[threadId];
+  if (landed) deadlines.push(Date.parse(landed.landedAt) + LANDED_REWIND_STALE_MS);
+  if (deadlines.length === 0) return null;
+  return Math.max(0, Math.min(...deadlines) - now) + 1;
+}
+
 /**
  * Transition for one domain event. `capturePrompt` reads the target message
  * when a revert started elsewhere (another window) and there is no optimistic

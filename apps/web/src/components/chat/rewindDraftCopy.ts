@@ -70,18 +70,28 @@ const REWIND_FAILED_ACTIVITY_KIND = "conversation.rewind.failed";
  * `turnId: null`, so reverts never prune them, and every failed attempt would
  * otherwise stay in the timeline after it was retried, cancelled, or completed.
  * Failures from before operations were recorded on the activity are dropped too.
+ *
+ * The newest failure is kept when the rewind never started (preflight): it has no
+ * panel, and its toast only shows on this thread, so this is its lasting record.
  */
 export function withoutSettledRewindFailures<
   T extends { readonly kind: string; readonly payload: unknown },
 >(activities: ReadonlyArray<T>, openOperationIds: ReadonlySet<string>): ReadonlyArray<T> {
+  const latestFailure = activities.findLast(
+    (activity) => activity.kind === REWIND_FAILED_ACTIVITY_KIND,
+  );
   let changed = false;
   const kept = activities.filter((activity) => {
     if (activity.kind !== REWIND_FAILED_ACTIVITY_KIND) return true;
-    const payload = activity.payload as { operationId?: unknown } | null | undefined;
+    const payload = activity.payload as
+      | { operationId?: unknown; stage?: unknown }
+      | null
+      | undefined;
     const open =
       typeof payload?.operationId === "string" && openOperationIds.has(payload.operationId);
-    if (!open) changed = true;
-    return open;
+    const latestPreflight = activity === latestFailure && payload?.stage === "preflight";
+    if (!open && !latestPreflight) changed = true;
+    return open || latestPreflight;
   });
   return changed ? kept : activities;
 }

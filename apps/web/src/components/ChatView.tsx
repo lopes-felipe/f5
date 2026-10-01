@@ -283,6 +283,7 @@ import {
   useRewindUiStore,
   type LandedRewind,
 } from "../rewindUi";
+import { nextRewindUiExpiry } from "../rewindUi.logic";
 import type { RewindDraft } from "@t3tools/contracts";
 import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
@@ -4278,13 +4279,34 @@ export default function ChatView({
   };
 
   // Confirmation happens in the revert popover. The trigger is disabled (with the
-  // reason) while the agent runs or a send is pending; these checks only guard
-  // against a stale click.
+  // reason) while the agent runs or a send is pending; these checks only catch a
+  // click that raced a state change, and say so rather than doing nothing.
   const onRevertUserMessage = useCallback(
-    async (messageId: MessageId, restoreFiles = false) => {
+    async (
+      messageId: MessageId,
+      restoreFiles = false,
+      expectedLatestMessageId: MessageId | null = null,
+    ) => {
       const api = readNativeApi();
-      if (!api || !activeThread || isRevertingCheckpoint) return;
-      if (hasPendingTurnDispatch || phase === "running" || isConnecting) return;
+      if (!api || !activeThread) return;
+      const blockedReason = isRevertingCheckpoint
+        ? "A revert is already in progress."
+        : hasPendingTurnDispatch
+          ? "Wait for the message to send, then try again."
+          : isConnecting
+            ? "Reconnecting to the server. Try again in a moment."
+            : phase === "running"
+              ? "Wait for the agent to finish, then try again."
+              : null;
+      if (blockedReason) {
+        toastManager.add({
+          type: "info",
+          title: "Couldn't revert yet",
+          description: blockedReason,
+          data: { threadId: activeThread.id },
+        });
+        return;
+      }
       const target = activeThread.messages.find((message) => message.id === messageId);
       if (!target || target.role !== "user") return;
 
@@ -4311,7 +4333,9 @@ export default function ChatView({
       });
       setIsDispatchingRevert(true);
       try {
-        const latestMessageId = activeThread.messages.at(-1)?.id;
+        // The tail the user saw when opening the confirmation, not the current one:
+        // anything that arrived while they were deciding must reject the revert.
+        const latestMessageId = expectedLatestMessageId ?? activeThread.messages.at(-1)?.id;
         await api.orchestration.dispatchCommand({
           type: "thread.conversation.revert",
           operationId,
@@ -6049,10 +6073,50 @@ export default function ChatView({
     ],
   );
   const onRevertUserMessageFromTimeline = useCallback(
-    (messageId: MessageId, restoreFiles?: boolean) =>
-      void onRevertUserMessage(messageId, restoreFiles ?? false),
+    (messageId: MessageId, restoreFiles?: boolean, expectedLatestMessageId?: MessageId | null) =>
+      void onRevertUserMessage(messageId, restoreFiles ?? false, expectedLatestMessageId ?? null),
     [onRevertUserMessage],
   );
+  const onRevertReopenHandled = useCallback(
+    (nonce: number) => {
+      if (activeThread) rewindUi.consumeReopen(activeThread.id, nonce);
+    },
+    [activeThread],
+  );
+  // Live events can be missed (reconnect, restart mid-rewind), so the pending
+  // and landed entries are re-checked against every snapshot of this thread,
+  // and once more when the oldest of them could go stale.
+  const [rewindReconcileTick, setRewindReconcileTick] = useState(0);
+  const rewindReconcileThreadId = activeThread?.id ?? null;
+  const rewindReconcileMessages = activeThread?.messages;
+  const rewindReconcileDrafts = activeThread?.rewindDrafts;
+  useEffect(() => {
+    // Nothing to check until there is something to clear.
+    if (!rewindReconcileThreadId || (!pendingRewind && !landedRewind)) return;
+    const now = Date.now();
+    rewindUi.reconcile(
+      {
+        threadId: rewindReconcileThreadId,
+        messageIds: new Set((rewindReconcileMessages ?? []).map((message) => message.id)),
+        drafts: (rewindReconcileDrafts ?? []).map((draft) => ({
+          operationId: draft.operationId,
+          inFlight: isRewindInFlight(draft),
+        })),
+      },
+      now,
+    );
+    const wait = nextRewindUiExpiry(useRewindUiStore.getState(), rewindReconcileThreadId, now);
+    if (wait === null) return;
+    const timer = window.setTimeout(() => setRewindReconcileTick((tick) => tick + 1), wait);
+    return () => window.clearTimeout(timer);
+  }, [
+    rewindReconcileThreadId,
+    rewindReconcileMessages,
+    rewindReconcileDrafts,
+    pendingRewind,
+    landedRewind,
+    rewindReconcileTick,
+  ]);
   const activeProviderLabel =
     PROVIDER_OPTIONS.find((option) => option.value === activeProvider)?.label ?? "This provider";
   const revertSupported = Boolean(
@@ -6072,9 +6136,13 @@ export default function ChatView({
   );
   const revertDisabledReason = !revertSupported
     ? `${activeProviderLabel} doesn't support revert`
-    : hasPendingTurnDispatch
+    : hasPendingTurnDispatch || isSendBusy
       ? "Wait for the message to send"
-      : null;
+      : isConnecting
+        ? "Reconnecting to the server"
+        : phase === "running"
+          ? "Stop the agent to revert"
+          : null;
   const pendingRevertDisplay = useMemo(() => {
     const target = pendingRewind
       ? { targetMessageId: pendingRewind.targetMessageId, restoreFiles: pendingRewind.restoreFiles }
@@ -6376,6 +6444,8 @@ export default function ChatView({
                   revertPreferenceKey={activeThread.projectId}
                   pendingRevert={pendingRevertDisplay}
                   revertReopenRequest={revertReopenRequest ?? null}
+                  onRevertReopenHandled={onRevertReopenHandled}
+                  latestMessageId={activeThread.messages.at(-1)?.id ?? null}
                   onImageExpand={onExpandTimelineImage}
                   onImageActionMenu={onImageActionMenu}
                   usesCustomImageContextMenu={usesCustomImageContextMenu}

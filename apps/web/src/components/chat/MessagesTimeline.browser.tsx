@@ -180,10 +180,17 @@ interface HarnessProps {
   onImageActionMenu?: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
   usesCustomImageContextMenu?: boolean;
   revertTurnCountByUserMessageId?: Map<MessageId, number>;
-  onRevertUserMessage?: (messageId: MessageId, restoreFiles?: boolean) => void;
+  onRevertUserMessage?: (
+    messageId: MessageId,
+    restoreFiles?: boolean,
+    expectedLatestMessageId?: MessageId | null,
+  ) => void;
   canRestoreFiles?: boolean;
   revertDisabledReason?: string | null;
   pendingRevert?: { targetMessageId: MessageId; label: string } | null;
+  revertReopenRequest?: { messageId: MessageId; restoreFiles: boolean; nonce: number } | null;
+  onRevertReopenHandled?: (nonce: number) => void;
+  latestMessageId?: MessageId | null;
 }
 
 interface TimelineHarnessApi {
@@ -276,6 +283,9 @@ function TimelineHarness(
           isRevertingCheckpoint={false}
           revertDisabledReason={props.revertDisabledReason ?? null}
           pendingRevert={props.pendingRevert ?? null}
+          revertReopenRequest={props.revertReopenRequest ?? null}
+          onRevertReopenHandled={props.onRevertReopenHandled}
+          latestMessageId={props.latestMessageId ?? null}
           onImageExpand={() => {}}
           onImageActionMenu={props.onImageActionMenu}
           usesCustomImageContextMenu={props.usesCustomImageContextMenu}
@@ -1350,7 +1360,85 @@ describe("MessagesTimeline (LegendList)", () => {
       await userEvent.keyboard("{Enter}");
       await vi.waitFor(() => {
         expect(onRevertUserMessage).toHaveBeenCalledTimes(1);
-        expect(onRevertUserMessage).toHaveBeenLastCalledWith(firstId, true);
+        expect(onRevertUserMessage).toHaveBeenLastCalledWith(firstId, true, null);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("sends the newest message seen when the popover opened, not when it was confirmed", async () => {
+    const messageId = "msg-revert-tail" as MessageId;
+    const seenTail = "msg-seen-tail" as MessageId;
+    const onRevertUserMessage = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const harness = (latestMessageId: MessageId) => (
+      <TimelineHarness
+        initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+        onRevertUserMessage={onRevertUserMessage}
+        latestMessageId={latestMessageId}
+      />
+    );
+    const screen = await render(harness(seenTail), { container: host });
+
+    try {
+      await page.getByRole("button", { name: "Revert to before this message" }).click();
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="revert-popover"]')).not.toBeNull();
+      });
+      // A message arrives while the user is still deciding.
+      await screen.rerender(harness("msg-arrived-later" as MessageId));
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() => {
+        expect(onRevertUserMessage).toHaveBeenCalledWith(messageId, false, seenTail);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("consumes a reopen request once, and drops it while revert is unavailable", async () => {
+    const messageId = "msg-revert-reopen" as MessageId;
+    const onRevertReopenHandled = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const request = { messageId, restoreFiles: false, nonce: 7 };
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+        revertReopenRequest={request}
+        onRevertReopenHandled={onRevertReopenHandled}
+        revertDisabledReason="Stop the agent to revert"
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(onRevertReopenHandled).toHaveBeenCalledWith(7);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(document.querySelector('[data-slot="revert-popover"]')).toBeNull();
+
+      await screen.rerender(
+        <TimelineHarness
+          initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
+          onIsAtEndChangeSpy={() => {}}
+          revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
+          revertReopenRequest={{ ...request, nonce: 8 }}
+          onRevertReopenHandled={onRevertReopenHandled}
+        />,
+      );
+      await vi.waitFor(() => {
+        expect(onRevertReopenHandled).toHaveBeenLastCalledWith(8);
+        expect(document.querySelector('[data-slot="revert-popover"]')).not.toBeNull();
       });
     } finally {
       await screen.unmount();

@@ -116,6 +116,7 @@ export function RewindDraftPanel({
       if (!placed) {
         const store = useComposerDraftStore.getState();
         const existing = store.draftsByThreadId[threadId];
+        const promptBeforeClone = existing?.prompt ?? "";
         const recoveredId = (id: string) => `rewind:${draft.operationId}:${id}`;
         const pendingAttachments = draft.attachments.filter(
           (attachment) =>
@@ -134,12 +135,19 @@ export function RewindDraftPanel({
             : [],
         );
         const failure = results.find((result) => result.status === "rejected");
-        if (failure?.status === "rejected") {
+        // The composer stays editable while attachments clone. Replacing text the
+        // user typed in the meantime would lose it without asking again.
+        const editedMeanwhile =
+          mode === "replace" &&
+          (useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "") !==
+            promptBeforeClone;
+        if (failure?.status === "rejected" || editedMeanwhile) {
           await api.attachments.releaseUploads({
             threadId,
             uploadIds: uploads.map((upload) => upload.uploadId),
           });
-          throw failure.reason;
+          if (failure?.status === "rejected") throw failure.reason;
+          throw new Error("The composer changed while the prompt was loading. Choose again.");
         }
         useComposerDraftStore
           .getState()
@@ -244,7 +252,13 @@ export function RewindDraftPanel({
   if (resolved) return null;
   const StateIcon = TONE_ICON[copy.tone];
   const disabled = busy || !actionsReady;
-  const waitingTitle = actionsReady ? undefined : "Saving your prompt…";
+  // Attachments are always added, never swapped: dropping the user's own
+  // attachments silently would be worse than an extra one to remove.
+  const placeTitle = !actionsReady
+    ? "Saving your prompt…"
+    : attachments.length > 0
+      ? "Its attachments are added alongside any already in the composer."
+      : undefined;
   const isLongText =
     text.length > PREVIEW_CLAMP_CHARACTERS || text.split("\n").length > PREVIEW_CLAMP_LINES;
 
@@ -285,7 +299,7 @@ export function RewindDraftPanel({
                   size="xs"
                   className="rounded-r-none"
                   disabled={disabled}
-                  title={waitingTitle}
+                  title={placeTitle}
                   onClick={() => void placeInComposer("replace")}
                 >
                   Replace composer text
@@ -314,7 +328,7 @@ export function RewindDraftPanel({
               <Button
                 size="xs"
                 disabled={disabled}
-                title={waitingTitle}
+                title={placeTitle}
                 onClick={() => void placeInComposer("replace")}
               >
                 Edit in composer

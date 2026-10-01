@@ -64,7 +64,7 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
     case "reconciliation_required":
       return "Queue paused until the unfinished rewind is resolved.";
     case "thread_reverted":
-      return "Queue paused: these were queued before the revert. Review, then resume.";
+      return "Queue paused after a revert. Review the queued prompts, then resume.";
     case "thread_compacting":
       return "Waiting for conversation compaction to finish.";
     case "thread_compacted":

@@ -69,6 +69,21 @@ describe("withoutSettledRewindFailures", () => {
     ]);
   });
 
+  it("keeps only the newest failure when the rewind never started", () => {
+    const preflight = (detail: string) => ({
+      kind: "conversation.rewind.failed",
+      payload: { detail, operationId: "gone", stage: "preflight" },
+    });
+    const older = preflight("older");
+    const newest = preflight("newest");
+    expect(withoutSettledRewindFailures([older, other, newest], new Set())).toEqual([
+      other,
+      newest,
+    ]);
+    // A later non-preflight failure supersedes it.
+    expect(withoutSettledRewindFailures([newest, failure("settled")], new Set())).toEqual([]);
+  });
+
   it("returns the same array when nothing is dropped", () => {
     const activities = [other, failure("open")];
     expect(withoutSettledRewindFailures(activities, new Set(["open"]))).toBe(activities);

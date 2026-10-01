@@ -55,6 +55,9 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
 }: UserMessageRevertPopoverProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [restoreFiles, setRestoreFiles] = useState(false);
+  // Only an explicit pick is remembered. A forced "keep" (no worktree) or a
+  // preset from a toast is not the user's preference for the project.
+  const userChoseRef = useRef(false);
   const disabled = disabledReason !== null;
   const effectiveRestoreFiles = canRestoreFiles && restoreFiles;
 
@@ -62,11 +65,12 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
   // opens. Layout effect so the first painted frame already shows it.
   useLayoutEffect(() => {
     if (!open) return;
+    userChoseRef.current = false;
     setRestoreFiles(presetRestoreFiles ?? readRestoreFilesPreference(preferenceKey));
   }, [open, presetRestoreFiles, preferenceKey]);
 
   const confirm = () => {
-    writeRestoreFilesPreference(preferenceKey, effectiveRestoreFiles);
+    if (userChoseRef.current) writeRestoreFilesPreference(preferenceKey, effectiveRestoreFiles);
     onOpenChange(false);
     onConfirm(effectiveRestoreFiles);
   };
@@ -144,8 +148,13 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
               value={[effectiveRestoreFiles ? "restore" : "keep"]}
               onValueChange={(value) => {
                 const next = value[0];
-                if (next === "keep") setRestoreFiles(false);
-                else if (next === "restore" && canRestoreFiles) setRestoreFiles(true);
+                if (next === "keep") {
+                  userChoseRef.current = true;
+                  setRestoreFiles(false);
+                } else if (next === "restore" && canRestoreFiles) {
+                  userChoseRef.current = true;
+                  setRestoreFiles(true);
+                }
               }}
             >
               <Toggle value="keep">Keep my files</Toggle>

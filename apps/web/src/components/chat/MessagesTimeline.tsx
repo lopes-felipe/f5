@@ -186,7 +186,16 @@ interface MessagesTimelineProps {
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
-  onRevertUserMessage: (messageId: MessageId, restoreFiles?: boolean) => void;
+  onRevertUserMessage: (
+    messageId: MessageId,
+    restoreFiles?: boolean,
+    /** The newest message when the user opened the confirmation. */
+    expectedLatestMessageId?: MessageId | null,
+  ) => void;
+  /** The thread's newest message, captured when the revert popover opens. */
+  latestMessageId?: MessageId | null | undefined;
+  /** Called once a reopen request has been seen, so it is never replayed. */
+  onRevertReopenHandled?: ((nonce: number) => void) | undefined;
   canRestoreFiles?: boolean | undefined;
   /** True while a revert of this thread is being dispatched or is still running. */
   isRevertingCheckpoint: boolean;
@@ -301,6 +310,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   revertPreferenceKey,
   pendingRevert = null,
   revertReopenRequest = null,
+  latestMessageId = null,
+  onRevertReopenHandled,
   onImageExpand,
   onImageActionMenu,
   usesCustomImageContextMenu = false,
@@ -744,6 +755,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [revertPopover, setRevertPopover] = useState<{
     messageId: MessageId;
     presetRestoreFiles?: boolean;
+    /**
+     * The thread's newest message when the popover opened. The server rejects
+     * the revert if anything arrived after it, so the user never removes
+     * messages they did not see while deciding.
+     */
+    expectedLatestMessageId: MessageId | null;
   } | null>(null);
   const timelineMessages = useMemo(
     () => timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
@@ -756,11 +773,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         : null,
     [revertPopover, timelineMessages, turnDiffSummaryByTurnId],
   );
+  // The parent knows the specific reason (sending, connecting, agent running);
+  // `isWorking` is only a fallback for callers that don't pass one.
   const effectiveRevertDisabledReason = isRevertingCheckpoint
     ? "A revert is already in progress"
-    : isWorking
-      ? "Stop the agent to revert"
-      : revertDisabledReason;
+    : (revertDisabledReason ?? (isWorking ? "Wait for the agent to finish to revert" : null));
   const revertDimMessageId = pendingRevert?.targetMessageId ?? revertPopover?.messageId ?? null;
   const revertDimFromRowIndex = useMemo(
     () =>
@@ -769,11 +786,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         : rows.findIndex((row) => row.kind === "message" && row.message.id === revertDimMessageId),
     [revertDimMessageId, rows],
   );
-  const lastRevertReopenNonceRef = useRef<number | null>(null);
+  // A reopen request is consumed as soon as it is seen, so remounting the
+  // timeline (thread switch) can never replay it. It is dropped, not deferred,
+  // when revert is unavailable: opening later, unprompted, would be a surprise.
   useEffect(() => {
-    if (!revertReopenRequest || revertReopenRequest.nonce === lastRevertReopenNonceRef.current)
-      return;
-    lastRevertReopenNonceRef.current = revertReopenRequest.nonce;
+    if (!revertReopenRequest) return;
+    onRevertReopenHandled?.(revertReopenRequest.nonce);
+    if (effectiveRevertDisabledReason !== null) return;
     const rowIndex = rows.findIndex(
       (row) => row.kind === "message" && row.message.id === revertReopenRequest.messageId,
     );
@@ -782,8 +801,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     setRevertPopover({
       messageId: revertReopenRequest.messageId,
       presetRestoreFiles: revertReopenRequest.restoreFiles,
+      expectedLatestMessageId: latestMessageId,
     });
-  }, [navigateToTimelineRow, revertReopenRequest, rows]);
+    // Keyed on the nonce alone: only a new request should trigger this, and the
+    // other inputs are deliberately read as of that moment.
+  }, [revertReopenRequest?.nonce]);
   // A popover whose message disappeared (reverted, thread switched) must not linger.
   useEffect(() => {
     if (revertPopover && !timelineMessages.some((m) => m.id === revertPopover.messageId))
@@ -1141,7 +1163,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                       onOpenChange={(open) =>
                         setRevertPopover((current) =>
                           open
-                            ? { messageId: row.message.id }
+                            ? {
+                                messageId: row.message.id,
+                                expectedLatestMessageId: latestMessageId,
+                              }
                             : current?.messageId === row.message.id
                               ? null
                               : current,
@@ -1157,7 +1182,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                       }
                       preferenceKey={revertPreferenceKey}
                       onConfirm={(restoreFiles) =>
-                        onRevertUserMessage(row.message.id, restoreFiles)
+                        onRevertUserMessage(
+                          row.message.id,
+                          restoreFiles,
+                          revertPopover?.messageId === row.message.id
+                            ? revertPopover.expectedLatestMessageId
+                            : latestMessageId,
+                        )
                       }
                     />
                   )}

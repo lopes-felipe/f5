@@ -10,6 +10,10 @@ import { describe, expect, it } from "vitest";
 import {
   applyRewindUiEvent,
   EMPTY_REWIND_UI_STATE,
+  LANDED_REWIND_STALE_MS,
+  nextRewindUiExpiry,
+  PENDING_REWIND_STALE_MS,
+  reconcileRewindUi,
   type PendingRewind,
   type RewindUiState,
 } from "./rewindUi.logic";
@@ -195,5 +199,90 @@ describe("applyRewindUiEvent", () => {
       noPrompt,
     );
     expect(result.state.pendingByThreadId[threadId]).toBe(pending);
+  });
+});
+
+describe("reconcileRewindUi", () => {
+  const requestedAt = Date.parse(pending.requestedAt);
+  const snapshot = (
+    overrides: Partial<{
+      messageIds: ReadonlySet<string>;
+      drafts: ReadonlyArray<{ operationId: string; inFlight: boolean }>;
+    }> = {},
+  ) => ({
+    threadId,
+    messageIds: new Set<string>([targetMessageId]),
+    drafts: [],
+    ...overrides,
+  });
+
+  it("leaves a fresh revert alone while the server has not caught up", () => {
+    expect(reconcileRewindUi(withPending, snapshot(), requestedAt + 1_000)).toBe(withPending);
+  });
+
+  it("treats a pruned target as a landed revert whose event was missed", () => {
+    const next = reconcileRewindUi(
+      withPending,
+      snapshot({ messageIds: new Set() }),
+      requestedAt + 1_000,
+    );
+    expect(next.pendingByThreadId[threadId]).toBeUndefined();
+    expect(next.landedByThreadId[threadId]).toMatchObject({ operationId });
+  });
+
+  it("stops showing progress once the snapshot parks the rewind on an error", () => {
+    const next = reconcileRewindUi(
+      withPending,
+      snapshot({ drafts: [{ operationId, inFlight: false }] }),
+      requestedAt + 1_000,
+    );
+    expect(next.pendingByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("keeps a revert the server is still working on, however long it takes", () => {
+    const state = reconcileRewindUi(
+      withPending,
+      snapshot({ drafts: [{ operationId, inFlight: true }] }),
+      requestedAt + PENDING_REWIND_STALE_MS * 2,
+    );
+    expect(state).toBe(withPending);
+  });
+
+  it("drops a pending revert that left no trace after the server's timeout", () => {
+    const next = reconcileRewindUi(
+      withPending,
+      snapshot(),
+      requestedAt + PENDING_REWIND_STALE_MS + 1,
+    );
+    expect(next.pendingByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("drops a landed revert once its draft arrives or it was resolved unseen", () => {
+    const landedAt = "2026-10-01T10:00:00.000Z";
+    const landedState: RewindUiState = {
+      ...EMPTY_REWIND_UI_STATE,
+      landedByThreadId: { [threadId]: { ...pending, landedAt } },
+    };
+    expect(
+      reconcileRewindUi(
+        landedState,
+        snapshot({ drafts: [{ operationId, inFlight: false }] }),
+        Date.parse(landedAt) + 1_000,
+      ).landedByThreadId,
+    ).toEqual({});
+    expect(reconcileRewindUi(landedState, snapshot(), Date.parse(landedAt) + 1_000)).toBe(
+      landedState,
+    );
+    expect(
+      reconcileRewindUi(landedState, snapshot(), Date.parse(landedAt) + LANDED_REWIND_STALE_MS + 1)
+        .landedByThreadId,
+    ).toEqual({});
+  });
+
+  it("schedules the next check for the earliest deadline", () => {
+    expect(nextRewindUiExpiry(EMPTY_REWIND_UI_STATE, threadId, 0)).toBeNull();
+    expect(nextRewindUiExpiry(withPending, threadId, requestedAt + 5_000)).toBe(
+      PENDING_REWIND_STALE_MS - 5_000 + 1,
+    );
   });
 });
