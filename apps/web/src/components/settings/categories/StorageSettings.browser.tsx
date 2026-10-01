@@ -232,9 +232,14 @@ function createNativeApiMock(
       ],
     }),
   );
+  // Deep-merges storageCleanup like the server, since the UI sends only changed fields.
   const updateSettings = vi.fn(async (patch: Record<string, unknown>) => ({
     ...DEFAULT_SERVER_SETTINGS,
     ...patch,
+    storageCleanup: {
+      ...DEFAULT_SERVER_SETTINGS.storageCleanup,
+      ...(patch.storageCleanup as object | undefined),
+    },
   }));
 
   nativeApiRef.current = {
@@ -320,7 +325,7 @@ describe("StorageSettings", () => {
       await page.getByRole("switch", { name: "Automatic storage cleanup" }).click();
       await vi.waitFor(() =>
         expect(nativeApi.updateSettings).toHaveBeenCalledWith({
-          storageCleanup: expect.objectContaining({ enabled: true }),
+          storageCleanup: { enabled: true },
         }),
       );
 
@@ -352,7 +357,7 @@ describe("StorageSettings", () => {
       pressEnter(input.element());
       await vi.waitFor(() =>
         expect(nativeApi.updateSettings).toHaveBeenCalledWith({
-          storageCleanup: expect.objectContaining({ previewArtifactRetentionDays: 14 }),
+          storageCleanup: { previewArtifactRetentionDays: 14 },
         }),
       );
     } finally {

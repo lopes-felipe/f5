@@ -56,7 +56,8 @@ would skip. **Recent activity** shows what ran, kept for 90 days. Entries name w
 to the worktrees directory.
 
 **Keep preview screenshots and recordings for** sets how long the desktop app keeps preview
-artifacts. Empty keeps the 7-day default.
+artifacts. Empty keeps the 7-day default. Profiles share one artifact folder, so the longest
+retention any profile sets applies.
 
 ## Auto-pull default branches
 

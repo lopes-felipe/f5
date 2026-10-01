@@ -1,12 +1,13 @@
 import type {
+  ServerSettingsPatch,
   StorageAutomationAuditEntry,
   StorageAutomationTarget,
-  StorageCleanupSettings,
 } from "@t3tools/contracts";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2Icon } from "lucide-react";
 
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
 import { Button } from "../ui/button";
 import { Switch } from "../ui/switch";
@@ -46,6 +47,7 @@ export function StorageAutomationSettings() {
   const storageCleanup = useSettings((settings) => settings.storageCleanup);
   const autoPullDefaultBranch = useSettings((settings) => settings.autoPullDefaultBranch);
   const { updateSettings } = useUpdateSettings();
+  const queryClient = useQueryClient();
 
   const save = (patch: Parameters<typeof updateSettings>[0]) =>
     void updateSettings(patch).catch((error: unknown) =>
@@ -55,8 +57,23 @@ export function StorageAutomationSettings() {
         description: errorMessage(error),
       }),
     );
-  const saveCleanup = (next: Partial<StorageCleanupSettings>) =>
-    save({ storageCleanup: { ...storageCleanup, ...next } });
+  // Send only the changed fields; the server deep-merges them. Spreading the
+  // rendered `storageCleanup` would let a second quick edit revert the first.
+  const saveCleanup = (next: NonNullable<ServerSettingsPatch["storageCleanup"]>) =>
+    void ensureNativeApi()
+      .server.updateSettings({ storageCleanup: next })
+      .then((settings) =>
+        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+          existing ? { ...existing, settings } : existing,
+        ),
+      )
+      .catch((error: unknown) =>
+        toastManager.add({
+          type: "error",
+          title: "Could not save storage automation",
+          description: errorMessage(error),
+        }),
+      );
 
   const dryRun = useMutation({
     mutationFn: () => ensureNativeApi().storage.automationDryRun(),

@@ -19,6 +19,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RETENTION_MS = 7 * DAY_MS;
 /** Remembers the configured retention so startup expiry does not fall back to the default. */
 const RETENTION_FILE = ".retention.json";
+
+function isValidRetentionDays(days: unknown): days is number {
+  return typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 3650;
+}
 const SCREENSHOT_MAX_BYTES = 25 * 1024 * 1024;
 const RECORDING_MAX_BYTES = 250 * 1024 * 1024;
 const RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
@@ -74,6 +78,8 @@ export class PreviewArtifactStore {
   readonly #quotaBytes: number;
   #retentionMs: number;
   readonly #retentionFromOptions: boolean;
+  /** Retention days requested by each profile; null means the default. */
+  readonly #retentionByScope = new Map<string, number | null>();
   readonly #now: () => number;
   readonly #recordings = new Map<string, RecordingEntry>();
   #quotaOperationTail: Promise<void> = Promise.resolve();
@@ -87,17 +93,36 @@ export class PreviewArtifactStore {
   }
 
   /**
-   * Screenshot and recording retention from the storage settings. Null
-   * restores the built-in default. Expired artifacts are removed right away.
+   * Screenshot and recording retention from one profile's storage settings.
+   * Null means that profile uses the built-in default. Artifacts are shared
+   * by every profile, so the longest retention any profile asked for applies:
+   * one profile's setting never expires artifacts another still keeps.
+   * Expired artifacts are removed right away.
    */
-  async setRetention(days: number | null): Promise<void> {
-    if (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)) {
+  async setRetention(scope: string, days: number | null): Promise<void> {
+    if (days !== null && !isValidRetentionDays(days)) {
       throw new Error("Preview artifact retention must be between 1 and 3650 days.");
     }
-    this.#retentionMs = days === null ? DEFAULT_RETENTION_MS : days * DAY_MS;
+    this.#retentionByScope.set(scope, days);
+    this.#applyRetention();
     await mkdir(this.#directory, { recursive: true });
-    await writeFile(path.join(this.#directory, RETENTION_FILE), JSON.stringify({ days }));
+    await writeFile(
+      path.join(this.#directory, RETENTION_FILE),
+      JSON.stringify({ byScope: Object.fromEntries(this.#retentionByScope) }),
+    );
     await this.#removeExpiredArtifacts();
+  }
+
+  #applyRetention(): void {
+    if (this.#retentionByScope.size === 0) {
+      this.#retentionMs = DEFAULT_RETENTION_MS;
+      return;
+    }
+    let longest = 0;
+    for (const days of this.#retentionByScope.values()) {
+      longest = Math.max(longest, days === null ? DEFAULT_RETENTION_MS : days * DAY_MS);
+    }
+    this.#retentionMs = longest;
   }
 
   async #loadSavedRetention(): Promise<void> {
@@ -105,15 +130,17 @@ export class PreviewArtifactStore {
       () => null,
     );
     if (raw === null) return;
-    let days: unknown = null;
+    let byScope: unknown = null;
     try {
-      days = (JSON.parse(raw) as { days?: unknown }).days;
+      byScope = (JSON.parse(raw) as { byScope?: unknown }).byScope;
     } catch {
       return;
     }
-    if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 3650) {
-      this.#retentionMs = days * DAY_MS;
+    if (typeof byScope !== "object" || byScope === null) return;
+    for (const [scope, days] of Object.entries(byScope)) {
+      if (days === null || isValidRetentionDays(days)) this.#retentionByScope.set(scope, days);
     }
+    this.#applyRetention();
   }
 
   async initialize(): Promise<void> {

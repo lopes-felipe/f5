@@ -2949,7 +2949,11 @@ describe("WebSocket Server", () => {
     );
   });
 
-  describe("first sends through nextTurnQueue.submit", () => {
+  // Each case starts one or two real servers and real Git worktrees, which can
+  // exceed the 15 s default on loaded CI runners.
+  describe("first sends through nextTurnQueue.submit", { timeout: 90_000 }, () => {
+    /** How long to wait for background setup or a turn on a slow runner. */
+    const SLOW_WAIT = { timeout: 30_000 } as const;
     function makeGitRepo(prefix: string): string {
       const repo = makeTempDir(prefix);
       const git = (...args: string[]) =>
@@ -3004,7 +3008,7 @@ describe("WebSocket Server", () => {
       ws: WebSocket,
       threadId: string,
       predicate: (snapshot: WorktreeSetupSnapshot | null) => boolean,
-      timeoutMs = 10_000,
+      timeoutMs = SLOW_WAIT.timeout,
     ): Promise<WorktreeSetupSnapshot | null> {
       const deadline = Date.now() + timeoutMs;
       for (;;) {
@@ -3109,19 +3113,10 @@ describe("WebSocket Server", () => {
               intent: "auto",
             });
       expect(response.error).toBeUndefined();
-      await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
-      const readThread = async () =>
-        (
-          (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
-            .result as OrchestrationReadModel
-        ).threads.find((entry) => entry.id === threadId);
-      // The title derived from the first message lands asynchronously; compare
-      // both routes after it settles rather than racing it under load.
-      let thread = await readThread();
-      for (let attempt = 0; thread?.title === "New thread" && attempt < 50; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        thread = await readThread();
-      }
+      await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+      const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
+        .result as OrchestrationReadModel;
+      const thread = snapshot.threads.find((entry) => entry.id === threadId);
       const worktreesDir = path.join(path.dirname(stateDir), "worktrees");
       const relative = (value: string | null | undefined) =>
         value == null
@@ -3132,7 +3127,8 @@ describe("WebSocket Server", () => {
               ? "<repo>"
               : value;
       const outcome = {
-        title: thread?.title,
+        // The title is left out: it is renamed later by title generation, whose
+        // timing depends on the environment and not on the bootstrap route.
         branch: thread?.branch,
         worktreePath: relative(thread?.worktreePath),
         worktreeExists: thread?.worktreePath ? fs.existsSync(thread.worktreePath) : null,
@@ -3168,7 +3164,7 @@ describe("WebSocket Server", () => {
             submissionId: "command-first-send-turn",
           }),
         );
-        await vi.waitFor(() => expect(queued.setup).not.toBeNull());
+        await vi.waitFor(() => expect(queued.setup).not.toBeNull(), SLOW_WAIT);
         expect(queued.setup?.stages.find((stage) => stage.id === "setup-script")?.status).toBe(
           variant.setupScript ? "done" : "skipped",
         );
@@ -3245,7 +3241,7 @@ describe("WebSocket Server", () => {
       expect(first.error).toBeUndefined();
       expect(second.result).toEqual(first.result);
       expect(third.result).toEqual(first.result);
-      await vi.waitFor(() => expect(sentTurns).toHaveLength(1));
+      await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
       const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
         .result as OrchestrationReadModel;
       expect(snapshot.threads.filter((entry) => entry.id === "thread-replay")).toHaveLength(1);
@@ -3426,7 +3422,7 @@ describe("WebSocket Server", () => {
           threadId: "thread-fail",
         });
         expect(local.error).toBeUndefined();
-        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
         const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
           .result as OrchestrationReadModel;
         expect(
@@ -3454,13 +3450,40 @@ describe("WebSocket Server", () => {
         expect(retried.error).toBeUndefined();
         const done = await waitForSetup(ws, "thread-retry", (entry) => entry?.phase === "done");
         expect(done?.agentStarted).toBe(true);
-        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), { timeout: 10_000 });
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
         expect(sentTurns[0]?.threadId).toBe("thread-retry");
         const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
           .result as OrchestrationReadModel;
         const thread = snapshot.threads.find((entry) => entry.id === "thread-retry");
         expect(thread?.worktreePath).toBe(done?.worktreePath);
         expect(thread?.branch).toBe("f5/thread-retry");
+      });
+
+      it("refuses to discard or work locally once the agent started in the worktree", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-started-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, sentTurns });
+        await createProject(ws, repo);
+        await sendRequest(
+          ws,
+          WS_METHODS.nextTurnQueueSubmit,
+          firstSend({ repo, threadId: "thread-started" }),
+        );
+        const done = await waitForSetup(ws, "thread-started", (entry) => entry?.phase === "done");
+        expect(done?.agentStarted).toBe(true);
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+
+        // The tree is clean, so only the agent-started guard keeps it.
+        const discarded = await sendRequest(ws, WS_METHODS.worktreeSetupCancel, {
+          threadId: "thread-started",
+        });
+        expect(discarded.error?.message).toContain("agent already started");
+        const local = await sendRequest(ws, WS_METHODS.worktreeSetupWorkLocally, {
+          threadId: "thread-started",
+        });
+        expect(local.error?.message).toContain("agent already started");
+        expect(fs.existsSync(done!.worktreePath!)).toBe(true);
+        expect(branchExists(repo, "f5/thread-started")).toBe(true);
       });
 
       it("fans one prompt out to three models in three separate worktrees", async () => {
@@ -3485,7 +3508,7 @@ describe("WebSocket Server", () => {
         for (const response of responses) {
           expect(response.result).toEqual(expect.objectContaining({ disposition: "queued" }));
         }
-        await vi.waitFor(() => expect(sentTurns).toHaveLength(3), { timeout: 15_000 });
+        await vi.waitFor(() => expect(sentTurns).toHaveLength(3), SLOW_WAIT);
         const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
           .result as OrchestrationReadModel;
         const worktrees = threadIds.map(

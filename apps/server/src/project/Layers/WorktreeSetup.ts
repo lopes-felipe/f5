@@ -681,6 +681,9 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         }
       }
 
+      // Read the first turn's command id before the handoff: once the gate
+      // opens, delivery can start the turn and delete its queue row.
+      const commandId = (yield* queueItem(tracked.get(threadId)!.snapshot))?.command.commandId;
       // Hand off to the queue. The gate opens atomically with the durable token.
       yield* Effect.uninterruptible(
         Effect.gen(function* () {
@@ -694,7 +697,6 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         }),
       );
 
-      const commandId = (yield* queueItem(tracked.get(threadId)!.snapshot))?.command.commandId;
       while (true) {
         const current = tracked.get(threadId)?.snapshot;
         if (!current) return;
@@ -770,6 +772,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             const claims = yield* readWorktreeClaims(worktreePath).pipe(
               Effect.provideServices(services),
             );
+            // foreignClaims ignores this thread's own session, but an agent
+            // that started without writing files still needs its worktree.
+            if (claims.sessions.some((session) => session.threadId === snapshot.threadId)) {
+              return { kept: "Setup cancelled; worktree kept because the agent session uses it." };
+            }
             const foreign = foreignClaims(claims, snapshot.threadId);
             if (foreign.length > 0) {
               return { kept: `Setup cancelled; worktree kept because ${foreign.join(", ")}.` };
@@ -974,6 +981,14 @@ export const makeWorktreeSetup = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = entry.snapshot;
       const threadId = snapshot.threadId;
+      const queued = yield* queueItem(snapshot);
+      if (
+        snapshot.agentStarted ||
+        (queued !== null && (yield* isTurnAccepted(queued.command.commandId)))
+      ) {
+        // The worktree belongs to a running or finished turn now.
+        return yield* failFor("The agent already started in this worktree; stop the turn instead.");
+      }
       const released = yield* releaseCreated(snapshot);
       const item = yield* queueItem(snapshot);
       if (item) {
@@ -1138,7 +1153,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       if (entry.snapshot.agentStarted) {
         return yield* failFor("The agent already started in the worktree.");
       }
-      if ((yield* queueItem(entry.snapshot)) === null) {
+      const queued = yield* queueItem(entry.snapshot);
+      if (queued === null) {
         return yield* failFor("The queued first turn is gone; send the message again.");
       }
       yield* store
@@ -1151,6 +1167,16 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         .pipe(Effect.ignoreCause({ log: true }));
       yield* gate.unregister(threadId, entry.snapshot.operationId);
       yield* stopRunning(entry);
+      if (yield* isTurnAccepted(queued.command.commandId)) {
+        // The handoff won the race: the agent is running in the worktree, so
+        // keep it and leave the queue running.
+        yield* store.setPaused({ threadId, paused: false }).pipe(Effect.ignoreCause({ log: true }));
+        yield* commit(threadId, (current) => ({
+          ...settle(current, "done", null),
+          agentStarted: true,
+        }));
+        return yield* failFor("The agent already started in the worktree.");
+      }
       const released = yield* releaseCreated(entry.snapshot);
       const local = yield* git.statusDetails(entry.snapshot.request.projectCwd).pipe(
         Effect.map((status) => status.branch),

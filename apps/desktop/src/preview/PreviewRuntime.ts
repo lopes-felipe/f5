@@ -71,8 +71,9 @@ export class PreviewRuntime {
     return this.#artifactStore.initialize();
   }
 
-  setArtifactRetention(days: number | null): Promise<void> {
-    return this.#artifactStore.setRetention(days);
+  /** Records one profile's retention; the longest across profiles applies. */
+  setArtifactRetention(profileId: string, days: number | null): Promise<void> {
+    return this.#artifactStore.setRetention(profileId, days);
   }
 
   ensureTab(tabId: unknown): PreviewTabEntry | null {
