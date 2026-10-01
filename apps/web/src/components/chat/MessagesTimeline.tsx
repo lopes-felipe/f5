@@ -38,6 +38,7 @@ import {
   GlobeIcon,
   HammerIcon,
   ImageIcon,
+  LoaderCircleIcon,
   type LucideIcon,
   SearchIcon,
   SquarePenIcon,
@@ -56,7 +57,8 @@ import { CommandTranscriptCard } from "./CommandTranscriptCard";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
-import { UserMessageRevertMenu } from "./UserMessageRevertMenu";
+import { UserMessageRevertPopover } from "./UserMessageRevertPopover";
+import { computeRevertImpact } from "./revertImpact";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import {
   buildTimelineEntryRowIndexMap,
@@ -186,7 +188,19 @@ interface MessagesTimelineProps {
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId, restoreFiles?: boolean) => void;
   canRestoreFiles?: boolean | undefined;
+  /** True while a revert of this thread is being dispatched or is still running. */
   isRevertingCheckpoint: boolean;
+  /** Why revert is unavailable (agent running, pending send, unsupported provider). */
+  revertDisabledReason?: string | null | undefined;
+  /** Scope for remembering the revert popover's files choice. */
+  revertPreferenceKey?: string | undefined;
+  /**
+   * The revert that is currently running. Rows from its target onward stay
+   * dimmed and a status pill marks where the conversation will end.
+   */
+  pendingRevert?: PendingRevertDisplay | null | undefined;
+  /** Opens the revert popover for a message, e.g. from a failure toast. */
+  revertReopenRequest?: RevertReopenRequest | null | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onImageActionMenu?:
     | ((item: ImageAttachmentActionItem, position: { x: number; y: number }) => void)
@@ -213,6 +227,18 @@ interface MessagesTimelineProps {
    */
   listHeaderContent?: ReactNode;
   chatDiffContext?: ChatDiffContext;
+}
+
+export interface PendingRevertDisplay {
+  targetMessageId: MessageId;
+  label: string;
+}
+
+export interface RevertReopenRequest {
+  messageId: MessageId;
+  restoreFiles: boolean;
+  /** Changes on every request so asking twice for the same message reopens it. */
+  nonce: number;
 }
 
 export interface ChatDiffContext {
@@ -271,6 +297,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onRevertUserMessage,
   canRestoreFiles,
   isRevertingCheckpoint,
+  revertDisabledReason = null,
+  revertPreferenceKey,
+  pendingRevert = null,
+  revertReopenRequest = null,
   onImageExpand,
   onImageActionMenu,
   usesCustomImageContextMenu = false,
@@ -709,6 +739,57 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const keyExtractor = useCallback((row: TimelineRow) => row.id, []);
 
+  // Revert popover state lives here, not in the row: LegendList recycles rows,
+  // and the timeline also dims everything the open popover would remove.
+  const [revertPopover, setRevertPopover] = useState<{
+    messageId: MessageId;
+    presetRestoreFiles?: boolean;
+  } | null>(null);
+  const timelineMessages = useMemo(
+    () => timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    [timelineEntries],
+  );
+  const revertImpact = useMemo(
+    () =>
+      revertPopover
+        ? computeRevertImpact(timelineMessages, revertPopover.messageId, turnDiffSummaryByTurnId)
+        : null,
+    [revertPopover, timelineMessages, turnDiffSummaryByTurnId],
+  );
+  const effectiveRevertDisabledReason = isRevertingCheckpoint
+    ? "A revert is already in progress"
+    : isWorking
+      ? "Stop the agent to revert"
+      : revertDisabledReason;
+  const revertDimMessageId = pendingRevert?.targetMessageId ?? revertPopover?.messageId ?? null;
+  const revertDimFromRowIndex = useMemo(
+    () =>
+      revertDimMessageId === null
+        ? -1
+        : rows.findIndex((row) => row.kind === "message" && row.message.id === revertDimMessageId),
+    [revertDimMessageId, rows],
+  );
+  const lastRevertReopenNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!revertReopenRequest || revertReopenRequest.nonce === lastRevertReopenNonceRef.current)
+      return;
+    lastRevertReopenNonceRef.current = revertReopenRequest.nonce;
+    const rowIndex = rows.findIndex(
+      (row) => row.kind === "message" && row.message.id === revertReopenRequest.messageId,
+    );
+    if (rowIndex < 0) return;
+    navigateToTimelineRow(rowIndex, 0.3);
+    setRevertPopover({
+      messageId: revertReopenRequest.messageId,
+      presetRestoreFiles: revertReopenRequest.restoreFiles,
+    });
+  }, [navigateToTimelineRow, revertReopenRequest, rows]);
+  // A popover whose message disappeared (reverted, thread switched) must not linger.
+  useEffect(() => {
+    if (revertPopover && !timelineMessages.some((m) => m.id === revertPopover.messageId))
+      setRevertPopover(null);
+  }, [revertPopover, timelineMessages]);
+
   // NOTE: This closure depends on many callbacks/state slices from props (see
   // ChatView's `<MessagesTimeline … />` wiring), so memoizing it via
   // useCallback would require a long dependency list that changes every render
@@ -731,12 +812,26 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       allDirectoriesExpanded,
       nowIso,
       revertTurnCountByUserMessageId,
+      canRestoreFiles,
+      effectiveRevertDisabledReason,
+      revertPopover,
+      revertImpact,
+      revertDimFromRowIndex,
+      pendingRevert,
+      revertPreferenceKey,
       turnDiffSummaryByAssistantMessageId,
       turnDiffSummaryByTurnId,
       changedFilesPresentationOverrides,
       newestTurnDiffId,
     ],
     [
+      canRestoreFiles,
+      effectiveRevertDisabledReason,
+      revertPopover,
+      revertImpact,
+      revertDimFromRowIndex,
+      pendingRevert,
+      revertPreferenceKey,
       allDirectoriesExpanded,
       chatDiffContext,
       expandedCommandExecutions,
@@ -1041,13 +1136,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     <MessageCopyButton text={displayedUserMessage.copyText} />
                   )}
                   {canRevertAgentWork && (
-                    <UserMessageRevertMenu
-                      disabled={isRevertingCheckpoint || isWorking}
+                    <UserMessageRevertPopover
+                      open={revertPopover?.messageId === row.message.id}
+                      onOpenChange={(open) =>
+                        setRevertPopover((current) =>
+                          open
+                            ? { messageId: row.message.id }
+                            : current?.messageId === row.message.id
+                              ? null
+                              : current,
+                        )
+                      }
+                      disabledReason={effectiveRevertDisabledReason}
                       canRestoreFiles={canRestoreFiles === true}
-                      onRevert={(restoreFiles) =>
-                        restoreFiles
-                          ? onRevertUserMessage(row.message.id, true)
-                          : onRevertUserMessage(row.message.id)
+                      impact={revertPopover?.messageId === row.message.id ? revertImpact : null}
+                      presetRestoreFiles={
+                        revertPopover?.messageId === row.message.id
+                          ? revertPopover.presetRestoreFiles
+                          : undefined
+                      }
+                      preferenceKey={revertPreferenceKey}
+                      onConfirm={(restoreFiles) =>
+                        onRevertUserMessage(row.message.id, restoreFiles)
                       }
                     />
                   )}
@@ -1276,11 +1386,30 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // current closure (expansion state, callbacks, nowIso, …), so wrapping this
   // in useCallback with a dependency list that changes every render would be
   // dead weight. LegendList handles cell-level reuse itself.
-  const renderItem = ({ item }: { item: TimelineRow }) => (
-    <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
-      {renderRowContent(item)}
-    </div>
-  );
+  const renderItem = ({ item, index }: { item: TimelineRow; index: number }) => {
+    // Rows from the revert target onward: previewed while the popover is open,
+    // then held dimmed and inert until the revert lands and removes them.
+    const dimmed = revertDimFromRowIndex >= 0 && index >= revertDimFromRowIndex;
+    const reverting = dimmed && pendingRevert !== null;
+    return (
+      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
+        {pendingRevert && index === revertDimFromRowIndex ? (
+          <RevertStatusPill label={pendingRevert.label} />
+        ) : null}
+        <div
+          className={cn(
+            "transition-opacity duration-150 motion-reduce:transition-none",
+            dimmed && "opacity-50",
+            reverting && "pointer-events-none select-none opacity-40",
+          )}
+          data-revert-dimmed={dimmed ? "" : undefined}
+          aria-busy={reverting || undefined}
+        >
+          {renderRowContent(item)}
+        </div>
+      </div>
+    );
+  };
 
   if (!hasMessages && !isWorking) {
     // Render the header slot above the empty-state message so that any
@@ -1509,6 +1638,21 @@ function TimelineMinimap(props: {
         })}
       </div>
     </>
+  );
+}
+
+/** Marks where the conversation will end while a revert is running. */
+function RevertStatusPill({ label }: { label: string }) {
+  return (
+    <div className="flex justify-center pb-3" role="status" data-slot="revert-status-pill">
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-card px-2.5 py-1 text-muted-foreground text-xs shadow-xs">
+        <LoaderCircleIcon
+          aria-hidden="true"
+          className="size-3 animate-spin motion-reduce:animate-none"
+        />
+        {label}
+      </span>
+    </div>
   );
 }
 

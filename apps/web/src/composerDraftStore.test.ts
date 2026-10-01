@@ -849,10 +849,19 @@ describe("composerDraftStore terminal contexts", () => {
     );
   });
 
+  it("replaces the composer text with a recovered prompt by default", () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadId, "Existing draft");
+    store.placeRecoveredPrompt(threadId, "rewind-replace", "Recovered prompt");
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe(
+      "Recovered prompt",
+    );
+  });
+
   it("persists recovered rewind placement across edits and hydration", () => {
     const store = useComposerDraftStore.getState();
     store.setPrompt(threadId, "Existing draft");
-    store.placeRecoveredPrompt(threadId, "rewind-operation", "Recovered prompt");
+    store.placeRecoveredPrompt(threadId, "rewind-operation", "Recovered prompt", "append");
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt).toBe(
       "Existing draft\n\nRecovered prompt",
     );

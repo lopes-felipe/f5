@@ -122,6 +122,7 @@ import {
   hasToolActivityForTurn,
   isLatestTurnSettled,
   formatElapsed,
+  PROVIDER_OPTIONS,
 } from "../session-logic";
 import { areUnknownEqual } from "../orchestrationState";
 import { type LegendListRef } from "@legendapp/list/react";
@@ -270,6 +271,19 @@ import { type ImageAttachmentAction } from "./chat/useImageAttachmentActions";
 import { useImageAttachmentActions } from "./chat/useImageAttachmentActions";
 
 import { RewindDraftPanel } from "./chat/RewindDraftPanel";
+import { computeRevertImpact } from "./chat/revertImpact";
+import {
+  describePendingRevert,
+  isRewindInFlight,
+  withoutSettledRewindFailures,
+} from "./chat/rewindDraftCopy";
+import {
+  ensureRewindUiSubscription,
+  rewindUi,
+  useRewindUiStore,
+  type LandedRewind,
+} from "../rewindUi";
+import type { RewindDraft } from "@t3tools/contracts";
 import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
@@ -795,7 +809,8 @@ export default function ChatView({
     (store) => store.updatePendingTurnDispatch,
   );
   const isConnecting = !useProtocolState().ready;
-  const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
+  // Only covers the dispatch round trip; the revert itself is tracked by `rewindUi`.
+  const [isDispatchingRevert, setIsDispatchingRevert] = useState(false);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
   const [answerAttachments, setAnswerAttachments] = useState<Record<string, AttachmentUpload[]>>(
     {},
@@ -995,6 +1010,21 @@ export default function ChatView({
     [draftThread, fallbackDraftProject?.model, localDraftError, threadId],
   );
   const activeThread = serverThread ?? localDraftThread;
+  const activeThreadIdForRewind = activeThread?.id ?? null;
+  const pendingRewind = useRewindUiStore((state) =>
+    activeThreadIdForRewind ? state.pendingByThreadId[activeThreadIdForRewind] : undefined,
+  );
+  const landedRewind = useRewindUiStore((state) =>
+    activeThreadIdForRewind ? state.landedByThreadId[activeThreadIdForRewind] : undefined,
+  );
+  const hiddenRewindDraftIds = useRewindUiStore((state) => state.hiddenDraftOperationIds);
+  const revertReopenRequest = useRewindUiStore((state) =>
+    activeThreadIdForRewind ? state.reopenByThreadId[activeThreadIdForRewind] : undefined,
+  );
+  // A rewind the server is still working on, known from the snapshot (e.g. after a reload).
+  const inFlightRewindDraft = activeThread?.rewindDrafts?.find((draft) => isRewindInFlight(draft));
+  const isRevertingCheckpoint =
+    isDispatchingRevert || pendingRewind !== undefined || inFlightRewindDraft !== undefined;
   const activeWorkflow = useMemo(() => {
     if (activeThread == null) {
       return null;
@@ -1717,9 +1747,19 @@ export default function ChatView({
 
     return `${connectedCount}/${latestStatusByServer.size} connected`;
   }, [threadActivities]);
+  const openRewindOperationIds = useMemo(
+    () => new Set((activeThread?.rewindDrafts ?? []).map((draft) => draft.operationId as string)),
+    [activeThread?.rewindDrafts],
+  );
+  // The rewind panel and toasts explain failures; the timeline only keeps those
+  // whose rewind is still open, instead of every attempt forever.
+  const workLogActivities = useMemo(
+    () => withoutSettledRewindFailures(threadActivities, openRewindOperationIds),
+    [openRewindOperationIds, threadActivities],
+  );
   const workLogEntries = useMemo(
     () =>
-      deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined, {
+      deriveWorkLogEntries(workLogActivities, activeLatestTurn?.turnId ?? undefined, {
         runtimeWarningVisibility: settings.runtimeWarningVisibility,
         suppressCommandToolLifecycle: showAgentCommandTranscripts && commandExecutions.length > 0,
         mode: workLogMode,
@@ -1730,7 +1770,7 @@ export default function ChatView({
       commandExecutions.length,
       settings.runtimeWarningVisibility,
       showAgentCommandTranscripts,
-      threadActivities,
+      workLogActivities,
       workLogFilter,
       workLogMode,
     ],
@@ -1913,7 +1953,9 @@ export default function ChatView({
   const isComposerSendBusy = isSendBusy || isComposerImageImportPending;
   const composerSendBusyLabel =
     isComposerImageImportPending && !isSendBusy ? "Preparing image" : "Sending";
-  const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  // A running revert is not "working": the timeline marks it with its own status
+  // pill and the composer reports it, instead of the agent working indicator.
+  const isWorking = phase === "running" || isSendBusy || isConnecting;
   useEffect(() => {
     if (isPendingTurnDispatchBlocked) {
       setIsModelPickerOpen(false);
@@ -3175,8 +3217,13 @@ export default function ChatView({
   }, [composerMenuItems, composerMenuOpen]);
 
   useEffect(() => {
-    setIsRevertingCheckpoint(false);
+    setIsDispatchingRevert(false);
   }, [activeThread?.id]);
+
+  useEffect(() => {
+    const api = readNativeApi();
+    if (api) ensureRewindUiSubscription(api);
+  }, []);
 
   useEffect(() => {
     if (!activeThread?.id || terminalState.terminalOpen) return;
@@ -4230,55 +4277,62 @@ export default function ChatView({
     focusComposer();
   };
 
-  const onRevertToTurnCount = useCallback(
-    async (turnCount: number, restoreFiles = false, targetMessageId?: MessageId) => {
+  // Confirmation happens in the revert popover. The trigger is disabled (with the
+  // reason) while the agent runs or a send is pending; these checks only guard
+  // against a stale click.
+  const onRevertUserMessage = useCallback(
+    async (messageId: MessageId, restoreFiles = false) => {
       const api = readNativeApi();
       if (!api || !activeThread || isRevertingCheckpoint) return;
+      if (hasPendingTurnDispatch || phase === "running" || isConnecting) return;
+      const target = activeThread.messages.find((message) => message.id === messageId);
+      if (!target || target.role !== "user") return;
 
-      if (hasPendingTurnDispatch) {
-        setThreadError(activeThread.id, "Resolve the pending send before reverting checkpoints.");
-        return;
-      }
-      if (phase === "running" || isConnecting) {
-        setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
-        return;
-      }
-      const confirmed = await api.dialogs.confirm(
-        [
-          restoreFiles
-            ? "Revert this conversation and restore its files?"
-            : "Revert this conversation and keep file changes?",
-          "This will discard newer messages and turn diffs in this thread.",
-          "This action cannot be undone.",
-        ].join("\n"),
-      );
-      if (!confirmed) {
-        return;
-      }
-
-      setIsRevertingCheckpoint(true);
-      setThreadError(activeThread.id, null);
+      const threadIdForRevert = activeThread.id;
+      const operationId = newCommandId();
+      const impact = computeRevertImpact(activeThread.messages, messageId, turnDiffSummaryByTurnId);
+      // Optimistic, so rows dim and sending pauses on click rather than after
+      // the server's event arrives.
+      rewindUi.markPending({
+        operationId,
+        threadId: threadIdForRevert,
+        targetMessageId: messageId,
+        restoreFiles,
+        changedFileCount: impact?.changedFileCount,
+        prompt: {
+          text: target.text,
+          attachments: (target.attachments ?? []).map((attachment) => ({
+            id: attachment.id,
+            name: attachment.name,
+            type: attachment.type,
+          })),
+        },
+        requestedAt: new Date().toISOString(),
+      });
+      setIsDispatchingRevert(true);
       try {
-        const snapshot = await api.orchestration.getSnapshot();
+        const latestMessageId = activeThread.messages.at(-1)?.id;
         await api.orchestration.dispatchCommand({
           type: "thread.conversation.revert",
-          expectedRevision: snapshot.snapshotSequence,
-          operationId: newCommandId(),
+          operationId,
           commandId: newCommandId(),
-          threadId: activeThread.id,
-          targetMessageId:
-            targetMessageId ??
-            activeThread.messages.filter((message) => message.role === "user")[turnCount]!.id,
+          threadId: threadIdForRevert,
+          targetMessageId: messageId,
           restoreFiles,
+          ...(latestMessageId ? { expectedLatestMessageId: latestMessageId } : {}),
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
-        setThreadError(
-          activeThread.id,
-          err instanceof Error ? err.message : "Failed to revert thread state.",
-        );
+        rewindUi.clearPending(threadIdForRevert, operationId);
+        toastManager.add({
+          type: "error",
+          title: "Couldn't revert",
+          description: err instanceof Error ? err.message : "The revert was not started.",
+          data: { threadId: threadIdForRevert },
+        });
+      } finally {
+        setIsDispatchingRevert(false);
       }
-      setIsRevertingCheckpoint(false);
     },
     [
       activeThread,
@@ -4286,7 +4340,7 @@ export default function ChatView({
       isConnecting,
       isRevertingCheckpoint,
       phase,
-      setThreadError,
+      turnDiffSummaryByTurnId,
     ],
   );
 
@@ -4347,7 +4401,9 @@ export default function ChatView({
       !activeThread ||
       hasPendingTurnDispatch ||
       isConnecting ||
-      sendInFlightRef.current
+      sendInFlightRef.current ||
+      // The server rejects sends while a revert is open; keep the draft instead.
+      isRevertingCheckpoint
     ) {
       return;
     }
@@ -5992,15 +6048,72 @@ export default function ChatView({
       workspaceRoot,
     ],
   );
-  const onRevertUserMessage = (messageId: MessageId, restoreFiles = false) => {
-    const targetTurnCount = activeThread?.messages
-      .filter((message) => message.role === "user")
-      .findIndex((message) => message.id === messageId);
-    if (typeof targetTurnCount !== "number" || targetTurnCount < 0) {
-      return;
-    }
-    void onRevertToTurnCount(targetTurnCount, restoreFiles, messageId);
-  };
+  const onRevertUserMessageFromTimeline = useCallback(
+    (messageId: MessageId, restoreFiles?: boolean) =>
+      void onRevertUserMessage(messageId, restoreFiles ?? false),
+    [onRevertUserMessage],
+  );
+  const activeProviderLabel =
+    PROVIDER_OPTIONS.find((option) => option.value === activeProvider)?.label ?? "This provider";
+  const revertSupported = Boolean(
+    activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
+    activeProviderStatus.runtimeCapabilities.rollbackReadback,
+  );
+  // Every user message gets a revert trigger once the provider is known; when it
+  // can't roll back, the trigger stays visible and says why instead of vanishing.
+  const revertTurnCountByUserMessageId = useMemo(
+    () =>
+      new Map(
+        (activeProviderStatus && activeThread ? activeThread.messages : [])
+          .filter((message) => message.role === "user")
+          .map((message, index) => [message.id, index] as const),
+      ),
+    [activeProviderStatus, activeThread],
+  );
+  const revertDisabledReason = !revertSupported
+    ? `${activeProviderLabel} doesn't support revert`
+    : hasPendingTurnDispatch
+      ? "Wait for the message to send"
+      : null;
+  const pendingRevertDisplay = useMemo(() => {
+    const target = pendingRewind
+      ? { targetMessageId: pendingRewind.targetMessageId, restoreFiles: pendingRewind.restoreFiles }
+      : inFlightRewindDraft?.targetMessageId
+        ? {
+            targetMessageId: inFlightRewindDraft.targetMessageId,
+            restoreFiles: inFlightRewindDraft.restoreFiles ?? false,
+          }
+        : null;
+    if (!target) return null;
+    return {
+      targetMessageId: target.targetMessageId,
+      label: describePendingRevert({
+        restoreFiles: target.restoreFiles,
+        state: inFlightRewindDraft?.state,
+        providerLabel: activeProviderLabel,
+      }),
+    };
+  }, [activeProviderLabel, inFlightRewindDraft, pendingRewind]);
+  // Real drafts from the snapshot, plus the just-landed revert rendered from its
+  // captured prompt until the snapshot refetch delivers the real draft.
+  const visibleRewindDrafts = useMemo(() => {
+    const entries: Array<{
+      operationId: string;
+      draft?: RewindDraft;
+      provisional?: LandedRewind;
+    }> = (activeThread?.rewindDrafts ?? [])
+      .filter((draft) => !hiddenRewindDraftIds[draft.operationId] && !isRewindInFlight(draft))
+      .map((draft) => ({ operationId: draft.operationId, draft }));
+    if (
+      landedRewind?.prompt &&
+      !hiddenRewindDraftIds[landedRewind.operationId] &&
+      !(activeThread?.rewindDrafts ?? []).some(
+        (draft) => draft.operationId === landedRewind.operationId,
+      )
+    )
+      entries.push({ operationId: landedRewind.operationId, provisional: landedRewind });
+    return entries;
+  }, [activeThread?.rewindDrafts, hiddenRewindDraftIds, landedRewind]);
   const headerThreadActionItems = useMemo(
     () => (activeThread ? threadActionController.menuItemsForThread(activeThread) : []),
     [
@@ -6255,20 +6368,14 @@ export default function ChatView({
                   expandedWorkGroups={expandedWorkGroups}
                   onToggleWorkGroup={onToggleWorkGroup}
                   onOpenTurnDiff={onOpenTurnDiff}
-                  revertTurnCountByUserMessageId={
-                    new Map(
-                      (activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
-                      activeProviderStatus.runtimeCapabilities.rollbackReadback
-                        ? activeThread.messages
-                        : []
-                      )
-                        .filter((message) => message.role === "user")
-                        .map((message, index) => [message.id, index]),
-                    )
-                  }
+                  revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                   canRestoreFiles={Boolean(activeThread.worktreePath)}
-                  onRevertUserMessage={onRevertUserMessage}
+                  onRevertUserMessage={onRevertUserMessageFromTimeline}
                   isRevertingCheckpoint={isRevertingCheckpoint}
+                  revertDisabledReason={revertDisabledReason}
+                  revertPreferenceKey={activeThread.projectId}
+                  pendingRevert={pendingRevertDisplay}
+                  revertReopenRequest={revertReopenRequest ?? null}
                   onImageExpand={onExpandTimelineImage}
                   onImageActionMenu={onImageActionMenu}
                   usesCustomImageContextMenu={usesCustomImageContextMenu}
@@ -6381,13 +6488,19 @@ export default function ChatView({
                     }
                   />
                 ) : null}
-                {activeThread?.rewindDrafts?.map((draft) => (
-                  <RewindDraftPanel
-                    key={draft.operationId}
-                    threadId={activeThread.id}
-                    draft={draft}
-                  />
-                ))}
+                {/* One keyed list, so the panel keeps its identity (and doesn't
+                    replay its entrance) when the real draft replaces the provisional one. */}
+                {activeThread
+                  ? visibleRewindDrafts.map((entry) => (
+                      <RewindDraftPanel
+                        key={entry.operationId}
+                        threadId={activeThread.id}
+                        draft={entry.draft}
+                        provisional={entry.provisional}
+                        onFocusComposer={focusComposer}
+                      />
+                    ))
+                  : null}
                 <ChatComposer
                   composerFormRef={composerFormRef}
                   onSend={onSend}
@@ -6464,7 +6577,7 @@ export default function ChatView({
                   activePlan={activePlan}
                   planSidebarOpen={planSidebarOpen}
                   canCompactConversation={canCompactConversation}
-                  isWorking={isWorking}
+                  isWorking={isWorking || isRevertingCheckpoint}
                   hasPendingTurnDispatch={hasPendingTurnDispatch}
                   showInteractionModeToggle={showInteractionModeToggle}
                   selectedProvider={selectedProvider}
@@ -6490,6 +6603,7 @@ export default function ChatView({
                   composerSendState={composerSendState}
                   isComposerSendBusy={isComposerSendBusy}
                   composerSendBusyLabel={composerSendBusyLabel}
+                  revertInProgress={isRevertingCheckpoint}
                   nextTurnQueueState={nextTurnQueueState}
                   isServerThread={isServerThread}
                   onInterrupt={onInterrupt}

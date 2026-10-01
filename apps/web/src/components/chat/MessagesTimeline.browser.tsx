@@ -16,7 +16,7 @@ import {
 import type { LegendListRef } from "@legendapp/list/react";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import type { deriveTimelineEntries } from "../../session-logic";
@@ -182,6 +182,8 @@ interface HarnessProps {
   revertTurnCountByUserMessageId?: Map<MessageId, number>;
   onRevertUserMessage?: (messageId: MessageId, restoreFiles?: boolean) => void;
   canRestoreFiles?: boolean;
+  revertDisabledReason?: string | null;
+  pendingRevert?: { targetMessageId: MessageId; label: string } | null;
 }
 
 interface TimelineHarnessApi {
@@ -272,6 +274,8 @@ function TimelineHarness(
           onRevertUserMessage={props.onRevertUserMessage ?? (() => {})}
           canRestoreFiles={props.canRestoreFiles}
           isRevertingCheckpoint={false}
+          revertDisabledReason={props.revertDisabledReason ?? null}
+          pendingRevert={props.pendingRevert ?? null}
           onImageExpand={() => {}}
           onImageActionMenu={props.onImageActionMenu}
           usesCustomImageContextMenu={props.usesCustomImageContextMenu}
@@ -1255,7 +1259,9 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(() => {
         bubble = host.querySelector<HTMLElement>('[data-slot="user-message-bubble"]');
         expect(bubble).not.toBeNull();
-        expect(host.querySelector('button[title="Revert to this message"]')).not.toBeNull();
+        expect(
+          host.querySelector('button[aria-label="Revert to before this message"]'),
+        ).not.toBeNull();
       });
       const bubbleRect = bubble!.getBoundingClientRect();
       expect(bubbleRect.width).toBeLessThan(200);
@@ -1268,8 +1274,92 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
-  it("offers both revert modes from the user message revert menu", async () => {
-    const messageId = "msg-revert-menu" as MessageId;
+  it("confirms a revert from the anchored popover, previewing what it removes", async () => {
+    const firstId = "msg-revert-first" as MessageId;
+    const targetId = "msg-revert-target" as MessageId;
+    const onRevertUserMessage = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const entries = [
+      makeUserEntry(firstId, "keep me", 0),
+      makeUserEntry(targetId, "revert me", 10),
+    ];
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={entries}
+        onIsAtEndChangeSpy={() => {}}
+        revertTurnCountByUserMessageId={
+          new Map([
+            [firstId, 0],
+            [targetId, 1],
+          ])
+        }
+        onRevertUserMessage={onRevertUserMessage}
+        canRestoreFiles={false}
+      />,
+      { container: host },
+    );
+    const rowOf = (id: MessageId) =>
+      host
+        .querySelector(`[data-message-id="${id}"]`)
+        ?.closest<HTMLElement>("[data-revert-dimmed], [data-timeline-root] > div");
+
+    try {
+      const triggers = page.getByRole("button", { name: "Revert to before this message" });
+      await triggers.nth(1).click();
+      const popover = page.getByRole("dialog", { name: "Revert to before this message" });
+      await vi.waitFor(() => {
+        expect(popover.element().textContent).toContain("Removes this message.");
+        expect(popover.element().textContent).toContain("needs an isolated worktree");
+        expect(
+          page.getByRole("button", { name: "Restore files" }).element().hasAttribute("disabled"),
+        ).toBe(true);
+        // Only the target and what follows it are dimmed while deciding.
+        expect(rowOf(targetId)?.hasAttribute("data-revert-dimmed")).toBe(true);
+        expect(rowOf(firstId)?.hasAttribute("data-revert-dimmed")).toBe(false);
+      });
+
+      await userEvent.keyboard("{Escape}");
+      await vi.waitFor(() => {
+        expect(rowOf(targetId)?.hasAttribute("data-revert-dimmed")).toBe(false);
+        expect(document.querySelector('[data-slot="revert-popover"]')).toBeNull();
+      });
+      expect(onRevertUserMessage).not.toHaveBeenCalled();
+
+      await screen.rerender(
+        <TimelineHarness
+          initialEntries={entries}
+          onIsAtEndChangeSpy={() => {}}
+          revertTurnCountByUserMessageId={
+            new Map([
+              [firstId, 0],
+              [targetId, 1],
+            ])
+          }
+          onRevertUserMessage={onRevertUserMessage}
+          canRestoreFiles
+        />,
+      );
+      await triggers.nth(0).click();
+      await page.getByRole("button", { name: "Restore files" }).click();
+      await vi.waitFor(() => {
+        expect(popover.element().textContent).toContain(
+          "Removes this message and the one after it.",
+        );
+      });
+      await userEvent.keyboard("{Enter}");
+      await vi.waitFor(() => {
+        expect(onRevertUserMessage).toHaveBeenCalledTimes(1);
+        expect(onRevertUserMessage).toHaveBeenLastCalledWith(firstId, true);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("explains why revert is unavailable and shows progress while it runs", async () => {
+    const messageId = "msg-revert-disabled" as MessageId;
     const onRevertUserMessage = vi.fn();
     const host = document.createElement("div");
     document.body.append(host);
@@ -1277,42 +1367,41 @@ describe("MessagesTimeline (LegendList)", () => {
       <TimelineHarness
         initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
         onIsAtEndChangeSpy={() => {}}
-        revertTurnCountByUserMessageId={new Map([[messageId, 1]])}
+        revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
         onRevertUserMessage={onRevertUserMessage}
-        canRestoreFiles={false}
+        revertDisabledReason="Cursor doesn't support revert"
       />,
       { container: host },
     );
 
     try {
-      await page.getByRole("button", { name: "Revert to this message" }).click();
-      const restoreFilesItem = page.getByRole("menuitem", {
-        name: /Revert conversation and files/,
-      });
+      const trigger = page.getByRole("button", { name: "Revert to before this message" });
       await vi.waitFor(() => {
-        expect(restoreFilesItem.element().getAttribute("aria-disabled")).toBe("true");
-        expect(restoreFilesItem.element().textContent).toContain("Requires an isolated worktree");
+        expect(trigger.element().getAttribute("aria-disabled")).toBe("true");
       });
-
-      await page.getByRole("menuitem", { name: "Revert conversation, keep file changes" }).click();
+      await trigger.hover();
       await vi.waitFor(() => {
-        expect(onRevertUserMessage).toHaveBeenCalledTimes(1);
-        expect(onRevertUserMessage).toHaveBeenCalledWith(messageId);
+        expect(document.body.textContent).toContain("Cursor doesn't support revert");
       });
+      // Playwright refuses to click aria-disabled controls; a DOM click must not open it either.
+      (trigger.element() as HTMLElement).click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(document.querySelector('[data-slot="revert-popover"]')).toBeNull();
 
       await screen.rerender(
         <TimelineHarness
           initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
           onIsAtEndChangeSpy={() => {}}
-          revertTurnCountByUserMessageId={new Map([[messageId, 1]])}
+          revertTurnCountByUserMessageId={new Map([[messageId, 0]])}
           onRevertUserMessage={onRevertUserMessage}
-          canRestoreFiles
+          pendingRevert={{ targetMessageId: messageId, label: "Reverting conversation…" }}
         />,
       );
-      await page.getByRole("button", { name: "Revert to this message" }).click();
-      await page.getByRole("menuitem", { name: "Revert conversation and files" }).click();
       await vi.waitFor(() => {
-        expect(onRevertUserMessage).toHaveBeenLastCalledWith(messageId, true);
+        expect(host.querySelector('[data-slot="revert-status-pill"]')?.textContent).toContain(
+          "Reverting conversation…",
+        );
+        expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
       });
     } finally {
       await screen.unmount();

@@ -395,8 +395,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                   }
                 }
                 if (savedEvent.type === "thread.reverted" && savedEvent.payload.operationId) {
-                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${savedEvent.payload.threadId}`;
-                  yield* sql`UPDATE next_turn_queue_state SET pause_reason_code = 'thread_reverted', revision = revision + 1 WHERE thread_id = ${savedEvent.payload.threadId}`;
+                  const { operationId, threadId } = savedEvent.payload;
+                  yield* sql`DELETE FROM restart_turn_markers WHERE thread_id = ${threadId}`;
+                  // Queued prompts were written against the conversation that was just
+                  // discarded, so they wait for the user. With nothing queued, the
+                  // rewind's own pause only gets in the way: put back what it replaced.
+                  const queued =
+                    yield* sql`SELECT 1 FROM next_turn_queue WHERE thread_id = ${threadId} AND deleted_at IS NULL LIMIT 1`;
+                  if (queued.length > 0) {
+                    yield* sql`UPDATE next_turn_queue_state SET paused = 1, pause_reason_code = 'thread_reverted', pause_detail = NULL, revision = revision + 1 WHERE thread_id = ${threadId}`;
+                  } else {
+                    const saved = (yield* sql<{
+                      state: string | null;
+                    }>`SELECT queue_state_json AS state FROM rewind_requests WHERE operation_id = ${operationId}`)[0];
+                    const prior = saved?.state
+                      ? (JSON.parse(saved.state) as {
+                          paused: number;
+                          pause_reason_code: string | null;
+                          pause_detail: string | null;
+                        })
+                      : { paused: 0, pause_reason_code: null, pause_detail: null };
+                    // Only the pauses this rewind set; another pause must survive.
+                    yield* sql`UPDATE next_turn_queue_state SET paused = ${prior.paused}, pause_reason_code = ${prior.pause_reason_code}, pause_detail = ${prior.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required')`;
+                  }
                   yield* sql`UPDATE rewind_operations SET state = 'completed', updated_at = ${savedEvent.occurredAt} WHERE operation_id = ${savedEvent.payload.operationId} AND thread_id = ${savedEvent.payload.threadId} AND state = 'files-confirmed'`;
                   yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${savedEvent.payload.operationId}`;
                 }

@@ -756,6 +756,20 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+/**
+ * Lifecycle of a conversation rewind, mirrored by the `rewind_operations.state`
+ * CHECK constraint. `prepared` is the only state that is safe to cancel.
+ */
+export const RewindDraftState = Schema.Literals([
+  "prepared",
+  "provider-pending",
+  "provider-confirmed",
+  "files-confirmed",
+  "completed",
+  "reconciliation-required",
+]);
+export type RewindDraftState = typeof RewindDraftState.Type;
+
 export const RewindDraft = Schema.Struct({
   operationId: CommandId,
   targetMessageId: Schema.optional(MessageId),
@@ -763,7 +777,7 @@ export const RewindDraft = Schema.Struct({
   error: Schema.optional(Schema.NullOr(Schema.String)),
   text: Schema.String,
   attachments: Schema.Array(ChatAttachment),
-  state: Schema.String,
+  state: RewindDraftState,
 });
 export type RewindDraft = typeof RewindDraft.Type;
 
@@ -1308,7 +1322,13 @@ export const ThreadConversationRevertCommand = Schema.Struct({
   threadId: ThreadId,
   targetMessageId: MessageId,
   restoreFiles: Schema.Boolean,
+  /** @deprecated Global snapshot sequence; any thread's activity invalidates it. */
   expectedRevision: Schema.optional(NonNegativeInt),
+  /**
+   * The newest message the user saw when confirming. The revert is rejected if
+   * this thread has moved on since, without being affected by other threads.
+   */
+  expectedLatestMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 /**
