@@ -1,3 +1,4 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeSupportedSlashCommands } from "../supportedSlashCommands.ts";
 /**
  * CursorAdapterLive — Cursor CLI (`agent acp`) via ACP.
@@ -128,6 +129,7 @@ interface PendingUserInput {
 }
 
 interface CursorSessionContext {
+  promptsInFlight: number;
   readonly threadId: ThreadId;
   session: ProviderSession;
   readonly scope: Scope.Closeable;
@@ -413,6 +415,7 @@ export function makeCursorAdapter(
     const sessions = new Map<ThreadId, CursorSessionContext>();
     const sendsInFlight = new Map<ThreadId, number>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+    const sessionLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -422,8 +425,8 @@ export function makeCursorAdapter(
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
 
-    const getThreadSemaphore = (threadId: string) =>
-      SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
+    const getThreadSemaphore = (threadId: string, locks = threadLocksRef) =>
+      SynchronizedRef.modifyEffect(locks, (current) => {
         const existing: Option.Option<Semaphore.Semaphore> = Option.fromNullishOr(
           current.get(threadId),
         );
@@ -442,6 +445,11 @@ export function makeCursorAdapter(
 
     const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
+
+    const withSessionLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
+      Effect.flatMap(getThreadSemaphore(threadId, sessionLocksRef), (semaphore) =>
+        semaphore.withPermit(effect),
+      );
 
     const logNative = (
       threadId: ThreadId,
@@ -535,7 +543,7 @@ export function makeCursorAdapter(
       });
 
     const startSession: CursorAdapterShape["startSession"] = (input) =>
-      withThreadLock(
+      withSessionLock(
         input.threadId,
         Effect.gen(function* () {
           if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -881,6 +889,7 @@ export function makeCursorAdapter(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            promptsInFlight: 0,
             assistantReply: new CursorTransportFailure(),
             nativeCommands: [],
             skillCommands: cursorSkillCommands(
@@ -1050,142 +1059,178 @@ export function makeCursorAdapter(
 
     const sendTurnUnlocked: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(input.threadId);
-        const turnId = TurnId.make(crypto.randomUUID());
-        const turnModelSelection = resolveCursorModelSelection({
-          boundInstanceId,
-          model: input.model ?? ctx.session.model,
-          modelOptions: input.modelOptions,
-          modelSelection: input.modelSelection,
-        });
-        const model = turnModelSelection?.model ?? ctx.session.model;
-        const resolvedModel = resolveCursorAcpBaseModelId(model);
-        if (input.workflowExecutionProfile) {
-          const modeState = yield* ctx.acp.getModeState;
-          const planModeId = resolveRequestedModeId({
-            interactionMode: "plan",
-            runtimeMode: ctx.session.runtimeMode,
-            modeState,
-          });
-          if (!planModeId) {
-            return yield* new ProviderAdapterValidationError({
-              provider: PROVIDER,
-              operation: "sendTurn",
-              issue: "Cursor did not advertise a read-only ACP plan mode for this workflow stage.",
+        const { ctx, turnId, promptParts, resolvedModel } = yield* withSessionLock(
+          input.threadId,
+          Effect.gen(function* () {
+            const ctx = yield* requireSession(input.threadId);
+            const steering = input.expectedTurnId !== undefined;
+            if (
+              steering &&
+              (ctx.activeTurnId !== input.expectedTurnId || ctx.promptsInFlight === 0)
+            )
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail: "The active turn ended or changed before steering.",
+              });
+            if (!steering && ctx.promptsInFlight > 0)
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/start",
+                detail: "A Cursor turn is already running.",
+              });
+            const turnId = input.expectedTurnId ?? TurnId.make(crypto.randomUUID());
+            const turnModelSelection = resolveCursorModelSelection({
+              boundInstanceId,
+              model: input.model ?? ctx.session.model,
+              modelOptions: input.modelOptions,
+              modelSelection: input.modelSelection,
             });
-          }
-        }
-        yield* applyRequestedSessionConfiguration({
-          runtime: ctx.acp,
-          runtimeMode: ctx.session.runtimeMode,
-          interactionMode: input.workflowExecutionProfile ? "plan" : input.interactionMode,
-          modelSelection:
-            model === undefined
-              ? undefined
-              : {
+            const model = turnModelSelection?.model ?? ctx.session.model;
+            const resolvedModel = resolveCursorAcpBaseModelId(model);
+            if (input.workflowExecutionProfile) {
+              const modeState = yield* ctx.acp.getModeState;
+              const planModeId = resolveRequestedModeId({
+                interactionMode: "plan",
+                runtimeMode: ctx.session.runtimeMode,
+                modeState,
+              });
+              if (!planModeId) {
+                return yield* new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "sendTurn",
+                  issue:
+                    "Cursor did not advertise a read-only ACP plan mode for this workflow stage.",
+                });
+              }
+            }
+            if (!steering)
+              yield* applyRequestedSessionConfiguration({
+                runtime: ctx.acp,
+                runtimeMode: ctx.session.runtimeMode,
+                interactionMode: input.workflowExecutionProfile ? "plan" : input.interactionMode,
+                modelSelection:
+                  model === undefined
+                    ? undefined
+                    : {
+                        model,
+                        options: turnModelSelection?.options,
+                      },
+                mapError: ({ cause, method }) =>
+                  mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
+              });
+            ctx.activeTurnId = turnId;
+            if (!steering) {
+              ctx.assistantReply = new CursorTransportFailure();
+              ctx.lastPlanFingerprint = undefined;
+            }
+            ctx.session = {
+              ...ctx.session,
+              activeTurnId: turnId,
+              model,
+              updatedAt: yield* nowIso,
+            };
+
+            yield* offerRuntimeEvent({
+              type: "session.configured",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              turnId,
+              payload: {
+                config: buildCursorConfiguredConfig({
+                  sessionId: parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? "",
+                  skillCommands: normalizeSupportedSlashCommands([
+                    ...ctx.nativeCommands,
+                    ...ctx.skillCommands,
+                  ]),
                   model,
                   options: turnModelSelection?.options,
-                },
-          mapError: ({ cause, method }) =>
-            mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
-        });
-        ctx.activeTurnId = turnId;
-        ctx.assistantReply = new CursorTransportFailure();
-        ctx.lastPlanFingerprint = undefined;
-        ctx.session = {
-          ...ctx.session,
-          activeTurnId: turnId,
-          model,
-          updatedAt: yield* nowIso,
-        };
+                }),
+              },
+            });
 
-        yield* offerRuntimeEvent({
-          type: "session.configured",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: input.threadId,
-          turnId,
-          payload: {
-            config: buildCursorConfiguredConfig({
-              sessionId: parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? "",
-              skillCommands: normalizeSupportedSlashCommands([
-                ...ctx.nativeCommands,
-                ...ctx.skillCommands,
-              ]),
-              model,
-              options: turnModelSelection?.options,
-            }),
-          },
-        });
+            if (!steering)
+              yield* offerRuntimeEvent({
+                type: "turn.started",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                turnId,
+                payload: { model: resolvedModel },
+              });
 
-        yield* offerRuntimeEvent({
-          type: "turn.started",
-          ...(yield* makeEventStamp()),
-          provider: PROVIDER,
-          threadId: input.threadId,
-          turnId,
-          payload: { model: resolvedModel },
-        });
-
-        const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
-        if (input.input?.trim()) {
-          promptParts.push({ type: "text", text: input.input.trim() });
-        }
-        const attachmentContext = buildProviderAttachmentRuntimeContext(
-          input.resolvedAttachments ?? [],
-        );
-        if (attachmentContext) {
-          promptParts.push({ type: "text", text: attachmentContext });
-        }
-        if (input.attachments && input.attachments.length > 0) {
-          for (const attachment of input.attachments) {
-            switch (attachment.type) {
-              case "image": {
-                const attachmentPath = resolveAttachmentPath({
-                  attachmentsDir: serverConfig.attachmentsDir,
-                  attachment,
-                });
-                if (!attachmentPath) {
-                  return yield* new ProviderAdapterRequestError({
-                    provider: PROVIDER,
-                    method: "session/prompt",
-                    detail: `Invalid attachment id '${attachment.id}'.`,
-                  });
-                }
-                const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapterRequestError({
+            const promptParts: Array<EffectAcpSchema.ContentBlock> = [];
+            if (input.input?.trim()) {
+              promptParts.push({ type: "text", text: input.input.trim() });
+            }
+            const attachmentContext = buildProviderAttachmentRuntimeContext(
+              input.resolvedAttachments ?? [],
+            );
+            if (attachmentContext) {
+              promptParts.push({ type: "text", text: attachmentContext });
+            }
+            if (input.attachments && input.attachments.length > 0) {
+              for (const attachment of input.attachments) {
+                switch (attachment.type) {
+                  case "image": {
+                    const attachmentPath = resolveAttachmentPath({
+                      attachmentsDir: serverConfig.attachmentsDir,
+                      attachment,
+                    });
+                    if (!attachmentPath) {
+                      return yield* new ProviderAdapterRequestError({
                         provider: PROVIDER,
                         method: "session/prompt",
-                        detail: cause.message,
-                        cause,
-                      }),
-                  ),
-                );
-                promptParts.push({
-                  type: "image",
-                  data: Buffer.from(bytes).toString("base64"),
-                  mimeType: attachment.mimeType,
-                });
-                break;
+                        detail: `Invalid attachment id '${attachment.id}'.`,
+                      });
+                    }
+                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderAdapterRequestError({
+                            provider: PROVIDER,
+                            method: "session/prompt",
+                            detail: cause.message,
+                            cause,
+                          }),
+                      ),
+                    );
+                    promptParts.push({
+                      type: "image",
+                      data: Buffer.from(bytes).toString("base64"),
+                      mimeType: attachment.mimeType,
+                    });
+                    break;
+                  }
+                  default:
+                    throw new Error(
+                      `Unsupported Cursor attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                    );
+                }
               }
-              default:
-                throw new Error(
-                  `Unsupported Cursor attachment type '${String((attachment as { type?: unknown }).type)}'.`,
-                );
             }
-          }
-        }
 
-        if (promptParts.length === 0) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Turn requires non-empty text or attachments.",
-          });
-        }
+            if (promptParts.length === 0) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue: "Turn requires non-empty text or attachments.",
+              });
+            }
 
+            if (steering && (ctx.activeTurnId !== turnId || ctx.promptsInFlight === 0))
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail: "The active turn ended while preparing the steer.",
+              });
+            ctx.promptsInFlight += 1;
+            return { ctx, turnId, promptParts, resolvedModel };
+          }),
+        );
+        // Preparation shares the session lifecycle lock. The live prompt stays
+        // outside it so steers can reach the active turn and replacement can cancel it.
         const result = yield* ctx.acp
           .prompt({
             prompt: promptParts,
@@ -1194,9 +1239,25 @@ export function makeCursorAdapter(
             Effect.mapError((error) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/prompt", error),
             ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
+              }),
+            ),
           );
 
+        if (sessions.get(input.threadId) !== ctx || ctx.stopped)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session/prompt",
+            detail: "The Cursor session was replaced while prompting.",
+          });
         yield* ctx.acp.awaitEventBarrier;
+        if (ctx.promptsInFlight > 0 || ctx.activeTurnId !== turnId)
+          return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        // Claim completion synchronously: overlapping prompts can both drain their
+        // event barriers after the last prompt has decremented the counter.
+        ctx.activeTurnId = undefined;
         const failure = ctx.assistantReply.failure;
         if (result.stopReason !== "cancelled" && failure) {
           ctx.activeTurnId = undefined;
@@ -1220,7 +1281,8 @@ export function makeCursorAdapter(
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         ctx.session = {
           ...ctx.session,
-          activeTurnId: turnId,
+          status: "ready",
+          activeTurnId: undefined,
           updatedAt: yield* nowIso,
           model: resolvedModel,
         };
@@ -1349,7 +1411,7 @@ export function makeCursorAdapter(
       });
 
     const stopSession: CursorAdapterShape["stopSession"] = (threadId) =>
-      withThreadLock(
+      withSessionLock(
         threadId,
         Effect.gen(function* () {
           const ctx = yield* requireSession(threadId);
@@ -1380,9 +1442,13 @@ export function makeCursorAdapter(
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+      },
       startSession,
       sendTurn,
+      steerTurn: sendTurnUnlocked,
       interruptTurn,
       readThread,
       rollbackThread,

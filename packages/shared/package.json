@@ -231,6 +231,14 @@
     "./filePreview": {
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"
+    },
+    "./pendingUserInputs": {
+      "types": "./src/pendingUserInputs.ts",
+      "import": "./src/pendingUserInputs.ts"
+    },
+    "./providerRuntimeCapabilities": {
+      "types": "./src/providerRuntimeCapabilities.ts",
+      "import": "./src/providerRuntimeCapabilities.ts"
     }
   },
   "scripts": {

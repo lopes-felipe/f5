@@ -22,6 +22,7 @@
  *
  * @module ProviderRegistryLive
  */
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -327,7 +328,14 @@ export const ProviderRegistryLive = Layer.effect(
           );
 
           const updatedKeys = new Set<ProviderInstanceId>();
-          for (const provider of nextProviders) {
+          for (const rawProvider of nextProviders) {
+            const provider = {
+              ...rawProvider,
+              runtimeCapabilities: providerRuntimeCapabilities(
+                rawProvider.driver,
+                rawProvider.version,
+              ),
+            };
             const key = snapshotInstanceKey(provider);
             updatedKeys.add(key);
             mergedProviders.set(

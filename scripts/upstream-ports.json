@@ -1507,10 +1507,17 @@
     {
       "upstreamSha": "12f5604442564d3e8c1cb23135b27b37ab4af1cf",
       "subject": "fix(web): correct pending question attachment message (#10599)",
-      "reason": "Phase 8b (durable questions and answers): fix(web): correct pending question attachment message. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/persistence/Migrations/095_AttachmentOwnerKinds.test.ts:1",
+        "apps/web/src/components/chat/AsyncUserInputPanel.browser.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "12fe2d6d03062c5d7fc3beff168f8c4af1235b50",
@@ -2189,10 +2196,16 @@
     {
       "upstreamSha": "1abc717f0dbd08027b5be4ec45ae6c5bccf96418",
       "subject": "fix(server): keep interrupted threads resumable after restarts (#10421)",
-      "reason": "Phase 8d: fix(server): keep interrupted threads resumable after restarts. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8d",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderService.ts:1",
+        "apps/server/src/nextTurnQueue/restartTurns.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "1add47b322ab1dfb5010bb363613650176b88088",
@@ -6927,10 +6940,16 @@
     {
       "upstreamSha": "5b7d72aad14ed37e8e5e4c02a6d49814bfe528ac",
       "subject": "feat(updates): continue active threads across server restarts (#9167)",
-      "reason": "Phase 8d (restart continuation): feat(updates): continue active threads across server restarts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8d",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderService.ts:1",
+        "apps/server/src/nextTurnQueue/restartTurns.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "5b7f6bcfbcd5f150a67f323e0ec5aeb70b3c4009",
@@ -7677,10 +7696,16 @@
     {
       "upstreamSha": "65f1839ae82af4e67f389f23e4ccc50f51a4a83f",
       "subject": "fix(web): keep codex restart responses continuous (#9560)",
-      "reason": "Phase 8d (restart continuation): fix(web): keep codex restart responses continuous. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8d",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderService.ts:1",
+        "apps/server/src/nextTurnQueue/restartTurns.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "660cddd3bc9801e089afcabba11c62f41aeac5c3",
@@ -8531,10 +8556,17 @@
     {
       "upstreamSha": "7112697e8be2d6f231726a91eb565e00ddbeebec",
       "subject": "feat(threads): dismiss async questions without replying (#10431)",
-      "reason": "Phase 8b (durable questions and answers): feat(threads): dismiss async questions without replying. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/persistence/Migrations/095_AttachmentOwnerKinds.test.ts:1",
+        "apps/web/src/components/chat/AsyncUserInputPanel.browser.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "71297974c666b0db50a3e3b1a861742f2cdd4d7d",
@@ -8573,10 +8605,16 @@
     {
       "upstreamSha": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
       "subject": "feat(web): choose queue or steer for follow-up messages (#11964)",
-      "reason": "Phase 8a (queue versus steer): feat(web): choose queue or steer for follow-up messages. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8a: Durable steering, same-ID start fallback, conservative ambiguous delivery recovery, provider adapters, follow-up preference and shortcut. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8a"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8a",
+      "evidence": [
+        "apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "719c905eacdcb04e11dd4ce1e515a44455ed0874",
@@ -8621,10 +8659,17 @@
     {
       "upstreamSha": "7220dfe2c949476eaa7d21eccbcd3a0ce0eddb49",
       "subject": "feat(chat): attach files to question answers (#9871)",
-      "reason": "Phase 8b (durable questions and answers): feat(chat): attach files to question answers. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/persistence/Migrations/095_AttachmentOwnerKinds.test.ts:1",
+        "apps/web/src/components/chat/AsyncUserInputPanel.browser.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "7230f6b1be4d1ad839b9a6ab45d0d70b4abc9a54",
@@ -13264,10 +13309,16 @@
     {
       "upstreamSha": "b4620d595554654c259ec7c0afb3d3d5532959a8",
       "subject": "fix(server): reject file rewind in shared workspaces (#12306)",
-      "reason": "Phase 8c (durable rewind): fix(server): reject file rewind in shared workspaces. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8c",
+      "evidence": [
+        "apps/server/src/orchestration/rewind.ts:1",
+        "apps/server/src/orchestration/rewind.test.ts:1",
+        "apps/web/src/components/chat/RewindDraftPanel.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "b4680cbfd064d59fdd2386a5ac6fc75e26e8c96b",
@@ -13599,10 +13650,16 @@
     {
       "upstreamSha": "b906ce2d73d025e801877f42a35b7a2f5629806f",
       "subject": "fix(server): recover opted-in threads after machine restarts (#9803)",
-      "reason": "Phase 8d (restart continuation): fix(server): recover opted-in threads after machine restarts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8d",
+      "evidence": [
+        "apps/server/src/provider/Layers/ProviderService.ts:1",
+        "apps/server/src/nextTurnQueue/restartTurns.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "b90898077e60290a1eb7bea4224f325fd3bb1595",
@@ -15893,10 +15950,17 @@
     {
       "upstreamSha": "d76b24dd15a219666941ab1b4967d8f738adcda0",
       "subject": "feat(codex): support async questions (#9512)",
-      "reason": "Phase 8b (durable questions and answers): feat(codex): support async questions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/persistence/Migrations/095_AttachmentOwnerKinds.test.ts:1",
+        "apps/web/src/components/chat/AsyncUserInputPanel.browser.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "d7736e06b6a4f8211f452908963fd23c4a04b2c4",
@@ -17071,10 +17135,17 @@
     {
       "upstreamSha": "e63ddb48e2fd23854a0b4a480b32cbf33e601981",
       "subject": "fix(threads): keep completed requests closed across clients (#10123)",
-      "reason": "Phase 8b: fix(threads): keep completed requests closed across clients. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1",
+        "apps/server/src/orchestration/Layers/TurnLifecycle.test.ts:1",
+        "apps/server/src/persistence/Migrations/095_AttachmentOwnerKinds.test.ts:1",
+        "apps/web/src/components/chat/AsyncUserInputPanel.browser.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "e65bc1c73e5e922216415b8e553bc74682d6810d",
@@ -17666,10 +17737,16 @@
     {
       "upstreamSha": "eed974c122e192de45b54b7dac7ca1a51448c08f",
       "subject": "fix(server): keep Claude rewind when fork history length changes (#11954)",
-      "reason": "Phase 8c (durable rewind): fix(server): keep Claude rewind when fork history length changes. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8c",
+      "evidence": [
+        "apps/server/src/orchestration/rewind.ts:1",
+        "apps/server/src/orchestration/rewind.test.ts:1",
+        "apps/web/src/components/chat/RewindDraftPanel.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "eee05575ebd514db36f61d7eb05d2258a10c96bd",
@@ -17742,10 +17819,16 @@
     {
       "upstreamSha": "efccda9ac9230db22b36990cffabdad218fa41b0",
       "subject": "feat: rewind conversations while keeping file changes (#11358)",
-      "reason": "Phase 8c (durable rewind): feat: rewind conversations while keeping file changes. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8c",
+      "evidence": [
+        "apps/server/src/orchestration/rewind.ts:1",
+        "apps/server/src/orchestration/rewind.test.ts:1",
+        "apps/web/src/components/chat/RewindDraftPanel.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "efcf7d1ac03e784bdb26843d61ae0ff81c03cec6",
@@ -18773,10 +18856,16 @@
     {
       "upstreamSha": "fd5553f1afcef4f410a067687faa991743b5034c",
       "subject": "fix: restore provider history and prompts when rewinding (#11338)",
-      "reason": "Phase 8c (durable rewind): fix: restore provider history and prompts when rewinding. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "8c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "8c",
+      "evidence": [
+        "apps/server/src/orchestration/rewind.ts:1",
+        "apps/server/src/orchestration/rewind.test.ts:1",
+        "apps/web/src/components/chat/RewindDraftPanel.tsx:1"
+      ],
+      "f5Shas": ["85eb4bbad40d7f10b1c1c096c2933e53db415f81"]
     },
     {
       "upstreamSha": "fd773172e7f26f2d98de3eb572f3317b0ad8d443",

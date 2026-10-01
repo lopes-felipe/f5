@@ -1,3 +1,6 @@
+import { Cause } from "effect";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   getProviderAttachmentLimitError,
   nativeProviderAttachments,
@@ -71,7 +74,11 @@ import {
   providerTurnMetricAttributes,
   withMetrics,
 } from "../../observability/Metrics.ts";
-import { type ProviderAdapterError, ProviderValidationError } from "../Errors.ts";
+import {
+  type ProviderAdapterError,
+  ProviderValidationError,
+  ProviderTurnDeliveryError,
+} from "../Errors.ts";
 import type { SharedInstructionInput } from "../sharedAssistantContract.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
@@ -1080,7 +1087,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const routed = yield* resolveRoutableSession({
             threadId: input.threadId,
             operation: "ProviderService.sendTurn",
-            allowRecovery: true,
+            allowRecovery: input.expectedTurnId === undefined,
             binding,
           });
           metricProvider = routed.adapter.provider;
@@ -1148,11 +1155,25 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             input.attachments,
             routed.adapter.provider,
           );
-          const turn = yield* routed.adapter.sendTurn({
-            ...input,
-            attachments: nativeAttachments,
-            resolvedAttachments,
-          });
+          if (input.expectedTurnId !== undefined && !routed.adapter.steerTurn) {
+            return yield* new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: false,
+              detail: "This provider does not support steering.",
+            });
+          }
+          const turn = yield* input.expectedTurnId !== undefined
+            ? routed.adapter.steerTurn!({
+                ...input,
+                expectedTurnId: input.expectedTurnId,
+                attachments: nativeAttachments,
+                resolvedAttachments,
+              })
+            : routed.adapter.sendTurn({
+                ...input,
+                attachments: nativeAttachments,
+                resolvedAttachments,
+              });
           const inlineIds = new Set(nativeAttachments.map((attachment) => attachment.id));
           const overflowImages = input.attachments.filter(
             (attachment) => attachment.type === "image" && !inlineIds.has(attachment.id),
@@ -1334,7 +1355,46 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.thread_id": input.threadId,
             "provider.request_id": input.requestId,
           });
-          yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, input.answers);
+          const paths: string[] = [];
+          const attachmentIssue = getProviderAttachmentLimitError(
+            input.attachments ?? [],
+            routed.adapter.provider,
+          );
+          if (attachmentIssue)
+            return yield* toValidationError("ProviderService.respondToUserInput", attachmentIssue);
+          for (const attachment of input.attachments ?? []) {
+            const localPath = resolveAttachmentPath({
+              attachmentsDir: serverConfig.attachmentsDir,
+              attachment,
+            });
+            if (!localPath)
+              return yield* toValidationError(
+                "ProviderService.respondToUserInput",
+                "The answer attachment path is invalid.",
+              );
+            const valid = yield* Effect.tryPromise(() => lstat(localPath)).pipe(
+              Effect.map((file) => file.isFile() && file.size === attachment.sizeBytes),
+              Effect.catch(() => Effect.succeed(false)),
+            );
+            if (!valid)
+              return yield* toValidationError(
+                "ProviderService.respondToUserInput",
+                "The answer attachment changed or is unavailable.",
+              );
+            paths.push(`saved at ${localPath}`);
+          }
+          const note = paths.join("\n");
+          const answers = paths.length
+            ? Object.fromEntries(
+                Object.entries(input.answers).map(([key, value]) => [
+                  key,
+                  isRecord(value) && Array.isArray(value.answers)
+                    ? { ...value, answers: [...value.answers, note] }
+                    : { answers: [...(Array.isArray(value) ? value : [String(value)]), note] },
+                ]),
+              )
+            : input.answers;
+          yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers);
         }).pipe(
           withMetrics({
             counter: providerTurnsTotal,
@@ -1509,6 +1569,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.num_turns": input.numTurns,
           });
           yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns);
+          const session = (yield* routed.adapter.listSessions()).find(
+            (session) => session.threadId === input.threadId,
+          );
+          if (session)
+            yield* directory.upsert({
+              threadId: input.threadId,
+              provider: routed.adapter.provider,
+              providerInstanceId: routed.instanceId,
+              status: "running",
+              resumeCursor: session.resumeCursor,
+              runtimePayload: toRuntimePayloadFromSession(session),
+            });
           yield* analytics.record("provider.conversation.rolled_back", {
             provider: routed.adapter.provider,
             turns: input.numTurns,
@@ -1685,10 +1757,43 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ).pipe(Effect.asVoid);
       });
 
+    const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
+    const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const markRestartTurns = Effect.gen(function* () {
+      if (Option.isNone(settingsOption) || Option.isNone(sqlOption)) return;
+      const settings = yield* settingsOption.value.getSettings;
+      const sql = sqlOption.value;
+      const sessions = yield* listSessions();
+      for (const session of sessions) {
+        if (!session.activeTurnId) continue;
+        const thread = (yield* sql<{
+          readonly projectId: string;
+        }>`SELECT project_id AS "projectId" FROM projection_threads WHERE thread_id = ${session.threadId}`)[0];
+        const enabled = thread
+          ? (settings.projectSettingsOverrides[
+              thread.projectId as import("@t3tools/contracts").ProjectId
+            ]?.resumeActiveTurnsAfterRestart ?? settings.resumeActiveTurnsAfterRestart)
+          : false;
+        if (!enabled) continue;
+        const continuation =
+          yield* sql`SELECT c.continuation_id FROM restart_continuations c LEFT JOIN provider_turn_deliveries d ON d.delivery_id = c.continuation_id WHERE c.thread_id = ${session.threadId} AND (c.provider_turn_id = ${session.activeTurnId} OR d.provider_turn_id = ${session.activeTurnId} OR d.state = 'sending' OR EXISTS (SELECT 1 FROM projection_turns t WHERE t.thread_id = c.thread_id AND t.turn_id = ${session.activeTurnId} AND t.pending_message_id = c.continuation_id))`;
+        if (continuation.length) continue;
+        const continuationId = `resume:${session.threadId}:${session.activeTurnId}`;
+        yield* sql`INSERT INTO restart_turn_markers VALUES (${session.threadId}, ${session.activeTurnId}, ${new Date().toISOString()}, ${continuationId}) ON CONFLICT(thread_id) DO UPDATE SET turn_id = excluded.turn_id, marked_at = excluded.marked_at, continuation_id = excluded.continuation_id`;
+      }
+    });
+
     const runStopAll = () =>
       Effect.gen(function* () {
         const threadIds = yield* directory.listThreadIds();
         const currentAdapters = yield* getAdapterEntries;
+        yield* markRestartTurns.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("failed to mark active turns for restart", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
         yield* Effect.forEach(currentAdapters, ([, adapter]) => adapter.stopAll()).pipe(
           Effect.asVoid,
         );

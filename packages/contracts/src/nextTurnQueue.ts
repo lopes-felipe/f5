@@ -40,6 +40,8 @@ export const QueueReasonCode = Schema.Literals([
   "delivery_ambiguous",
   "thread_archived",
   "thread_reverted",
+  "rewind_in_progress",
+  "reconciliation_required",
   "thread_compacting",
   "thread_compacted",
   "thread_deleted",
@@ -98,7 +100,7 @@ export const NextTurnQueueMutationResult = Schema.Struct({
 });
 export type NextTurnQueueMutationResult = typeof NextTurnQueueMutationResult.Type;
 
-export const TurnSubmissionIntent = Schema.Literals(["auto", "queue-tail", "queue-head"]);
+export const TurnSubmissionIntent = Schema.Literals(["auto", "queue-tail", "queue-head", "steer"]);
 export type TurnSubmissionIntent = typeof TurnSubmissionIntent.Type;
 
 const TurnSubmissionResultBase = {
@@ -109,6 +111,11 @@ export const TurnSubmissionResult = Schema.Union([
   Schema.Struct({
     ...TurnSubmissionResultBase,
     disposition: Schema.Literal("started"),
+    sequence: NonNegativeInt,
+  }),
+  Schema.Struct({
+    ...TurnSubmissionResultBase,
+    disposition: Schema.Literal("steered"),
     sequence: NonNegativeInt,
   }),
   Schema.Struct({
@@ -170,6 +177,12 @@ export const NextTurnQueueRetryInput = Schema.Struct({
   expectedUpdatedAt: Schema.optional(IsoDateTime),
 });
 export type NextTurnQueueRetryInput = typeof NextTurnQueueRetryInput.Type;
+
+export const NextTurnQueueSteerInput = Schema.Struct({
+  itemId: CommandId,
+  expectedRevision: NonNegativeInt,
+});
+export type NextTurnQueueSteerInput = typeof NextTurnQueueSteerInput.Type;
 
 export const NextTurnQueuePromoteInput = Schema.Struct({
   itemId: CommandId,

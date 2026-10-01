@@ -1828,6 +1828,7 @@ function runtimeEventToActivities(
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -3302,6 +3303,7 @@ const make = Effect.gen(function* () {
       if (
         workflowExecutionProfile === "unattended-readonly" &&
         event.type === "user-input.requested" &&
+        event.payload.responseMode !== "message" &&
         profiledTurnId
       ) {
         // An unattended stage has no reply path, but asking once is a
@@ -3368,6 +3370,7 @@ const make = Effect.gen(function* () {
       if (
         workflowExecutionProfile === "attended-readonly" &&
         event.type === "user-input.requested" &&
+        event.payload.responseMode !== "message" &&
         profiledTurnId
       ) {
         // A pending author/investigator question is intentionally unbounded by
@@ -4077,12 +4080,20 @@ const make = Effect.gen(function* () {
       if (event.type === "turn.completed" || event.type === "turn.aborted") {
         const turnId = toTurnId(event.turnId);
         if (turnId) {
-          const pending = new Set<string>();
+          const pending = new Set<string>(
+            (thread.pendingUserInputs ?? [])
+              .filter((input) => input.responseMode !== "message" && input.turnId === turnId)
+              .map((input) => input.requestId),
+          );
           for (const activity of thread.activities) {
             const payload = activity.payload as Record<string, unknown> | null;
             const requestId = payload?.requestId;
             if (typeof requestId !== "string") continue;
-            if (activity.kind === "user-input.requested" && activity.turnId === turnId) {
+            if (
+              activity.kind === "user-input.requested" &&
+              activity.turnId === turnId &&
+              payload?.responseMode !== "message"
+            ) {
               pending.add(requestId);
             } else if (activity.kind === "user-input.resolved") {
               pending.delete(requestId);

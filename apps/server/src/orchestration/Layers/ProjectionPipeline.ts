@@ -1,3 +1,5 @@
+import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
+import { PendingUserInput } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -83,6 +85,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  pendingUserInputs: "projection.pending-user-inputs",
   planningWorkflows: "projection.planning-workflows",
   codeReviewWorkflows: "projection.code-review-workflows",
   investigationWorkflows: "projection.investigation-workflows",
@@ -123,6 +126,13 @@ function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
   return typeof requestId === "string" ? ApprovalRequestId.makeUnsafe(requestId) : null;
 }
 
+function retainedProjectionTurns(turns: ReadonlyArray<ProjectionTurn>, turnCount: number) {
+  return turns
+    .filter((turn) => turn.turnId !== null)
+    .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt))
+    .slice(0, turnCount);
+}
+
 function retainProjectionMessagesAfterRevert(
   messages: ReadonlyArray<ProjectionThreadMessage>,
   turns: ReadonlyArray<ProjectionTurn>,
@@ -130,12 +140,7 @@ function retainProjectionMessagesAfterRevert(
 ): ReadonlyArray<ProjectionThreadMessage> {
   const retainedMessageIds = new Set<string>();
   const retainedTurnIds = new Set<string>();
-  const keptTurns = turns.filter(
-    (turn) =>
-      turn.turnId !== null &&
-      turn.checkpointTurnCount !== null &&
-      turn.checkpointTurnCount <= turnCount,
-  );
+  const keptTurns = retainedProjectionTurns(turns, turnCount);
   for (const turn of keptTurns) {
     if (turn.turnId !== null) {
       retainedTurnIds.add(turn.turnId);
@@ -321,14 +326,9 @@ function retainProjectionActivitiesAfterRevert(
   turnCount: number,
 ): ReadonlyArray<ProjectionThreadActivity> {
   const retainedTurnIds = new Set<string>(
-    turns
-      .filter(
-        (turn) =>
-          turn.turnId !== null &&
-          turn.checkpointTurnCount !== null &&
-          turn.checkpointTurnCount <= turnCount,
-      )
-      .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+    retainedProjectionTurns(turns, turnCount).flatMap((turn) =>
+      turn.turnId === null ? [] : [turn.turnId],
+    ),
   );
   return activities.filter(
     (activity) => activity.turnId === null || retainedTurnIds.has(activity.turnId),
@@ -341,14 +341,9 @@ function retainProjectionProposedPlansAfterRevert(
   turnCount: number,
 ): ReadonlyArray<ProjectionThreadProposedPlan> {
   const retainedTurnIds = new Set<string>(
-    turns
-      .filter(
-        (turn) =>
-          turn.turnId !== null &&
-          turn.checkpointTurnCount !== null &&
-          turn.checkpointTurnCount <= turnCount,
-      )
-      .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+    retainedProjectionTurns(turns, turnCount).flatMap((turn) =>
+      turn.turnId === null ? [] : [turn.turnId],
+    ),
   );
   return proposedPlans.filter(
     (proposedPlan) => proposedPlan.turnId === null || retainedTurnIds.has(proposedPlan.turnId),
@@ -1513,14 +1508,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             threadId: event.payload.threadId,
           });
           const retainedTurnIds = new Set(
-            existingTurns
-              .filter(
-                (turn) =>
-                  turn.turnId !== null &&
-                  turn.checkpointTurnCount !== null &&
-                  turn.checkpointTurnCount <= event.payload.turnCount,
-              )
-              .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+            retainedProjectionTurns(existingTurns, event.payload.turnCount).flatMap((turn) =>
+              turn.turnId === null ? [] : [turn.turnId],
+            ),
           );
           const removedTurnIds = [
             ...new Set(
@@ -1579,14 +1569,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             threadId: event.payload.threadId,
           });
           const retainedTurnIds = new Set(
-            existingTurns
-              .filter(
-                (turn) =>
-                  turn.turnId !== null &&
-                  turn.checkpointTurnCount !== null &&
-                  turn.checkpointTurnCount <= event.payload.turnCount,
-              )
-              .flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+            retainedProjectionTurns(existingTurns, event.payload.turnCount).flatMap((turn) =>
+              turn.turnId === null ? [] : [turn.turnId],
+            ),
           );
           const removedTurnIds = existingRows
             .filter((row) => !retainedTurnIds.has(row.turnId))
@@ -2040,12 +2025,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           const existingTurns = yield* projectionTurnRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const keptTurns = existingTurns.filter(
-            (turn) =>
-              turn.turnId !== null &&
-              turn.checkpointTurnCount !== null &&
-              turn.checkpointTurnCount <= event.payload.turnCount,
-          );
+          const keptTurns = retainedProjectionTurns(existingTurns, event.payload.turnCount);
           yield* projectionTurnRepository.deleteByThreadId({
             threadId: event.payload.threadId,
           });
@@ -2186,7 +2166,65 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       );
     });
 
+  const applyPendingUserInputsProjection = (event: OrchestrationEvent) =>
+    Effect.gen(function* () {
+      if (
+        event.type !== "thread.activity-appended" &&
+        event.type !== "thread.user-input-resolved" &&
+        event.type !== "thread.reverted" &&
+        event.type !== "thread.session-set"
+      )
+        return;
+      if (
+        event.type === "thread.activity-appended" &&
+        event.payload.activity.kind !== "user-input.requested" &&
+        event.payload.activity.kind !== "user-input.resolved"
+      )
+        return;
+      if (
+        event.type === "thread.session-set" &&
+        (event.payload.session.activeTurnId !== null || event.payload.session.status === "starting")
+      )
+        return;
+      const threadId = event.payload.threadId;
+      const rows = yield* sql<{
+        readonly payload: string;
+      }>`SELECT payload_json AS payload FROM projection_pending_user_inputs WHERE thread_id = ${threadId} AND resolution IS NULL`;
+      const current: PendingUserInput[] = [];
+      for (const row of rows) {
+        const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(PendingUserInput))(
+          row.payload,
+        );
+        if (decoded._tag === "Some") current.push(decoded.value);
+        else yield* Effect.logWarning("Skipping invalid pending user input", { threadId });
+      }
+      const pendingEvent =
+        event.type === "thread.reverted" && event.payload.retainedTurnIds === undefined
+          ? {
+              ...event,
+              payload: {
+                ...event.payload,
+                retainedTurnIds: retainedProjectionTurns(
+                  yield* projectionTurnRepository.listByThreadId({ threadId }),
+                  event.payload.turnCount,
+                ).flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+              },
+            }
+          : event;
+      const next = projectPendingUserInputs(current, pendingEvent);
+      for (const input of current)
+        if (!next.some((candidate) => candidate.requestId === input.requestId)) {
+          yield* sql`UPDATE projection_pending_user_inputs SET resolution = 'resolved' WHERE thread_id = ${threadId} AND request_id = ${input.requestId}`;
+        }
+      for (const input of next)
+        yield* sql`INSERT OR IGNORE INTO projection_pending_user_inputs(thread_id, request_id, payload_json) VALUES (${threadId}, ${input.requestId}, ${JSON.stringify(input)})`;
+    }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.pendingUserInputs")));
+
   const projectors: ReadonlyArray<ProjectorDefinition> = [
+    {
+      name: ORCHESTRATION_PROJECTOR_NAMES.pendingUserInputs,
+      apply: applyPendingUserInputsProjection,
+    },
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.projects,
       apply: applyProjectsProjection,

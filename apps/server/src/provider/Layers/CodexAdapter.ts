@@ -1,3 +1,4 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   formatCodexUsageError,
   mergeCodexLimitSnapshot,
@@ -19,6 +20,7 @@ import {
   type ProviderStartOptions,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
+  EventId,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -1402,6 +1404,39 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/completed") {
+    const asyncItem = asObject(asObject(event.payload)?.item);
+    if (
+      asyncItem?.type === "agentMessage" &&
+      asyncItem.delivery === "async" &&
+      Array.isArray(asyncItem.questions) &&
+      asyncItem.questions.length
+    ) {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          eventId: EventId.makeUnsafe(`codex-async:${canonicalThreadId}:${String(asyncItem.id)}`),
+          type: "user-input.requested",
+          requestId: RuntimeRequestId.makeUnsafe(
+            `codex-async:${canonicalThreadId}:${String(asyncItem.id)}`,
+          ),
+          payload: {
+            responseMode: "message",
+            questions: asyncItem.questions.map((value, index) => {
+              const question = asObject(value);
+              return {
+                id: String(index),
+                header: "Question",
+                question: asString(question?.title) ?? "Question",
+                options: (Array.isArray(question?.options) ? question.options : [])
+                  .filter((label): label is string => typeof label === "string")
+                  .map((label) => ({ label, description: label })),
+                multiSelect: false,
+              };
+            }),
+          },
+        },
+      ];
+    }
     const payload = asObject(event.payload);
     const item = asObject(payload?.item);
     const source = item ?? payload;
@@ -2350,6 +2385,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           try: () => {
             const managerInput = {
               threadId: input.threadId,
+              ...(input.expectedTurnId ? { expectedTurnId: input.expectedTurnId } : {}),
               ...(providerInput !== undefined ? { input: providerInput } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
               ...(input.modelOptions?.codex?.reasoningEffort !== undefined
@@ -2573,9 +2609,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
       startSession,
       sendTurn,
+      steerTurn: sendTurn,
       interruptTurn,
       readThread,
       rollbackThread,

@@ -813,6 +813,17 @@ routing.layer("ProviderServiceLive routing", (it) => {
         ...attachment,
         localPath: attachmentPath,
       });
+      yield* provider.respondToUserInput({
+        threadId,
+        requestId: asRequestId("answer-with-media"),
+        answers: { choices: ["A", "B"], record: { answers: ["C"] }, scalar: "D" },
+        attachments: [attachment],
+      });
+      assert.deepEqual(codex.respondToUserInput.mock.calls.at(-1)?.[2], {
+        choices: { answers: ["A", "B", `saved at ${attachmentPath}`] },
+        record: { answers: ["C", `saved at ${attachmentPath}`] },
+        scalar: { answers: ["D", `saved at ${attachmentPath}`] },
+      });
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {

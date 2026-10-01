@@ -2284,6 +2284,38 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps an async agent message to a question with a stable identity", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const fiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("async-event"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/completed",
+        payload: {
+          item: {
+            type: "agentMessage",
+            id: "async-question",
+            delivery: "async",
+            questions: [{ title: "Choose", options: ["A", "B"] }, { title: "Type an answer" }],
+          },
+        },
+      } satisfies ProviderEvent);
+      const result = yield* Fiber.join(fiber);
+      assert.equal(result._tag, "Some");
+      if (result._tag !== "Some" || result.value.type !== "user-input.requested")
+        throw new Error("Expected a question");
+      assert.equal(result.value.eventId, "codex-async:thread-1:async-question");
+      assert.equal(result.value.payload.responseMode, "message");
+      assert.equal(result.value.payload.questions.length, 2);
+      assert.equal(result.value.payload.questions[0]?.options[0]?.label, "A");
+    }),
+  );
+
   it.effect(
     "maps requestUserInput requests and answered notifications to canonical user-input events",
     () =>

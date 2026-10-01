@@ -1,3 +1,4 @@
+import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type OrchestrationEvent,
@@ -1151,6 +1152,22 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       return threads === state.threads ? state : { ...state, threads };
     }
 
+    case "thread.user-input-resolved":
+      return {
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.id === event.payload.threadId
+            ? {
+                ...thread,
+                pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
+              }
+            : thread,
+        ),
+      };
+    case "thread.conversation-revert-requested":
+    case "thread.rewind-draft-resolved":
+    case "thread.turn-steer-requested":
+      return state;
     case "thread.turn-interrupt-requested": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
         const latestTurn =
@@ -1194,6 +1211,21 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "thread.reverted": {
       const detailGate = gateThreadDetailMutations(state, event.payload.threadId, event);
       const threads = updateThread(detailGate.state.threads, event.payload.threadId, (thread) => {
+        const pendingUserInputs = projectPendingUserInputs(thread.pendingUserInputs ?? [], {
+          ...event,
+          payload: {
+            ...event.payload,
+            retainedTurnIds:
+              event.payload.retainedTurnIds ??
+              thread.turnDiffSummaries
+                .filter(
+                  (summary) =>
+                    summary.checkpointTurnCount !== undefined &&
+                    summary.checkpointTurnCount <= event.payload.turnCount,
+                )
+                .map((summary) => summary.turnId),
+          },
+        });
         if (!detailGate.applyDetailMutations) {
           const nextSession =
             thread.session?.tokenUsageSource === undefined
@@ -1206,12 +1238,14 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             thread.estimatedContextTokens === null &&
             thread.estimatedThinkingTokens === null &&
             nextSession === thread.session &&
+            pendingUserInputs.length === (thread.pendingUserInputs?.length ?? 0) &&
             thread.lastInteractionAt === event.occurredAt
           ) {
             return thread;
           }
           return {
             ...thread,
+            pendingUserInputs,
             ...(nextSession !== thread.session ? { session: nextSession } : {}),
             estimatedContextTokens: null,
             estimatedThinkingTokens: null,
@@ -1228,7 +1262,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             (left, right) => (left.checkpointTurnCount ?? 0) - (right.checkpointTurnCount ?? 0),
           )
           .slice(-MAX_THREAD_CHECKPOINTS);
-        const retainedTurnIds = new Set(turnDiffSummaries.map((summary) => summary.turnId));
+        const retainedTurnIds = new Set(
+          event.payload.retainedTurnIds ?? turnDiffSummaries.map((summary) => summary.turnId),
+        );
         const messages = retainThreadMessagesAfterRevert(
           thread.messages,
           retainedTurnIds,
@@ -1279,6 +1315,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         }
         return {
           ...thread,
+          pendingUserInputs,
           turnDiffSummaries,
           messages,
           commandExecutions,
@@ -1337,7 +1374,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
               }
             : thread.latestTurn;
         const error = visibleThreadSessionError(event.payload.threadId, event.payload.session);
+        const pendingUserInputs = projectPendingUserInputs(thread.pendingUserInputs ?? [], event);
         if (
+          pendingUserInputs.length === (thread.pendingUserInputs ?? []).length &&
           session === thread.session &&
           latestTurn === thread.latestTurn &&
           error === thread.error &&
@@ -1350,6 +1389,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(session !== thread.session ? { session } : {}),
+          pendingUserInputs,
           ...(latestTurn !== thread.latestTurn ? { latestTurn } : {}),
           ...(error !== thread.error ? { error } : {}),
           ...(nextEstimatedContextTokens !== thread.estimatedContextTokens
@@ -1467,6 +1507,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(activities !== thread.activities ? { activities } : {}),
+          pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
           lastInteractionAt: event.occurredAt,
         };
       });

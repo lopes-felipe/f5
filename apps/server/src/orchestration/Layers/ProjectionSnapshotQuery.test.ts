@@ -310,6 +310,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(snapshot.threads, [
         {
           id: ThreadId.makeUnsafe("thread-1"),
+          pendingUserInputs: [],
+          rewindDrafts: [],
           projectId: asProjectId("project-1"),
           title: "Thread 1",
           titleSource: "legacy",

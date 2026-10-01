@@ -1,3 +1,5 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
+import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import { claudeLimitState } from "../usageLimitMessages.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
@@ -164,6 +166,7 @@ type PromptQueueItem =
     };
 
 interface ClaudeTurnState {
+  readonly synthetic?: boolean;
   readonly turnId: TurnId;
   readonly startedAt: string;
   readonly items: Array<unknown>;
@@ -263,6 +266,8 @@ interface ClaudeRuntimeWarningOptions {
 }
 
 interface ClaudeSessionContext {
+  readonly startInput: ProviderSessionStartInput;
+  readonly turnBoundaries: Array<{ turnId: string; assistantUuid: string }>;
   session: ProviderSession;
   readonly providerInstanceId: ProviderInstanceId;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -2220,6 +2225,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
+          turnBoundaries: context.turnBoundaries.slice(-200),
           ...(context.lastTotalCostUsd !== undefined
             ? { lastTotalCostUsd: context.lastTotalCostUsd }
             : {}),
@@ -2995,6 +3001,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           status === "failed" && context.resumeInvalidatedTurnId === turnState.turnId;
         const approximateTurnChars = approximateContextCharsFromTurnItems(turnState.items);
         if (!invalidResumeFailure) {
+          if (context.lastAssistantUuid) {
+            context.turnBoundaries.push({
+              turnId: turnState.turnId,
+              assistantUuid: context.lastAssistantUuid,
+            });
+            if (context.turnBoundaries.length > 200)
+              context.turnBoundaries.splice(0, context.turnBoundaries.length - 200);
+          }
           context.turns.push({
             id: turnState.turnId,
             items: [...turnState.items],
@@ -3579,6 +3593,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
           const startedAt = yield* nowIso;
           context.turnState = {
+            synthetic: true,
             turnId,
             startedAt,
             items: [],
@@ -5174,7 +5189,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return filtered ? { extraArgs: filtered } : {};
           })(),
           ...(Object.keys(settings).length > 0 ? { settings } : {}),
-          ...(existingResumeSessionId ? { resume: existingResumeSessionId } : {}),
+          ...(existingResumeSessionId
+            ? {
+                resume: existingResumeSessionId,
+                ...(resumeState?.turnBoundaries?.some(
+                  (boundary) => boundary.assistantUuid === resumeState.resumeSessionAt,
+                )
+                  ? { resumeSessionAt: resumeState.resumeSessionAt }
+                  : {}),
+              }
+            : {}),
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
@@ -5227,6 +5251,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? { resumeSessionAt: resumeState.resumeSessionAt }
               : {}),
             turnCount: resumeState?.turnCount ?? 0,
+            ...(resumeState?.turnBoundaries ? { turnBoundaries: resumeState.turnBoundaries } : {}),
             ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
           },
           createdAt: startedAt,
@@ -5234,6 +5259,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const context: ClaudeSessionContext = {
+          startInput: input,
+          turnBoundaries: [...(resumeState?.turnBoundaries ?? [])],
           session,
           providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
@@ -5246,7 +5273,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resumeSessionId: sessionId,
           pendingApprovals,
           pendingUserInputs,
-          turns: [],
+          turns: (resumeState?.turnBoundaries ?? []).map((boundary) => ({
+            id: TurnId.makeUnsafe(boundary.turnId),
+            items: [],
+            approximateChars: 0,
+          })),
           inFlightTools,
           taskStates,
           taskModelsByTool: new Map(),
@@ -5372,7 +5403,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         );
         yield* ensureLive;
 
-        if (context.turnState) {
+        if (context.turnState && !context.turnState.synthetic) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "A Claude turn is already active. Use steering to add a prompt.",
+          });
+        }
+        if (context.turnState?.synthetic) {
           // Auto-close a stale synthetic turn (from background agent responses
           // between user prompts) to prevent blocking the user's next turn.
           yield* completeTurn(context, "completed");
@@ -5485,6 +5523,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const updatedAt = yield* nowIso;
         yield* ensureLive;
         context.turnState = turnState;
+        context.lastAssistantUuid = undefined;
         context.session = {
           ...context.session,
           status: "running",
@@ -5538,6 +5577,39 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       withThreadLock(input.threadId, sendTurnUnlocked(input));
 
+    const steerTurn: NonNullable<ClaudeAdapterShape["steerTurn"]> = (input) =>
+      withThreadLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(input.threadId);
+          if (
+            !context.turnState ||
+            context.turnState.synthetic ||
+            context.turnState.turnId !== input.expectedTurnId
+          ) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/steer",
+              detail: "The active turn changed before steering.",
+            });
+          }
+          const message = yield* buildUserMessageEffect(input, {
+            fileSystem,
+            attachmentsDir: serverConfig.attachmentsDir,
+            allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
+          });
+          if (context.stopped || context.turnState?.turnId !== input.expectedTurnId) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/steer",
+              detail: "The turn ended before steering.",
+            });
+          }
+          yield* Queue.offer(context.promptQueue, { type: "message", message });
+          return { threadId: input.threadId, turnId: input.expectedTurnId };
+        }),
+      );
+
     const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (threadId, turnId) =>
       withThreadLock(
         threadId,
@@ -5565,17 +5637,57 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       });
 
     const rollbackThread: ClaudeAdapterShape["rollbackThread"] = (threadId, numTurns) =>
-      Effect.gen(function* () {
-        const context = yield* requireSession(threadId);
-        const nextLength = Math.max(0, context.turns.length - numTurns);
-        context.turns.splice(nextLength);
-        context.approximateConversationChars = context.turns.reduce(
-          (total, turn) => total + turn.approximateChars,
-          0,
-        );
-        yield* updateResumeCursor(context);
-        return yield* snapshotThread(context);
-      });
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = yield* requireSession(threadId);
+          if (context.turnState)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/rollback",
+              detail: "Interrupt the active turn before rewinding.",
+            });
+          if (!Number.isInteger(numTurns) || numTurns < 1)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/rollback",
+              detail: "numTurns must be an integer greater than zero.",
+            });
+          const retainedTurnId =
+            context.turns[Math.max(0, context.turns.length - numTurns) - 1]?.id;
+          const retainedBoundaryIndex = context.turnBoundaries.findIndex(
+            (boundary) => boundary.turnId === retainedTurnId,
+          );
+          if (
+            retainedTurnId !== undefined &&
+            (retainedBoundaryIndex < 0 || !context.resumeSessionId)
+          )
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "thread/rollback",
+              detail:
+                "The retained Claude turn has no reliable assistant boundary; conversation history was preserved.",
+            });
+          const nextLength = retainedBoundaryIndex + 1;
+          const boundaries = context.turnBoundaries.slice(0, nextLength);
+          const boundary = boundaries.at(-1);
+          const cursor =
+            boundary && context.resumeSessionId
+              ? {
+                  ...(context.session.resumeCursor as Record<string, unknown>),
+                  resume: context.resumeSessionId,
+                  resumeSessionAt: boundary.assistantUuid,
+                  turnBoundaries: boundaries,
+                  turnCount: nextLength,
+                }
+              : undefined;
+          // Reopen the SDK query at the retained assistant boundary. Trimming the
+          // local turn list alone leaves the provider remembering reverted turns.
+          yield* startSessionUnlocked({ ...context.startInput, resumeCursor: cursor });
+          const restarted = yield* requireSession(threadId);
+          return yield* snapshotThread(restarted);
+        }),
+      );
 
     const respondToRequest: ClaudeAdapterShape["respondToRequest"] = (
       threadId,
@@ -5662,9 +5774,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       provider: PROVIDER,
       capabilities: {
         sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
       startSession,
       sendTurn,
+      steerTurn,
       runOneOffPrompt,
       compactConversation,
       interruptTurn,

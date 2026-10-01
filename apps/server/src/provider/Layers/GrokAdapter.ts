@@ -1,3 +1,4 @@
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
 import { acpElicitationForm } from "../acp/AcpElicitationForm.ts";
 import {
@@ -961,6 +962,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 issue:
                   "Native compaction is disabled for this Antigravity instance. Use F5’s Compact action or enable native compaction in Settings.",
               });
+            if (
+              input.expectedTurnId &&
+              (ctx.activeTurnId !== input.expectedTurnId || ctx.promptsInFlight === 0)
+            )
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "turn/steer",
+                detail: "The active turn ended or changed before steering.",
+              });
             const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
             const turnId = steeringTurnId ?? TurnId.make(yield* Random.nextUUIDv4);
             ctx.promptsInFlight += 1;
@@ -1301,9 +1311,13 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      capabilities: {
+        sessionModelSwitch: "in-session",
+        runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
+      },
       startSession,
       sendTurn,
+      steerTurn: sendTurn,
       interruptTurn,
       readThread,
       rollbackThread,

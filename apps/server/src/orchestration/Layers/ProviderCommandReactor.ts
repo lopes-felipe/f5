@@ -1,3 +1,4 @@
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readProjectSettings } from "../../project/projectSettings";
 import { isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
 import { ensureWorkspaceDirectory } from "../../provider/workspaceDirectory.ts";
@@ -49,6 +50,7 @@ import {
   ProviderAdapterRequestError,
   ProviderAdapterValidationError,
   ProviderServiceError,
+  ProviderSessionNotFoundError,
   ProviderTurnDeliveryError,
   ProviderUnsupportedError,
   ProviderValidationError,
@@ -94,6 +96,7 @@ type ProviderIntentEvent = Extract<
       | "thread.title-regeneration-started"
       | "thread.deleted"
       | "thread.turn-start-requested"
+      | "thread.turn-steer-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
@@ -291,6 +294,7 @@ function buildGeneratedWorktreeBranchName(raw: string, configuredPrefix: string)
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const git = yield* GitCore;
@@ -1349,7 +1353,10 @@ const make = Effect.gen(function* () {
   const titleRegenerationWorker = yield* makeDrainableWorker(processTitleRegenerationStartedSafely);
 
   const processTurnStartRequested = Effect.fnUntraced(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+    event: Extract<
+      ProviderIntentEvent,
+      { type: "thread.turn-start-requested" | "thread.turn-steer-requested" }
+    >,
   ) {
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
@@ -1379,6 +1386,17 @@ const make = Effect.gen(function* () {
         certainty: "not_sent",
         retryable: false,
         detail,
+      });
+    }
+
+    if (event.type === "thread.turn-steer-requested") {
+      return yield* providerService.sendTurn({
+        threadId: thread.id,
+        ...(event.commandId ? { deliveryId: event.commandId } : {}),
+        expectedTurnId: event.payload.expectedTurnId,
+        input: message.text,
+        attachments: message.attachments ?? [],
+        interactionMode: event.payload.interactionMode,
       });
     }
 
@@ -1633,12 +1651,19 @@ const make = Effect.gen(function* () {
   const processUserInputResponseRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.user-input-response-requested" }>,
   ) {
+    const releaseAttachments = Option.isSome(sqlOption)
+      ? sqlOption.value`DELETE FROM attachment_owners WHERE owner_kind = 'user_input' AND owner_id = ${event.payload.requestId} AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${event.payload.threadId})`.pipe(
+          Effect.asVoid,
+        )
+      : Effect.void;
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
+      yield* releaseAttachments;
       return;
     }
     const hasSession = thread.session && thread.session.status !== "stopped";
     if (!hasSession) {
+      yield* releaseAttachments;
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.user-input.respond.failed",
@@ -1655,18 +1680,24 @@ const make = Effect.gen(function* () {
         threadId: event.payload.threadId,
         requestId: event.payload.requestId,
         answers: event.payload.answers,
+        attachments: event.payload.attachments ?? [],
       })
       .pipe(
+        Effect.onInterrupt(() => releaseAttachments.pipe(Effect.ignore)),
         Effect.catchCause((cause) =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.user-input.respond.failed",
-            summary: "Provider user input response failed",
-            detail: Cause.pretty(cause),
-            turnId: null,
-            createdAt: event.payload.createdAt,
-            requestId: event.payload.requestId,
-          }),
+          releaseAttachments.pipe(
+            Effect.andThen(
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.user-input.respond.failed",
+                summary: "Provider user input response failed",
+                detail: Cause.pretty(cause),
+                turnId: null,
+                createdAt: event.payload.createdAt,
+                requestId: event.payload.requestId,
+              }),
+            ),
+          ),
         ),
       );
   });
@@ -2086,6 +2117,7 @@ const make = Effect.gen(function* () {
         if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
         const definitelyNotSent =
           Schema.is(ProviderValidationError)(error) ||
+          Schema.is(ProviderSessionNotFoundError)(error) ||
           Schema.is(ProviderUnsupportedError)(error) ||
           Schema.is(ProviderAdapterValidationError)(error);
         const detail = definitelyNotSent

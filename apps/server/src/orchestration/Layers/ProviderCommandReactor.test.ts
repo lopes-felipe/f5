@@ -3499,6 +3499,35 @@ describe("ProviderCommandReactor", () => {
 
     await Effect.runPromise(
       harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.makeUnsafe("cmd-user-input-requested"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        createdAt: now,
+        activity: {
+          id: EventId.makeUnsafe("user-input-requested"),
+          kind: "user-input.requested",
+          tone: "info",
+          summary: "Question",
+          turnId: null,
+          createdAt: now,
+          payload: {
+            requestId: "user-input-request-1",
+            questions: [
+              {
+                id: "sandbox_mode",
+                header: "Sandbox",
+                question: "Choose a sandbox",
+                options: [],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.makeUnsafe("cmd-user-input-respond"),
         threadId: ThreadId.makeUnsafe("thread-1"),
@@ -3514,6 +3543,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.respondToUserInput.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
       requestId: "user-input-request-1",
+      attachments: [],
       answers: {
         sandbox_mode: "workspace-write",
       },

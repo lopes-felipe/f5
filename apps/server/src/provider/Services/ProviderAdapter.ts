@@ -34,6 +34,7 @@ export interface ProviderAdapterCapabilities {
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
   readonly nativeTurnIdempotency?: boolean;
+  readonly runtimeCapabilities?: import("@t3tools/contracts").ProviderRuntimeCapabilities;
 }
 
 export interface ProviderThreadTurnSnapshot {
@@ -102,6 +103,10 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Send a turn to an active provider session.
    */
+  readonly steerTurn?: (
+    input: ProviderAdapterSendTurnInput & { readonly expectedTurnId: TurnId },
+  ) => Effect.Effect<ProviderTurnStartResult, TError>;
+
   readonly sendTurn: (
     input: ProviderAdapterSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;

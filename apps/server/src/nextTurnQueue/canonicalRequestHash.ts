@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { ClientThreadTurnStartCommand } from "@t3tools/contracts";
+import type { ClientThreadTurnStartCommand, ThreadTurnStartCommand } from "@t3tools/contracts";
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -12,9 +12,11 @@ function canonicalize(value: unknown): unknown {
   );
 }
 
-export function canonicalRequestHash(command: ClientThreadTurnStartCommand): string {
+export function canonicalRequestHash(
+  command: ClientThreadTurnStartCommand | ThreadTurnStartCommand,
+): string {
   const attachments = command.message.attachments.map((entry) => {
-    if (entry.type === "upload") return entry;
+    if (entry.type === "upload" || !("dataUrl" in entry)) return entry;
     const { dataUrl, ...attachment } = entry;
     return { ...attachment, contentDigest: createHash("sha256").update(dataUrl).digest("hex") };
   });

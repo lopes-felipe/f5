@@ -156,14 +156,21 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.mapError(mapError("ProviderTurnDelivery.claim")));
 
   const markAccepted: ProviderTurnDeliveryRepositoryShape["markAccepted"] = (input) =>
-    sql`
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`
       UPDATE provider_turn_deliveries
       SET state = 'accepted', provider_turn_id = ${input.providerTurnId}, certainty = NULL,
           error_code = NULL, error_detail = NULL, not_before = NULL,
           outcome_projected_at = NULL, updated_at = ${new Date().toISOString()}
       WHERE delivery_id = ${input.deliveryId}
         AND state IN ('sending', 'rejected', 'ambiguous')
-    `.pipe(Effect.asVoid, Effect.mapError(mapError("ProviderTurnDelivery.markAccepted")));
+    `;
+          yield* sql`UPDATE restart_continuations SET provider_turn_id = ${input.providerTurnId} WHERE continuation_id = ${input.deliveryId}`;
+        }),
+      )
+      .pipe(Effect.asVoid, Effect.mapError(mapError("ProviderTurnDelivery.markAccepted")));
 
   const markRejected: ProviderTurnDeliveryRepositoryShape["markRejected"] = (input) =>
     sql`

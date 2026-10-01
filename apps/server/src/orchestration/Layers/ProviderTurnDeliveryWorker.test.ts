@@ -28,6 +28,7 @@ let providerReadFails = false;
 let pendingBarrier = true;
 let reconciliationCount = 0;
 let acceptSend = false;
+let methodNotFound = false;
 let reconciliationFails = false;
 let extraReplayDelivery: ProviderTurnDelivery | null = null;
 let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
@@ -60,6 +61,7 @@ function resetDelivery() {
   pendingBarrier = true;
   reconciliationCount = 0;
   acceptSend = false;
+  methodNotFound = false;
   reconciliationFails = false;
   extraReplayDelivery = null;
   providerTurns = [];
@@ -143,9 +145,11 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(ProviderCommandReactor, {
       deliverTurnStart: () =>
-        acceptSend
-          ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
-          : Effect.fail(new Error("session not found after request write")),
+        methodNotFound
+          ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
+          : acceptSend
+            ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
+            : Effect.fail(new Error("session not found after request write")),
       recordTurnStartFailure: () => Effect.void,
     } as never),
   ),
@@ -321,5 +325,50 @@ it.effect("returns accepted from Recheck even when cleanup fails", () =>
     assert.equal(delivery?.state, "accepted");
     assert.equal(state.state, "accepted");
     assert.equal(pendingBarrier, true);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a steer disconnected after acceptance is ambiguous and never retried on restart", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = {
+      ...state,
+      state: "sending",
+      event: {
+        ...state.event,
+        type: "thread.turn-steer-requested",
+        payload: { expectedTurnId: TurnId.makeUnsafe("busy-turn") },
+      } as never,
+    };
+    providerTurns = [
+      { id: TurnId.makeUnsafe("busy-turn"), items: [] },
+      { id: TurnId.makeUnsafe("later-turn"), items: [] },
+    ];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "ambiguous");
+    assert.equal(requeueCount, 0);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Codex method-not-found wrapped by provider delivery is a definite steer rejection", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    methodNotFound = true;
+    state = {
+      ...state,
+      event: {
+        ...state.event,
+        type: "thread.turn-steer-requested",
+        payload: { expectedTurnId: TurnId.makeUnsafe("busy-turn") },
+      } as never,
+    };
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "rejected");
+    assert.equal(state.certainty, "not_sent");
+    assert.equal(requeueCount, 0);
   }).pipe(Effect.provide(testLayer)),
 );

@@ -57,6 +57,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "workflow.new",
   "chat.scrollToBottom",
   "chat.queueTurn",
+  "chat.steerTurn",
   "chat.queueTurnNext",
   "composer.stash",
   "composer.pasteAsText",

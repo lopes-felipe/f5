@@ -117,7 +117,19 @@ import { Effect } from "effect";
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
+import Migration0094 from "./Migrations/094_ProjectionPendingUserInputs.ts";
+
+import Migration0095 from "./Migrations/095_AttachmentOwnerKinds.ts";
+
+import Migration0096 from "./Migrations/096_RewindOperations.ts";
+
+import Migration0097 from "./Migrations/097_RestartTurnMarkers.ts";
+
 export const MIGRATIONS = {
+  "97_RestartTurnMarkers": Migration0097,
+  "96_RewindOperations": Migration0096,
+  "95_AttachmentOwnerKinds": Migration0095,
+  "94_ProjectionPendingUserInputs": Migration0094,
   "93_AttachmentUploads": Migration0093,
   "1_OrchestrationEvents": Migration0001,
   "2_OrchestrationCommandReceipts": Migration0002,

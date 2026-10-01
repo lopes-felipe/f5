@@ -298,6 +298,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),
   ),
+  followUpBehavior: Schema.Literals(["queue", "steer"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("queue" as const)),
+    Schema.withDecodingDefault(() => "queue" as const),
+  ),
   sendShortcut: Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"]).pipe(
     Schema.withConstructorDefault(() => Option.some("enter")),
     Schema.withDecodingDefault(() => "enter" as const),

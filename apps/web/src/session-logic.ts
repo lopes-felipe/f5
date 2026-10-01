@@ -137,6 +137,7 @@ export interface PendingApproval {
 }
 
 export interface PendingUserInput {
+  responseMode?: "message" | undefined;
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
@@ -482,6 +483,7 @@ export function derivePendingUserInputs(
       }
       openByRequestId.set(requestId, {
         requestId,
+        ...(payload?.responseMode === "message" ? { responseMode: "message" as const } : {}),
         createdAt: activity.createdAt,
         questions,
       });

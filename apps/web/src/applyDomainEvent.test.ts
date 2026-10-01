@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   CheckpointRef,
   CommandId,
   EventId,
@@ -616,6 +617,59 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.latestTurn?.turnId).toBe(turnId);
   });
 
+  for (const detailsLoaded of [true, false])
+    it(`drops questions from discarded turns when thread details are ${detailsLoaded ? "loaded" : "unloaded"}`, () => {
+      const pending = (turnId: string) => ({
+        requestId: ApprovalRequestId.makeUnsafe(`question:${turnId}`),
+        turnId: TurnId.makeUnsafe(turnId),
+        createdAt: "2026-04-01T09:00:00.000Z",
+        responseMode: "message" as const,
+        questions: [],
+      });
+      const kept = pending("kept-turn");
+      const state = makeState({
+        threads: [
+          makeThread({ detailsLoaded, pendingUserInputs: [kept, pending("discarded-turn")] }),
+        ],
+      });
+      const next = applyDomainEvent(
+        state,
+        makeEvent("thread.reverted", {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnCount: 1,
+          retainedTurnIds: [TurnId.makeUnsafe("kept-turn")],
+        }),
+      );
+      expect(next.threads[0]?.pendingUserInputs).toEqual([kept]);
+    });
+
+  it("clears blocking questions on an otherwise unchanged terminal session event", () => {
+    const event = makeEvent("thread.session-set", {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      session: {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: "2026-04-01T09:06:00.000Z",
+      },
+    });
+    const initial = applyDomainEvent(makeState(), event);
+    const pending = {
+      requestId: ApprovalRequestId.makeUnsafe("blocking-question"),
+      turnId: null,
+      createdAt: "2026-04-01T09:06:00.000Z",
+      questions: [],
+    };
+    const state = {
+      ...initial,
+      threads: initial.threads.map((thread) => ({ ...thread, pendingUserInputs: [pending] })),
+    };
+    expect(applyDomainEvent(state, event).threads[0]?.pendingUserInputs).toEqual([]);
+  });
+
   it("preserves token usage source across session updates that omit token metadata", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const afterUsage = applyDomainEvent(
@@ -1095,6 +1149,21 @@ describe("applyDomainEvent", () => {
       completedAt: "2026-04-01T09:01:40.000Z",
       assistantMessageId: MessageId.makeUnsafe("assistant-1"),
     });
+    const noGit = applyDomainEvent(
+      {
+        ...initialState,
+        threads: initialState.threads.map((thread) => ({ ...thread, turnDiffSummaries: [] })),
+      },
+      makeEvent("thread.reverted", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnCount: 1,
+        retainedTurnIds: [turn1],
+      }),
+    );
+    expect(noGit.threads[0]?.messages).toEqual(next.threads[0]?.messages);
+    expect(noGit.threads[0]?.activities).toEqual(next.threads[0]?.activities);
+    expect(noGit.threads[0]?.proposedPlans).toEqual(next.threads[0]?.proposedPlans);
+    expect(noGit.threads[0]?.commandExecutions).toEqual(next.threads[0]?.commandExecutions);
   });
 
   it("ignores stale command execution recorded events", () => {

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useStore } from "~/store";
 import { readNativeApi } from "~/nativeApi";
 import { rewriteComposerRuntimeSkillInvocationForSend } from "../ChatView.logic";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "~/nextTurnQueueStore";
@@ -59,13 +60,16 @@ export function NextTurnQueuePanel({
   provider,
   runtimeSlashCommands,
   projectSkills,
+  turnSteering = false,
 }: {
   readonly threadId: ThreadId;
+  readonly turnSteering?: boolean | undefined;
   readonly provider?: ProviderKind | null;
   readonly runtimeSlashCommands?: CompactRuntimeConfiguredActivityPayload["slashCommands"] | null;
   readonly projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
 }) {
   const connection = useWsConnectionState();
+  const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
   const state = useNextTurnQueueStore(
     (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
   );
@@ -500,6 +504,26 @@ export function NextTurnQueuePanel({
                     ];
                     await reorder(next);
                   }}
+                  canSteer={
+                    turnSteering &&
+                    Boolean(
+                      thread?.session?.activeTurnId &&
+                      thread.interactionMode === item.command.interactionMode &&
+                      thread.runtimeMode === item.command.runtimeMode,
+                    )
+                  }
+                  onSteer={async (candidate) =>
+                    runItemMutation(candidate, async () => {
+                      const api = readNativeApi();
+                      if (!api) throw new Error("Server connection is unavailable.");
+                      applySnapshot(
+                        await api.nextTurnQueue.steer({
+                          itemId: candidate.itemId,
+                          expectedRevision: snapshot.revision,
+                        }),
+                      );
+                    })
+                  }
                   onRunNow={async (candidate) =>
                     runItemMutation(candidate, async () => {
                       const api = readNativeApi();

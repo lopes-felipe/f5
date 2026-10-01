@@ -184,7 +184,8 @@ interface MessagesTimelineProps {
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
-  onRevertUserMessage: (messageId: MessageId) => void;
+  onRevertUserMessage: (messageId: MessageId, restoreFiles?: boolean) => void;
+  canRestoreFiles?: boolean | undefined;
   isRevertingCheckpoint: boolean;
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onImageActionMenu?:
@@ -268,6 +269,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
+  canRestoreFiles,
   isRevertingCheckpoint,
   onImageExpand,
   onImageActionMenu,
@@ -920,6 +922,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       {row.kind === "message" &&
         row.message.role === "user" &&
         (() => {
+          if (String(row.message.id).startsWith("resume:"))
+            return (
+              <div
+                className="my-4 flex items-center gap-3 text-xs text-muted-foreground"
+                role="separator"
+              >
+                <span className="h-px flex-1 bg-border" />
+                Resumed after restart
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            );
           const userImages = (row.message.attachments ?? []).filter(
             (attachment) => attachment.type === "image",
           );
@@ -1023,6 +1036,22 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     {displayedUserMessage.copyText && (
                       <MessageCopyButton text={displayedUserMessage.copyText} />
                     )}
+                    {canRevertAgentWork ? (
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        disabled={isRevertingCheckpoint || isWorking || !canRestoreFiles}
+                        onClick={() => onRevertUserMessage(row.message.id, true)}
+                        title={
+                          canRestoreFiles
+                            ? "Revert files too"
+                            : "File rewind requires an isolated worktree"
+                        }
+                      >
+                        Revert files too
+                      </Button>
+                    ) : null}
                     {canRevertAgentWork && (
                       <Button
                         type="button"
@@ -1030,9 +1059,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         variant="outline"
                         disabled={isRevertingCheckpoint || isWorking}
                         onClick={() => onRevertUserMessage(row.message.id)}
-                        title="Revert to this message"
+                        title="Revert and keep changes"
                       >
                         <Undo2Icon className="size-3" />
+                        <span>Revert and keep changes</span>
                       </Button>
                     )}
                   </div>

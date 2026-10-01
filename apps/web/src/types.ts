@@ -190,6 +190,8 @@ export interface Thread {
   compaction?: ThreadCompaction | null | undefined;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  pendingUserInputs?: ReadonlyArray<import("@t3tools/contracts").PendingUserInput> | undefined;
+  rewindDrafts?: ReadonlyArray<import("@t3tools/contracts").RewindDraft> | undefined;
   detailsLoaded: boolean;
   history?: ThreadHistoryState | undefined;
   tasks: TaskItem[];

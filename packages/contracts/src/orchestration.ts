@@ -1,3 +1,4 @@
+import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
@@ -755,7 +756,20 @@ export const ThreadTitleRegeneration = Schema.Struct({
 });
 export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
 
+export const RewindDraft = Schema.Struct({
+  operationId: CommandId,
+  targetMessageId: Schema.optional(MessageId),
+  restoreFiles: Schema.optional(Schema.Boolean),
+  error: Schema.optional(Schema.NullOr(Schema.String)),
+  text: Schema.String,
+  attachments: Schema.Array(ChatAttachment),
+  state: Schema.String,
+});
+export type RewindDraft = typeof RewindDraft.Type;
+
 export const OrchestrationThread = Schema.Struct({
+  rewindDrafts: Schema.optional(Schema.Array(RewindDraft)),
+  pendingUserInputs: Schema.optional(Schema.Array(PendingUserInput)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1207,10 +1221,19 @@ export const ThreadTurnStartCommand = Schema.Struct({
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  expectedTurnId: Schema.optional(TurnId),
+  presentation: Schema.optional(Schema.Literal("continuation")),
   dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
   createdAt: IsoDateTime,
 });
 export type ThreadTurnStartCommand = typeof ThreadTurnStartCommand.Type;
+
+export const ThreadTurnSteerCommand = Schema.Struct({
+  ...ThreadTurnStartCommand.fields,
+  type: Schema.Literal("thread.turn.steer"),
+  expectedTurnId: TurnId,
+});
+export type ThreadTurnSteerCommand = typeof ThreadTurnSteerCommand.Type;
 
 export const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
@@ -1236,6 +1259,8 @@ export const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  expectedTurnId: Schema.optional(TurnId),
+  presentation: Schema.optional(Schema.Literal("continuation")),
   dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
   createdAt: IsoDateTime,
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
@@ -1264,6 +1289,33 @@ const ThreadUserInputRespondCommand = Schema.Struct({
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  createdAt: IsoDateTime,
+});
+
+const ThreadUserInputDismissCommand = Schema.Struct({
+  type: Schema.Literal("thread.user-input.dismiss"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadConversationRevertCommand = Schema.Struct({
+  type: Schema.Literal("thread.conversation.revert"),
+  commandId: CommandId,
+  operationId: CommandId,
+  threadId: ThreadId,
+  targetMessageId: MessageId,
+  restoreFiles: Schema.Boolean,
+  expectedRevision: Schema.optional(NonNegativeInt),
+  createdAt: IsoDateTime,
+});
+const ThreadRewindDraftResolveCommand = Schema.Struct({
+  type: Schema.Literal("thread.rewind-draft.resolve"),
+  commandId: CommandId,
+  operationId: CommandId,
+  threadId: ThreadId,
   createdAt: IsoDateTime,
 });
 
@@ -1313,10 +1365,14 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
+  ThreadTurnSteerCommand,
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
+  ThreadConversationRevertCommand,
+  ThreadRewindDraftResolveCommand,
   ThreadSessionStopCommand,
   ThreadCompactRequestCommand,
 ]);
@@ -1344,10 +1400,21 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
+  Schema.Struct({
+    ...ClientThreadTurnStartCommand.fields,
+    type: Schema.Literal("thread.turn.steer"),
+    expectedTurnId: TurnId,
+  }),
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
-  ThreadUserInputRespondCommand,
+  Schema.Struct({
+    ...ThreadUserInputRespondCommand.fields,
+    attachments: Schema.optional(Schema.Array(UploadChatAttachment)),
+  }),
+  ThreadUserInputDismissCommand,
   ThreadCheckpointRevertCommand,
+  ThreadConversationRevertCommand,
+  ThreadRewindDraftResolveCommand,
   ThreadSessionStopCommand,
   ThreadCompactRequestCommand,
 ]);
@@ -1457,6 +1524,8 @@ const ThreadSessionNotesRecordCommand = Schema.Struct({
 });
 
 const ThreadRevertCompleteCommand = Schema.Struct({
+  retainedTurnIds: Schema.optional(Schema.Array(TurnId)),
+  operationId: Schema.optional(CommandId),
   type: Schema.Literal("thread.revert.complete"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1605,10 +1674,14 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.interaction-mode-set",
   "thread.message-sent",
   "thread.turn-start-requested",
+  "thread.turn-steer-requested",
   "thread.turn-interrupt-requested",
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
+  "thread.user-input-resolved",
   "thread.checkpoint-revert-requested",
+  "thread.conversation-revert-requested",
+  "thread.rewind-draft-resolved",
   "thread.reverted",
   "thread.session-stop-requested",
   "thread.session-set",
@@ -1886,6 +1959,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
 });
 
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
+  expectedTurnId: Schema.optional(TurnId),
+  presentation: Schema.optional(Schema.Literal("continuation")),
   threadId: ThreadId,
   messageId: MessageId,
   provider: Schema.optional(ProviderKind),
@@ -1920,9 +1995,21 @@ export const ThreadApprovalResponseRequestedPayload = Schema.Struct({
 });
 
 const ThreadUserInputResponseRequestedPayload = Schema.Struct({
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
   threadId: ThreadId,
   requestId: ApprovalRequestId,
   answers: ProviderUserInputAnswers,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadUserInputResolvedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: ApprovalRequestId,
+  resolution: Schema.Literals(["answered", "dismissed"]),
+  answers: Schema.optional(ProviderUserInputAnswers),
+  attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  deliveryQueueItemId: Schema.optional(CommandId),
+  command: Schema.optional(ThreadTurnStartCommand),
   createdAt: IsoDateTime,
 });
 
@@ -1933,6 +2020,8 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
 });
 
 export const ThreadRevertedPayload = Schema.Struct({
+  retainedTurnIds: Schema.optional(Schema.Array(TurnId)),
+  operationId: Schema.optional(CommandId),
   threadId: ThreadId,
   turnCount: NonNegativeInt,
 });
@@ -2224,6 +2313,11 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.turn-steer-requested"),
+    payload: Schema.Struct({ ...ThreadTurnStartRequestedPayload.fields, expectedTurnId: TurnId }),
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.turn-interrupt-requested"),
     payload: ThreadTurnInterruptRequestedPayload,
   }),
@@ -2236,6 +2330,21 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.user-input-response-requested"),
     payload: ThreadUserInputResponseRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.user-input-resolved"),
+    payload: ThreadUserInputResolvedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.conversation-revert-requested"),
+    payload: Schema.Struct({ ...ThreadConversationRevertCommand.fields }),
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.rewind-draft-resolved"),
+    payload: Schema.Struct({ operationId: CommandId, threadId: ThreadId }),
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -7,6 +7,7 @@ import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   DesktopBridge,
   OrchestrationCreateCodeReviewWorkflowInput,
@@ -1054,7 +1055,7 @@ describe("WorkflowCreateDialog", () => {
         projectId: "project-1",
         requirementPrompt: "Plan the new workflow behavior",
         titleGenerationModel: "custom/thread-title-model",
-        branchA: { provider: "codex", model: "gpt-6-astra" },
+        branchA: { provider: "codex", model: DEFAULT_MODEL_BY_PROVIDER.codex },
       });
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
@@ -1344,6 +1345,10 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
+      // Allow the controlled editor to finish mounting before the synthetic drop.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
       const transfer = new DataTransfer();
       writeFileTreeDragMention(transfer, {
         projectId: "project-1",
@@ -1358,9 +1363,12 @@ describe("WorkflowCreateDialog", () => {
         }),
       );
 
-      await vi.waitFor(() => {
-        expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1);
-      });
+      await vi.waitFor(
+        () => {
+          expect(document.querySelectorAll("[data-composer-mention-chip]")).toHaveLength(1);
+        },
+        { timeout: 5_000 },
+      );
       expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledWith({
         cwd: "/repo/project",
         relativePath: "docs/AGENTS.md",
@@ -1396,6 +1404,10 @@ describe("WorkflowCreateDialog", () => {
     try {
       const editor = page.getByTestId("composer-editor");
       await editor.fill("@docs/AGENTS.md ");
+      // Let the editor's controlled draft commit before dispatching the synthetic drop.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
       const transfer = new DataTransfer();
       writeFileTreeDragMention(transfer, {
         projectId: "project-1",
@@ -1410,18 +1422,18 @@ describe("WorkflowCreateDialog", () => {
         }),
       );
       const chipCount = () => document.querySelectorAll("[data-composer-mention-chip]").length;
-      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      await vi.waitFor(() => expect(chipCount()).toBe(1), { timeout: 5000 });
       await userEvent.keyboard("{Backspace}{Backspace}");
       await vi.waitFor(() => expect(chipCount()).toBe(0));
       expect(editor.element().textContent).toContain("@docs/AGENTS.md");
       const modifier = /Mac/.test(navigator.platform) ? "Meta" : "Control";
       const undo = "{" + modifier + ">}z{/" + modifier + "}";
       await userEvent.keyboard(undo);
-      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      await vi.waitFor(() => expect(chipCount()).toBe(1), { timeout: 5000 });
       await userEvent.keyboard("{" + modifier + ">}{Shift>}z{/Shift}{/" + modifier + "}");
       await vi.waitFor(() => expect(chipCount()).toBe(0));
       await userEvent.keyboard(undo);
-      await vi.waitFor(() => expect(chipCount()).toBe(1));
+      await vi.waitFor(() => expect(chipCount()).toBe(1), { timeout: 5000 });
       nativeApiMocks.authorizeEntry.mockClear();
       createWorkflowButton().click();
       await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));

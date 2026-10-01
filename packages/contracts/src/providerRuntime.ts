@@ -434,23 +434,11 @@ const RequestResolvedPayload = Schema.Struct({
 });
 export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
-const UserInputQuestionOption = Schema.Struct({
-  label: TrimmedNonEmptyStringSchema,
-  description: TrimmedNonEmptyStringSchema,
-});
-export type UserInputQuestionOption = typeof UserInputQuestionOption.Type;
-
-export const UserInputQuestion = Schema.Struct({
-  id: TrimmedNonEmptyStringSchema,
-  header: TrimmedNonEmptyStringSchema,
-  question: TrimmedNonEmptyStringSchema,
-  options: Schema.Array(UserInputQuestionOption),
-  multiSelect: Schema.optional(Schema.Boolean),
-  optional: Schema.optional(Schema.Boolean),
-});
-export type UserInputQuestion = typeof UserInputQuestion.Type;
+export { UserInputQuestion, type UserInputQuestionOption } from "./userInput";
+import { UserInputQuestion } from "./userInput";
 
 const UserInputRequestedPayload = Schema.Struct({
+  responseMode: Schema.optional(Schema.Literal("message")),
   questions: Schema.Array(UserInputQuestion),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;

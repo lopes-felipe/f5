@@ -9,6 +9,7 @@ import {
   EventId,
   type ProviderEvent,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 
 import {
@@ -46,6 +47,7 @@ function createSendTurnHarness(input?: {
     session: {
       provider: "codex",
       status: "ready",
+      activeTurnId: undefined as TurnId | undefined,
       threadId: "thread_1",
       runtimeMode: "full-access",
       model: "gpt-5.3-codex",
@@ -882,6 +884,37 @@ describe("startSession", () => {
 });
 
 describe("sendTurn", () => {
+  it("steers the active native turn without starting another turn", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    context.session.activeTurnId = TurnId.makeUnsafe("turn_busy");
+    sendRequest.mockResolvedValueOnce({ turnId: "turn_busy" });
+    await expect(
+      manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Add coverage",
+        expectedTurnId: context.session.activeTurnId,
+      }),
+    ).resolves.toEqual({ threadId: "thread_1", turnId: "turn_busy" });
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(sendRequest).toHaveBeenCalledWith(context, "turn/steer", {
+      threadId: "thread_1",
+      input: [{ type: "text", text: "Add coverage", text_elements: [] }],
+      expectedTurnId: "turn_busy",
+    });
+  });
+
+  it("rejects a stale steer before native delivery", async () => {
+    const { manager, sendRequest } = createSendTurnHarness();
+    await expect(
+      manager.sendTurn({
+        threadId: asThreadId("thread_1"),
+        input: "Add coverage",
+        expectedTurnId: TurnId.makeUnsafe("turn_busy"),
+      }),
+    ).rejects.toMatchObject({ code: -32602 });
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       description: "omits the previous limit when the new model has no catalog limit",

@@ -1,5 +1,5 @@
 import { CommandId, TurnId } from "@t3tools/contracts";
-import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Duration, Effect, Layer, PubSub, Schema, Stream } from "effect";
 
 import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
@@ -66,8 +66,6 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
     );
 
-  let worker: DrainableWorker<CommandId>;
-
   const processDelivery = (deliveryId: CommandId) =>
     Effect.gen(function* () {
       const actionable = yield* repository.listActionable;
@@ -80,7 +78,10 @@ const make = Effect.gen(function* () {
       );
       const claimed = yield* repository.claim(deliveryId, preSendTurnIds);
       if (!claimed) return;
-      if (claimed.event.type !== "thread.turn-start-requested") {
+      if (
+        claimed.event.type !== "thread.turn-start-requested" &&
+        claimed.event.type !== "thread.turn-steer-requested"
+      ) {
         yield* markRejected({
           deliveryId,
           commandId: claimed.commandId,
@@ -106,7 +107,22 @@ const make = Effect.gen(function* () {
 
       const error = exit._tag === "Failure" ? Cause.squash(exit.cause) : null;
       const typedDeliveryError = Schema.is(ProviderTurnDeliveryError)(error) ? error : null;
-      const notSent = typedDeliveryError?.certainty === "not_sent";
+      const steering = claimed.event.type === "thread.turn-steer-requested";
+      let rejected = false;
+      let nested: unknown = error;
+      const seen = new Set<unknown>();
+      while (nested && typeof nested === "object" && !seen.has(nested)) {
+        seen.add(nested);
+        if (
+          ("code" in nested && typeof nested.code === "number" && nested.code < 0) ||
+          ("method" in nested &&
+            nested.method === "turn/steer" &&
+            !("cause" in nested && nested.cause))
+        )
+          rejected = true;
+        nested = "cause" in nested ? nested.cause : undefined;
+      }
+      const notSent = typedDeliveryError?.certainty === "not_sent" || (steering && rejected);
       if (
         exit._tag === "Failure" &&
         (typedDeliveryError === null || typedDeliveryError.certainty === "unknown")
@@ -120,7 +136,7 @@ const make = Effect.gen(function* () {
       const detail =
         typedDeliveryError?.message ??
         "The provider delivery outcome is unknown. Recheck provider history before retrying.";
-      if (notSent && typedDeliveryError?.retryable === true && claimed.attempt < 3) {
+      if (!steering && notSent && typedDeliveryError?.retryable === true && claimed.attempt < 3) {
         const delayMs = Math.min(30_000, 1_000 * 2 ** Math.max(0, claimed.attempt - 1));
         yield* repository.requeue({
           deliveryId,
@@ -132,15 +148,16 @@ const make = Effect.gen(function* () {
         yield* PubSub.publish(delayed, [deliveryId, delayMs] as const);
         return;
       }
-      yield* reactor.recordTurnStartFailure(claimed.event, detail).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("failed to record terminal provider delivery error", {
-            deliveryId,
-            threadId: claimed.threadId,
-            cause: Cause.pretty(cause),
-          }),
-        ),
-      );
+      if (!steering)
+        yield* reactor.recordTurnStartFailure(claimed.event, detail).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("failed to record terminal provider delivery error", {
+              deliveryId,
+              threadId: claimed.threadId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
       yield* markRejected({
         deliveryId,
         commandId: claimed.commandId,
@@ -162,7 +179,18 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  worker = yield* makeDrainableWorker(processDelivery);
+  // ACP starts await the entire prompt. Steers must reach the adapter while
+  // that prompt is in flight; each lane retains its own delivery order.
+  const worker = yield* makeDrainableWorker(processDelivery);
+  const steerWorker = yield* makeDrainableWorker(processDelivery);
+  const enqueue = (delivery: { deliveryId: CommandId; event: { type: string } }) =>
+    (delivery.event.type === "thread.turn-steer-requested" ? steerWorker : worker).enqueue(
+      delivery.deliveryId,
+    );
+  const enqueueById = (deliveryId: CommandId) =>
+    repository
+      .getByCommandId(deliveryId)
+      .pipe(Effect.flatMap((delivery) => (delivery ? enqueue(delivery) : Effect.void)));
 
   const reconcileSending = Effect.gen(function* () {
     const sending = yield* repository.listSending;
@@ -173,7 +201,7 @@ const make = Effect.gen(function* () {
           Effect.flatMap((snapshot) => {
             const before = new Set(delivery.preSendTurnIds);
             const added = snapshot.turns.filter((turn) => !before.has(turn.id));
-            return added.length === 1
+            return delivery.event.type !== "thread.turn-steer-requested" && added.length === 1
               ? markAccepted({
                   deliveryId: delivery.deliveryId,
                   commandId: delivery.commandId,
@@ -208,7 +236,7 @@ const make = Effect.gen(function* () {
 
   const enqueueActionable = repository.listActionable.pipe(
     Effect.flatMap((deliveries) =>
-      Effect.forEach(deliveries, (delivery) => worker.enqueue(delivery.deliveryId), {
+      Effect.forEach(deliveries, (delivery) => enqueue(delivery), {
         discard: true,
       }),
     ),
@@ -261,11 +289,11 @@ const make = Effect.gen(function* () {
       ),
     );
     yield* Stream.runForEach(engine.streamDomainEvents, (event) =>
-      event.type === "thread.turn-start-requested" && event.commandId !== null
+      (event.type === "thread.turn-start-requested" ||
+        event.type === "thread.turn-steer-requested") &&
+      event.commandId !== null
         ? repository.getByCommandId(event.commandId).pipe(
-            Effect.flatMap((delivery) =>
-              delivery ? worker.enqueue(delivery.deliveryId) : Effect.void,
-            ),
+            Effect.flatMap((delivery) => (delivery ? enqueue(delivery) : Effect.void)),
             Effect.catchCause((cause) =>
               Effect.logError("failed to enqueue durable provider delivery", {
                 commandId: event.commandId,
@@ -277,7 +305,7 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.forkScoped);
     yield* Stream.runForEach(Stream.fromPubSub(delayed), ([deliveryId, delayMs]) =>
       Effect.sleep(Duration.millis(delayMs)).pipe(
-        Effect.andThen(worker.enqueue(deliveryId)),
+        Effect.andThen(enqueueById(deliveryId)),
         Effect.forkScoped,
         Effect.asVoid,
       ),
@@ -314,7 +342,8 @@ const make = Effect.gen(function* () {
       if (!snapshot) return delivery;
       const before = new Set(delivery.preSendTurnIds);
       const added = snapshot.turns.filter((turn) => !before.has(turn.id));
-      if (added.length !== 1) return delivery;
+      if (delivery.event.type === "thread.turn-steer-requested" || added.length !== 1)
+        return delivery;
       yield* markAccepted({
         deliveryId: delivery.deliveryId,
         commandId: delivery.commandId,
@@ -355,7 +384,7 @@ const make = Effect.gen(function* () {
           ),
         );
       }
-      yield* worker.enqueue(retried.deliveryId);
+      yield* enqueue(retried);
       return retried;
     }).pipe(
       Effect.mapError((error) =>
@@ -384,7 +413,9 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    // Starts can remain active while new steers arrive. Observe the steer lane
+    // after the start lane drains so shutdown also waits for those deliveries.
+    drain: worker.drain.pipe(Effect.andThen(steerWorker.drain)),
     outcomes: Stream.fromPubSub(outcomes),
     acknowledgeOutcome: (deliveryId) =>
       repository

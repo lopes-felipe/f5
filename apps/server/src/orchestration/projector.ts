@@ -1,5 +1,6 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import type { ProviderKind } from "@t3tools/contracts";
+import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
 import {
   CodeReviewWorkflow,
   InvestigationWorkflow,
@@ -1135,6 +1136,21 @@ export function projectEvent(
         })),
       );
 
+    case "thread.user-input-resolved":
+      return Effect.succeed({
+        ...nextBase,
+        threads: nextBase.threads.map((thread) =>
+          thread.id === event.payload.threadId
+            ? {
+                ...thread,
+                pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
+              }
+            : thread,
+        ),
+      });
+    case "thread.conversation-revert-requested":
+    case "thread.rewind-draft-resolved":
+    case "thread.turn-steer-requested":
     case "thread.turn-interrupt-requested":
     case "thread.approval-response-requested":
     case "thread.user-input-response-requested":
@@ -1249,6 +1265,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             session: nextSession,
+            pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
             estimatedContextTokens:
               nextSession.estimatedContextTokens ?? thread.estimatedContextTokens ?? null,
             estimatedThinkingTokens:
@@ -1419,7 +1436,9 @@ export function projectEvent(
             .filter((entry) => entry.checkpointTurnCount <= payload.turnCount)
             .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
             .slice(-MAX_THREAD_CHECKPOINTS);
-          const retainedTurnIds = new Set(checkpoints.map((checkpoint) => checkpoint.turnId));
+          const retainedTurnIds = new Set(
+            payload.retainedTurnIds ?? checkpoints.map((checkpoint) => checkpoint.turnId),
+          );
           const messages = retainThreadMessagesAfterRevert(
             thread.messages,
             retainedTurnIds,
@@ -1459,6 +1478,11 @@ export function projectEvent(
               checkpoints,
               messages,
               proposedPlans,
+              pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], {
+                ...event,
+                type: "thread.reverted",
+                payload: { ...payload, retainedTurnIds: [...retainedTurnIds] },
+              }),
               // TodoWrite tasks are stored as the latest runtime snapshot.
               // Revert clears them so discarded-turn tasks do not remain visible.
               tasks: [],
@@ -1500,6 +1524,7 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               activities,
+              pendingUserInputs: projectPendingUserInputs(thread.pendingUserInputs ?? [], event),
               lastInteractionAt: event.occurredAt,
               updatedAt: event.occurredAt,
             }),

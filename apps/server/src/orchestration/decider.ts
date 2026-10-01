@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { CommandId, MessageId } from "@t3tools/contracts";
 import {
   MAX_PINNED_THREADS,
   SCRIPT_RUN_COMMAND_PATTERN,
@@ -1228,18 +1229,34 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.turn.steer":
     case "thread.turn.start": {
       const targetThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const steering = command.type === "thread.turn.steer";
+      if (
+        steering &&
+        (targetThread.session?.activeTurnId !== command.expectedTurnId ||
+          targetThread.interactionMode !== command.interactionMode ||
+          targetThread.runtimeMode !== command.runtimeMode ||
+          (command.model !== undefined && targetThread.model !== command.model) ||
+          (command.modelSelection !== undefined &&
+            JSON.stringify(targetThread.modelSelection) !== JSON.stringify(command.modelSelection)))
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The active turn, model, or mode changed before steering.",
+        });
+      }
       const threadIsBusy =
         targetThread.latestTurn?.state === "running" ||
         targetThread.session?.status === "starting" ||
         targetThread.session?.status === "running" ||
         targetThread.session?.activeTurnId != null;
-      if (threadIsBusy && command.dispatchSource === "next-turn-queue") {
+      if (threadIsBusy && !steering && command.dispatchSource === "next-turn-queue") {
         return yield* new ThreadTurnAlreadyActiveError({
           threadId: command.threadId,
           activeTurnId: targetThread.session?.activeTurnId ?? null,
@@ -1389,13 +1406,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { skillCall: command.message.skillCall }
             : {}),
           attachments: command.message.attachments,
-          turnId: null,
+          turnId: steering ? command.expectedTurnId! : null,
           streaming: false,
           createdAt: command.createdAt,
           updatedAt: command.createdAt,
         },
       };
-      const turnStartRequestedEvent: Omit<OrchestrationEvent, "sequence"> = {
+      const turnStartRequestedEvent = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1403,8 +1420,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         causationEventId: userMessageEvent.eventId,
-        type: "thread.turn-start-requested",
+        type: steering ? "thread.turn-steer-requested" : "thread.turn-start-requested",
         payload: {
+          ...(steering ? { expectedTurnId: command.expectedTurnId! } : {}),
+          ...(command.presentation ? { presentation: command.presentation } : {}),
           threadId: command.threadId,
           messageId: command.message.messageId,
           ...(command.provider !== undefined ? { provider: command.provider } : {}),
@@ -1437,7 +1456,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      return [...settingEvents, userMessageEvent, turnStartRequestedEvent];
+      return [
+        ...settingEvents,
+        userMessageEvent,
+        turnStartRequestedEvent as Omit<OrchestrationEvent, "sequence">,
+      ];
     }
 
     case "thread.turn.interrupt": {
@@ -1488,32 +1511,123 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.user-input.dismiss":
     case "thread.user-input.respond": {
-      yield* requireThread({
-        readModel,
-        command,
-        threadId: command.threadId,
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const pending = thread.pendingUserInputs?.find(
+        (input) => input.requestId === command.requestId,
+      );
+      if (thread.pendingUserInputs !== undefined && !pending)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This question was already answered or dismissed.",
+        });
+      const dismissed = command.type === "thread.user-input.dismiss";
+      const answers = dismissed ? {} : command.answers;
+      const attachments = dismissed ? [] : (command.attachments ?? []);
+      const base = withEventBase({
+        aggregateKind: "thread",
+        aggregateId: thread.id,
+        commandId: command.commandId,
+        occurredAt: command.createdAt,
       });
+      const queueCommand =
+        pending?.responseMode === "message" && !dismissed
+          ? {
+              type: "thread.turn.start" as const,
+              commandId: CommandId.makeUnsafe(`answer-delivery:${command.commandId}`),
+              threadId: thread.id,
+              message: {
+                messageId: MessageId.makeUnsafe(`answer:${command.commandId}`),
+                role: "user" as const,
+                text: JSON.stringify(answers),
+                attachments,
+              },
+              model: thread.model,
+              ...(thread.modelSelection ? { modelSelection: thread.modelSelection } : {}),
+              runtimeMode: thread.runtimeMode,
+              interactionMode: thread.interactionMode,
+              ...(thread.session?.activeTurnId
+                ? { expectedTurnId: thread.session.activeTurnId }
+                : {}),
+              createdAt: command.createdAt,
+            }
+          : undefined;
+      const resolved: Omit<OrchestrationEvent, "sequence"> = {
+        ...base,
+        type: "thread.user-input-resolved",
+        payload: {
+          threadId: thread.id,
+          requestId: command.requestId,
+          resolution: dismissed ? "dismissed" : "answered",
+          answers,
+          attachments,
+          ...(queueCommand
+            ? { command: queueCommand, deliveryQueueItemId: queueCommand.commandId }
+            : {}),
+          createdAt: command.createdAt,
+        },
+      };
+      if (pending?.responseMode === "message") return resolved;
+      return [
+        resolved,
+        {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            commandId: command.commandId,
+            occurredAt: command.createdAt,
+          }),
+          type: "thread.user-input-response-requested" as const,
+          payload: {
+            attachments,
+            threadId: thread.id,
+            requestId: command.requestId,
+            answers,
+            createdAt: command.createdAt,
+          },
+        },
+      ];
+    }
+
+    case "thread.rewind-draft.resolve":
+      yield* requireThread({ readModel, command, threadId: command.threadId });
       return {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
-          occurredAt: command.createdAt,
           commandId: command.commandId,
-          metadata: {
-            requestId: command.requestId,
-          },
+          occurredAt: command.createdAt,
         }),
-        type: "thread.user-input-response-requested",
-        payload: {
-          threadId: command.threadId,
-          requestId: command.requestId,
-          answers: command.answers,
-          createdAt: command.createdAt,
-        },
+        type: "thread.rewind-draft-resolved",
+        payload: { operationId: command.operationId, threadId: command.threadId },
+      };
+    case "thread.conversation.revert": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.session?.activeTurnId || thread.latestTurn?.state === "running")
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Interrupt the current turn before rewinding.",
+        });
+      if (
+        command.expectedRevision !== undefined &&
+        command.expectedRevision !== readModel.snapshotSequence
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The conversation changed before rewinding.",
+        });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: thread.id,
+          commandId: command.commandId,
+          occurredAt: command.createdAt,
+        }),
+        type: "thread.conversation-revert-requested",
+        payload: command,
       };
     }
-
     case "thread.checkpoint.revert": {
       yield* requireThread({
         readModel,
@@ -1793,6 +1907,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           turnCount: command.turnCount,
+          ...(command.operationId ? { operationId: command.operationId } : {}),
+          ...(command.retainedTurnIds ? { retainedTurnIds: command.retainedTurnIds } : {}),
         },
       };
     }

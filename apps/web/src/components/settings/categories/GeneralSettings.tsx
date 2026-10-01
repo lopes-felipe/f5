@@ -18,6 +18,9 @@ const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
+  const resumeActiveTurnsAfterRestart = useSettings(
+    (settings) => settings.resumeActiveTurnsAfterRestart,
+  );
   const defaultMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
   const { updateSettings: updateServerSettings } = useUpdateSettings();
   const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
@@ -161,6 +164,31 @@ export function GeneralSettings() {
             checked={settings.loadRemoteImagesInChat}
             onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
           />
+        </label>
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>Resume active turns after restart</span>
+          <Switch
+            aria-label="Resume active turns after restart"
+            checked={resumeActiveTurnsAfterRestart}
+            onCheckedChange={(value) =>
+              void updateServerSettings({ resumeActiveTurnsAfterRestart: value })
+            }
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4 py-2">
+          <span>Follow-up behavior</span>
+          <select
+            aria-label="Follow-up behavior"
+            value={settings.followUpBehavior}
+            onChange={(event) =>
+              updateSettings({
+                followUpBehavior: event.target.value === "steer" ? "steer" : "queue",
+              })
+            }
+          >
+            <option value="queue">Queue</option>
+            <option value="steer">Steer the active turn</option>
+          </select>
         </label>
         <p className="my-2 text-xs text-muted-foreground">Shift+Enter always inserts a new line.</p>
         <Select
