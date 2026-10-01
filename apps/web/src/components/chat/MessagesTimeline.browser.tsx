@@ -179,6 +179,9 @@ interface HarnessProps {
   onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
   onImageActionMenu?: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
   usesCustomImageContextMenu?: boolean;
+  revertTurnCountByUserMessageId?: Map<MessageId, number>;
+  onRevertUserMessage?: (messageId: MessageId, restoreFiles?: boolean) => void;
+  canRestoreFiles?: boolean;
 }
 
 interface TimelineHarnessApi {
@@ -265,8 +268,9 @@ function TimelineHarness(
             });
           }}
           onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
-          revertTurnCountByUserMessageId={new Map()}
-          onRevertUserMessage={() => {}}
+          revertTurnCountByUserMessageId={props.revertTurnCountByUserMessageId ?? new Map()}
+          onRevertUserMessage={props.onRevertUserMessage ?? (() => {})}
+          canRestoreFiles={props.canRestoreFiles}
           isRevertingCheckpoint={false}
           onImageExpand={() => {}}
           onImageActionMenu={props.onImageActionMenu}
@@ -1224,6 +1228,91 @@ describe("MessagesTimeline (LegendList)", () => {
 
       await vi.waitFor(() => {
         expect(clipboardWrite).toHaveBeenCalledWith(longText);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps short user bubbles tight when revert actions are available", async () => {
+    const messageId = "msg-short-bubble" as MessageId;
+    const host = document.createElement("div");
+    host.style.width = "900px";
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry(messageId, "test", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+        revertTurnCountByUserMessageId={new Map([[messageId, 1]])}
+        canRestoreFiles
+      />,
+      { container: host },
+    );
+
+    try {
+      let bubble: HTMLElement | null = null;
+      await vi.waitFor(() => {
+        bubble = host.querySelector<HTMLElement>('[data-slot="user-message-bubble"]');
+        expect(bubble).not.toBeNull();
+        expect(host.querySelector('button[title="Revert to this message"]')).not.toBeNull();
+      });
+      const bubbleRect = bubble!.getBoundingClientRect();
+      expect(bubbleRect.width).toBeLessThan(200);
+      // Hover actions live outside the bubble, so they must not add height to it.
+      expect(bubble!.querySelector("button")).toBeNull();
+      expect(bubbleRect.height).toBeLessThan(60);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("offers both revert modes from the user message revert menu", async () => {
+    const messageId = "msg-revert-menu" as MessageId;
+    const onRevertUserMessage = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+        revertTurnCountByUserMessageId={new Map([[messageId, 1]])}
+        onRevertUserMessage={onRevertUserMessage}
+        canRestoreFiles={false}
+      />,
+      { container: host },
+    );
+
+    try {
+      await page.getByRole("button", { name: "Revert to this message" }).click();
+      const restoreFilesItem = page.getByRole("menuitem", {
+        name: /Revert conversation and files/,
+      });
+      await vi.waitFor(() => {
+        expect(restoreFilesItem.element().getAttribute("aria-disabled")).toBe("true");
+        expect(restoreFilesItem.element().textContent).toContain("Requires an isolated worktree");
+      });
+
+      await page.getByRole("menuitem", { name: "Revert conversation, keep file changes" }).click();
+      await vi.waitFor(() => {
+        expect(onRevertUserMessage).toHaveBeenCalledTimes(1);
+        expect(onRevertUserMessage).toHaveBeenCalledWith(messageId);
+      });
+
+      await screen.rerender(
+        <TimelineHarness
+          initialEntries={[makeUserEntry(messageId, "revert me", 0)]}
+          onIsAtEndChangeSpy={() => {}}
+          revertTurnCountByUserMessageId={new Map([[messageId, 1]])}
+          onRevertUserMessage={onRevertUserMessage}
+          canRestoreFiles
+        />,
+      );
+      await page.getByRole("button", { name: "Revert to this message" }).click();
+      await page.getByRole("menuitem", { name: "Revert conversation and files" }).click();
+      await vi.waitFor(() => {
+        expect(onRevertUserMessage).toHaveBeenLastCalledWith(messageId, true);
       });
     } finally {
       await screen.unmount();
