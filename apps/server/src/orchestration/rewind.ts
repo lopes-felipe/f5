@@ -69,7 +69,11 @@ const contains = (parent: string, child: string) => {
   );
 };
 
-/** Relative rollback is performed once. Recovery verifies readback before doing anything else. */
+/**
+ * A rollback is only re-sent after read-back proves the provider history is
+ * unchanged, and only on an explicit user request. Recovery verifies read-back
+ * before doing anything else and never re-sends.
+ */
 export const makeConversationRewind = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const provider = yield* ProviderService;
@@ -151,6 +155,14 @@ export const makeConversationRewind = Effect.gen(function* () {
         // A prepared operation with an error already failed once. Leave the retry
         // (or cancel) to the user instead of re-sending it on every startup.
         if (op?.state === "prepared" && op.error !== null && !options.userInitiated) return;
+        // Cancel deletes the operation and its request together. A Retry that was
+        // queued behind the rewind gate must not recreate the operation afterwards.
+        if (
+          !op &&
+          (yield* sql`SELECT 1 FROM rewind_requests WHERE operation_id = ${request.operationId}`)
+            .length === 0
+        )
+          return;
         const snapshot = yield* provider.readThread(thread.id);
         const session = (yield* provider.listSessions()).find(
           (session) => session.threadId === thread.id,
@@ -255,26 +267,53 @@ export const makeConversationRewind = Effect.gen(function* () {
           // The read-back taken at the start of this run proves the rollback never
           // took effect, so the operation is as safe to retry as a prepared one.
           if (!options.userInitiated) {
-            // Recovery only records the finding; re-sending is left to the user.
-            yield* sql`UPDATE rewind_operations SET state = 'prepared', error = ${"The provider did not apply this rewind, so nothing was changed. Retry or cancel it."}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id}`;
+            // Recovery only records the finding; re-sending is left to the user. The
+            // queue says the rewind is waiting on them, not that it is still running.
+            const parked =
+              "The provider did not apply this rewind, so nothing was changed. Retry or cancel it.";
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`UPDATE rewind_operations SET state = 'prepared', error = ${parked}, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op!.operation_id}`;
+                yield* sql`UPDATE next_turn_queue_state SET paused = 1, pause_reason_code = 'reconciliation_required', pause_detail = ${parked}, revision = revision + 1 WHERE thread_id = ${request.threadId}`;
+              }),
+            );
             return;
           }
           yield* update(op.operation_id, "prepared");
           state = "prepared";
         }
         if (state === "prepared" && !verified(currentIds)) {
-          if (!untouched(currentIds))
+          if (!untouched(currentIds)) {
+            // Nothing was sent, so Cancel stays safe, but the thread keeps going with a
+            // projection that differs from the provider. Keep the evidence in the log.
+            yield* Effect.logWarning("rewind found provider history changed after prepare", {
+              threadId: request.threadId,
+              operationId: request.operationId,
+              providerTurnIds: currentIds,
+              expectedTurnIds: original,
+            });
             return yield* fail(
               "The provider history changed after this rewind was prepared. Cancel the rewind and start it again.",
             );
-          if (caps.rollbackAffectsFiles && !request.restoreFiles)
+          }
+          const captureKeepFiles = caps.rollbackAffectsFiles && !request.restoreFiles;
+          if (captureKeepFiles)
             yield* checkpoints.captureCheckpoint({ cwd: workspace!, checkpointRef: keepFilesRef });
           // Persist before the external call. A process death here requires readback,
           // even when the provider never received the rollback. The conditional claim
           // also loses cleanly against a concurrent cancel.
           const claimed =
             yield* sql`UPDATE rewind_operations SET state = 'provider-pending', error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id} AND state = 'prepared' RETURNING operation_id`;
-          if (claimed.length === 0) return yield* fail("This rewind was cancelled.");
+          if (claimed.length === 0) {
+            // The user cancelled while this run was preparing. Cancel already restored
+            // the queue and released the thread, so this is not a failure.
+            if (captureKeepFiles)
+              yield* checkpoints.deleteCheckpointRefs({
+                cwd: workspace!,
+                checkpointRefs: [keepFilesRef],
+              });
+            return;
+          }
           state = "provider-pending";
           const attempt = yield* Effect.exit(
             provider.rollbackConversation({

@@ -1600,7 +1600,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
         }),
         type: "thread.rewind-draft-resolved",
-        payload: { operationId: command.operationId, threadId: command.threadId },
+        payload: {
+          operationId: command.operationId,
+          threadId: command.threadId,
+          ...(command.intent !== undefined ? { intent: command.intent } : {}),
+        },
       };
     case "thread.conversation.revert": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });

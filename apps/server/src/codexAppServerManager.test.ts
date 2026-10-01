@@ -2315,22 +2315,76 @@ describe("thread checkpoint control", () => {
     const legacy = { thread: { id: "thread_1", turns: [{ id: "turn_1", items: [] }] } };
     sendRequest
       .mockRejectedValueOnce(unknownMethod)
+      .mockResolvedValueOnce(page("turn_1", "turn_2", "turn_3"))
       .mockResolvedValueOnce(legacy)
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
       .mockResolvedValueOnce(legacy);
 
     const result = await manager.rollbackThread(asThreadId("thread_1"), 2, "turn_2");
     await manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2");
 
+    // Each count-based rollback is preceded by a boundary check; revert is not retried.
     expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
       "thread/revert",
+      "thread/turns/list",
       "thread/rollback",
+      "thread/turns/list",
       "thread/rollback",
     ]);
-    expect(sendRequest).toHaveBeenNthCalledWith(2, context, "thread/rollback", {
+    expect(sendRequest).toHaveBeenNthCalledWith(3, context, "thread/rollback", {
       threadId: "thread_1",
       numTurns: 2,
     });
     expect(result).toEqual({ threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] });
+  });
+
+  it("refuses a count-based rollback when the boundary turn is no longer at the end", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    // An earlier rollback already dropped turn_2 and turn_3.
+    sendRequest.mockResolvedValueOnce(page("turn_1"));
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 2, "turn_2")).rejects.toThrow(
+      "refusing a count-based rollback",
+    );
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual(["thread/turns/list"]);
+  });
+
+  it("refuses further count-based rollbacks after one got no response", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    sendRequest
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockRejectedValueOnce(new Error("Timed out waiting for thread/rollback."));
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "Timed out",
+    );
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "may still apply",
+    );
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "thread/turns/list",
+      "thread/rollback",
+    ]);
+  });
+
+  it("keeps count-based rollback available after a definite rejection", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    (context as { revertUnsupported?: boolean }).revertUnsupported = true;
+    sendRequest
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockRejectedValueOnce(new CodexJsonRpcError("thread/rollback", -32600, "thread busy"))
+      .mockResolvedValueOnce(page("turn_1", "turn_2"))
+      .mockResolvedValueOnce({ thread: { id: "thread_1", turns: [{ id: "turn_1", items: [] }] } });
+
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).rejects.toThrow(
+      "thread busy",
+    );
+    await expect(manager.rollbackThread(asThreadId("thread_1"), 1, "turn_2")).resolves.toEqual({
+      threadId: "thread_1",
+      turns: [{ id: "turn_1", items: [] }],
+    });
   });
 
   it("does not fall back when thread/revert rejects the thread itself", async () => {

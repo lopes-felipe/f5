@@ -140,6 +140,8 @@ interface CodexSessionContext {
   turnPaginationUnsupported?: boolean;
   /** Set once the CLI rejects `thread/revert` as unknown; rollback then uses `thread/rollback`. */
   revertUnsupported?: boolean;
+  /** Set when a count-based `thread/rollback` got no response and may still apply. */
+  unsettledCountRollback?: boolean;
 }
 
 interface JsonRpcError {
@@ -1559,10 +1561,35 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
     }
 
-    const response = await this.sendRequest(context, "thread/rollback", {
-      threadId: providerThreadId,
-      numTurns,
-    });
+    // `thread/rollback` drops turns by count, so it must never be sent twice for one
+    // rewind. A request that got no response may still be applied later, so this
+    // session refuses further count-based rollbacks until it is replaced.
+    if (context.unsettledCountRollback) {
+      throw new Error(
+        "An earlier thread/rollback for this session never answered and may still apply. Restart the Codex session before retrying.",
+      );
+    }
+    if (beforeTurnId !== undefined) {
+      const snapshot = await this.readThread(threadId);
+      if (snapshot.turns.at(-numTurns)?.id !== beforeTurnId) {
+        throw new Error(
+          "Thread history no longer ends with the turns to drop; refusing a count-based rollback.",
+        );
+      }
+    }
+
+    let response: unknown;
+    try {
+      response = await this.sendRequest(context, "thread/rollback", {
+        threadId: providerThreadId,
+        numTurns,
+      });
+    } catch (error) {
+      // A JSON-RPC error is a definite rejection. Anything else (timeout, closed
+      // transport) leaves the outcome unknown.
+      if (!(error instanceof CodexJsonRpcError)) context.unsettledCountRollback = true;
+      throw error;
+    }
     this.updateSession(context, {
       status: "ready",
       activeTurnId: undefined,

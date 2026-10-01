@@ -119,7 +119,9 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
     }
   };
   // Only offered for `prepared` rewinds: the server keeps that state only when the
-  // provider history is untouched, so cancelling cannot leave it half-rewound.
+  // provider history is untouched, so cancelling cannot leave it half-rewound. The
+  // `cancel` intent makes the server reject it once the rewind has moved on, and a
+  // fresh command id per click keeps one rejected attempt from blocking later ones.
   const cancel = async () => {
     const api = readNativeApi();
     if (!api || busy) return;
@@ -128,9 +130,10 @@ export function RewindDraftPanel({ threadId, draft }: { threadId: ThreadId; draf
     try {
       await api.orchestration.dispatchCommand({
         type: "thread.rewind-draft.resolve",
-        commandId: CommandId.makeUnsafe(`rewind-cancel:${draft.operationId}`),
+        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
         operationId: draft.operationId,
         threadId,
+        intent: "cancel",
         createdAt: new Date().toISOString(),
       });
       setResolved(true);
