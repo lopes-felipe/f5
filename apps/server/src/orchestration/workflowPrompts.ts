@@ -16,6 +16,9 @@ interface ReviewInput {
   readonly source: WorkflowPromptArtifactSource;
 }
 
+const PLAN_SUBMISSION_REQUIREMENT =
+  "Submit the complete final plan in exactly one nonempty <proposed_plan> block, with each delimiter on its own line and no text outside the block. Claude may instead submit it through ExitPlanMode. Waiting messages and progress updates are not plan submissions. Wait for delegated work and incorporate its results before submitting.";
+
 export function buildAuthorPromptSections(input: {
   readonly workflow: PlanningWorkflow;
   readonly branch: WorkflowBranch;
@@ -36,6 +39,7 @@ ${input.workflow.requirementPrompt}`,
 - Include specific file references. When you refer to existing code, use \`file_path:line_number\` references.`,
     `Return the full plan in your assistant response.
 Do not create or modify files during this planning phase.`,
+    PLAN_SUBMISSION_REQUIREMENT,
   ];
 }
 
@@ -110,6 +114,7 @@ ${reviewSections.join("\n\n")}`,
 The revised plan should be a complete replacement, not a diff.
 Return the full revised plan in your assistant response.
 Do not create or modify files during this planning phase.`,
+    PLAN_SUBMISSION_REQUIREMENT,
   ];
 }
 
@@ -151,6 +156,7 @@ Read both plans and produce a merged plan that:
 
 Return the merged plan in your assistant response.
 Do not create or modify files during this planning phase.`,
+    PLAN_SUBMISSION_REQUIREMENT,
   ];
 }
 

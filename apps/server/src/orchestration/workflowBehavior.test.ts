@@ -39,7 +39,7 @@ describe("workflowBehavior", () => {
   it("treats missing record metadata as legacy v1", () => {
     const behavior = resolveWorkflowBehavior({ runKind: "planning" });
     expect(behavior.templateVersion).toBe(1);
-    expect(behavior.strictPlanCapture).toBe(false);
+    expect(behavior.strictPlanCapture).toBe(true);
     expect(behavior.executionProfileForStage("author")).toBeUndefined();
   });
 
@@ -48,9 +48,9 @@ describe("workflowBehavior", () => {
     expect(behavior.executionProfileForStage("author")).toBe("attended-readonly");
     expect(behavior.executionProfileForStage("plan-review")).toBe("unattended-readonly");
     expect(behavior.executionProfileForStage("implementation")).toBeUndefined();
-    expect(behavior.strictPlanCapture).toBe(false);
-    expect(behavior.planCaptureForProvider("claudeAgent")).toBe("assistant-fallback");
-    expect(behavior.planCaptureForProvider("codex")).toBe("assistant-fallback");
+    expect(behavior.strictPlanCapture).toBe(true);
+    expect(behavior.planCaptureForProvider("claudeAgent")).toBe("line-wrapper");
+    expect(behavior.planCaptureForProvider("codex")).toBe("line-wrapper");
   });
 
   it("keeps user-facing reconciliation stages attended so they can ask questions", () => {

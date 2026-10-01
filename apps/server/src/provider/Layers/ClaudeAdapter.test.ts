@@ -523,6 +523,259 @@ function emitClaudeSuccessResult(
 }
 
 describe("ClaudeAdapterLive", () => {
+  for (const sessionSignals of [false, true]) {
+    it.effect(
+      `keeps background continuations in one turn (idle signals: ${sessionSignals})`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+          const emit = (message: Record<string, unknown>) =>
+            harness.query.emit({
+              uuid: crypto.randomUUID(),
+              session_id: sessionId,
+              ...message,
+            } as unknown as SDKMessage);
+          const drain = (uuid: string) => {
+            emit({ type: "system", subtype: "status", status: "requesting", uuid });
+            return adapter.streamEvents.pipe(
+              Stream.takeUntil(
+                (event) => (event.raw?.payload as { uuid?: string } | undefined)?.uuid === uuid,
+              ),
+              Stream.runCollect,
+            );
+          };
+          const parentSegment = (uuid: string, text: string, cost: number) => {
+            emit({
+              type: "stream_event",
+              parent_tool_use_id: null,
+              event: {
+                type: "content_block_start",
+                index: 0,
+                content_block: { type: "text", text: "" },
+              },
+            });
+            emit({
+              type: "stream_event",
+              parent_tool_use_id: null,
+              event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+            });
+            emit({
+              type: "stream_event",
+              parent_tool_use_id: null,
+              event: { type: "content_block_stop", index: 0 },
+            });
+            emit({
+              type: "assistant",
+              uuid,
+              parent_tool_use_id: null,
+              message: { content: [{ type: "text", text }] },
+            });
+            emit({
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              uuid: `result-${uuid}`,
+              result: text,
+              total_cost_usd: cost,
+              modelUsage: {},
+              stop_reason: "end_turn",
+            });
+          };
+
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          const turn = yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "Create a plan",
+            attachments: [],
+          });
+          if (sessionSignals)
+            emit({ type: "system", subtype: "session_state_changed", state: "running" });
+          emit({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: ["a", "b", "c"].map((task_id) => ({ task_id, task_type: "local_agent" })),
+          });
+          for (const taskId of ["a", "b", "c"]) {
+            emitClaudeTaskStarted(harness.query, { taskId, toolUseId: taskId, sessionId });
+          }
+          parentSegment("waiting", "Waiting on the explorers now.", 0.4);
+          const first = yield* drain("after-wait");
+          assert.equal(
+            first.some((event) => event.type === "turn.completed"),
+            false,
+          );
+          assert.equal((yield* adapter.readThread(THREAD_ID)).turns.length, 0);
+          assert.equal((yield* adapter.listSessions())[0]?.activeTurnId, turn.turnId);
+          const nextSend = yield* adapter
+            .sendTurn({ threadId: THREAD_ID, input: "next", attachments: [] })
+            .pipe(Effect.result);
+          assert.equal(nextSend._tag, "Failure");
+
+          emit({
+            type: "assistant",
+            parent_tool_use_id: "a",
+            uuid: "child-uuid",
+            message: {
+              model: "claude-sonnet-4-6",
+              content: [{ type: "text", text: "Private child output" }],
+            },
+          });
+          emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+          // Late starts cannot resurrect tasks after a replacement snapshot.
+          emitClaudeTaskStarted(harness.query, { taskId: "c", toolUseId: "c", sessionId });
+          for (const task_id of ["a", "b", "c"]) {
+            emit({ type: "system", subtype: "task_notification", task_id, status: "completed" });
+          }
+          const taskEvents = yield* drain("after-tasks");
+          assert.equal(
+            taskEvents.some((event) => event.type === "turn.completed"),
+            false,
+          );
+          const finalText = "<proposed_plan>\n# Complete plan\n</proposed_plan>";
+          parentSegment("final-parent", finalText, 0.9);
+          if (sessionSignals) {
+            const beforeIdle = yield* drain("before-idle");
+            assert.equal(
+              beforeIdle.some((event) => event.type === "turn.completed"),
+              false,
+            );
+            emit({ type: "system", subtype: "session_state_changed", state: "idle" });
+          }
+          const finalEvents = yield* drain("after-final");
+          const completions = finalEvents.filter((event) => event.type === "turn.completed");
+          assert.equal(completions.length, 1);
+          assert.equal(completions[0]?.turnId, turn.turnId);
+          assert.equal(completions[0]?.payload.totalCostUsd, 0.9);
+          const cursor = completions[0]?.resumeCursor as {
+            resumeSessionAt: string;
+            turnBoundaries: Array<{ turnId: string }>;
+          };
+          assert.equal(cursor.resumeSessionAt, "final-parent");
+          assert.deepEqual(
+            cursor.turnBoundaries.map((entry) => entry.turnId),
+            [turn.turnId],
+          );
+          assert.equal((yield* adapter.readThread(THREAD_ID)).turns.length, 1);
+          assert.equal(
+            finalEvents.some((event) => event.type === "turn.started"),
+            false,
+          );
+          assert.equal(
+            [...first, ...taskEvents, ...finalEvents].some(
+              (event) =>
+                event.type === "content.delta" &&
+                event.payload.delta.includes("Private child output"),
+            ),
+            false,
+          );
+          // A queued follow-up becomes admissible only after the logical turn.
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "next", attachments: [] });
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
+  for (const ending of ["interrupt", "rate-limit", "zeroed-error", "stream-exit"] as const) {
+    it.effect(
+      `retires a background-waiting process after ${ending} and suppresses trailers`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const emit = (payload: Record<string, unknown>) =>
+            harness.query.emit({
+              uuid: crypto.randomUUID(),
+              session_id: BACKGROUND_SESSION_ID,
+              ...payload,
+            } as unknown as SDKMessage);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          const turn = yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "explore",
+            attachments: [],
+          });
+          emit({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [{ task_id: "explorer" }],
+          });
+          emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.4 });
+          emit({ type: "system", subtype: "status", status: "requesting", uuid: "wait-barrier" });
+          yield* adapter.streamEvents.pipe(
+            Stream.takeUntil(
+              (event) => (event.raw?.payload as { uuid?: string })?.uuid === "wait-barrier",
+            ),
+            Stream.runCollect,
+          );
+          if (ending === "interrupt") yield* adapter.interruptTurn(THREAD_ID, turn.turnId);
+          else if (ending === "rate-limit" || ending === "zeroed-error") {
+            emit({
+              type: "result",
+              subtype: "success",
+              is_error: true,
+              result: "Session limit reached",
+              total_cost_usd: ending === "zeroed-error" ? 0 : 0.6,
+            });
+          } else harness.query.fail(new Error("transport disconnected"));
+          const terminal = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "session.exited"),
+            Stream.runCollect,
+          );
+          const completions = terminal.filter((event) => event.type === "turn.completed");
+          assert.equal(completions.length, 1);
+          assert.equal(completions[0]?.turnId, turn.turnId);
+          assert.equal(
+            completions[0]?.payload.state,
+            ending === "interrupt" ? "interrupted" : "failed",
+          );
+          assert.equal(completions[0]?.payload.totalCostUsd, ending === "rate-limit" ? 0.6 : 0.4);
+          assert.equal(harness.query.closeCalls, 1);
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          const next = yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "retry",
+            attachments: [],
+          });
+          // The retired transport cannot deliver into the new process generation.
+          emit({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Late explorer" }] },
+          });
+          emit({ type: "result", subtype: "success", is_error: false });
+          emit({ type: "system", subtype: "session_state_changed", state: "idle" });
+          emitClaudeSuccessResult(harness.queries[1]!, { uuid: "new-process-result" });
+          const followup = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+          );
+          assert.equal(followup.filter((event) => event.type === "turn.started").length, 1);
+          assert.equal(
+            followup.find((event) => event.type === "turn.completed")?.turnId,
+            next.turnId,
+          );
+          assert.equal(
+            followup.some((event) => event.type === "content.delta"),
+            false,
+          );
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+  }
+
   it("matches missing-conversation errors only for the attempted session", () => {
     const attempted = "550e8400-e29b-41d4-a716-446655440000";
     assert.equal(
@@ -3703,23 +3956,28 @@ describe("ClaudeAdapterLive", () => {
         session_id: "sdk-fable-rejected",
         uuid: "fable-rejection",
       } as unknown as SDKMessage);
-      const completed = yield* Stream.filter(
-        adapter.streamEvents,
-        (event) => event.type === "turn.completed",
-      ).pipe(Stream.runHead);
-      assert.equal(completed._tag, "Some");
-      if (completed._tag === "Some") {
-        assert.equal(completed.value.payload.state, "failed");
-        assert.match(completed.value.payload.errorMessage ?? "", /claude-fable-5-1/);
-      }
+      const failureEvents = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+      );
+      const completed = failureEvents.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.payload.state, "failed");
+      assert.match(completed?.payload.errorMessage ?? "", /claude-fable-5-1/);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        model: "fable-5",
+      });
       yield* adapter.sendTurn({
         threadId: THREAD_ID,
         model: "fable-5",
         input: "retry with supported model",
         attachments: [],
       });
-      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5"]);
-      harness.query.emit({
+      assert.equal(harness.query.closeCalls, 1);
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5");
+      harness.queries[1]!.emit({
         type: "result",
         subtype: "success",
         is_error: false,
@@ -4438,6 +4696,7 @@ describe("ClaudeAdapterLive", () => {
           end_time: 1_785_000_000,
         },
       });
+      emitClaudeSuccessResult(harness.query, { uuid: "result-after-background-complete" });
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
       assert.equal(
@@ -4468,7 +4727,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
-    "fails background tools from terminal Claude task_updated patches after the turn ends",
+    "fails background tools from terminal Claude task_updated patches before the turn ends",
     () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -4505,6 +4764,7 @@ describe("ClaudeAdapterLive", () => {
             status: "failed",
           },
         });
+        emitClaudeSuccessResult(harness.query, { uuid: "result-after-background-failed" });
 
         const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
         assert.equal(
@@ -6798,29 +7058,42 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  function completeCostTurn(query: FakeClaudeQuery, total: number | undefined, failed = false) {
+  function completeCostTurn(
+    harness: ReturnType<typeof makeHarness>,
+    total: number | undefined,
+    failed = false,
+  ) {
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "next", attachments: [] });
-      query.emit({
+      harness.queries.at(-1)!.emit({
         type: "result",
         subtype: failed ? "error_during_execution" : "success",
         is_error: failed,
         errors: failed ? ["runtime crashed"] : [],
-        session_id: "sdk-cost-session",
-        uuid: "cost-result",
+        session_id: "550e8400-e29b-41d4-a716-446655440000",
+        uuid: crypto.randomUUID(),
         ...(total !== undefined ? { total_cost_usd: total } : {}),
         modelUsage: {},
       } as unknown as SDKMessage);
-      const completed = yield* Stream.filter(
-        adapter.streamEvents,
-        (event) => event.type === "turn.completed",
-      ).pipe(Stream.runHead);
-      assert.equal(completed._tag, "Some");
-      if (completed._tag !== "Some") throw new Error("Missing completion");
-      assert.equal(completed.value.raw, undefined);
-      assert.deepEqual(completed.value.payload.modelUsage, {});
-      return completed.value.payload.totalCostUsd;
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === (failed ? "session.exited" : "turn.completed")),
+        Stream.runCollect,
+      );
+      const completed = events.find((event) => event.type === "turn.completed");
+      if (!completed || completed.type !== "turn.completed") throw new Error("Missing completion");
+      assert.equal(completed.raw, undefined);
+      assert.deepEqual(completed.payload.modelUsage, {});
+      if (failed) {
+        // Failed processes are retired before another user turn is admitted.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: completed.resumeCursor,
+        });
+      }
+      return completed.payload.totalCostUsd;
     });
   }
 
@@ -6868,18 +7141,14 @@ describe("ClaudeAdapterLive", () => {
           model: "claude-opus-5-5",
         });
         for (const [index, total] of scenario.totals.entries()) {
-          const cost = yield* completeCostTurn(
-            harness.query,
-            total,
-            scenario.failedIndex === index,
-          );
+          const cost = yield* completeCostTurn(harness, total, scenario.failedIndex === index);
           assert.equal(cost, scenario.deltas[index], `result ${index}: cumulative ${total}`);
         }
       }).pipe(Effect.provide(harness.layer));
     });
   }
 
-  it.effect("normalizes orphaned duplicate results without emitting cumulative spend", () => {
+  it.effect("ignores orphaned duplicate results without emitting another completion", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -6888,19 +7157,28 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
       });
-      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      assert.equal(yield* completeCostTurn(harness, 0.3), 0.3);
       harness.query.emit({
         type: "result",
         subtype: "success",
         is_error: false,
         total_cost_usd: 0.3,
       } as unknown as SDKMessage);
-      const duplicate = yield* Stream.filter(
-        adapter.streamEvents,
-        (event) => event.type === "turn.completed",
-      ).pipe(Stream.runHead);
-      assert.equal(duplicate._tag, "Some");
-      if (duplicate._tag === "Some") assert.equal(duplicate.value.payload.totalCostUsd, 0);
+      harness.query.emit({
+        type: "system",
+        subtype: "status",
+        status: "requesting",
+        session_id: "550e8400-e29b-41d4-a716-446655440000",
+        uuid: "after-duplicate",
+      } as unknown as SDKMessage);
+      const afterDuplicate = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.state.changed"),
+        Stream.runCollect,
+      );
+      assert.equal(
+        afterDuplicate.some((event) => event.type === "turn.completed"),
+        false,
+      );
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -6933,9 +7211,9 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(harness.query.closeCalls, 0);
         assert.equal(calls, 0);
         // Error zeros cannot establish a restored-session baseline either.
-        assert.equal(yield* completeCostTurn(harness.query, 0, true), undefined);
-        assert.equal(yield* completeCostTurn(harness.query, 4.85), undefined);
-        assert.equal(yield* completeCostTurn(harness.query, 4.9), 0.05);
+        assert.equal(yield* completeCostTurn(harness, 0, true), undefined);
+        assert.equal(yield* completeCostTurn(harness, 4.85), undefined);
+        assert.equal(yield* completeCostTurn(harness, 4.9), 0.05);
       }).pipe(Effect.provide(harness.layer));
     });
   }
@@ -6950,8 +7228,8 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         resumeCursor: { resume: "550e8400-e29b-41d4-a716-446655440000" },
       });
-      assert.equal(yield* completeCostTurn(harness.query, 0.1), undefined);
-      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.2);
+      assert.equal(yield* completeCostTurn(harness, 0.1), undefined);
+      assert.equal(yield* completeCostTurn(harness, 0.3), 0.2);
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -6970,7 +7248,7 @@ describe("ClaudeAdapterLive", () => {
           runtimeMode: "full-access",
           modelSelection: selection("medium"),
         });
-        assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+        assert.equal(yield* completeCostTurn(harness, 0.3), 0.3);
         const sessions = yield* adapter.listSessions();
         const cursor = sessions[0]!.resumeCursor as Record<string, unknown>;
         assert.equal(cursor.lastTotalCostUsd, 0.3);
@@ -6987,7 +7265,7 @@ describe("ClaudeAdapterLive", () => {
           resumeCursor,
         });
         assert.equal(harness.getLastCreateQueryInput()?.options.effort, "high");
-        assert.equal(yield* completeCostTurn(harness.queries[1]!, resumedTotal), 0.05);
+        assert.equal(yield* completeCostTurn(harness, resumedTotal), 0.05);
       }).pipe(Effect.provide(harness.layer));
     });
   }
@@ -7001,7 +7279,7 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
       });
-      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      assert.equal(yield* completeCostTurn(harness, 0.3), 0.3);
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "interrupt", attachments: [] });
       yield* adapter.interruptTurn(THREAD_ID);
       yield* TestClock.adjust("3 seconds");
@@ -7035,7 +7313,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(harness.queries.length, 2);
       // The replacement process resumes the cumulative baseline, while a late
       // result from the closed process cannot be counted a second time.
-      assert.equal(yield* completeCostTurn(harness.queries[1]!, 0.4), 0.1);
+      assert.equal(yield* completeCostTurn(harness, 0.4), 0.1);
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -7049,10 +7327,10 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access" as const,
       };
       yield* adapter.startSession(input);
-      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      assert.equal(yield* completeCostTurn(harness, 0.3), 0.3);
       yield* adapter.stopSession(THREAD_ID);
       yield* adapter.startSession(input);
-      assert.equal(yield* completeCostTurn(harness.queries[1]!, 0.4), 0.4);
+      assert.equal(yield* completeCostTurn(harness, 0.4), 0.4);
     }).pipe(Effect.provide(harness.layer));
   });
 

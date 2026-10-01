@@ -102,12 +102,13 @@ function behavior(
   templateVersion: 1 | 2,
   templateId: string = BUILTIN_WORKFLOW_TEMPLATE_IDS[runKind],
 ): WorkflowBehavior {
+  const strictPlanCapture = runKind === "planning" && templateId !== DOCUMENT_WORKFLOW_TEMPLATE_ID;
   if (templateVersion === 1) {
     return {
       runKind,
       templateId,
       templateVersion,
-      strictPlanCapture: false,
+      strictPlanCapture,
       checkpointBackedImplementationReview: false,
       idempotentStageSetup: false,
       loudAuthoritativeArtifactLimit: false,
@@ -116,20 +117,20 @@ function behavior(
           ? "plan"
           : "default",
       executionProfileForStage: () => undefined,
-      planCaptureForProvider: () => "assistant-fallback",
+      planCaptureForProvider: () => (strictPlanCapture ? "line-wrapper" : "assistant-fallback"),
     };
   }
   return {
     runKind,
     templateId,
     templateVersion,
-    strictPlanCapture: false,
+    strictPlanCapture,
     checkpointBackedImplementationReview: true,
     idempotentStageSetup: true,
     loudAuthoritativeArtifactLimit: true,
     interactionModeForStage: (stage) => (readonlyProfileForStage(stage) ? "plan" : "default"),
     executionProfileForStage: readonlyProfileForStage,
-    planCaptureForProvider: () => "assistant-fallback",
+    planCaptureForProvider: () => (strictPlanCapture ? "line-wrapper" : "assistant-fallback"),
   };
 }
 

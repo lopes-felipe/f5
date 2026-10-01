@@ -112,6 +112,7 @@ describe("workflowPrompts", () => {
       "## Provider-Specific Guidance",
       "## Planning Requirements",
       "Return the full plan in your assistant response.",
+      "Submit the complete final plan in exactly one nonempty <proposed_plan> block, with each delimiter on its own line and no text outside the block. Claude may instead submit it through ExitPlanMode. Waiting messages and progress updates are not plan submissions. Wait for delegated work and incorporate its results before submitting.",
     ]);
     const codex = buildAuthorPrompt({
       workflow,
@@ -123,8 +124,8 @@ describe("workflowPrompts", () => {
       branch: workflow.branchB,
       authorSlot: CLAUDE_SLOT,
     });
-    expect(codex).not.toContain("<proposed_plan>");
-    expect(claude).not.toContain("ExitPlanMode");
+    expect(codex).toContain("<proposed_plan>");
+    expect(claude).toContain("ExitPlanMode");
     expect(codex).not.toContain("Scrutiny Lens");
     expect(codex).toContain("Return the full plan in your assistant response");
   });
