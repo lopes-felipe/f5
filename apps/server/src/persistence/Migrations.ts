@@ -127,7 +127,10 @@ import Migration0097 from "./Migrations/097_RestartTurnMarkers.ts";
 
 import Migration0098 from "./Migrations/098_StorageAutomationAudit.ts";
 
+import Migration0099 from "./Migrations/099_RewindDraftThreadIndex.ts";
+
 export const MIGRATIONS = {
+  "99_RewindDraftThreadIndex": Migration0099,
   "98_StorageAutomationAudit": Migration0098,
   "97_RestartTurnMarkers": Migration0097,
   "96_RewindOperations": Migration0096,

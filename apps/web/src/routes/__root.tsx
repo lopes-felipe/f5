@@ -47,7 +47,7 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
-import { useStore } from "../store";
+import { nextRewindDraftReadTicket, useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
 import {
   onMcpStatusUpdated,
@@ -935,6 +935,9 @@ function EventRouter() {
         codeReviewWorkflows: useStore.getState().codeReviewWorkflows,
         investigationWorkflows: useStore.getState().investigationWorkflows,
       });
+      // Taken before the request so a `getRewindDrafts` read that starts
+      // later wins, even if this snapshot response lands after it.
+      const rewindDraftReadTicket = nextRewindDraftReadTicket();
       const startupResult = await api.orchestration.getStartupSnapshot(
         startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
       );
@@ -993,7 +996,7 @@ function EventRouter() {
       latestSequence = Math.max(latestSequence, snapshot.snapshotSequence);
       committedSequence = Math.max(committedSequence, snapshot.snapshotSequence);
       flushSequenceCommitWaiters();
-      syncStartupSnapshot(snapshot);
+      syncStartupSnapshot(snapshot, { rewindDraftReadTicket });
       if (!snapshotIsProvisional) {
         useComposerMentionHistoryStore
           .getState()

@@ -135,7 +135,7 @@ import {
   togglePendingUserInputOption,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
-import { useStore } from "../store";
+import { nextRewindDraftReadTicket, useStore } from "../store";
 import {
   deletePendingTurnDispatchArtifacts,
   getPendingTurnDispatchArtifacts,
@@ -1578,30 +1578,40 @@ export default function ChatView({
   }, [alwaysExpandAgentCommandTranscripts, threadId]);
 
   // Rewind drafts live outside the event-sourced read model, so `getSnapshot`
-  // never carries them. Read them from their own endpoint when the thread opens
-  // and after every rewind event; only the newest response is applied.
+  // never carries them. Read them from their own endpoint after every rewind
+  // event, and when the thread opens in case a revert finished while another
+  // thread was open. The store's read tickets drop responses that land after
+  // a newer read (including a startup snapshot).
   useEffect(() => {
     const api = readNativeApi();
     if (!api) return;
-    let latestRequest = 0;
+    let latestTicket = 0;
     let disposed = false;
-    const refreshRewindDrafts = () => {
-      const request = ++latestRequest;
+    const refreshRewindDrafts = (reportFailure: boolean) => {
+      const ticket = nextRewindDraftReadTicket();
+      latestTicket = ticket;
       void api.orchestration
         .getRewindDrafts({ threadId })
         .then((result) => {
-          if (disposed || request !== latestRequest) return;
-          useStore.getState().setThreadRewindDrafts(threadId, result.drafts);
+          useStore.getState().setThreadRewindDrafts(threadId, result.drafts ?? [], ticket);
         })
-        .catch((error) => {
-          if (disposed || request !== latestRequest) return;
-          setStoreThreadError(
-            threadId,
-            error instanceof Error ? error.message : "Could not refresh the reverted prompt.",
-          );
+        .catch((error: unknown) => {
+          if (disposed || ticket !== latestTicket) return;
+          // The read on open is a background top-up of what the startup
+          // snapshot already delivered, so it fails quietly.
+          if (!reportFailure) {
+            console.warn("Could not refresh rewind drafts.", { threadId, error });
+            return;
+          }
+          toastManager.add({
+            type: "error",
+            title: "Could not refresh the reverted prompt",
+            ...(error instanceof Error ? { description: error.message } : {}),
+            data: { threadId },
+          });
         });
     };
-    refreshRewindDrafts();
+    refreshRewindDrafts(false);
     const unsubscribe = api.orchestration.onDomainEvent((event) => {
       const affectsDraft =
         (event.type === "thread.reverted" && event.payload.operationId) ||
@@ -1609,13 +1619,13 @@ export default function ChatView({
         (event.type === "thread.activity-appended" &&
           event.payload.activity.kind === "conversation.rewind.failed");
       if (affectsDraft && "threadId" in event.payload && event.payload.threadId === threadId)
-        refreshRewindDrafts();
+        refreshRewindDrafts(true);
     });
     return () => {
       disposed = true;
       unsubscribe();
     };
-  }, [threadId, setStoreThreadError]);
+  }, [threadId]);
   useEffect(() => {
     if (!showFileChangeDiffsInline) {
       return;

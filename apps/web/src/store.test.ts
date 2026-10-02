@@ -555,26 +555,96 @@ describe("setThreadRewindDrafts", () => {
     const state = makeState(makeThread({ rewindDrafts: [] }));
     const draft = makeRewindDraft();
 
-    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("thread-1"), [draft]);
+    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("thread-1"), [draft], 1);
 
     expect(next.threads[0]?.rewindDrafts).toEqual([draft]);
   });
 
-  it("returns the same state when the drafts are unchanged", () => {
+  it("keeps the thread object when the drafts are unchanged", () => {
     const draft = makeRewindDraft();
-    const state = makeState(makeThread({ rewindDrafts: [draft] }));
+    const thread = makeThread({ rewindDrafts: [draft] });
 
-    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("thread-1"), [{ ...draft }]);
+    const next = setThreadRewindDrafts(
+      makeState(thread),
+      ThreadId.makeUnsafe("thread-1"),
+      [{ ...draft }],
+      1,
+    );
 
-    expect(next).toBe(state);
+    expect(next.threads[0]).toBe(thread);
   });
 
   it("ignores unknown threads", () => {
     const state = makeState(makeThread());
 
-    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("missing"), [makeRewindDraft()]);
+    const next = setThreadRewindDrafts(
+      state,
+      ThreadId.makeUnsafe("missing"),
+      [makeRewindDraft()],
+      1,
+    );
 
     expect(next).toBe(state);
+  });
+
+  it("drops a draft read that started before the newest one", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const newer = makeRewindDraft({ state: "completed" });
+    const older = makeRewindDraft({ state: "provider-pending" });
+
+    const afterNewer = setThreadRewindDrafts(makeState(makeThread()), threadId, [newer], 2);
+    const next = setThreadRewindDrafts(afterNewer, threadId, [older], 1);
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([newer]);
+  });
+});
+
+describe("rewind draft read order across startup snapshots", () => {
+  const threadId = ThreadId.makeUnsafe("thread-1");
+  const pending = makeRewindDraft({ state: "provider-pending" });
+  const completed = makeRewindDraft({ state: "completed" });
+
+  it("keeps a newer draft read when an older startup snapshot lands after it", () => {
+    const initial = makeState(makeThread({ rewindDrafts: [pending] }));
+    // The snapshot request starts first, then the revert lands and ChatView
+    // reads the drafts. The snapshot response arrives last.
+    const snapshotTicket = 1;
+    const afterDraftRead = setThreadRewindDrafts(initial, threadId, [completed], 2);
+
+    const next = syncStartupSnapshot(
+      afterDraftRead,
+      makeReadModel(makeReadModelThread({ rewindDrafts: [pending] })),
+      { rewindDraftReadTicket: snapshotTicket },
+    );
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([completed]);
+  });
+
+  it("drops a draft read that lands after a newer startup snapshot", () => {
+    const initial = makeState(makeThread({ rewindDrafts: [pending] }));
+    const afterSnapshot = syncStartupSnapshot(
+      initial,
+      makeReadModel(makeReadModelThread({ rewindDrafts: [completed] })),
+      { rewindDraftReadTicket: 2 },
+    );
+
+    const next = setThreadRewindDrafts(afterSnapshot, threadId, [pending], 1);
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([completed]);
+  });
+
+  it("applies snapshot drafts again once a newer snapshot supersedes the draft read", () => {
+    const initial = makeState(makeThread({ rewindDrafts: [] }));
+    const afterDraftRead = setThreadRewindDrafts(initial, threadId, [completed], 1);
+
+    const next = syncStartupSnapshot(
+      afterDraftRead,
+      makeReadModel(makeReadModelThread({ rewindDrafts: [] })),
+      { rewindDraftReadTicket: 2 },
+    );
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([]);
+    expect(next.rewindDraftReads).toEqual({ snapshotTicket: 2, ticketByThreadId: {} });
   });
 });
 

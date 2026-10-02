@@ -1207,6 +1207,17 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         threadId: ThreadId.makeUnsafe("thread-rewind-missing"),
       });
       assert.deepEqual(empty.drafts, []);
+
+      const plan = yield* sql<{ readonly detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT operation_id FROM rewind_operations
+        WHERE draft_resolved_at IS NULL AND thread_id = ${"thread-rewind-a"}
+        ORDER BY created_at
+      `;
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("idx_rewind_operations_unresolved_drafts")),
+        plan.map((row) => row.detail).join("\n"),
+      );
     }),
   );
 });

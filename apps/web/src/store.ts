@@ -53,6 +53,28 @@ export interface AppState {
    * missing, so the persisted payload only needs to record explicit `false`s.
    */
   changedFilesExpandedByThreadId: Record<ThreadId, boolean>;
+  /**
+   * Read order for rewind drafts. Startup snapshots and `getRewindDrafts`
+   * both write drafts, and their responses can land out of order; each read
+   * takes a ticket when it starts so an older read never overwrites a newer
+   * one. Missing means no ticketed read has landed yet.
+   */
+  rewindDraftReads?: RewindDraftReadState;
+}
+
+export interface RewindDraftReadState {
+  /** Ticket of the newest startup snapshot whose drafts were applied. */
+  readonly snapshotTicket: number;
+  /** Tickets of `getRewindDrafts` reads newer than `snapshotTicket`. */
+  readonly ticketByThreadId: Readonly<Record<string, number>>;
+}
+
+let lastRewindDraftReadTicket = 0;
+
+/** Takes a ticket for a draft read; call it before sending the request. */
+export function nextRewindDraftReadTicket(): number {
+  lastRewindDraftReadTicket += 1;
+  return lastRewindDraftReadTicket;
 }
 
 const PERSISTED_STATE_KEY = "t3code:renderer-state:v8";
@@ -1038,8 +1060,16 @@ function buildThreadFromReadModel(
     | undefined,
   options?: {
     preserveExistingActivitiesWhenIncomingEmpty?: boolean;
+    /** A newer `getRewindDrafts` read already landed for this thread. */
+    keepExistingRewindDrafts?: boolean;
   },
 ): Thread {
+  // Only projection snapshots carry drafts; the in-memory read model behind
+  // `getSnapshot` leaves them undefined, which means "unknown", not "none".
+  const rewindDrafts =
+    options?.keepExistingRewindDrafts && existing
+      ? existing.rewindDrafts
+      : (thread.rewindDrafts ?? existing?.rewindDrafts);
   const model = resolveThreadModel({
     model: thread.model,
     sessionProviderName: thread.session?.providerName ?? null,
@@ -1111,7 +1141,7 @@ function buildThreadFromReadModel(
     existing.turnDiffSummaries === nextDetailFields.turnDiffSummaries &&
     existing.activities === activities &&
     areUnknownEqual(existing.pendingUserInputs, thread.pendingUserInputs) &&
-    areUnknownEqual(existing.rewindDrafts, thread.rewindDrafts ?? existing.rewindDrafts) &&
+    areUnknownEqual(existing.rewindDrafts, rewindDrafts) &&
     existing.detailsLoaded === nextDetailFields.detailsLoaded &&
     existing.tasks === nextDetailFields.tasks &&
     existing.tasksTurnId === nextDetailFields.tasksTurnId &&
@@ -1132,9 +1162,7 @@ function buildThreadFromReadModel(
     ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,
     pendingUserInputs: thread.pendingUserInputs,
-    // Only projection snapshots carry drafts; the in-memory read model behind
-    // `getSnapshot` leaves them undefined, which means "unknown", not "none".
-    rewindDrafts: thread.rewindDrafts ?? existing?.rewindDrafts,
+    rewindDrafts,
     interactionMode: thread.interactionMode,
     session,
     messages: nextDetailFields.messages,
@@ -1246,7 +1274,11 @@ export function invalidateThreadDetails(
   };
 }
 
-export function syncStartupSnapshot(state: AppState, readModel: OrchestrationReadModel): AppState {
+export function syncStartupSnapshot(
+  state: AppState,
+  readModel: OrchestrationReadModel,
+  options?: { rewindDraftReadTicket?: number },
+): AppState {
   if (readModel.snapshotSequence < state.lastAppliedSequence) {
     return state;
   }
@@ -1255,14 +1287,22 @@ export function syncStartupSnapshot(state: AppState, readModel: OrchestrationRea
     readModel.projects.filter((project) => project.deletedAt === null),
     state.projects,
   );
+  const ticket = options?.rewindDraftReadTicket;
+  const newerDraftTickets = state.rewindDraftReads?.ticketByThreadId ?? {};
   const existingThreadById = new Map(state.threads.map((thread) => [thread.id, thread] as const));
   const nextThreads = readModel.threads
     .filter((thread) => thread.deletedAt === null)
     .map((thread) =>
       buildThreadFromReadModel(thread, existingThreadById.get(thread.id), undefined, {
         preserveExistingActivitiesWhenIncomingEmpty: true,
+        keepExistingRewindDrafts:
+          ticket !== undefined && (newerDraftTickets[thread.id] ?? 0) > ticket,
       }),
     );
+  const rewindDraftReads =
+    ticket === undefined
+      ? state.rewindDraftReads
+      : advanceSnapshotDraftTicket(state.rewindDraftReads, ticket);
   const threads = arraysShallowEqual(nextThreads, state.threads) ? state.threads : nextThreads;
   return {
     ...state,
@@ -1280,7 +1320,22 @@ export function syncStartupSnapshot(state: AppState, readModel: OrchestrationRea
     pinRevision: readModel.pinRevision ?? 0,
     threadsHydrated: true,
     lastAppliedSequence: Math.max(state.lastAppliedSequence, readModel.snapshotSequence),
+    ...(rewindDraftReads ? { rewindDraftReads } : {}),
   };
+}
+
+/** Records an applied snapshot ticket and drops the per-thread reads it superseded. */
+function advanceSnapshotDraftTicket(
+  current: RewindDraftReadState | undefined,
+  ticket: number,
+): RewindDraftReadState {
+  const snapshotTicket = Math.max(current?.snapshotTicket ?? 0, ticket);
+  const ticketByThreadId = Object.fromEntries(
+    Object.entries(current?.ticketByThreadId ?? {}).filter(
+      ([, threadTicket]) => threadTicket > snapshotTicket,
+    ),
+  );
+  return { snapshotTicket, ticketByThreadId };
 }
 
 export function syncThreadTailDetails(
@@ -1748,16 +1803,32 @@ export function drainBufferedThreadDetailEvents(
   return nextState;
 }
 
-/** Replaces one thread's rewind drafts with a fresh server read. */
+/**
+ * Replaces one thread's rewind drafts with a `getRewindDrafts` response.
+ * Ignored when a read that started later (another draft read or a startup
+ * snapshot) has already landed.
+ */
 export function setThreadRewindDrafts(
   state: AppState,
   threadId: ThreadId,
   drafts: ReadonlyArray<RewindDraft>,
+  ticket: number,
 ): AppState {
+  const reads = state.rewindDraftReads;
+  const newestTicket = Math.max(reads?.snapshotTicket ?? 0, reads?.ticketByThreadId[threadId] ?? 0);
+  if (ticket < newestTicket) return state;
+  if (!state.threads.some((thread) => thread.id === threadId)) return state;
   const threads = updateThread(state.threads, threadId, (thread) =>
     areUnknownEqual(thread.rewindDrafts, drafts) ? thread : { ...thread, rewindDrafts: drafts },
   );
-  return threads === state.threads ? state : { ...state, threads };
+  return {
+    ...state,
+    threads,
+    rewindDraftReads: {
+      snapshotTicket: reads?.snapshotTicket ?? 0,
+      ticketByThreadId: { ...reads?.ticketByThreadId, [threadId]: ticket },
+    },
+  };
 }
 
 /**
@@ -1998,8 +2069,15 @@ export function setThreadBranch(
 interface AppStore extends AppState {
   invalidateThreadDetails: (options?: { preserveThreadIds?: Iterable<ThreadId> }) => void;
   syncServerReadModel: (readModel: OrchestrationReadModel) => void;
-  setThreadRewindDrafts: (threadId: ThreadId, drafts: ReadonlyArray<RewindDraft>) => void;
-  syncStartupSnapshot: (readModel: OrchestrationReadModel) => void;
+  setThreadRewindDrafts: (
+    threadId: ThreadId,
+    drafts: ReadonlyArray<RewindDraft>,
+    ticket: number,
+  ) => void;
+  syncStartupSnapshot: (
+    readModel: OrchestrationReadModel,
+    options?: { rewindDraftReadTicket?: number },
+  ) => void;
   syncThreadTailDetails: (
     threadId: ThreadId,
     details: OrchestrationThreadTailDetails,
@@ -2049,9 +2127,10 @@ export const useStore = create<AppStore>((set) => ({
   ...readPersistedState(),
   invalidateThreadDetails: (options) => set((state) => invalidateThreadDetails(state, options)),
   syncServerReadModel: (readModel) => set((state) => syncServerReadModel(state, readModel)),
-  setThreadRewindDrafts: (threadId, drafts) =>
-    set((state) => setThreadRewindDrafts(state, threadId, drafts)),
-  syncStartupSnapshot: (readModel) => set((state) => syncStartupSnapshot(state, readModel)),
+  setThreadRewindDrafts: (threadId, drafts, ticket) =>
+    set((state) => setThreadRewindDrafts(state, threadId, drafts, ticket)),
+  syncStartupSnapshot: (readModel, options) =>
+    set((state) => syncStartupSnapshot(state, readModel, options)),
   syncThreadTailDetails: (threadId, details, options) =>
     set((state) => syncThreadTailDetails(state, threadId, details, options)),
   prependOlderThreadHistoryPage: (threadId, page, expectedGeneration) =>

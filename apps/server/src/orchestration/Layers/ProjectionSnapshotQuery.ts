@@ -797,7 +797,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             decoded.value,
           ]);
         else
-          yield* Effect.logWarning("Skipping invalid rewind draft in snapshot", {
+          yield* Effect.logWarning("Skipping invalid rewind draft", {
             threadId: row.threadId,
             operationId: row.operationId,
           });
