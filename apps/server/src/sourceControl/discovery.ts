@@ -7,6 +7,10 @@ export function discoverSourceControlProviderIdentities(
   remotes: ReadonlyArray<GitRemote>,
   options: {
     readonly githubHosts?: ReadonlyArray<string>;
+    readonly providerHosts?: ReadonlyArray<{
+      readonly kind: SourceControlProviderKind;
+      readonly host: string;
+    }>;
   } = {},
 ): ReadonlyArray<SourceControlProviderIdentity> {
   const githubHosts = new Set(
@@ -15,10 +19,14 @@ export function discoverSourceControlProviderIdentities(
   const identities: SourceControlProviderIdentity[] = [];
   for (const remote of remotes) {
     const parsed = parseSourceControlRemoteUrl(remote.url);
+    const configuredKind = options.providerHosts?.find(
+      (entry) => entry.host.toLowerCase() === parsed.host?.toLowerCase(),
+    )?.kind;
     const kind =
-      parsed.kind === "unknown" && parsed.host && githubHosts.has(parsed.host.toLowerCase())
+      configuredKind ??
+      (parsed.kind === "unknown" && parsed.host && githubHosts.has(parsed.host.toLowerCase())
         ? "github"
-        : parsed.kind;
+        : parsed.kind);
     const identity = {
       kind,
       remoteName: remote.name,

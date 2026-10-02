@@ -75,10 +75,17 @@
     {
       "upstreamSha": "014016a62344ab03dbccdb73c3c1861bc4f7e349",
       "subject": "fix(web): make copy PR link discoverable in keybindings (#11826)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): make copy PR link discoverable in keybindings. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): make copy PR link discoverable in keybindings.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "0141bc2bf5fcf52a563240a6bce4b58050496db5",
@@ -100,7 +107,7 @@
     {
       "upstreamSha": "0150c6a53b409ba3bcb45645709b649cf8708354",
       "subject": "feat(web): start new threads with multiple models in separate worktrees (#12179)",
-      "reason": "Phase 9d: Shift+click selects up to six models; each gets its own thread, worktree (requireWorktree) and upload copies, submitted three at a time with a retry guard. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9d: Shift+click selects up to six models; each gets its own thread, worktree (requireWorktree) and upload copies, submitted three at a time with a retry guard. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9d",
@@ -199,10 +206,17 @@
     {
       "upstreamSha": "02297e3dbd896ef619d5c916938c751e343e76a8",
       "subject": "fix(ui): color linked pr counts by aggregate status (#11180)",
-      "reason": "Phase 12a (GitHub PR hub): fix(ui): color linked pr counts by aggregate status. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(ui): color linked pr counts by aggregate status.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "02443335b155e46248f96d80e037603abc742a61",
@@ -221,7 +235,7 @@
     {
       "upstreamSha": "0310cbf9f46ca94e9df0231a3440bca08ac44709",
       "subject": "fix: keep worktree setup visible after leaving and reopening the thread (#11836)",
-      "reason": "Phase 9c: The setup card is rebuilt from the persisted activity and live updates, so it stays visible after leaving and reopening the thread. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: The setup card is rebuilt from the persisted activity and live updates, so it stays visible after leaving and reopening the thread. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -270,10 +284,15 @@
     {
       "upstreamSha": "03950089ffa5cecf0ce731227f58551f6437495f",
       "subject": "feat(web): pull request files can be marked as viewed (#7721)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): pull request files can be marked as viewed. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Viewed-file marks use verified readers and compared head/base revisions; GitHub host marks and native F5 persistence are wired into the file UI.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/prHub/PrHubExtensions.ts:1",
+        "apps/web/src/components/prHub/PrViewedFile.tsx:1"
+      ]
     },
     {
       "upstreamSha": "03adf215ceebedeb9c5e813406154dd8353b36f6",
@@ -524,10 +543,17 @@
     {
       "upstreamSha": "0681d854994ec0ceed0562ae74549ccf8ef2ec41",
       "subject": "fix(pull-requests): expand code tab diffs by default (#9174)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): expand code tab diffs by default. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): expand code tab diffs by default.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "06dd9993b6292e61de8890956a3ce3c50495a6eb",
@@ -704,10 +730,17 @@
     {
       "upstreamSha": "0869ad648b67a286d7a47af878f1d256d0ff689f",
       "subject": "fix(web): let the PR reviewer and label search boxes take keystrokes (#9479)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): let the PR reviewer and label search boxes take keystrokes. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): let the PR reviewer and label search boxes take keystrokes.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "087cfb8ae262f344f7e409f5a8c0eda6f0ef12f9",
@@ -867,10 +900,17 @@
     {
       "upstreamSha": "0a37240a87bb2fed8f48cf20dc8312ee3b94eba6",
       "subject": "fix(web): remove sidebar pull request link icon (#11179)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): remove sidebar pull request link icon. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): remove sidebar pull request link icon.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "0a46daaf63e78cdd188f6eb944ce5ee463e63216",
@@ -911,8 +951,8 @@
     },
     {
       "upstreamSha": "0a91b9a116117dd5df619fb7c1248cba9cf6f43c",
-      "subject": "feat(mobile): show startup crashes in Settings → Diagnostics (#11540)",
-      "reason": "Not applicable: f5 has no mobile application; mobile behavior and native mobile dependencies are excluded. Upstream change: feat(mobile): show startup crashes in Settings → Diagnostics.",
+      "subject": "feat(mobile): show startup crashes in Settings \u2192 Diagnostics (#11540)",
+      "reason": "Not applicable: f5 has no mobile application; mobile behavior and native mobile dependencies are excluded. Upstream change: feat(mobile): show startup crashes in Settings \u2192 Diagnostics.",
       "reviewStatus": "reviewed",
       "disposition": "not-applicable"
     },
@@ -999,10 +1039,17 @@
     {
       "upstreamSha": "0bc59bbae391ee45ab3a7cfb2dc703c8b27e5772",
       "subject": "fix(web): let the pull request list use wide screens (#9351)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): let the pull request list use wide screens. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): let the pull request list use wide screens.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "0bf2d6b0109f243add8fb6d727e153e97dd51802",
@@ -1251,7 +1298,7 @@
     {
       "upstreamSha": "0f5a1513e09fb41e0d0f86157aff64cc3657975d",
       "subject": "fix(web): stop the worktree setup card from flashing and shifting (#12015)",
-      "reason": "Phase 9c: Snapshots are ordered by sequence and the card's visibility rule ignores stale or settled states, avoiding flashes and layout shifts. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Snapshots are ordered by sequence and the card's visibility rule ignores stale or settled states, avoiding flashes and layout shifts. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -1375,10 +1422,17 @@
     {
       "upstreamSha": "110bbe6b55d684627a2481aebfd7c1ae3396011c",
       "subject": "fix(prs): reuse GitHub data and defer optional reads (#9835)",
-      "reason": "Phase 12a (GitHub PR hub): fix(prs): reuse GitHub data and defer optional reads. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(prs): reuse GitHub data and defer optional reads.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "112a7088da63ea4fa48fee63dc8f29557c545ed7",
@@ -1537,7 +1591,7 @@
     {
       "upstreamSha": "12f5604442564d3e8c1cb23135b27b37ab4af1cf",
       "subject": "fix(web): correct pending question attachment message (#10599)",
-      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8b",
@@ -1687,10 +1741,17 @@
     {
       "upstreamSha": "14f15cfed48bc7519e8e5eeac03f483f4b11ef3a",
       "subject": "fix(server): stop titling linked PR threads from local git history (#9191)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): stop titling linked PR threads from local git history. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): stop titling linked PR threads from local git history.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "151324b2c0bf0ace789820b8ea4ec8ceb55753d9",
@@ -1744,10 +1805,17 @@
     {
       "upstreamSha": "15c6167bc48922c9359235d6eee11259f2164d1d",
       "subject": "fix(web): use the configured panel shortcut on the PR page (#11292)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): use the configured panel shortcut on the PR page. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): use the configured panel shortcut on the PR page.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "15e875a2d9bdda2fc08909c4b1582a363d288403",
@@ -1896,10 +1964,15 @@
     {
       "upstreamSha": "178da6bc3210b82c4a83f33c8b149f623a3375e1",
       "subject": "fix(shared): match source-control providers by DNS label (#6175)",
-      "reason": "Phase 12b: fix(shared): match source-control providers by DNS label. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 12: Provider detection and configured-host routing use DNS-label/exact-host matching, including Forgejo and Gitea.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "disposition": "ported",
+      "plannedWorkstream": "12b",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "packages/shared/src/sourceControl.ts:1",
+        "packages/shared/src/sourceControl.test.ts:1"
+      ]
     },
     {
       "upstreamSha": "17c48f7fc1af66110706b013bf41901ebcd8aedb",
@@ -2049,10 +2122,17 @@
     {
       "upstreamSha": "18c5a1d2dfbb02856ec51b54edac82952852a58a",
       "subject": "fix(web): simplify pull request summary sections (#10612)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): simplify pull request summary sections. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): simplify pull request summary sections.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "18d8cbfd920d0a53e5b5206456585aea767e852c",
@@ -2071,10 +2151,17 @@
     {
       "upstreamSha": "18de6bb328059703b5d1b0661610076e3c0fa2d4",
       "subject": "fix(server): background PR sync reads summaries in batches (#13198)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): background PR sync reads summaries in batches. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): background PR sync reads summaries in batches.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "18f6d034897d9cc5429dcb88c6a9795d183f1687",
@@ -2254,7 +2341,7 @@
     {
       "upstreamSha": "1abc717f0dbd08027b5be4ec45ae6c5bccf96418",
       "subject": "fix(server): keep interrupted threads resumable after restarts (#10421)",
-      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8d",
@@ -2496,10 +2583,17 @@
     {
       "upstreamSha": "1eb36b45ef7aa5c028380afb7266bcabf258a55e",
       "subject": "fix(web): show pull request state icons in tabs (#9112)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): show pull request state icons in tabs. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): show pull request state icons in tabs.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "1eeeabb26f654c679efe265cd03edf69c3df3a6f",
@@ -2575,7 +2669,7 @@
     },
     {
       "upstreamSha": "200fa826b02cf0503c6f6c2bd7250a58747bff2d",
-      "subject": "feat(web): prompt stash — cmd+S saves the composer to a per-provider queue (#4453)",
+      "subject": "feat(web): prompt stash \u2014 cmd+S saves the composer to a per-provider queue (#4453)",
       "disposition": "ported",
       "f5Shas": ["989d9d9d33fd51d8499536fc0528556f1f8e0378"],
       "reason": "Added a durable 20-entry prompt stash with a composer-scoped Mod+S binding, full sendable-draft serialization, transactional restore confirmations, workspace file re-authorization, terminal-context filtering, image persistence, and restore/delete UI.",
@@ -2591,10 +2685,17 @@
     {
       "upstreamSha": "20363c32c9bfdbf49c2716ef11d1f18483fcc01b",
       "subject": "feat(web): add provider selector to pull request toolbar (#11524)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): add provider selector to pull request toolbar. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): add provider selector to pull request toolbar.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "20a70420a85aecab0bde1a58921197f423e401cc",
@@ -2776,10 +2877,17 @@
     {
       "upstreamSha": "223ff4490f764a74ff911589e97b9bbcd595fee8",
       "subject": "fix(server): link thread PRs without an open client (#10101)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): link thread PRs without an open client. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): link thread PRs without an open client.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "22539f2a428947ab218589c984b2af44e434012e",
@@ -2831,10 +2939,17 @@
     {
       "upstreamSha": "229b05df042f896bbb44660c8524ffe222b85b8d",
       "subject": "fix(server): return fresh live pull request reads (#6472)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): return fresh live pull request reads. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): return fresh live pull request reads.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "22c311ddecfbab2e541a374a46f2df87d4fc6305",
@@ -2971,10 +3086,17 @@
     {
       "upstreamSha": "24b711b7f9ccba03518551991e466e2e4f8ace5a",
       "subject": "fix: multiple UI and server bug fixes (#11593)",
-      "reason": "Phase 12b: fix: multiple UI and server bug fixes. Reimplement the applicable behavior in f5; not yet delivered. Retain the Forgejo response-body/error handling; omit the mobile terminal change. Adapt shared picker fixes to f5 in Phase 3f.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix: multiple UI and server bug fixes.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "plannedWorkstream": "12b",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "24c4ba68f536d56e8482a1e4d7070a6771da551d",
@@ -3025,10 +3147,17 @@
     {
       "upstreamSha": "25da986037a99d1e87bf1ed51aa58d7babee064a",
       "subject": "fix(web): keep comment actions visible when pr comments are folded (#11357)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): keep comment actions visible when pr comments are folded. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): keep comment actions visible when pr comments are folded.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "25dcee00a6e12db2781a17b326e6e34de0d4ced7",
@@ -3098,10 +3227,17 @@
     {
       "upstreamSha": "26af903b9bec7f8da56bb5f545d9980d08d418e1",
       "subject": "fix(web): label pull request merge actions (#7381)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): label pull request merge actions. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): label pull request merge actions.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "26b8f985d85773e41a2ee637785f7c87d5c1a01e",
@@ -3332,10 +3468,17 @@
     {
       "upstreamSha": "2a3cfe456375fd34b906f849b04706109dc74170",
       "subject": "fix(web): collapse PR header actions to icons when narrow (#9334)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): collapse PR header actions to icons when narrow. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): collapse PR header actions to icons when narrow.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "2a47fc905a7a1054823919980f625b7cd869f1c1",
@@ -3505,7 +3648,7 @@
     {
       "upstreamSha": "2c19283afed1e3b69a9af33360980527aeb37494",
       "subject": "feat(server): persist the worktree setup send and progress on the thread (#11852)",
-      "reason": "Phase 9c: The queued first send is gated by a durable worktree block token, and setup progress persists as a thread activity, so both survive reconnects and restarts. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: The queued first send is gated by a durable worktree block token, and setup progress persists as a thread activity, so both survive reconnects and restarts. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -3526,10 +3669,17 @@
     {
       "upstreamSha": "2c2fa8cd7ded97be76587ae1cfce54ee0a65f544",
       "subject": "fix(web): pull request embed chip shows the state icon (#12951)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): pull request embed chip shows the state icon. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): pull request embed chip shows the state icon.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "2c301fd0c4fc58c1612be47c3856fa4ad547429d",
@@ -3777,10 +3927,17 @@
     {
       "upstreamSha": "2ec59ca1fad6d9eb6ae36714b76b6130e63201e6",
       "subject": "fix(web): hide back button for single linked pull requests (#11520)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): hide back button for single linked pull requests. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): hide back button for single linked pull requests.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "2efb8178d83f4f7c4ccc3ae1165f2a2ded0b2742",
@@ -4082,10 +4239,16 @@
     {
       "upstreamSha": "32e8b2584556c0c55ce0d1d8f72b506cb771d60d",
       "subject": "fix(web): show private repository media in pull request tabs (#11706)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): show private repository media in pull request tabs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Private GitHub images/videos use an authenticated, allowlisted, host-scoped proxy with bounded Range reads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/prHub/githubMediaProxy.ts:1",
+        "apps/server/src/prHub/githubMediaProxy.test.ts:1",
+        "apps/web/src/components/prHub/PrMarkdown.tsx:1"
+      ]
     },
     {
       "upstreamSha": "33118d9ab263904e4180b3bf2cbf0a36fe0695e2",
@@ -4105,10 +4268,17 @@
     {
       "upstreamSha": "33242d0164d47c6935ba5c7725296539384de65d",
       "subject": "fix(server): preserve recent PR reads across server restarts (#11007)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): preserve recent PR reads across server restarts. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): preserve recent PR reads across server restarts.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "3382b26c4f29bcbc709edf135c5486b7f1e0e211",
@@ -4365,10 +4535,17 @@
     {
       "upstreamSha": "371b52d9dad76876f84609a4cd0f80eaa757b69c",
       "subject": "feat(web): answer pull request actions on the row at once (#12843)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): answer pull request actions on the row at once. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): answer pull request actions on the row at once.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "371e32392570fdc0d2309e9f92490bbd2c6b3f02",
@@ -4781,7 +4958,7 @@
     {
       "upstreamSha": "3bee4c286e586c2eb7f8d196a65b4b5ea6a95241",
       "subject": "fix(server): settle cancelled worktree setup before rollback (#12176)",
-      "reason": "Phase 9c: Cancel pauses the queue and stops the running stage before releasing created artifacts, and checks for an already-accepted turn before rolling back. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Cancel pauses the queue and stops the running stage before releasing created artifacts, and checks for an already-accepted turn before rolling back. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -4847,18 +5024,30 @@
     {
       "upstreamSha": "3c73fa7ce02b7ee6b2904ec58e47c06262aebf5d",
       "subject": "perf(web): defer pull request line stats until visible (#6471)",
-      "reason": "Phase 12a (GitHub PR hub): perf(web): defer pull request line stats until visible. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: perf(web): defer pull request line stats until visible.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "3c75eb1132bb5d67cfa95ac6271ef68959f986c1",
       "subject": "feat: link pull requests to threads (#8160)",
-      "reason": "Phase 12a (GitHub PR hub): feat: link pull requests to threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Provider-qualified thread PR links retain the additive projection and are exposed in the thread header.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/ThreadPrLinks.tsx:1",
+        "apps/server/src/prHub/PrHubExtensions.ts:1"
+      ]
     },
     {
       "upstreamSha": "3cd2cbbc115ac7d72fb52cc737fa64c547d6723e",
@@ -4962,7 +5151,7 @@
     {
       "upstreamSha": "3e1333319aacff96856a3c161b8787ff6b0ddd6b",
       "subject": "fix(web): reset markdown widgets when the previewed file changes (#9910)",
-      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A\u2192B\u2192A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3e",
@@ -5154,10 +5343,17 @@
     {
       "upstreamSha": "411da2a7356dd795b720228e9c834ea9bad0415f",
       "subject": "feat(web): use the linked pull request row layout on the pull requests page (#12536)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): use the linked pull request row layout on the pull requests page. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): use the linked pull request row layout on the pull requests page.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "41a430a88e8dde9c428f59d54dd328aa6a66a8fd",
@@ -5338,10 +5534,17 @@
     {
       "upstreamSha": "443b4ebfe83fcfe64c34b09ecb5a5fffdebb85c7",
       "subject": "fix(pull-requests): missing features & better behaviour (#9188)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): missing features & better behaviour. Reimplement in f5; not yet delivered. Also informs Phase 12b provider capabilities; hide unsupported operations.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): missing features & better behaviour.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "444fd8badd265ddde33babf2a21bf3f527334e98",
@@ -5539,10 +5742,17 @@
     {
       "upstreamSha": "47ace94962a714a561d7cfbdbaa4c721ef6b0598",
       "subject": "fix(web): use consistent PR section toggles (#11763)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): use consistent PR section toggles. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): use consistent PR section toggles.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "47dbb06c3b171c40ebdfbd5b38cd954127949bc0",
@@ -5621,10 +5831,17 @@
     {
       "upstreamSha": "48ba76bc26337f23d1f0991bbac51f996a3333dc",
       "subject": "fix(web): collapse oldest pull request comments (#9323)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): collapse oldest pull request comments. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): collapse oldest pull request comments.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "48c176b3cfda7a714c10f18a12d398528ff4c2f9",
@@ -5691,10 +5908,17 @@
     {
       "upstreamSha": "493fbb58870c912b9cb2ba6c2f1dae938877a59a",
       "subject": "fix(web): reuse pull request list data while loading (#9467)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): reuse pull request list data while loading. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): reuse pull request list data while loading.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "494cfac2494095c3f9b24cc16fb73721f84894a4",
@@ -5788,10 +6012,17 @@
     {
       "upstreamSha": "4a560b4e4ebb37efb7f57805ba79e37f5500bdca",
       "subject": "fix(web): honor whitespace settings in pull request diffs (#12438)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): honor whitespace settings in pull request diffs. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): honor whitespace settings in pull request diffs.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "4a8ab1b720c41b035dc4b7c58030ed62fbe6bd7f",
@@ -5972,10 +6203,17 @@
     {
       "upstreamSha": "4d06156dd7821851007e61489105f33dbb241a7f",
       "subject": "fix(web): center pull request unavailable states (#11110)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): center pull request unavailable states. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): center pull request unavailable states.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "4d12e52223f3fcd4813b9bc52cd9cb3f2bd19539",
@@ -6063,10 +6301,17 @@
     {
       "upstreamSha": "4e547318b60031eb546d8cf2b84ad9fa0785a87a",
       "subject": "fix(server): find newly opened pull requests after agent turns (#9125)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): find newly opened pull requests after agent turns. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): find newly opened pull requests after agent turns.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "4e59b06b84fdfa36f78b4fc9079dff88b4ff3dc4",
@@ -6312,10 +6557,17 @@
     {
       "upstreamSha": "51341f2ac1e25032efac13ef6e9652e9c74b48a3",
       "subject": "fix(server): outdated gh no longer reads as \"not authenticated\" (#7588)",
-      "reason": "Phase 12a: fix(server): outdated gh no longer reads as \"not authenticated\". Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): outdated gh no longer reads as \"not authenticated\".",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "51672b6ecb9d927d57d0b12dd071ca0d4a34ef36",
@@ -6359,10 +6611,17 @@
     {
       "upstreamSha": "52ad70ec43b5dcfcdc72ac79c0964da8e4d163db",
       "subject": "fix(web): prioritize linked pull requests over automatic diffs (#12142)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): prioritize linked pull requests over automatic diffs. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): prioritize linked pull requests over automatic diffs.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "52b2bf77a941740b4d979f3f4cae1c2851c14a69",
@@ -6479,10 +6738,15 @@
     {
       "upstreamSha": "5423ba0fd08447240282c08362ee8e382bf16903",
       "subject": "feat(web): merge the comment and review buttons into one composer (#12945)",
-      "reason": "Phase 12a: feat(web): merge the comment and review buttons into one composer. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 12: The shared composer selects comment/approve/request-changes only from advertised verdicts and prepares an immutable durable operation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/ForgeControls.tsx:1",
+        "apps/web/src/components/prHub/ForgeControls.browser.tsx:1"
+      ]
     },
     {
       "upstreamSha": "5427ca056270ad49ac88431ac1fb8bb54dd7b91b",
@@ -6601,7 +6865,7 @@
     {
       "upstreamSha": "5623089aea68ca62811f51321686c259fa4c810f",
       "subject": "fix(server): disable color probes in worktree setup (#11843)",
-      "reason": "Phase 9c: The setup script runs as an owned process with NO_COLOR and FORCE_COLOR=0, and ANSI output is stripped from the tail. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: The setup script runs as an owned process with NO_COLOR and FORCE_COLOR=0, and ANSI output is stripped from the tail. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -6625,10 +6889,15 @@
     {
       "upstreamSha": "569a8cd2c3303f55fd869687eb31359b5658cc78",
       "subject": "fix(web): play pull request videos inline (#10617)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): play pull request videos inline. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Authenticated GitHub videos, including UUID video HTML, render inline through the bounded proxy while other HTML stays escaped.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/PrMarkdown.tsx:1",
+        "apps/web/src/components/prHub/PrEnhancements.browser.tsx:1"
+      ]
     },
     {
       "upstreamSha": "56a2f42b8ce27f5deefaa85a02ae9c1d3b61f309",
@@ -6766,10 +7035,17 @@
     {
       "upstreamSha": "57a66608b918d673eeec7e6c94ea5906b756fcd0",
       "subject": "fix(pull-requests): align checkout control with author (#9196)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): align checkout control with author. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): align checkout control with author.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "57a6b70e24221f00c9a161f1e5b6b2ddd753bc8f",
@@ -6814,7 +7090,7 @@
     {
       "upstreamSha": "584450a1f198c8592d28947a0a7a060d28013298",
       "subject": "fix(web): compact the worktree setup glass popover (#12802)",
-      "reason": "Phase 9c: f5 shows setup as a compact card above the composer with a five-line script tail rather than upstream's glass popover; same information, f5 layout. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: f5 shows setup as a compact card above the composer with a five-line script tail rather than upstream's glass popover; same information, f5 layout. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -6909,10 +7185,16 @@
     {
       "upstreamSha": "5975ec78b7eaff654e6183b99f8de7a05591e99d",
       "subject": "fix(server): background PR checks spend less GitHub quota (#13189)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): background PR checks spend less GitHub quota. Reimplement in f5; not yet delivered. Also informs Phase 12b forge capabilities; retain f5 durable write recovery.",
+      "reason": "Phase 12: Background sync and read budgets belong to account-scoped server runtimes; bounded native caches and shared rate cooldowns limit repeat optional reads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/prHub/forgeHub.ts:1",
+        "apps/server/src/sourceControl/forgeRequestBudget.ts:1"
+      ]
     },
     {
       "upstreamSha": "5989de44a24888dab02854477ea1d0f50ac3a4a6",
@@ -6924,10 +7206,17 @@
     {
       "upstreamSha": "599c9776eb887d4fff42da7d2daf8aa07ee9a9e2",
       "subject": "fix(web): align pull request state glyph to top of row (#11268)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): align pull request state glyph to top of row. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): align pull request state glyph to top of row.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "59be6f78465d73d2d8bba5ddd7741018205dc675",
@@ -6960,10 +7249,17 @@
     {
       "upstreamSha": "5a39013313a7e6e9d6fbeeb915b8c176ea3dd126",
       "subject": "fix(web): share touch-visible pull request edit actions (#12370)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): share touch-visible pull request edit actions. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): share touch-visible pull request edit actions.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "5a4287cd63aefef93c0fd15fe79f63a2f2657211",
@@ -7058,7 +7354,7 @@
     {
       "upstreamSha": "5b7d72aad14ed37e8e5e4c02a6d49814bfe528ac",
       "subject": "feat(updates): continue active threads across server restarts (#9167)",
-      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8d",
@@ -7146,10 +7442,17 @@
     {
       "upstreamSha": "5cc369b7eb882dbea8d5ad21ba688c73a0058748",
       "subject": "fix(pull-requests): refresh data after thread turns (#9496)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): refresh data after thread turns. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): refresh data after thread turns.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "5ce92c2f192040bf77c0211fa33bf03c74c031ef",
@@ -7278,7 +7581,7 @@
     {
       "upstreamSha": "5ea6439816470288d3f2b6b43635fea41fbbb101",
       "subject": "feat(web): inline worktree setup rows and async setup scripts (#11832)",
-      "reason": "Phase 9c: Setup stages render inline in the setup card, and project scripts gain an 'Agent waits for this script' toggle; other setup scripts run alongside the agent. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Setup stages render inline in the setup card, and project scripts gain an 'Agent waits for this script' toggle; other setup scripts run alongside the agent. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -7458,10 +7761,17 @@
     {
       "upstreamSha": "60eff99f25dbfc9799043ad979537e2da1aea590",
       "subject": "fix(web): save PR body edits with Cmd/Ctrl+Enter (#10660)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): save PR body edits with Cmd/Ctrl+Enter. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): save PR body edits with Cmd/Ctrl+Enter.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "60f2ce0279d524bd70a573f6e0b6e9fab56e4b3e",
@@ -7582,9 +7892,9 @@
     },
     {
       "upstreamSha": "62cf4617594c2a0d8c9c5dc4bbc2012d0ead802d",
-      "subject": "fix: better defaults — Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)",
+      "subject": "fix: better defaults \u2014 Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)",
       "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: better defaults — Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)).",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: better defaults \u2014 Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)).",
       "reviewStatus": "legacy"
     },
     {
@@ -7749,10 +8059,17 @@
     {
       "upstreamSha": "645d58547d282eb2aaf6c48e5907625fc112386a",
       "subject": "fix(web): prioritize authored pull requests (#9453)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): prioritize authored pull requests. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): prioritize authored pull requests.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "64a3cd6d7daab21f6bfbc00faf0104b6fd361267",
@@ -7820,7 +8137,7 @@
     {
       "upstreamSha": "65f1839ae82af4e67f389f23e4ccc50f51a4a83f",
       "subject": "fix(web): keep codex restart responses continuous (#9560)",
-      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8d",
@@ -8064,10 +8381,17 @@
     {
       "upstreamSha": "692eb1a5792b9930959b19805acf2bf2611318c9",
       "subject": "fix(web): sync sidebar PR state from open panel (#9092)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): sync sidebar PR state from open panel. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): sync sidebar PR state from open panel.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "694f8d1c6eaaabafbf5c2861ae524174919ef625",
@@ -8079,10 +8403,17 @@
     {
       "upstreamSha": "6975efd3dd52c95dd978ff26f591139d8c5c2503",
       "subject": "fix(web): the pull request badge reads at the meta size again (#13175)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): the pull request badge reads at the meta size again. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): the pull request badge reads at the meta size again.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "69a18ce912ac3ae93cf498cfe0cee40beb49fb9f",
@@ -8121,10 +8452,17 @@
     {
       "upstreamSha": "6a2d2466673c010a15cb530fa2a8f77b363e046d",
       "subject": "fix(pr): update labels and reviewers without redundant reloads (#11117)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pr): update labels and reviewers without redundant reloads. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pr): update labels and reviewers without redundant reloads.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "6a3df51707b67c3435f86b3b83a093aec8b03415",
@@ -8150,10 +8488,17 @@
     {
       "upstreamSha": "6a699f0f2fbd8847d7ec2df8d9245ce8c2eb8707",
       "subject": "fix(web): stabilize pull request loading layout (#12721)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): stabilize pull request loading layout. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): stabilize pull request loading layout.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "6a8f4d3b8f1c73df33fb6ac3f1ff89e38b4cf633",
@@ -8616,10 +8961,19 @@
     {
       "upstreamSha": "6fd68f5c3e7c81a9650ba36df32f2241912e00ba",
       "subject": "feat(source-control): support Forgejo and Gitea with fj and tea (#11436)",
-      "reason": "Phase 12b (forge adapters): feat(source-control): support Forgejo and Gitea with fj and tea. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Forgejo/Gitea REST adapters supply typed reads, mutations and Git workflows with the complete upstream capability matrix; host tokens route per repository.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "disposition": "ported",
+      "plannedWorkstream": "12b",
+      "f5Shas": [
+        "e073f2654001c9c72cb7a8f78cbec5dc6bf58c85",
+        "3d509a0fadb79ca1b6b18d0e60440cab400a1a39"
+      ],
+      "evidence": [
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/server/src/git/Layers/GitManager.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.test.ts:1"
+      ]
     },
     {
       "upstreamSha": "6ff537f03c4df500da7283c0566fe6f8feca709b",
@@ -8643,18 +8997,32 @@
     {
       "upstreamSha": "706231535ceac8618712913dfdc4a058c2ffb0d8",
       "subject": "fix(web): match composer pull request state icons (#9375)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): match composer pull request state icons. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): match composer pull request state icons.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "7068e86f76e908c77ff04d1a684840257eab3a8a",
       "subject": "fix(web): open GitHub pull requests in browser when loading fails (#8507)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): open GitHub pull requests in browser when loading fails. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): open GitHub pull requests in browser when loading fails.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "7083bce26aa89fedfc482ad44cf61c5508a58db7",
@@ -8715,7 +9083,7 @@
     {
       "upstreamSha": "7112697e8be2d6f231726a91eb565e00ddbeebec",
       "subject": "feat(threads): dismiss async questions without replying (#10431)",
-      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8b",
@@ -8764,7 +9132,7 @@
     {
       "upstreamSha": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
       "subject": "feat(web): choose queue or steer for follow-up messages (#11964)",
-      "reason": "Phase 8a: Durable steering, same-ID start fallback, conservative ambiguous delivery recovery, provider adapters, follow-up preference and shortcut. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8a: Durable steering, same-ID start fallback, conservative ambiguous delivery recovery, provider adapters, follow-up preference and shortcut. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8a",
@@ -8818,7 +9186,7 @@
     {
       "upstreamSha": "7220dfe2c949476eaa7d21eccbcd3a0ce0eddb49",
       "subject": "feat(chat): attach files to question answers (#9871)",
-      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8b",
@@ -8920,7 +9288,7 @@
     {
       "upstreamSha": "73b206f4bf99e7e98ae144a9d9edbf7cb2700fc1",
       "subject": "feat(web): show each worktree setup step and let users cancel it (#11372)",
-      "reason": "Phase 9c: Background worktree setup reports fetch, checkout (with progress), submodule, setup-script and agent stages, with cancel that removes only clean, unclaimed artifacts it created. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Background worktree setup reports fetch, checkout (with progress), submodule, setup-script and agent stages, with cancel that removes only clean, unclaimed artifacts it created. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -8972,10 +9340,17 @@
     {
       "upstreamSha": "7445aa733ada33e45289e5aa5055f79142556513",
       "subject": "fix(web): align menu item icons in pull request detail panel (#11263)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): align menu item icons in pull request detail panel. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): align menu item icons in pull request detail panel.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "7451d17a69ff7585f302933beeae1037d2c708a8",
@@ -9052,10 +9427,15 @@
     {
       "upstreamSha": "75472802bc5ddaba860dc652000223600e529937",
       "subject": "fix(server): treat removed Bitbucket permissions endpoint as unknown, not blocking (#6525)",
-      "reason": "Phase 12b (forge adapters): fix(server): treat removed Bitbucket permissions endpoint as unknown, not blocking. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Bitbucket does not depend on the removed permissions endpoint; unknown requirements stay unknown and advertised writes remain host-authorized.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "disposition": "ported",
+      "plannedWorkstream": "12b",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/server/src/prHub/forgeModel.ts:1"
+      ]
     },
     {
       "upstreamSha": "758decaa565f021f85af756669b18bd9f80cacf5",
@@ -10106,10 +10486,17 @@
     {
       "upstreamSha": "8461c25ffd0a11dfb537b081ed8460283d04f033",
       "subject": "fix(web): disable linked pull requests when none are linked (#11348)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): disable linked pull requests when none are linked. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): disable linked pull requests when none are linked.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "849bac8946c40420174b4187e36fcf17b5ea7cc4",
@@ -10175,10 +10562,17 @@
     {
       "upstreamSha": "854541a04e07b7960698b381bcfd2fda73eb276c",
       "subject": "fix(pull-requests): shared state + not settling? (#9332)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): shared state + not settling?. Reimplement in f5; not yet delivered. Port shared PR state only; omit ThreadSettlement.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): shared state + not settling?.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "8583eac643b8c248bcd835e8de81c7c0d7182ad3",
@@ -10326,10 +10720,17 @@
     {
       "upstreamSha": "871192933fe0a501fd92a1ed3a5d317ba1eea9d3",
       "subject": "fix(web): show pointer cursors on pull request controls (#11283)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): show pointer cursors on pull request controls. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): show pointer cursors on pull request controls.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "87a12b53fdff7e2e0318af3edea54005557cea56",
@@ -10349,7 +10750,7 @@
     {
       "upstreamSha": "8824f8f24f8b81fd6aed6f228a57a1d4013d01d9",
       "subject": "fix(web): retry failed thread bootstraps with a fresh id (#7664)",
-      "reason": "Phase 9b: A failed first-send bootstrap reports whether the thread was not created or was rolled back and deleted; the draft moves to a fresh thread id so sending again works. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9b: A failed first-send bootstrap reports whether the thread was not created or was rolled back and deleted; the draft moves to a fresh thread id so sending again works. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9b",
@@ -10693,10 +11094,17 @@
     {
       "upstreamSha": "8c628f14993cb159d467e7a0f8c52578dde77005",
       "subject": "fix(web): align pull request action menu rows (#6534)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): align pull request action menu rows. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): align pull request action menu rows.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "8c85b4933fb7202c2d48e4c8f8ea0e1cfdbcdc29",
@@ -10896,7 +11304,7 @@
     },
     {
       "upstreamSha": "8eca20005b47e197b3610f7996f3fd02355c1891",
-      "subject": "feat(web): configurable fonts and sizes under Settings → Appearance (#5103)",
+      "subject": "feat(web): configurable fonts and sizes under Settings \u2192 Appearance (#5103)",
       "disposition": "ported",
       "f5Shas": ["120eb36729b35d63dc2bf2a10843ff4a604a4c4a"],
       "reason": "Reimplemented through f5's client-local AppSettings path with validated interface, chat, code, and terminal font controls; pre-paint and live CSS-variable application across app, chat, diff, and preview surfaces; and explicit xterm updates, refits, and PTY resize synchronization without session restarts.",
@@ -10905,10 +11313,17 @@
     {
       "upstreamSha": "8eec78cf839a6ce507c085f0b4c42042831407c7",
       "subject": "fix(web): remove pr description reactions (#11361)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): remove pr description reactions. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): remove pr description reactions.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "8ef478eb0a6deeef81c5421dd7bb1c6b8c4d0e7d",
@@ -11161,10 +11576,17 @@
     {
       "upstreamSha": "91c66ac43ddad4f8697887009746f4de11736cb9",
       "subject": "fix(web): center pull request link previews (#9794)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): center pull request link previews. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): center pull request link previews.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "91c8d4771ccb503a9dde65190b87db642df0a6ea",
@@ -11237,10 +11659,17 @@
     {
       "upstreamSha": "931d41f933b2536f699975412169f5318e6adad5",
       "subject": "fix(web): sort equally merge-ready pull requests by diff size (#9887)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): sort equally merge-ready pull requests by diff size. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): sort equally merge-ready pull requests by diff size.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "931e91527c285c49d8482328877c93c8c684591a",
@@ -11258,10 +11687,16 @@
     {
       "upstreamSha": "93349247008517663aa16a3ed145d5b0f3f044ff",
       "subject": "fix(web): pull request chips share the link hover preview (#12719)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): pull request chips share the link hover preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Thread link chips, stack navigation and markdown links share the same PR hover-preview component.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/PrLinkPreview.tsx:1",
+        "apps/web/src/components/prHub/ThreadPrLinks.tsx:1",
+        "apps/web/src/components/prHub/PrStackSection.tsx:1"
+      ]
     },
     {
       "upstreamSha": "935917f50a2d9ccdd772464de140c187ca80bb0b",
@@ -11390,8 +11825,8 @@
     },
     {
       "upstreamSha": "949feb61e4bfd96669ba0e8cf3dca7c6d7f885b3",
-      "subject": "feat(web): configurable browser defaults in Settings → Integrations (#7082)",
-      "reason": "Phase 13b (preview browser controls): feat(web): configurable browser defaults in Settings → Integrations. Reimplement in f5; not yet delivered.",
+      "subject": "feat(web): configurable browser defaults in Settings \u2192 Integrations (#7082)",
+      "reason": "Phase 13b (preview browser controls): feat(web): configurable browser defaults in Settings \u2192 Integrations. Reimplement in f5; not yet delivered.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
       "plannedWorkstream": "13b"
@@ -11423,10 +11858,15 @@
     {
       "upstreamSha": "95103905f5f045523994213bf76bfb14acc31b27",
       "subject": "feat(web): preview pull request links (#9631)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): preview pull request links. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: PR links load bounded 60-second server previews on hover/focus, expose Copy link and navigate to the hub.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/prHub/PrHubExtensions.ts:1",
+        "apps/web/src/components/prHub/PrLinkPreview.tsx:1"
+      ]
     },
     {
       "upstreamSha": "95139254ba98fb8ad12a001ebcbc9d4b833ead19",
@@ -11515,10 +11955,17 @@
     {
       "upstreamSha": "962bf62921c0ecbc9320f9b071e16b1d41484aad",
       "subject": "fix(web): show author avatars in pull request previews (#12125)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): show author avatars in pull request previews. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): show author avatars in pull request previews.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "96398e3775fc6c74525e4a211e75e580c6cf4225",
@@ -12159,10 +12606,15 @@
     {
       "upstreamSha": "9ebbeda5a03fd8fce7be147b65ea396e50721c68",
       "subject": "feat(web): apply and remove labels from the pull request tab (#9313)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): apply and remove labels from the pull request tab. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Advertised label edits are prepared, confirmed and recovered through the durable forge operation path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/ForgeControls.tsx:1",
+        "apps/server/src/prHub/PrHubExtensions.ts:1"
+      ]
     },
     {
       "upstreamSha": "9ecfc07a8b3acadd1612665b6e24425f625480de",
@@ -12174,10 +12626,17 @@
     {
       "upstreamSha": "9f0c9f725d4553d34e3c91c13d67ebcc58be5b0f",
       "subject": "fix(web): reuse current PR status in the sidebar (#12545)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): reuse current PR status in the sidebar. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): reuse current PR status in the sidebar.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "9f12eab383ab0fd348c9d35cd248cd939a2c5796",
@@ -12253,10 +12712,17 @@
     {
       "upstreamSha": "9fdafdf114a88bd7309883b4578e74cbe786d04d",
       "subject": "feat(pull-requests): copy provider checkout commands (#9086)",
-      "reason": "Phase 12a (GitHub PR hub): feat(pull-requests): copy provider checkout commands. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(pull-requests): copy provider checkout commands.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "9fe4832a3f87e48152f915cfac9f85ec78e14e24",
@@ -12316,10 +12782,17 @@
     {
       "upstreamSha": "a0eb23993a3bacf96d618918f43ea18f2da72390",
       "subject": "fix(web): prioritize open panel pull request when copying (#9877)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): prioritize open panel pull request when copying. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): prioritize open panel pull request when copying.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "a12589dc0bec60b498e72bdd2190871ee6b5c80d",
@@ -12490,7 +12963,7 @@
     {
       "upstreamSha": "a40aef4ccbc10b7bcd7bc817151db8d5a9b1c257",
       "subject": "fix(server): a draft can retry its first send after a failed bootstrap (#8226)",
-      "reason": "Phase 9b: First sends, including thread and worktree bootstrap, go through nextTurnQueue.submit with single-flight replay, so a draft can retry after a failed bootstrap without duplicating the thread or turn. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9b: First sends, including thread and worktree bootstrap, go through nextTurnQueue.submit with single-flight replay, so a draft can retry after a failed bootstrap without duplicating the thread or turn. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9b",
@@ -12563,10 +13036,17 @@
     {
       "upstreamSha": "a56b0cd7178dfef299aa49b26773a80a34abe205",
       "subject": "fix(server): allow large Azure DevOps PR lists (#8572)",
-      "reason": "Phase 12b (forge adapters): fix(server): allow large Azure DevOps PR lists. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): allow large Azure DevOps PR lists.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "plannedWorkstream": "12b",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "a5ac766596bdf6c7d6852ecda453e2a85a7b08d4",
@@ -12612,10 +13092,16 @@
     {
       "upstreamSha": "a5e29edeec34fdfab1d44e643b0d12bb924fd261",
       "subject": "feat(web): send PR line requests to agent (#6597)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): send PR line requests to agent. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: A diff comment prepares a prompt in the linked F5 thread, preserving its existing draft and never automatically submitting a turn.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/PrSendToAgent.tsx:1",
+        "apps/web/src/components/prHub/prF5Thread.ts:1",
+        "apps/web/src/components/prHub/PrEnhancements.browser.tsx:1"
+      ]
     },
     {
       "upstreamSha": "a62e7d670c67bf221a5699b5a988367781fead74",
@@ -12732,10 +13218,17 @@
     {
       "upstreamSha": "a850895f6833b99d90fc6c50192b5eaa4966d5c7",
       "subject": "feat(web): refresh pull request details (#7148)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): refresh pull request details. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): refresh pull request details.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "a8693eb4ed3a66d72e6b814117e7beeaf0fb5f8b",
@@ -12793,10 +13286,17 @@
     {
       "upstreamSha": "a9ab9049bbbab89fe23dcfb26c3169ef70a0597e",
       "subject": "feat(web): show the pull request refresh spinning in the detail header (#12833)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): show the pull request refresh spinning in the detail header. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): show the pull request refresh spinning in the detail header.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "a9caf7b7089afb6f1b3b888ea404b75b8f9e88e1",
@@ -12932,7 +13432,7 @@
     },
     {
       "upstreamSha": "abc409c2d4a072c2de46c9015f5cffff00dcc46b",
-      "subject": "Add project file picker (⌘P) and project content search (⇧⌘F) (#4855)",
+      "subject": "Add project file picker (\u2318P) and project content search (\u21e7\u2318F) (#4855)",
       "disposition": "ported",
       "f5Shas": ["a1b619b1604fee4c6437a3947a7744165c0b3f3d"],
       "reviewStatus": "legacy"
@@ -13100,15 +13600,22 @@
     {
       "upstreamSha": "addfb1390eea5e850fb5e235525f9eb6c4ade100",
       "subject": "fix(web): restore pr list diff counts to the top right (#10609)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): restore pr list diff counts to the top right. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): restore pr list diff counts to the top right.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "ae53072af0560c0606202b87b5fdb7e52d48ac5c",
       "subject": "fix(web): keep the composer ready during background worktree setup (#11883)",
-      "reason": "Phase 9c: A worktree first send returns 'queued' immediately and the composer stays usable while setup runs in the background. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: A worktree first send returns 'queued' immediately and the composer stays usable while setup runs in the background. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -13185,10 +13692,15 @@
     {
       "upstreamSha": "afb84898be3bf9b83bd4cb98c608b79c433579cc",
       "subject": "feat(pull-requests): link multiple pull requests to threads (#10839)",
-      "reason": "Phase 12a (GitHub PR hub): feat(pull-requests): link multiple pull requests to threads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Several provider-qualified PRs can link to a thread through the existing additive projection; the header exposes all links and explicit attachment.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/ThreadPrLinks.tsx:1",
+        "apps/server/src/prHub/PrHubExtensions.ts:1"
+      ]
     },
     {
       "upstreamSha": "afc8342801d487d96732fdad25454f0c1fe96a3b",
@@ -13345,10 +13857,17 @@
     {
       "upstreamSha": "b1e223e2b0d87124883b1410ab52dd6a1338e40d",
       "subject": "perf(server): avoid workspace scans when loading pull requests (#11299)",
-      "reason": "Phase 12a (GitHub PR hub): perf(server): avoid workspace scans when loading pull requests. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: perf(server): avoid workspace scans when loading pull requests.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "b20d29dc438bcabb2c25e85976dc108169bb4c6d",
@@ -13422,7 +13941,7 @@
     },
     {
       "upstreamSha": "b28f9bf0a1bd562623c027c5ed80b5ca50395b28",
-      "subject": "feat(web): pull request surfaces — filters & qualifiers, all-server listing, update branch, reactions, in-place editing, smarter diffs (#6039)",
+      "subject": "feat(web): pull request surfaces \u2014 filters & qualifiers, all-server listing, update branch, reactions, in-place editing, smarter diffs (#6039)",
       "disposition": "deferred",
       "reason": "Deferred until the provider-neutral GitHub PR detail seam is complete.",
       "reviewStatus": "legacy"
@@ -13521,10 +14040,17 @@
     {
       "upstreamSha": "b3ed07fb39fb795b9d2c74644e4b0a7f12392ad5",
       "subject": "feat(web): add PR page selections to new draft threads (#11296)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): add PR page selections to new draft threads. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): add PR page selections to new draft threads.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "b3f8dd979af2bb089f94e6f1006ebbb2cf748db4",
@@ -13571,7 +14097,7 @@
     {
       "upstreamSha": "b4620d595554654c259ec7c0afb3d3d5532959a8",
       "subject": "fix(server): reject file rewind in shared workspaces (#12306)",
-      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8c",
@@ -13912,7 +14438,7 @@
     {
       "upstreamSha": "b906ce2d73d025e801877f42a35b7a2f5629806f",
       "subject": "fix(server): recover opted-in threads after machine restarts (#9803)",
-      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8d: Scoped opt-in graceful-shutdown markers, atomic exactly-once continuation admission, eligibility/expiry checks and recovery presentation; abrupt shutdown without a marker remains outside the approved Phase 8d mechanism. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8d",
@@ -13998,15 +14524,22 @@
     {
       "upstreamSha": "ba30177b5a5e9b47885b59afcc4f00a8a7cc0efd",
       "subject": "fix(server): preserve merged PR badges after branch deletion (#6216)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): preserve merged PR badges after branch deletion. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): preserve merged PR badges after branch deletion.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "ba3cb0773859334fe9f75016295bb3893c9e6044",
       "subject": "feat(projects): automatically pull clean default branches (#9277)",
-      "reason": "Phase 9f: Off-by-default auto-pull fast-forwards clean default-branch project roots every 15 minutes under the path lock and a background cross-profile repository lock, with dry run and audit records. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9f: Off-by-default auto-pull fast-forwards clean default-branch project roots every 15 minutes under the path lock and a background cross-profile repository lock, with dry run and audit records. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9f",
@@ -14019,10 +14552,16 @@
     {
       "upstreamSha": "ba46f922a271942d42faf305ff833af89cb5c3a1",
       "subject": "fix(pull-requests): protect provider API budgets (#6466)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): protect provider API budgets. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Account-specific request scheduling, bounded read connections/caches and shared native cooldowns protect provider budgets without replaying writes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/sourceControl/forgeRequestBudget.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.test.ts:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1"
+      ]
     },
     {
       "upstreamSha": "ba873b8181c3741603a365e75785457064a52ffd",
@@ -14685,10 +15224,17 @@
     {
       "upstreamSha": "c12ba7581ac00ba2a623ad23283da5d03d34c2d8",
       "subject": "feat(web): make pull request comments easier to scan (#12150)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): make pull request comments easier to scan. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): make pull request comments easier to scan.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "c131f289268d407bb0d8540dc33ba6ddb88f46ed",
@@ -14963,7 +15509,7 @@
     {
       "upstreamSha": "c4ca1b0f94e56bd93899704f03015d51948a6b4d",
       "subject": "feat(settings): add automatic storage cleanup per machine and project (#11598)",
-      "reason": "Phase 9e: Off-by-default storage cleanup removes idle F5 worktrees by project-scopable rules (never forced, branch kept, all claims re-checked under the lifecycle lock) and old provider logs, with dry run, redacted audit records and configurable preview-artifact retention. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9e: Off-by-default storage cleanup removes idle F5 worktrees by project-scopable rules (never forced, branch kept, all claims re-checked under the lifecycle lock) and old provider logs, with dry run, redacted audit records and configurable preview-artifact retention. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9e",
@@ -15168,10 +15714,17 @@
     {
       "upstreamSha": "c7e6d711d3f2982e54854258987509e8f69b31cd",
       "subject": "feat(web): make review verdicts legible in the pull request detail (#7077)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): make review verdicts legible in the pull request detail. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): make review verdicts legible in the pull request detail.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "c7e93f520bbd1ba4b795a5fb1aad14778aa1d047",
@@ -15363,10 +15916,17 @@
     {
       "upstreamSha": "caab2fdbac041ac2e851ad4fa3ac4a40a1d4a8f6",
       "subject": "fix(web): render draft PRs in gray (#9537)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): render draft PRs in gray. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): render draft PRs in gray.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "cabac780f5d9566ea26d340c9f126a46664b698b",
@@ -15421,10 +15981,16 @@
     {
       "upstreamSha": "cb3d95c17487f3d834a5537f7c3aa0106bc9b5ec",
       "subject": "fix(server): release oversized pull request diff cache entries (#12523)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): release oversized pull request diff cache entries. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Native diff reads are bounded by response size, records and cache count; failed refreshes retain prior verified files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/server/src/prHub/forgeHub.ts:1",
+        "apps/server/src/prHub/forgeHub.test.ts:1"
+      ]
     },
     {
       "upstreamSha": "cb49e5d7201ef6bcb288bf447785bbd374e8644d",
@@ -15578,10 +16144,17 @@
     {
       "upstreamSha": "cde12790d721ab2a90471750fd75d9f5bf13f57d",
       "subject": "fix(contracts): accept legacy pull request checkout results (#8238)",
-      "reason": "Phase 12a (GitHub PR hub): fix(contracts): accept legacy pull request checkout results. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(contracts): accept legacy pull request checkout results.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "ce467da9cfae3d7952ce13a9e2450e2908e9f224",
@@ -15651,10 +16224,17 @@
     {
       "upstreamSha": "cefec32d6fc5d14f03e110ebdde534bdbcc9b62b",
       "subject": "fix(web): prevent pull request metadata overlap (#8790)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): prevent pull request metadata overlap. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): prevent pull request metadata overlap.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "cf0bb4c3571badbc5aaa8189cd5cbe3563ec73c1",
@@ -15762,10 +16342,15 @@
     {
       "upstreamSha": "d081ab7abc16a21570d3d96948acb6c1f8d847a4",
       "subject": "fix(web): open pull request markdown links in the panel (#10623)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): open pull request markdown links in the panel. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: PR markdown links share hover previews and hub navigation rather than losing the selected PR context.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/web/src/components/prHub/PrMarkdown.tsx:1",
+        "apps/web/src/components/prHub/PrLinkPreview.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d0b19b32e01d7abc8829c01353d759fed3d304ed",
@@ -15810,10 +16395,17 @@
     {
       "upstreamSha": "d115a96763b76d00f06b06272688cf68eebe8206",
       "subject": "fix(web): stop empty diffs replacing pull requests (#9753)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): stop empty diffs replacing pull requests. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): stop empty diffs replacing pull requests.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d1790aa14639a0361c02fbc5c326d0aa76f95a83",
@@ -15872,7 +16464,7 @@
     {
       "upstreamSha": "d2042d288eaf7aaf7feda85eb7d1a6f546302c12",
       "subject": "fix(web): avoid stale file writes on close (#8630)",
-      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A\u2192B\u2192A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3e",
@@ -15913,10 +16505,17 @@
     {
       "upstreamSha": "d29c56a5c404cb0f58d3b2ac41762fa0d0ac28d4",
       "subject": "fix(server): resolve project identity before legacy pr relinks (#11045)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): resolve project identity before legacy pr relinks. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): resolve project identity before legacy pr relinks.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d2a90b921a5843654a58448d0bc59828e1e3ccc4",
@@ -15989,10 +16588,17 @@
     {
       "upstreamSha": "d35c71d1b975660ec6a71bbceb6aa7dfd0e8c3d5",
       "subject": "feat(web): add pull request list filters (#8809)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): add pull request list filters. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): add pull request list filters.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d37a9b09b8ea6b014e9ea2d6b00d9b25cde0efc6",
@@ -16131,10 +16737,17 @@
     {
       "upstreamSha": "d5465aebf2746b8d5f327be3b2424d9412a29075",
       "subject": "fix(web): retain terminal PR badges after checkout switch (#4755)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): retain terminal PR badges after checkout switch. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): retain terminal PR badges after checkout switch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d547e3b12a1af79e9dd81e422255a12d6ecf70d1",
@@ -16186,10 +16799,17 @@
     {
       "upstreamSha": "d612d12b8bb278af97b0029f8d48b2403a5f9ee6",
       "subject": "fix(web): reuse cached GitHub PR details across entry points (#12168)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): reuse cached GitHub PR details across entry points. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): reuse cached GitHub PR details across entry points.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d64335bb5913c21869633a4236d9409911e3da52",
@@ -16248,16 +16868,22 @@
     {
       "upstreamSha": "d715c2e56bb718d2225cc0f07cc65e6c637dc229",
       "subject": "fix(server): let slow provider CLIs raise their discovery probe budget (#6223)",
-      "reason": "This commit actually bounds Azure DevOps discovery requests, not provider CLI probes. Retain it for the Phase 12b Azure DevOps adapter.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): let slow provider CLIs raise their discovery probe budget.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
       "plannedWorkstream": "12b",
-      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ],
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"]
     },
     {
       "upstreamSha": "d76b24dd15a219666941ab1b4967d8f738adcda0",
       "subject": "feat(codex): support async questions (#9512)",
-      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8b",
@@ -16333,10 +16959,17 @@
     {
       "upstreamSha": "d7c71f91d61e68ae35fcc0032847cb42324a8b51",
       "subject": "feat(web): float the pull request comment composer (#11531)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): float the pull request comment composer. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): float the pull request comment composer.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70",
@@ -16388,10 +17021,17 @@
     {
       "upstreamSha": "d897641d738c67dd7c12cbb3a273b43fe17a5eb1",
       "subject": "fix(pull-requests): keep cached PR chrome on reopen (#9294)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): keep cached PR chrome on reopen. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): keep cached PR chrome on reopen.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d8a6dfd31539a86d08bd4fbd030f8252b3c405ac",
@@ -16450,18 +17090,34 @@
     {
       "upstreamSha": "d94fbda344398bd266b9f6645e531eb17d3c9e4e",
       "subject": "fix(gitlab): submit review comments on context lines (#6348)",
-      "reason": "Phase 12b (forge adapters): fix(gitlab): submit review comments on context lines. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: GitLab typed inline comments carry pinned head/base/start SHAs and old/new line sides, including context-line positions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "disposition": "ported",
+      "plannedWorkstream": "12b",
+      "f5Shas": [
+        "e073f2654001c9c72cb7a8f78cbec5dc6bf58c85",
+        "3d509a0fadb79ca1b6b18d0e60440cab400a1a39"
+      ],
+      "evidence": [
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.test.ts:1",
+        "apps/server/src/prHub/PrHubExtensions.ts:1"
+      ]
     },
     {
       "upstreamSha": "d99bc5a4d707df2506e60cbb411b8d30022bbf89",
       "subject": "feat(web): sort pull requests by what is blocked on me (#12508)",
-      "reason": "Phase 12a (GitHub PR hub): feat(web): sort pull requests by what is blocked on me. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): sort pull requests by what is blocked on me.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "d9c1732b2791f762bce06e4898cdb6679ce24961",
@@ -16609,10 +17265,16 @@
     {
       "upstreamSha": "db6e0531e4faac0fc5ac0e12088b01bed6e7b851",
       "subject": "feat(github): route pull request operations across matching accounts (#11367)",
-      "reason": "Phase 12a (GitHub PR hub): feat(github): route pull request operations across matching accounts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Verified host/login tokens and exact repository routes select credentials per operation across PR Hub and thread Git actions without global account switching.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/sourceControl/accountRouting.ts:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.test.ts:1",
+        "apps/server/src/git/Layers/GitManager.test.ts:1"
+      ]
     },
     {
       "upstreamSha": "db898a30629a9d87ad0a9bc4bde1b13e672fa2d3",
@@ -16634,7 +17296,7 @@
     {
       "upstreamSha": "db9a0671bb8921ebf5f9da16cd54f7e87f5ef3b0",
       "subject": "refactor(web): move settings scope pickers into breadcrumbs (#13165)",
-      "reason": "Phase 6: scope controls are a Global › Project breadcrumb with search, scroll and URL persistence.",
+      "reason": "Phase 6: scope controls are a Global \u203a Project breadcrumb with search, scroll and URL persistence.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "6",
@@ -16734,15 +17396,22 @@
     {
       "upstreamSha": "dd6879ffea24da9fc16cb62d7d6072d2c5b2bae3",
       "subject": "fix(pull-requests): reuse github api reads (#9176)",
-      "reason": "Phase 12a (GitHub PR hub): fix(pull-requests): reuse github api reads. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(pull-requests): reuse github api reads.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "dd6ba84dc96f83000388e14b90f6533d5f63315d",
       "subject": "fix(server): fall back when new worktrees are unavailable (#6208)",
-      "reason": "Phase 9c: When a worktree cannot be prepared, the send falls back to the project root unless the request requires a worktree; failed setups offer Work locally. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: When a worktree cannot be prepared, the send falls back to the project root unless the request requires a worktree; failed setups offer Work locally. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -16787,9 +17456,9 @@
     },
     {
       "upstreamSha": "ddd5a46f3942df302f8a13310cdfa47838b0ca81",
-      "subject": "fix(web): sidebar v2 polish — jump hints, working duration, in-flight fade, settled sort (#4274)",
+      "subject": "fix(web): sidebar v2 polish \u2014 jump hints, working duration, in-flight fade, settled sort (#4274)",
       "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): sidebar v2 polish — jump hints, working duration, in-flight fade, settled sort (#4274)).",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): sidebar v2 polish \u2014 jump hints, working duration, in-flight fade, settled sort (#4274)).",
       "reviewStatus": "legacy"
     },
     {
@@ -16848,10 +17517,16 @@
     {
       "upstreamSha": "de37964db26bd3260d253f138bfde2ac60fe254e",
       "subject": "feat(prs): navigate, merge and rebase GitHub stacks (#10875)",
-      "reason": "Phase 12a (GitHub PR hub): feat(prs): navigate, merge and rebase GitHub stacks. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Host-native GitHub stacks expose navigation plus pinned merge/rebase actions, changed-layer fences and persisted uncertain/partial outcomes; unavailable previews hide the section.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "disposition": "ported",
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/prHub/githubStacks.ts:1",
+        "apps/server/src/prHub/PrHubExtensions.ts:1",
+        "apps/web/src/components/prHub/PrStackSection.tsx:1"
+      ]
     },
     {
       "upstreamSha": "de545c41737aca08359244b7778ab52e55934f17",
@@ -16927,10 +17602,17 @@
     {
       "upstreamSha": "df466c79810046d20c0f3ccc4e51709c5703814e",
       "subject": "fix(web): fall back when pull request avatars fail (#11728)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): fall back when pull request avatars fail. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): fall back when pull request avatars fail.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "df78cda8bf9c0971300e1bf35251774d9fbc833a",
@@ -16949,7 +17631,7 @@
     {
       "upstreamSha": "df8e0eb46bca3dc01c17cc74a53b19aaacbe252b",
       "subject": "fix(web): discard stale highlights after file edits (#9902)",
-      "reason": "Phase 3: file visit identity invalidates stale saves, including A→B→A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
+      "reason": "Phase 3: file visit identity invalidates stale saves, including A\u2192B\u2192A navigation; content-hash keyed viewers discard stale highlighting. Existing content-hash write conflicts remain enforced.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "3e",
@@ -17044,10 +17726,17 @@
     {
       "upstreamSha": "e0adcc8a24db604c522282edea2823e3ef7a2bc6",
       "subject": "fix(server): capture checkpoints before refreshing PR status (#10347)",
-      "reason": "Phase 12a (GitHub PR hub): fix(server): capture checkpoints before refreshing PR status. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): capture checkpoints before refreshing PR status.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e0b4f4639037ce539e6feac7eaf11995cf5490f8",
@@ -17213,10 +17902,17 @@
     {
       "upstreamSha": "e26af33b228792bb72349ca4e849a96381578a57",
       "subject": "fix(web): keep PR panel actions in the current thread (#12320)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): keep PR panel actions in the current thread. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): keep PR panel actions in the current thread.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e279e402c12b002cedcd8c4ea19476fc33783dac",
@@ -17408,10 +18104,17 @@
     {
       "upstreamSha": "e5a87e8b9ca9db21e0291ddbd54438c5fe56b277",
       "subject": "fix(web): deduplicate PR project filter choices (#9948)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): deduplicate PR project filter choices. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): deduplicate PR project filter choices.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e5c75470678e33ca2bd1001d9d93493fe437972a",
@@ -17461,7 +18164,7 @@
     {
       "upstreamSha": "e63ddb48e2fd23854a0b4a480b32cbf33e601981",
       "subject": "fix(threads): keep completed requests closed across clients (#10123)",
-      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8b: Independent pending-question projection/replay, atomic answer enqueue, dismissal and answer attachment ownership. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8b",
@@ -17566,10 +18269,17 @@
     {
       "upstreamSha": "e784975bbec7c54ed75fc6da3d4ffd4038fae041",
       "subject": "fix(ui): simplify multiple linked pull request badges (#11104)",
-      "reason": "Phase 12a (GitHub PR hub): fix(ui): simplify multiple linked pull request badges. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(ui): simplify multiple linked pull request badges.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e7deb2aaf4d4d089618dc0c8f393fa0b8b6c77e9",
@@ -17610,10 +18320,17 @@
     {
       "upstreamSha": "e84f23a97d587e0e58215f1fba2eab12717bec28",
       "subject": "fix(web): speed up PR previews with fewer GitHub requests (#11825)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): speed up PR previews with fewer GitHub requests. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): speed up PR previews with fewer GitHub requests.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e86604d3372acccd9f6a33a2c4ae46f4e2685541",
@@ -17661,10 +18378,17 @@
     {
       "upstreamSha": "e9c4775e8738381140af4e5248507b15fc1cd491",
       "subject": "fix(web): mark pull request links as external (#8856)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): mark pull request links as external. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): mark pull request links as external.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "e9db39ce05c706122bb747fd5e7e70e1aac78935",
@@ -17718,10 +18442,17 @@
     {
       "upstreamSha": "ea2983afbbcd5ad6ee2e7db80c2a9270ff4964a9",
       "subject": "fix(web): copy selected pull request link from PR page (#10615)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): copy selected pull request link from PR page. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): copy selected pull request link from PR page.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
@@ -17800,10 +18531,16 @@
     {
       "upstreamSha": "eadeaf228267be215a2e9486f16b876d703dcccc",
       "subject": "fix(bitbucket): preserve rate limits from optional PR reads (#12486)",
-      "reason": "Phase 12b (forge adapters): fix(bitbucket): preserve rate limits from optional PR reads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 12: Native optional-read failures retain retry timing, while remaining/reset headers update a shared account cooldown and cached data stays stale instead of disappearing.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "12b"
+      "disposition": "ported",
+      "plannedWorkstream": "12b",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "apps/server/src/sourceControl/forgeRequestBudget.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.test.ts:1",
+        "apps/server/src/prHub/forgeHub.ts:1"
+      ]
     },
     {
       "upstreamSha": "eae770b125553275e1ccfe4aebd88df28e818aed",
@@ -17879,10 +18616,17 @@
     {
       "upstreamSha": "ebb9b9fda03d33a81cad3ce7f4d1106adba3044b",
       "subject": "fix(client-runtime): refresh edited pull request comments (#8094)",
-      "reason": "Phase 12a (GitHub PR hub): fix(client-runtime): refresh edited pull request comments. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(client-runtime): refresh edited pull request comments.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "ec141c125726ae70f31f392e780afa8de446fdc4",
@@ -18063,7 +18807,7 @@
     {
       "upstreamSha": "eed974c122e192de45b54b7dac7ca1a51448c08f",
       "subject": "fix(server): keep Claude rewind when fork history length changes (#11954)",
-      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8c",
@@ -18127,7 +18871,7 @@
     {
       "upstreamSha": "ef84bc9873a6c4565fbeb64dce3f552570e95a2d",
       "subject": "fix(chat): smooth worktree setup status (#8922)",
-      "reason": "Phase 9c: Progress pushes are throttled to 100 ms and persistence to 500 ms, keeping status updates smooth. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Progress pushes are throttled to 100 ms and persistence to 500 ms, keeping status updates smooth. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -18147,7 +18891,7 @@
     {
       "upstreamSha": "efccda9ac9230db22b36990cffabdad218fa41b0",
       "subject": "feat: rewind conversations while keeping file changes (#11358)",
-      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8c",
@@ -18263,10 +19007,17 @@
     {
       "upstreamSha": "f0a0ead946ca3f3f310460a91b7dabb0e3fe4834",
       "subject": "fix(web): keep PR controls readable in narrow panels (#11962)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): keep PR controls readable in narrow panels. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): keep PR controls readable in narrow panels.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "f0b57ca2313bd7971cefb366d3b3808152b014fc",
@@ -18349,7 +19100,7 @@
     {
       "upstreamSha": "f14f41b894448298a86865c9114e6700245356e7",
       "subject": "fix(web): preserve composer draft during worktree setup (#9197)",
-      "reason": "Phase 9c: Discarding a cancelled or failed setup deletes the empty thread and restores the message into a new draft. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9c: Discarding a cancelled or failed setup deletes the empty thread and restores the message into a new draft. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9c",
@@ -18622,18 +19373,32 @@
     {
       "upstreamSha": "f45c6b4a755905485431872f4a4188de3ed05974",
       "subject": "fix(web): submit PR comments with Cmd/Ctrl+Enter (#11994)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): submit PR comments with Cmd/Ctrl+Enter. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): submit PR comments with Cmd/Ctrl+Enter.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "f4600d77dd7c2fa9f10e8f4500882e427fcc7e26",
       "subject": "fix: reduce GitHub quota use with sharing enabled (#11888)",
-      "reason": "Phase 12a (GitHub PR hub): fix: reduce GitHub quota use with sharing enabled. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix: reduce GitHub quota use with sharing enabled.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "f46522777372be1705e3b7a1ab08756f236db5d2",
@@ -18812,7 +19577,7 @@
     {
       "upstreamSha": "f6db4206258b0ef30e8dd8949627acfd209bf338",
       "subject": "fix(web): reset automatic pull to default (#9763)",
-      "reason": "Phase 9f: Auto-pull is project-scopable with the standard per-project Reset, and a checked-in f5.json cannot turn it on. Implemented with f5’s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 9f: Auto-pull is project-scopable with the standard per-project Reset, and a checked-in f5.json cannot turn it on. Implemented with f5\u2019s durable queue and worktree lifecycle locks; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "9f",
@@ -18878,10 +19643,17 @@
     {
       "upstreamSha": "f814983c262b42bd79247bae377a709925c70d63",
       "subject": "fix(web): emphasize primary pull request actions (#11105)",
-      "reason": "Phase 12a (GitHub PR hub): fix(web): emphasize primary pull request actions. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native Phase 12 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): emphasize primary pull request actions.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "12a"
+      "plannedWorkstream": "12a",
+      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "evidence": [
+        "docs/user/pr-hub-forges.md:1",
+        "apps/server/src/prHub/Layers/PrHubFederation.ts:1",
+        "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
+        "apps/web/src/components/prHub/ForgeControls.tsx:1"
+      ]
     },
     {
       "upstreamSha": "f8500f11271622ed82df7f6c1d7f73eddb4f43e6",
@@ -19115,7 +19887,7 @@
     },
     {
       "upstreamSha": "fbd77420f27c1322d49726dd927861b8b5903494",
-      "subject": "feat: add \"Auto\" runtime mode — AI-reviewed approvals for Codex and Claude (#4272)",
+      "subject": "feat: add \"Auto\" runtime mode \u2014 AI-reviewed approvals for Codex and Claude (#4272)",
       "disposition": "ported",
       "f5Shas": ["d071c612efe95ad13ce798a6de2726b5a226c417"],
       "reviewStatus": "legacy"
@@ -19229,7 +20001,7 @@
     {
       "upstreamSha": "fd5553f1afcef4f410a067687faa991743b5034c",
       "subject": "fix: restore provider history and prompts when rewinding (#11338)",
-      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5’s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
+      "reason": "Phase 8c: Verified durable conversation rewind, Claude retained boundaries, isolated file restore, OpenCode keep-files checkpoint and recoverable drafts. Implemented with f5\u2019s durable queue, attachment ownership and provider recovery architecture; validated by the full workspace, real-Git and browser suites.",
       "reviewStatus": "reviewed",
       "disposition": "equivalent",
       "plannedWorkstream": "8c",

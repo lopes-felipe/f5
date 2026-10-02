@@ -1,3 +1,4 @@
+import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
 import { useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
@@ -364,6 +365,13 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         // disambiguation.
         const meta = href ? resolveMarkdownFileLinkMeta(href, cwd) : null;
         if (!meta || !href) {
+          if (
+            href &&
+            /^https:\/\/[^/]+\/.*\/(?:pull|pulls|pull-requests|pullrequests|merge_requests|pullrequest)\/\d+(?:[/?#]|$)/.test(
+              href,
+            )
+          )
+            return <PrLinkPreview url={href}>{children}</PrLinkPreview>;
           let isGitHub = false;
           try {
             isGitHub = href !== undefined && new URL(href).hostname === "github.com";

@@ -1,3 +1,20 @@
+import type { ThreadId } from "./baseSchemas";
+import type { PullRequestKey } from "./prHub";
+import type {
+  ForgeAccount,
+  ForgeAccountInput,
+  ForgeAccountRouting,
+  PrHubPeek,
+  PrHubPeekInput,
+  PrHubStack,
+  PrHubStackInput,
+  PrHubViewedFilesInput,
+  PrHubSetViewedFileInput,
+  ForgePrepareOperationInput,
+  ForgeOperationInput,
+  ForgeOperation,
+} from "./prHubExtensions";
+import type { ThreadPullRequestLink } from "./orchestration";
 import type {
   AttachmentUpload,
   AttachmentUploadsInput,
@@ -724,6 +741,27 @@ export interface NativeApi {
     ) => Promise<WorkflowPlatformInspectRunResult>;
   };
   prHub: {
+    listAccounts: () => Promise<ReadonlyArray<ForgeAccount>>;
+    saveAccount: (input: ForgeAccountInput) => Promise<ForgeAccount>;
+    listAccountRouting: () => Promise<ReadonlyArray<ForgeAccountRouting>>;
+    setAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
+    peek: (input: PrHubPeekInput) => Promise<PrHubPeek | null>;
+    getStack: (input: PrHubStackInput) => Promise<PrHubStack | null>;
+    getViewedFiles: (input: PrHubViewedFilesInput) => Promise<ReadonlyArray<string>>;
+    setViewedFile: (input: PrHubSetViewedFileInput) => Promise<ReadonlyArray<string>>;
+    getThreadLinks: (input: {
+      threadId: ThreadId;
+    }) => Promise<ReadonlyArray<ThreadPullRequestLink>>;
+    getThreadsForPr: (input: {
+      key: PullRequestKey;
+    }) => Promise<ReadonlyArray<{ threadId: ThreadId; title: string }>>;
+    prepareOperation: (input: ForgePrepareOperationInput) => Promise<ForgeOperation>;
+    submitOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    getOperation: (input: ForgeOperationInput) => Promise<ForgeOperation | null>;
+    recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+
     getOverview: (input?: PrHubOverviewInput) => Promise<PrHubOverview>;
     claimNotifications: (input: PrHubClaimNotificationsInput) => Promise<PrHubNotificationBatch>;
     acknowledgeNotifications: (input: PrHubAcknowledgeNotificationsInput) => Promise<PrHubOverview>;

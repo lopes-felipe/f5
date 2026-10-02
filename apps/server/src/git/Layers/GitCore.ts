@@ -2071,7 +2071,7 @@ const makeGitCore = Effect.gen(function* () {
         "--quiet",
         "--no-tags",
         input.remoteName,
-        `+refs/heads/${input.remoteBranch}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
+        `${input.preserveExisting ? "" : "+"}${input.remoteRef ?? `refs/heads/${input.remoteBranch}`}:refs/remotes/${input.remoteName}/${input.remoteBranch}`,
       ]);
 
       const localBranchAlreadyExists = yield* branchExists(input.cwd, input.localBranch);
@@ -2079,7 +2079,7 @@ const makeGitCore = Effect.gen(function* () {
       yield* runGit(
         "GitCore.fetchRemoteBranch.materialize",
         input.cwd,
-        localBranchAlreadyExists
+        localBranchAlreadyExists && !input.preserveExisting
           ? ["branch", "--force", input.localBranch, targetRef]
           : ["branch", input.localBranch, targetRef],
       );

@@ -1,3 +1,4 @@
+import { prDetailCapability } from "./prDetails.logic";
 import {
   ArchiveIcon,
   CheckIcon,
@@ -104,15 +105,21 @@ export function PrDetailActions({
 
       {canReview ? (
         <>
-          <Button size="sm" variant="outline" onClick={onApprove}>
-            <CheckIcon /> Approve
-          </Button>
-          <Button size="sm" variant="outline" onClick={onComment}>
-            <MessageSquareIcon /> Comment
-          </Button>
-          <Button size="sm" variant="outline" onClick={onRequestChanges}>
-            <XIcon /> Request changes
-          </Button>
+          {prDetailCapability(pr, "approve").supported ? (
+            <Button size="sm" variant="outline" onClick={onApprove}>
+              <CheckIcon /> Approve
+            </Button>
+          ) : null}
+          {prDetailCapability(pr, "comment").supported ? (
+            <Button size="sm" variant="outline" onClick={onComment}>
+              <MessageSquareIcon /> Comment
+            </Button>
+          ) : null}
+          {prDetailCapability(pr, "request-changes").supported ? (
+            <Button size="sm" variant="outline" onClick={onRequestChanges}>
+              <XIcon /> Request changes
+            </Button>
+          ) : null}
         </>
       ) : null}
 
@@ -140,7 +147,7 @@ export function PrDetailActions({
       ) : null}
 
       <Button size="sm" variant="outline" onClick={onOpenGitHub}>
-        <GithubIcon /> GitHub
+        <GithubIcon /> {pr.provider === "github" ? "GitHub" : pr.provider}
       </Button>
       <Button size="sm" variant="outline" disabled={isOpeningInF5} onClick={onOpenInF5}>
         <SquareArrowOutUpRightIcon /> Open in F5

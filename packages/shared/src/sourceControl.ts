@@ -10,6 +10,7 @@ const SOURCE_CONTROL_PROVIDER_KINDS = [
   "gitlab",
   "azure-devops",
   "bitbucket",
+  "forgejo",
   "unknown",
 ] as const satisfies ReadonlyArray<SourceControlProviderKind>;
 
@@ -31,6 +32,8 @@ export function providerKindFromHost(host: string): SourceControlProviderKind {
   if (normalized === "github.com") return "github";
   if (normalized === "gitlab.com" || labels.includes("gitlab")) return "gitlab";
   if (normalized === "bitbucket.org") return "bitbucket";
+  if (normalized === "codeberg.org" || labels.includes("forgejo") || labels.includes("gitea"))
+    return "forgejo";
   if (
     normalized === "dev.azure.com" ||
     normalized.endsWith(".dev.azure.com") ||
@@ -270,6 +273,7 @@ export function resolveChangeRequestWebUrl(
   const identifier = encodeURIComponent(changeRequest.displayNumber || changeRequest.id);
   switch (changeRequest.provider.kind) {
     case "github":
+    case "forgejo":
       return `${baseUrl}/pull/${identifier}`;
     case "gitlab":
       return `${baseUrl}/-/merge_requests/${identifier}`;
@@ -279,5 +283,46 @@ export function resolveChangeRequestWebUrl(
       return `${baseUrl}/pullrequest/${identifier}`;
     case "unknown":
       return null;
+  }
+}
+
+/** Hosts must be selected explicitly for self-hosted forges; credentials never infer a host. */
+export function parseSourceControlPullRequestUrl(
+  value: string,
+  kind?: SourceControlProviderKind,
+  host?: string,
+): SourceControlPullRequestRef | null {
+  try {
+    const url = new URL(value.trim());
+    if (
+      url.protocol !== "https:" ||
+      url.port ||
+      url.username ||
+      url.password ||
+      (host && url.hostname.toLowerCase() !== host.toLowerCase())
+    )
+      return null;
+    const provider = kind ?? providerKindFromHost(url.hostname);
+    const expression =
+      provider === "gitlab"
+        ? /^\/(.+)\/-\/merge_requests\/([0-9]+)(?:\/.*)?$/
+        : provider === "bitbucket"
+          ? /^\/(.+)\/pull-requests\/([0-9]+)(?:\/.*)?$/
+          : provider === "azure-devops"
+            ? /^\/(.+)\/pullrequest\/([0-9]+)(?:\/.*)?$/
+            : provider === "forgejo"
+              ? /^\/(.+)\/pulls?\/([0-9]+)(?:\/.*)?$/
+              : provider === "github"
+                ? /^\/(.+)\/pull\/([0-9]+)(?:\/.*)?$/
+                : null;
+    const match = expression?.exec(url.pathname);
+    if (!match) return null;
+    const number = Number(match[2]);
+    if (!Number.isSafeInteger(number) || number < 1) return null;
+    const repository = decodeURIComponent(match[1]!).replace("/_git/", "/");
+    if (repository.split("/").some((part) => !part || part === "." || part === "..")) return null;
+    return { provider, host: url.hostname.toLowerCase(), repository, number };
+  } catch {
+    return null;
   }
 }
