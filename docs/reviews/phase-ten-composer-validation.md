@@ -152,6 +152,8 @@ leaving the editor expanded.
 
 ## PR review follow-up
 
+Implementation commit: `cffeb4004468ba2efd952ea288a2ef24ba653c17` (also recorded in the ledger).
+
 State panels again render from ChatView, preserving their full-width legacy
 placement without the capability. The shared task toggle removes duplicated state
 updates. Closed task bodies remain inert in both layouts, an intentional

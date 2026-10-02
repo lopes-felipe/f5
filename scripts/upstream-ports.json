@@ -12,7 +12,10 @@
         "apps/web/src/components/chat/composer/ThreadTasksPanel.tsx:1",
         "apps/web/src/index.css:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "001f06d543beb92cc66bb7e8d54d233a20d802b4",
@@ -261,7 +264,10 @@
         "apps/web/src/appSettings.ts:1",
         "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "038560e58036d51b2576b3c2cd9170a194cefe9e",
@@ -336,7 +342,10 @@
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
         "apps/web/src/components/composerFooterLayout.ts:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "04df98db4c90790fb5171426894baa3bca57a935",
@@ -888,7 +897,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/index.css:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "0a590fa01af66ec135d2ebf2d5542b08a37dc275",
@@ -992,7 +1004,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/ChatView.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "0bbecfabf189349b16ad2d7e6558a95a98a3b196",
@@ -1410,7 +1425,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/index.css:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "11639bf4391d9d49e48052bae755f748cbd22ff2",
@@ -1490,7 +1508,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "126ea5c3bcf888df4a918438ae7d68a4a4a905f2",
@@ -3635,7 +3656,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/ChatView.browser.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "2d9066e089c241c3befd7a4632efe493fabd70d9",
@@ -3843,7 +3867,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/ChatView.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "3060cc461458e66842dfb656d979c4acca4dfb20",
@@ -4856,7 +4883,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/ChatView.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "3d429662c9bd7b731c059dc3a84ccdfc43bf3701",
@@ -5461,7 +5491,10 @@
         "apps/web/src/components/chat/composer/ThreadTasksPanel.tsx:1",
         "apps/web/src/index.css:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "474cc5fb017a13dbdb403dd3bf714ddbf867205a",
@@ -6306,7 +6339,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "52ad70ec43b5dcfcdc72ac79c0964da8e4d163db",
@@ -6485,7 +6521,10 @@
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
         "apps/web/src/components/ChatView.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "54bbed660fc5dc99c6bfe335981e6d431275c91e",
@@ -7044,7 +7083,10 @@
         "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1",
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "5b8a69c7b90b751507d0ab762dd77aaa2048408b",
@@ -7657,7 +7699,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "63e6faef62218c9d1b5277933154516e278f7cb2",
@@ -8242,7 +8287,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "6cdbf76fa4b0509913046abe6105037ded9e52bb",
@@ -8746,7 +8794,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "7220dfe2c949476eaa7d21eccbcd3a0ce0eddb49",
@@ -9081,7 +9132,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "772ea1473a4a8f8fb0e0a5c9ba6d7a2ef14eac6e",
@@ -9246,7 +9300,10 @@
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
         "apps/web/src/components/ChatView.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "7931227977ca3e6f3354a63467caa634ab79796f",
@@ -9638,7 +9695,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "803f94e787faef498edecba5dbd07493ac8bc817",
@@ -10717,7 +10777,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "8dd02470b1e7603b8d36a21ae27c510480351f18",
@@ -10760,7 +10823,10 @@
         "apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:1",
         "apps/web/src/components/ui/popover.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "8e129a0dfb35ac2c03a7320245b5bfb976f5d3bf",
@@ -11553,7 +11619,10 @@
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
         "apps/web/src/index.css:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "98469159dd9e162a9c2f5cc4bbb2fbe89b3c4f67",
@@ -11981,7 +12050,10 @@
         "apps/web/src/components/ChatView.browser.tsx:1",
         "apps/web/src/components/chat/MessagesTimeline.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "9e1fb459a985d13c1d4e57080f49d70dabf3b681",
@@ -12226,7 +12298,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "a135f2c2d32bcded09fca32d4147c06df90ec84d",
@@ -13826,7 +13901,10 @@
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
         "apps/web/src/index.css:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "b91a000a17ddb4937397151a0a39a07990ad6473",
@@ -14657,7 +14735,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "c1e279eca52e02ee3fb9c8d133057a30526f282c",
@@ -14940,7 +15021,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "c742edd46c5b6792ec8647f934a4703f9103aa82",
@@ -16632,7 +16716,10 @@
       "disposition": "deferred",
       "plannedWorkstream": "10",
       "evidence": ["apps/web/src/components/BranchToolbar.tsx:1"],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "ddaa6afef55e0da53950c7ed45f7d91b717475a5",
@@ -18295,7 +18382,10 @@
         "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1",
         "apps/web/src/components/chat/composer/ChatComposer.tsx:1"
       ],
-      "f5Shas": ["0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4"]
+      "f5Shas": [
+        "0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4",
+        "cffeb4004468ba2efd952ea288a2ef24ba653c17"
+      ]
     },
     {
       "upstreamSha": "f25a8e4b72c1164f2ab7b1c8481496f168d17f55",
