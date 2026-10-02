@@ -595,10 +595,12 @@
     {
       "upstreamSha": "06de59b3d67e5be427ce4c7c8d41e91265709aec",
       "subject": "build(server): make the CLI bundle loadable as a Node single-executable (#11316)",
-      "reason": "Phase 14 (standalone distribution and updates): build(server): make the CLI bundle loadable as a Node single-executable. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Node SEA bundle keeps native packages file-backed and uses built-in/disk-backed loaders; actual packaged startup passes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/tsdown.standalone.config.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "06de9e90ab0832727968c58ce72282b94a95ae17",
@@ -1279,10 +1281,12 @@
     {
       "upstreamSha": "0e77fbd3d0d79eec5247e75583a04590a1785133",
       "subject": "fix(server): prevent accidental service downgrades (#5302)",
-      "reason": "Phase 14: fix(server): prevent accidental service downgrades. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 14: Canonical semver comparisons reject same-version updates and downgrades before handoff.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["packages/shared/src/cliRelease.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "0eaa18c12936dffde078b277be91cbafa5758cb9",
@@ -2472,10 +2476,12 @@
     {
       "upstreamSha": "1baf99195a552572e24f907cd7f72ce01c6c81c8",
       "subject": "fix(server): keep provider CLIs available in the macOS service (#8173)",
-      "reason": "Phase 14: fix(server): keep provider CLIs available in the macOS service. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 14: macOS login-shell PATH discovery preserves the bundled Node used by services and provider helper scripts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/os-jank.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "1bbca0e78202c8ece73351fccd29f3c99070b82e",
@@ -3569,10 +3575,12 @@
     {
       "upstreamSha": "2aa5f095fc3bb65c00cc4efce66a5473e2d4554a",
       "subject": "feat(server): run the background service on macOS via launchd (#6286)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(server): run the background service on macOS via launchd. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Owned user launchd service management; Linux user systemd and explicit Windows foreground/desktop support.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/distribution/services.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "2aa907b1969237efdaced29612fb46ba51be7041",
@@ -3850,11 +3858,15 @@
     {
       "upstreamSha": "2d5464afbc19058be8c125d5ee70481d721d14f4",
       "subject": "fix(server): preserve native provider executable paths during updates (#9850)",
-      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
+      "reason": "Phase 14: Updates retain immutable old runtimes and configured provider paths while Node helper discovery uses the current private runtime.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
+      "disposition": "ported",
       "plannedWorkstream": "14",
-      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
+      "evidence": [
+        "apps/server/src/distribution/installation.ts:1",
+        "docs/user/standalone-cli.md:1"
+      ],
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"]
     },
     {
       "upstreamSha": "2d645df474f0af5e261edb56a79f7a2a9a2d442e",
@@ -5339,10 +5351,12 @@
     {
       "upstreamSha": "3fd50643311d0b0e702628f906f7cb6bbe84e1ba",
       "subject": "fix(server): run the CLI on Node versions without import.meta.main (#7141)",
-      "reason": "Phase 14: fix(server): run the CLI on Node versions without import.meta.main. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "F5 server/source entry does not rely on import.meta.main; standalone commands preserve current invocation and Bun development.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "equivalent",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/index.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "3fd5d6439d8fd49d173503ecda96500463a39bd2",
@@ -8442,10 +8456,16 @@
     {
       "upstreamSha": "683aa87096899aa191e150429415ecc78966f538",
       "subject": "build(desktop): bundle the main process and stage only its native externals (#11410)",
-      "reason": "Phase 14 (standalone distribution and updates): build(desktop): bundle the main process and stage only its native externals. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14 delivers standalone server bundling and native external staging. Desktop main bundling and the narrow ASAR policy are retained; the existing file-backed desktop server still requires its production dependency closure, so the upstream desktop-only staging optimization remains deferred.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": [
+        "apps/server/tsdown.standalone.config.ts:1",
+        "scripts/build-cli-archive.ts:1",
+        "scripts/build-desktop-artifact.ts:22"
+      ]
     },
     {
       "upstreamSha": "684d703b0a8a0632a18c8453277f7e5e6312b200",
@@ -10150,10 +10170,15 @@
     {
       "upstreamSha": "7e01d33f0eeb9435299791392d546756cc09c5d3",
       "subject": "perf(build): stop unpacking node_modules wholesale from the Windows asar (#5877)",
-      "reason": "Phase 14 (standalone distribution and updates): perf(build): stop unpacking node_modules wholesale from the Windows asar. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14 retains the existing narrow desktop ASAR unpack whitelist; standalone archives have a separate native dependency tree.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "equivalent",
+      "plannedWorkstream": "14",
+      "f5Shas": [
+        "356789a9ab33c970a380f65800be0f235c26be45",
+        "cc45ed69281c7584adc6dd1c1e401846c0c185eb"
+      ],
+      "evidence": ["scripts/build-desktop-artifact.ts:22", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "7e03dcfe5d405626a94037e19a18f9950162b3ea",
@@ -11407,10 +11432,12 @@
     {
       "upstreamSha": "8ddd9f7efcdfb6e32b614595242b5986942d37b0",
       "subject": "fix(desktop): bound backend shutdown wait during quit (#7599)",
-      "reason": "Phase 14 (standalone distribution and updates): fix(desktop): bound backend shutdown wait during quit. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14 retains existing bounded concurrent profile shutdown (5-second per-backend waits) before desktop update installation; CLI launcher independently bounds trial shutdown.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "equivalent",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/desktop/src/main.ts:3200", "apps/server/src/distribution/handoff.ts:1"]
     },
     {
       "upstreamSha": "8de0aa24d9b09b3dff9e3378222877cbfff41ae0",
@@ -11587,10 +11614,15 @@
     {
       "upstreamSha": "8f90b380f676735f1e3026b5173c45c22d265583",
       "subject": "feat(server): install preview runtimes from release archives (#11318)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(server): install preview runtimes from release archives. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Install immutable, bounded, SHA-256-verified same-architecture runtime archives without npm.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": [
+        "apps/server/src/distribution/installation.ts:1",
+        "docs/user/standalone-cli.md:1"
+      ]
     },
     {
       "upstreamSha": "8f9ab0845d8e034bf49b28eb4d6abbb14fce597d",
@@ -13888,10 +13920,15 @@
     {
       "upstreamSha": "af6c138a0de297f94ddef3133e2f47d017b46e94",
       "subject": "feat(server): manage runtimes as release archives only, never from npm (#11510)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(server): manage runtimes as release archives only, never from npm. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Runtime install/update exclusively uses self-contained release archives with native preflight and immutable version directories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": [
+        "apps/server/src/distribution/installation.ts:1",
+        "docs/user/standalone-cli.md:1"
+      ]
     },
     {
       "upstreamSha": "afa83098064e7dca524a1e42dea3de03a883a0b6",
@@ -14627,10 +14664,12 @@
     {
       "upstreamSha": "b84f63bb13f13b1d0ee8537c4d244d6f1efdb987",
       "subject": "fix(server): block updates under legacy service launchers (#11940)",
-      "reason": "Phase 14: fix(server): block updates under legacy service launchers. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 14: Updates require a managed archive installation and running launcher; stable launcher protocol and archive architecture/native modules are preflighted.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/distribution/commands.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "b883fc066ea5c9bebbe1c3e9b4bc2471aab3685f",
@@ -15259,10 +15298,12 @@
     {
       "upstreamSha": "bf55408a5cddbb0f3f7f50d538398e315b5407d0",
       "subject": "fix(server): resolve Node for standalone helper scripts (#12033)",
-      "reason": "Phase 14 (standalone distribution and updates): fix(server): resolve Node for standalone helper scripts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: JavaScript helpers use the bundled Node instead of treating the SEA executable as a script interpreter; source invocation is preserved.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["packages/shared/src/hostRuntime.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "bfba7781681eaa03eb465ce3d9a4ec07bf952b78",
@@ -15971,10 +16012,12 @@
     {
       "upstreamSha": "c7f23c4668ce3ff2e1b2f63fe51759d1bcc159f8",
       "subject": "feat(cli): add t3 update for self-contained installs (#11451)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(cli): add t3 update for self-contained installs. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: F5-owned archive install/update commands, manifests, exact architecture selection and stable launcher preflight.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/distribution/commands.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "c7fa1e96943f380a8893e89460d03a362285ab83",
@@ -16077,10 +16120,12 @@
     {
       "upstreamSha": "c9063f03ea1c16e0239e1996a9b6ef611679995d",
       "subject": "perf(desktop): speed up Windows update installation (#6169)",
-      "reason": "Phase 14 (standalone distribution and updates): perf(desktop): speed up Windows update installation. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Windows NSIS installation explicitly relaunches after bounded backend shutdown; finite whole-percentage progress is retained.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/desktop/src/main.ts:2050", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "c9b76e6f5d382fb83caafe419f75ead87a3dbabb",
@@ -17250,10 +17295,12 @@
     {
       "upstreamSha": "d8655ed2fcf5cac3e1742459476b4a392b949367",
       "subject": "feat(cli): add t3 service restart and make t3 update repoint the service eagerly (#11702)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(cli): add t3 service restart and make t3 update repoint the service eagerly. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Service restart and staged update handoff commit before activation, restore SQLite main/WAL/SHM after failed trials, recover interruption and correlate reconnects by durable update outcome.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/distribution/handoff.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "d897641d738c67dd7c12cbb3a273b43fe17a5eb1",
@@ -18858,10 +18905,16 @@
     {
       "upstreamSha": "eb8f6f42a5cad1a5d0bc51eaa16cff13a9c69f45",
       "subject": "ci(release): build, sign, and publish self-contained CLI archives (#11317)",
-      "reason": "Phase 14 (standalone distribution and updates): ci(release): build, sign, and publish self-contained CLI archives. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14 delivers checked-in archive builders, complete release-manifest merging, ad hoc macOS signing and local artifact tests. Public signing/notarization and CI publishing automation/credentials remain deferred to a separate PR, as required by the plan; Windows/Linux packaged and clean-machine VM release gates remain outstanding.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": [
+        "scripts/build-cli-archive.ts:1",
+        "scripts/merge-cli-release-manifests.ts:1",
+        "docs/user/standalone-cli.md:1"
+      ]
     },
     {
       "upstreamSha": "ebb9b9fda03d33a81cad3ce7f4d1106adba3044b",
@@ -19251,10 +19304,12 @@
     {
       "upstreamSha": "f083f520fbde1e1bf4332399df47b45c2bd99722",
       "subject": "fix(server): tolerate the missing directory fsync on Windows (#9569)",
-      "reason": "Phase 14: fix(server): tolerate the missing directory fsync on Windows. Reimplement the applicable behavior in f5; not yet delivered. Retain the service-launcher filesystem portability fix; omit cloud boot-service changes.",
+      "reason": "Phase 14: Durable file writes and atomic metadata renames tolerate Windows lack of directory fsync.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": ["apps/server/src/distribution/files.ts:1", "docs/user/standalone-cli.md:1"]
     },
     {
       "upstreamSha": "f0a0ead946ca3f3f310460a91b7dabb0e3fe4834",
@@ -19416,10 +19471,15 @@
     {
       "upstreamSha": "f1b497a5552abf4616a7477b730b78a1274f3db4",
       "subject": "feat(cli): show installer and update download progress (#12044)",
-      "reason": "Phase 14 (standalone distribution and updates): feat(cli): show installer and update download progress. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 14: Bounded installer download progress and finer finite desktop progress without duplicate whole-percentage updates.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "14"
+      "disposition": "ported",
+      "plannedWorkstream": "14",
+      "f5Shas": ["356789a9ab33c970a380f65800be0f235c26be45"],
+      "evidence": [
+        "apps/server/src/distribution/installation.ts:1",
+        "docs/user/standalone-cli.md:1"
+      ]
     },
     {
       "upstreamSha": "f1e6f0c9bbe527a76eaae9e3b498a5977ce3c7d6",
