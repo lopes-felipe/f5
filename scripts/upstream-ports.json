@@ -8965,7 +8965,10 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "12b",
-      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "f5Shas": [
+        "e073f2654001c9c72cb7a8f78cbec5dc6bf58c85",
+        "3d509a0fadb79ca1b6b18d0e60440cab400a1a39"
+      ],
       "evidence": [
         "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
         "apps/server/src/git/Layers/GitManager.ts:1",
@@ -17091,7 +17094,10 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "12b",
-      "f5Shas": ["e073f2654001c9c72cb7a8f78cbec5dc6bf58c85"],
+      "f5Shas": [
+        "e073f2654001c9c72cb7a8f78cbec5dc6bf58c85",
+        "3d509a0fadb79ca1b6b18d0e60440cab400a1a39"
+      ],
       "evidence": [
         "apps/server/src/sourceControl/ForgeSourceControlProvider.ts:1",
         "apps/server/src/sourceControl/ForgeSourceControlProvider.test.ts:1",
