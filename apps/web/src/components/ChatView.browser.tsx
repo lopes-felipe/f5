@@ -1221,6 +1221,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }
+  if (tag === ORCHESTRATION_WS_METHODS.getRewindDrafts) {
+    return { threadId: typeof body.threadId === "string" ? body.threadId : THREAD_ID, drafts: [] };
+  }
   if (tag === WS_METHODS.nextTurnQueueList) {
     const threadId = typeof body.threadId === "string" ? body.threadId : THREAD_ID;
     return {
@@ -2632,6 +2635,98 @@ describe("ChatView timeline (full app)", () => {
         const refreshedRow = document.querySelector<HTMLElement>(commandRowSelector);
         expect(refreshedRow?.textContent).toContain("/repo/project");
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("enables the reverted prompt panel once the draft is read after a revert lands", async () => {
+    let connectedClient: TestWsClient | null = null;
+    let revertLanded = false;
+    const operationId = CommandId.makeUnsafe("rewind-op-landed");
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-revert-landed" as MessageId,
+      targetText: "revert me",
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: {
+        ...baseSnapshot,
+        snapshotSequence: 1,
+        threads: baseSnapshot.threads.map((thread) =>
+          thread.id === THREAD_ID ? { ...thread, rewindDrafts: [] } : thread,
+        ),
+      },
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body, client) => {
+          connectedClient = client;
+          if (body._tag !== ORCHESTRATION_WS_METHODS.getRewindDrafts) return null;
+          return {
+            type: "result",
+            result: {
+              threadId: THREAD_ID,
+              drafts: revertLanded
+                ? [
+                    {
+                      operationId,
+                      targetMessageId: "msg-user-revert-landed",
+                      restoreFiles: false,
+                      error: null,
+                      text: "revert me, but better",
+                      attachments: [],
+                      state: "completed",
+                    },
+                  ]
+                : [],
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(connectedClient).not.toBeNull();
+      });
+      if (connectedClient === null) {
+        throw new Error("Expected the test WebSocket client to be connected.");
+      }
+      const activeClient: TestWsClient = connectedClient;
+      revertLanded = true;
+      activeClient.send(
+        JSON.stringify({
+          type: "push",
+          sequence: 2,
+          channel: ORCHESTRATION_WS_CHANNELS.domainEvent,
+          data: {
+            sequence: 2,
+            eventId: EventId.makeUnsafe("event-revert-landed"),
+            aggregateKind: "thread",
+            aggregateId: THREAD_ID,
+            occurredAt: isoAt(300),
+            commandId: CommandId.makeUnsafe("cmd-revert-landed"),
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            type: "thread.reverted",
+            payload: { threadId: THREAD_ID, operationId, turnCount: 999 },
+          } satisfies Extract<OrchestrationEvent, { type: "thread.reverted" }>,
+        }),
+      );
+
+      const editButton = await waitForElement(
+        () =>
+          Array.from(
+            document.querySelectorAll<HTMLButtonElement>('[data-slot="rewind-draft-panel"] button'),
+          ).find((button) => button.textContent?.trim() === "Edit in composer") ?? null,
+        "Unable to find the reverted prompt panel.",
+      );
+      await vi.waitFor(() => {
+        expect(editButton.disabled).toBe(false);
+      });
+      expect(document.querySelector('[data-slot="rewind-draft-panel"]')?.textContent).toContain(
+        "revert me, but better",
+      );
     } finally {
       await mounted.cleanup();
     }

@@ -756,6 +756,59 @@ function buildThreadHistoryPageResult(params: {
 
 const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
+  /** Unresolved rewind drafts by thread, for every thread or just `threadId`. */
+  const loadRewindDrafts = (threadId: string | null) =>
+    Effect.gen(function* () {
+      const draftRows = yield* sql<{
+        readonly threadId: string;
+        readonly operationId: string;
+        readonly state: string;
+        readonly draft: string;
+        readonly targetMessageId: string;
+        readonly mode: string;
+        readonly error: string | null;
+      }>`SELECT thread_id AS "threadId", operation_id AS "operationId", state, draft_json AS draft, target_message_id AS "targetMessageId", mode, error FROM rewind_operations WHERE draft_resolved_at IS NULL ${threadId === null ? sql`` : sql`AND thread_id = ${threadId}`} ORDER BY created_at`.pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.rewindDrafts:query",
+            "ProjectionSnapshotQuery.rewindDrafts:decode",
+          ),
+        ),
+      );
+      const draftsByThread = new Map<string, RewindDraft[]>();
+      for (const row of draftRows) {
+        const json = Schema.decodeUnknownOption(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+        )(row.draft);
+        const decoded = Option.isSome(json)
+          ? Schema.decodeUnknownOption(RewindDraft)({
+              ...json.value,
+              operationId: row.operationId,
+              state: row.state,
+              targetMessageId: row.targetMessageId,
+              restoreFiles: row.mode === "conversation-and-files",
+              error: row.error,
+            })
+          : Option.none();
+        if (Option.isSome(decoded))
+          draftsByThread.set(row.threadId, [
+            ...(draftsByThread.get(row.threadId) ?? []),
+            decoded.value,
+          ]);
+        else
+          yield* Effect.logWarning("Skipping invalid rewind draft", {
+            threadId: row.threadId,
+            operationId: row.operationId,
+          });
+      }
+      return draftsByThread;
+    });
+
+  const getRewindDrafts: ProjectionSnapshotQueryShape["getRewindDrafts"] = ({ threadId }) =>
+    loadRewindDrafts(threadId).pipe(
+      Effect.map((draftsByThread) => ({ threadId, drafts: draftsByThread.get(threadId) ?? [] })),
+    );
   const projectionThreadRepository = yield* ProjectionThreadRepository;
   const projectionThreadActivityRepository = yield* ProjectionThreadActivityRepository;
   const projectionThreadMessageRepository = yield* ProjectionThreadMessageRepository;
@@ -2503,48 +2556,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           includeDetailFields: params.includeDetailFields,
         }),
       );
-      const draftRows = yield* sql<{
-        readonly threadId: string;
-        readonly operationId: string;
-        readonly state: string;
-        readonly draft: string;
-        readonly targetMessageId: string;
-        readonly mode: string;
-        readonly error: string | null;
-      }>`SELECT thread_id AS "threadId", operation_id AS "operationId", state, draft_json AS draft, target_message_id AS "targetMessageId", mode, error FROM rewind_operations WHERE draft_resolved_at IS NULL`.pipe(
-        Effect.mapError(
-          toPersistenceSqlOrDecodeError(
-            "ProjectionSnapshotQuery.rewindDrafts:query",
-            "ProjectionSnapshotQuery.rewindDrafts:decode",
-          ),
-        ),
-      );
-      const draftsByThread = new Map<string, RewindDraft[]>();
-      for (const row of draftRows) {
-        const json = Schema.decodeUnknownOption(
-          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
-        )(row.draft);
-        const decoded = Option.isSome(json)
-          ? Schema.decodeUnknownOption(RewindDraft)({
-              ...json.value,
-              operationId: row.operationId,
-              state: row.state,
-              targetMessageId: row.targetMessageId,
-              restoreFiles: row.mode === "conversation-and-files",
-              error: row.error,
-            })
-          : Option.none();
-        if (Option.isSome(decoded))
-          draftsByThread.set(row.threadId, [
-            ...(draftsByThread.get(row.threadId) ?? []),
-            decoded.value,
-          ]);
-        else
-          yield* Effect.logWarning("Skipping invalid rewind draft in snapshot", {
-            threadId: row.threadId,
-            operationId: row.operationId,
-          });
-      }
+      const draftsByThread = yield* loadRewindDrafts(null);
       const threadsWithInputs = threads.map((thread) => ({
         ...thread,
         pendingUserInputs: inputsByThread.get(thread.id) ?? [],
@@ -2948,6 +2960,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     getBootstrapSnapshot,
     getStartupSnapshot,
     getThreadTailDetails,
+    getRewindDrafts,
     getThreadHistoryPage,
     getThreadDetails,
   } satisfies ProjectionSnapshotQueryShape;

@@ -2779,6 +2779,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case ORCHESTRATION_WS_METHODS.getRewindDrafts: {
+        const body = stripRequestTag(request.body);
+        return yield* projectionReadModelQuery.getRewindDrafts(body);
+      }
+
       case ORCHESTRATION_WS_METHODS.getThreadTailDetails: {
         const body = stripRequestTag(request.body);
         return yield* withWsThreadOpenTiming({

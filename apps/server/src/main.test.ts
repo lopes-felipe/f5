@@ -504,6 +504,7 @@ it.layer(testLayer)("server CLI command", (it) => {
                 threadTailDetails: null,
               })),
             ),
+          getRewindDrafts: ({ threadId }) => Effect.succeed({ threadId, drafts: [] }),
           getThreadTailDetails: (input) =>
             Effect.succeed({
               threadId: input.threadId,

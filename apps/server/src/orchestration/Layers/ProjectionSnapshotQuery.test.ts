@@ -1125,4 +1125,99 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }),
     60_000,
   );
+
+  it.effect("getRewindDrafts returns only one thread's unresolved drafts", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM rewind_operations`;
+      yield* sql`DELETE FROM projection_projects`;
+      yield* sql`DELETE FROM projection_threads`;
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at
+        ) VALUES (
+          'project-rewind', 'Project', '/tmp/project-rewind', 'gpt-5-codex', '[]',
+          '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:01.000Z', NULL
+        )
+      `;
+      for (const threadId of ["thread-rewind-a", "thread-rewind-b"]) {
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+            estimated_context_tokens, created_at, last_interaction_at, updated_at, deleted_at
+          ) VALUES (
+            ${threadId}, 'project-rewind', 'Thread', 'gpt-5-codex', NULL, NULL, NULL,
+            NULL, '2026-02-24T00:00:02.000Z', '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:03.000Z', NULL
+          )
+        `;
+      }
+      const insertOperation = (input: {
+        readonly operationId: string;
+        readonly threadId: string;
+        readonly text: string;
+        readonly resolvedAt: string | null;
+        readonly createdAt: string;
+      }) => sql`
+        INSERT INTO rewind_operations (
+          operation_id, thread_id, target_message_id, target_turn_id, provider_session_id, mode,
+          expected_revision, state, relative_count, retained_count, boundary_json, draft_json,
+          draft_resolved_at, error, created_at, updated_at
+        ) VALUES (
+          ${input.operationId}, ${input.threadId}, 'message-target', NULL, 'session-1', 'conversation',
+          1, 'completed', 1, 0, '{}', ${JSON.stringify({ text: input.text, attachments: [] })},
+          ${input.resolvedAt}, NULL, ${input.createdAt}, ${input.createdAt}
+        )
+      `;
+      yield* insertOperation({
+        operationId: "rewind-a-1",
+        threadId: "thread-rewind-a",
+        text: "first",
+        resolvedAt: null,
+        createdAt: "2026-02-24T00:01:00.000Z",
+      });
+      yield* insertOperation({
+        operationId: "rewind-a-2",
+        threadId: "thread-rewind-a",
+        text: "resolved",
+        resolvedAt: "2026-02-24T00:03:00.000Z",
+        createdAt: "2026-02-24T00:02:00.000Z",
+      });
+      yield* insertOperation({
+        operationId: "rewind-b-1",
+        threadId: "thread-rewind-b",
+        text: "other thread",
+        resolvedAt: null,
+        createdAt: "2026-02-24T00:01:30.000Z",
+      });
+
+      const result = yield* snapshotQuery.getRewindDrafts({
+        threadId: ThreadId.makeUnsafe("thread-rewind-a"),
+      });
+
+      assert.equal(result.threadId, "thread-rewind-a");
+      assert.deepEqual(
+        result.drafts.map((draft) => [draft.operationId, draft.text, draft.state]),
+        [["rewind-a-1", "first", "completed"]],
+      );
+
+      const empty = yield* snapshotQuery.getRewindDrafts({
+        threadId: ThreadId.makeUnsafe("thread-rewind-missing"),
+      });
+      assert.deepEqual(empty.drafts, []);
+
+      const plan = yield* sql<{ readonly detail: string }>`
+        EXPLAIN QUERY PLAN
+        SELECT operation_id FROM rewind_operations
+        WHERE draft_resolved_at IS NULL AND thread_id = ${"thread-rewind-a"}
+        ORDER BY created_at
+      `;
+      assert.isTrue(
+        plan.some((row) => row.detail.includes("idx_rewind_operations_unresolved_drafts")),
+        plan.map((row) => row.detail).join("\n"),
+      );
+    }),
+  );
 });

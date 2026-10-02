@@ -44,6 +44,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getSnapshot: "orchestration.getSnapshot",
   getStartupSnapshot: "orchestration.getStartupSnapshot",
   getThreadTailDetails: "orchestration.getThreadTailDetails",
+  getRewindDrafts: "orchestration.getRewindDrafts",
   getThreadHistoryPage: "orchestration.getThreadHistoryPage",
   getThreadDetails: "orchestration.getThreadDetails",
   dispatchCommand: "orchestration.dispatchCommand",
@@ -2593,6 +2594,20 @@ export const OrchestrationThreadDetails = Schema.Struct({
 });
 export type OrchestrationThreadDetails = typeof OrchestrationThreadDetails.Type;
 
+/**
+ * A thread's unresolved rewind drafts. They live outside the event-sourced read
+ * model, so `getSnapshot` (the in-memory model) never carries them.
+ */
+export const OrchestrationGetRewindDraftsInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationGetRewindDraftsInput = typeof OrchestrationGetRewindDraftsInput.Type;
+export const OrchestrationGetRewindDraftsResult = Schema.Struct({
+  threadId: ThreadId,
+  drafts: Schema.Array(RewindDraft),
+});
+export type OrchestrationGetRewindDraftsResult = typeof OrchestrationGetRewindDraftsResult.Type;
+
 export const OrchestrationGetThreadTailDetailsInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optional(NonNegativeInt),
@@ -2999,6 +3014,10 @@ export const OrchestrationRpcSchemas = {
   getThreadTailDetails: {
     input: OrchestrationGetThreadTailDetailsInput,
     output: OrchestrationThreadTailDetails,
+  },
+  getRewindDrafts: {
+    input: OrchestrationGetRewindDraftsInput,
+    output: OrchestrationGetRewindDraftsResult,
   },
   getThreadHistoryPage: {
     input: OrchestrationGetThreadHistoryPageInput,
