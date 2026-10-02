@@ -123,6 +123,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Implementation-planning workflows now require an explicit plan submission, including v1 runs
+  already in progress. Unwrapped assistant text and changed Markdown files are no longer captured
+  as plans. Missing submissions receive one format-repair attempt before the stage reports an error.
+  Previously saved plans and document workflows are unchanged.
+
 - PR Hub keys are now provider-qualified (for example, `github:github.com/owner/repo#123`). Existing
   GitHub rows are migrated automatically, and legacy unqualified command keys remain accepted.
 

@@ -81,6 +81,7 @@ import {
   DateTime,
   Deferred,
   Duration,
+  Clock,
   Effect,
   Exit,
   FileSystem,
@@ -137,6 +138,8 @@ import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import {
   createClaudeTurnLifecycle,
+  isClaudeAgentTask,
+  recordClaudeResult,
   reduceClaudeTurnLifecycle,
   type ClaudeTurnLifecycle,
 } from "./claudeTurnLifecycle.ts";
@@ -294,6 +297,7 @@ interface ClaudeSessionContext {
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly lifecycle: ClaudeTurnLifecycle;
+  settlementWatchdog: { resultId: string; cancel: Deferred.Deferred<void> } | undefined;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
@@ -1361,6 +1365,7 @@ export function buildClaudeQueryEnv(
   // New models omit task tools by default. Keep the TodoWrite surface required
   // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
   const taskEnvironment = {
+    CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
     CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
     CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "0",
   };
@@ -1994,6 +1999,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
+    const settlementClock = yield* Clock.Clock;
     interface ThreadLockEntry {
       readonly semaphore: Semaphore.Semaphore;
       readonly users: number;
@@ -2756,6 +2762,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const existing = context.taskStates.get(taskUpdated.taskId);
+        if (
+          taskUpdated.patch.terminalStatus &&
+          !existing &&
+          context.lifecycle.terminalTasks.has(taskUpdated.taskId)
+        )
+          return;
         const state = rememberTaskState(context, {
           taskId: taskUpdated.taskId,
           ...(taskUpdated.patch.isBackgrounded ? { backgrounded: true } : {}),
@@ -2801,10 +2813,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         if (taskUpdated.patch.isBackgrounded) {
-          reduceClaudeTurnLifecycle(context.lifecycle, {
-            type: "task-started",
-            taskId: state.taskId,
-          });
+          if (isClaudeAgentTask(state.taskType) || tool?.itemType === "collab_agent_tool_call") {
+            reduceClaudeTurnLifecycle(context.lifecycle, {
+              type: "task-started",
+              taskId: state.taskId,
+            });
+          }
           if (tool) {
             yield* emitBackgroundToolLifecycle(context, {
               eventType: "item.updated",
@@ -2929,7 +2943,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const lastSegmentResult = context.lifecycle.latestResult;
-        result ??= lastSegmentResult;
+        const usage = context.lifecycle.usage ?? result?.usage;
         // Error placeholders can zero accounting fields. Retain the last
         // cumulative snapshot from this logical turn, never sum snapshots.
         const resultTotal = result?.total_cost_usd;
@@ -2946,6 +2960,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // may immediately try to dispatch a queued prompt.
         if (status !== "completed") context.retiring = true;
         reduceClaudeTurnLifecycle(context.lifecycle, { type: "turn-boundary" });
+        if (context.settlementWatchdog) {
+          yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
+          context.settlementWatchdog = undefined;
+        }
         // Cancel any interrupt watchdog still waiting to force-complete this
         // turn. Safe to signal even if the watchdog already fired — the
         // deferred is resolve-once.
@@ -3054,7 +3072,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           payload: {
             state: status,
             ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
-            ...(result?.usage ? { usage: result.usage } : {}),
+            ...(usage ? { usage } : {}),
             ...(modelUsage ? { modelUsage } : {}),
             ...turnCost,
             ...(errorMessage ? { errorMessage } : {}),
@@ -3357,10 +3375,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             (taskEntry?.[1].backgrounded === true ? taskEntry[0] : undefined);
 
           if (backgroundTaskId) {
-            reduceClaudeTurnLifecycle(context.lifecycle, {
-              type: "task-started",
-              taskId: backgroundTaskId,
-            });
+            if (tool.itemType === "collab_agent_tool_call") {
+              reduceClaudeTurnLifecycle(context.lifecycle, {
+                type: "task-started",
+                taskId: backgroundTaskId,
+              });
+            }
             if (taskEntry && taskEntry[0] !== backgroundTaskId) {
               context.taskStates.delete(taskEntry[0]);
             }
@@ -3699,7 +3719,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (message.type !== "result") {
           return;
         }
-        if (!context.turnState || context.lifecycle.seenResults.has(message.uuid)) return;
+        if (context.lifecycle.seenResults.has(message.uuid)) return;
+        if (!context.turnState) {
+          if (turnStatusFromResult(message) === "failed") {
+            recordClaudeResult(context.lifecycle, message);
+            yield* emitRuntimeError(
+              context,
+              resultUserFacingError(message) ?? "Claude runtime failed outside an active turn.",
+            );
+            yield* stopSessionInternal(context, { interruptStreamFiber: false });
+          }
+          return;
+        }
 
         const hint =
           context.turnState?.authenticationFailureMessage ??
@@ -3752,6 +3783,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
         }
+        if (status !== "completed") recordClaudeResult(context.lifecycle, message);
         yield* completeTurn(context, status, errorMessage, message);
         if (resumeRejected || status !== "completed") {
           // Results/idle trailers have no reliable turn attribution. Retire the
@@ -3954,12 +3986,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const taskId = normalizeOptionalString(message.task_id);
               const toolUseId = normalizeOptionalString(messageRecord?.tool_use_id);
               if (taskId) {
-                reduceClaudeTurnLifecycle(context.lifecycle, { type: "task-started", taskId });
                 const tool = toolUseId
                   ? findInFlightToolEntryByItemId(context, toolUseId)?.[1]
                   : undefined;
                 const description = normalizeOptionalString(message.description);
                 const taskType = normalizeOptionalString(message.task_type);
+                if (isClaudeAgentTask(taskType) && tool?.input.run_in_background === true) {
+                  reduceClaudeTurnLifecycle(context.lifecycle, { type: "task-started", taskId });
+                }
                 rememberTaskState(context, {
                   taskId,
                   ...(toolUseId ? { toolUseId } : {}),
@@ -4000,6 +4034,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "task_notification":
+            // Either terminal notification can arrive first. Close the tool
+            // while its launch metadata still exists, then publish the task edge.
+            if (context.taskStates.get(message.task_id)?.tool) {
+              yield* handleTaskUpdatedMessage(context, message, {
+                taskId: message.task_id,
+                patch: { terminalStatus: message.status },
+                malformed: false,
+              });
+            }
             reduceClaudeTurnLifecycle(context.lifecycle, {
               type: "task-completed",
               taskId: message.task_id,
@@ -4214,12 +4257,61 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
       });
 
+    const reconcileSettlementWatchdog = (context: ClaudeSessionContext): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const result = context.lifecycle.pendingResult;
+        const turn = context.turnState;
+        const needsDeadline =
+          !context.stopped &&
+          turn &&
+          result &&
+          !context.lifecycle.awaitingAction &&
+          context.pendingApprovals.size === 0 &&
+          context.pendingUserInputs.size === 0 &&
+          context.lifecycle.backgroundTasks.size === 0;
+        if (needsDeadline && context.settlementWatchdog?.resultId === result.uuid) return;
+        if (context.settlementWatchdog) {
+          yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
+          context.settlementWatchdog = undefined;
+        }
+        if (!needsDeadline) return;
+        const cancel = yield* Deferred.make<void>();
+        context.settlementWatchdog = { resultId: result.uuid, cancel };
+        // A missing idle/result must not wedge the session or promote a waiting
+        // message to success. Only time out once tracked agent work has drained.
+        Effect.runFork(
+          Effect.gen(function* () {
+            const expired = yield* Effect.race(
+              settlementClock.sleep(Duration.seconds(30)).pipe(Effect.as(true)),
+              Deferred.await(cancel).pipe(Effect.as(false)),
+            );
+            if (
+              !expired ||
+              context.stopped ||
+              sessions.get(context.session.threadId) !== context ||
+              context.turnState !== turn ||
+              context.lifecycle.pendingResult !== result
+            )
+              return;
+            const message =
+              "Claude did not confirm turn completion after background work finished. Retry the turn.";
+            yield* emitRuntimeError(context, message);
+            yield* completeTurn(context, "failed", message);
+            yield* stopSessionInternal(context);
+          }),
+        );
+      });
+
     const runSdkStream = (context: ClaudeSessionContext): Effect.Effect<void, Error> =>
       Stream.fromAsyncIterable(context.query, (cause) =>
         toError(cause, "Claude runtime stream failed."),
       ).pipe(
         Stream.takeWhile(() => !context.stopped),
-        Stream.runForEach((message) => handleSdkMessage(context, message)),
+        Stream.runForEach((message) =>
+          handleSdkMessage(context, message).pipe(
+            Effect.andThen(reconcileSettlementWatchdog(context)),
+          ),
+        ),
       );
 
     const handleStreamExit = (
@@ -4328,6 +4420,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.stopped) return;
 
         context.stopped = true;
+        if (context.settlementWatchdog) {
+          yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
+          context.settlementWatchdog = undefined;
+        }
 
         // @effect-diagnostics-next-line tryCatchInEffectGen:off
         try {
@@ -5346,6 +5442,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           taskStates,
           taskModelsByTool: new Map(),
           lifecycle: createClaudeTurnLifecycle(),
+          settlementWatchdog: undefined,
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,

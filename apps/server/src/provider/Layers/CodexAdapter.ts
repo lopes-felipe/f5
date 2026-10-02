@@ -30,7 +30,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { extractProposedPlanMarkdown } from "@t3tools/shared/proposedPlan";
+import { validateProposedPlanOutput } from "@t3tools/shared/proposedPlan";
 import {
   getModelSelectionStringOptionValue,
   getProviderOptionBooleanSelectionValue,
@@ -1643,7 +1643,8 @@ function mapToRuntimeEvents(
   if (event.method === "codex/event/task_complete") {
     const msg = codexEventMessage(payload);
     const taskId = asString(payload?.id) ?? asString(msg?.turn_id);
-    const proposedPlanMarkdown = extractProposedPlanMarkdown(asString(msg?.last_agent_message));
+    const planValidation = validateProposedPlanOutput(asString(msg?.last_agent_message));
+    const proposedPlanMarkdown = planValidation.valid ? planValidation.markdown : undefined;
     if (!taskId) {
       if (!proposedPlanMarkdown) {
         return [];

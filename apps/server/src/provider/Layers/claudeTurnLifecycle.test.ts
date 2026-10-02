@@ -12,7 +12,10 @@ describe("Claude logical turn lifecycle", () => {
     const state = createClaudeTurnLifecycle();
     const reduce = (event: Parameters<typeof reduceClaudeTurnLifecycle>[1]) =>
       reduceClaudeTurnLifecycle(state, event);
-    reduce({ type: "background", tasks: ["a", "b", "c"].map((task_id) => ({ task_id })) });
+    reduce({
+      type: "background",
+      tasks: ["a", "b", "c"].map((task_id) => ({ task_id, task_type: "local_agent" })),
+    });
     expect(reduce({ type: "result", result: result("waiting") })).toBeUndefined();
     reduce({ type: "parent-activity" });
     expect(reduce({ type: "result", result: result("still-waiting") })).toBeUndefined();
@@ -71,8 +74,53 @@ describe("Claude logical turn lifecycle", () => {
     });
     const final = result("final");
     expect(reduceClaudeTurnLifecycle(state, { type: "result", result: final })).toBe(final);
-    reduceClaudeTurnLifecycle(state, { type: "background", tasks: [{ task_id: "agent" }] });
+    reduceClaudeTurnLifecycle(state, {
+      type: "background",
+      tasks: [{ task_id: "agent", task_type: "local_agent" }],
+    });
     const restarted = createClaudeTurnLifecycle();
     expect(reduceClaudeTurnLifecycle(restarted, { type: "result", result: final })).toBe(final);
+  });
+
+  it("does not wait for persistent shells, including runtimes without idle events", () => {
+    const state = createClaudeTurnLifecycle();
+    reduceClaudeTurnLifecycle(state, {
+      type: "background",
+      tasks: [{ task_id: "dev-server", task_type: "local_bash" }],
+    });
+    const final = result("server-started");
+    expect(reduceClaudeTurnLifecycle(state, { type: "result", result: final })).toBe(final);
+  });
+
+  it("does not carry missed edge completions into a subsequent turn", () => {
+    const state = createClaudeTurnLifecycle();
+    reduceClaudeTurnLifecycle(state, { type: "task-started", taskId: "stale-agent" });
+    reduceClaudeTurnLifecycle(state, { type: "turn-boundary" });
+    const final = result("next-turn");
+    expect(reduceClaudeTurnLifecycle(state, { type: "result", result: final })).toBe(final);
+  });
+
+  it("sums main-loop segment usage once while retaining cumulative model totals", () => {
+    const state = createClaudeTurnLifecycle();
+    reduceClaudeTurnLifecycle(state, { type: "session", state: "running" });
+    const first = {
+      ...result("first"),
+      usage: { input_tokens: 10, output_tokens: 4, server_tool_use: { web_search_requests: 1 } },
+      modelUsage: { model: { inputTokens: 10 } },
+    } as unknown as SDKResultMessage;
+    const last = {
+      ...result("last"),
+      usage: { input_tokens: 20, output_tokens: 6, server_tool_use: { web_search_requests: 2 } },
+      modelUsage: { model: { inputTokens: 30 } },
+    } as unknown as SDKResultMessage;
+    reduceClaudeTurnLifecycle(state, { type: "result", result: first });
+    reduceClaudeTurnLifecycle(state, { type: "result", result: first });
+    reduceClaudeTurnLifecycle(state, { type: "result", result: last });
+    expect(state.usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 10,
+      server_tool_use: { web_search_requests: 3 },
+    });
+    expect(state.latestResult?.modelUsage).toEqual(last.modelUsage);
   });
 });

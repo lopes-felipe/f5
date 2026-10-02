@@ -2514,7 +2514,7 @@ const make = Effect.gen(function* () {
       const bufferedPlan = yield* takeBufferedProposedPlan(input.planId);
       const bufferedMarkdown = normalizeProposedPlanMarkdown(bufferedPlan?.text);
       const fallbackMarkdown = normalizeProposedPlanMarkdown(input.fallbackMarkdown);
-      const planMarkdown = bufferedMarkdown ?? fallbackMarkdown;
+      const planMarkdown = fallbackMarkdown ?? bufferedMarkdown;
       if (!planMarkdown) {
         return;
       }
@@ -4185,14 +4185,16 @@ const make = Effect.gen(function* () {
             }
           }
 
-          yield* finalizeBufferedProposedPlan({
-            event,
-            threadId: thread.id,
-            threadProposedPlans: thread.proposedPlans,
-            planId: proposedPlanIdForTurn(thread.id, turnId),
-            turnId,
-            updatedAt: now,
-          });
+          if (runtimeTurnState(event) === "completed")
+            yield* finalizeBufferedProposedPlan({
+              event,
+              threadId: thread.id,
+              threadProposedPlans: thread.proposedPlans,
+              planId: proposedPlanIdForTurn(thread.id, turnId),
+              turnId,
+              updatedAt: now,
+            });
+          else yield* clearBufferedProposedPlan(proposedPlanIdForTurn(thread.id, turnId));
         }
       }
 
