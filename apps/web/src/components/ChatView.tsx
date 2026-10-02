@@ -750,6 +750,12 @@ export default function ChatView({
   const previousTaskPanelThreadIdRef = useRef<ThreadId | null>(null);
   const previousThreadTaskCountRef = useRef(0);
   const tasksPanelManuallyCollapsedRef = useRef(false);
+  const onToggleTasksPanel = useCallback(() => {
+    setTasksPanelOpen((open) => {
+      tasksPanelManuallyCollapsedRef.current = open;
+      return !open;
+    });
+  }, []);
   const planSidebarOpen = useRightPanelStore((store) => {
     const state = selectThreadRightPanelState(store.byThreadId, threadId);
     return state.isOpen && state.surfaces.some((surface) => surface.id === "plan");
@@ -6629,7 +6635,10 @@ export default function ChatView({
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            style={composerRedesign ? { containerType: "size" } : undefined}
+          >
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {shouldRenderTimeline ? (
@@ -6695,13 +6704,7 @@ export default function ChatView({
                               tasks={effectiveThreadTasks}
                               open={tasksPanelOpen}
                               summary={taskPanelSummary}
-                              onToggle={() =>
-                                setTasksPanelOpen((open) => {
-                                  const nextOpen = !open;
-                                  tasksPanelManuallyCollapsedRef.current = !nextOpen;
-                                  return nextOpen;
-                                })
-                              }
+                              onToggle={onToggleTasksPanel}
                             />
                           </div>
                         ) : null
@@ -6731,121 +6734,119 @@ export default function ChatView({
             </div>
 
             {/* Input bar */}
-            <div className="pb-safe-add">
+            <div className="pb-safe-add" data-composer-input-bar={composerRedesign || undefined}>
               <div
-                className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}
+                data-composer-redesign={composerRedesign || undefined}
+                className={cn(
+                  "px-3 pt-1.5 sm:px-5 sm:pt-2",
+                  composerRedesign && "mx-auto w-full max-w-3xl",
+                  isGitRepo ? "pb-1" : "pb-3 sm:pb-4",
+                )}
               >
+                <div data-composer-state-drawers={composerRedesign || undefined}>
+                  {composerRedesign &&
+                  activeThread.detailsLoaded &&
+                  effectiveThreadTasks.length > 0 ? (
+                    <ThreadTasksPanel
+                      attached
+                      threadId={activeThread.id}
+                      tasks={effectiveThreadTasks}
+                      open={tasksPanelOpen}
+                      summary={taskPanelSummary}
+                      onToggle={onToggleTasksPanel}
+                    />
+                  ) : null}
+                  {isServerThread &&
+                  worktreeSetup &&
+                  shouldShowWorktreeSetupCard(worktreeSetup, {
+                    firstTurnQueued:
+                      nextTurnQueueState.snapshot?.items.some(
+                        (item) => item.itemId === worktreeSetup.itemId,
+                      ) ?? false,
+                  }) ? (
+                    <WorktreeSetupCard
+                      snapshot={worktreeSetup}
+                      busy={worktreeSetupBusy}
+                      onCancel={
+                        worktreeSetup.agentStarted
+                          ? null
+                          : () => void runWorktreeSetupAction("cancel")
+                      }
+                      onRetry={
+                        worktreeSetup.phase === "failed" ||
+                        worktreeSetup.phase === "cancelled" ||
+                        worktreeSetup.phase === "cancelled_kept"
+                          ? () => void runWorktreeSetupAction("retry")
+                          : null
+                      }
+                      onWorkLocally={
+                        worktreeSetup.agentStarted || worktreeSetup.phase === "done"
+                          ? null
+                          : () => void runWorktreeSetupAction("workLocally")
+                      }
+                    />
+                  ) : null}
+                  {isServerThread ? (
+                    <NextTurnQueuePanel
+                      turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
+                      threadId={activeThread.id}
+                      provider={selectedProvider}
+                      runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
+                      projectSkills={activeProject?.skills}
+                    />
+                  ) : null}
+                  {activeThread?.pendingUserInputs
+                    ?.filter((input) => input.responseMode === "message")
+                    .map((input) => (
+                      <AsyncUserInputPanel
+                        key={input.requestId}
+                        threadId={activeThread.id}
+                        input={input}
+                      />
+                    ))}
+                  {activePendingUserInput && activeThread ? (
+                    <UserInputAttachments
+                      key={activePendingUserInput.requestId}
+                      threadId={activeThread.id}
+                      attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
+                      onChange={(update) =>
+                        setAnswerAttachments((current) => ({
+                          ...current,
+                          [activePendingUserInput.requestId]: update(
+                            current[activePendingUserInput.requestId] ?? [],
+                          ),
+                        }))
+                      }
+                      onUploadBusyChange={(busy) =>
+                        setRespondingUserInputRequestIds((current) =>
+                          busy
+                            ? [...new Set([...current, activePendingUserInput.requestId])]
+                            : current.filter((id) => id !== activePendingUserInput.requestId),
+                        )
+                      }
+                      disabled={activePendingIsResponding}
+                      onDismiss={() =>
+                        void onRespondToUserInput(activePendingUserInput.requestId, {}, true)
+                      }
+                    />
+                  ) : null}
+                  {/* One keyed list, so the panel keeps its identity (and doesn't
+                    replay its entrance) when the real draft replaces the provisional one. */}
+                  {activeThread
+                    ? visibleRewindDrafts.map((entry) => (
+                        <RewindDraftPanel
+                          key={entry.operationId}
+                          threadId={activeThread.id}
+                          draft={entry.draft}
+                          provisional={entry.provisional}
+                          onFocusComposer={focusComposer}
+                        />
+                      ))
+                    : null}
+                </div>
                 <ChatComposer
                   redesignEnabled={composerRedesign}
                   getTimeline={getComposerTimeline}
-                  stateDrawers={
-                    <>
-                      {composerRedesign &&
-                      activeThread.detailsLoaded &&
-                      effectiveThreadTasks.length > 0 ? (
-                        <ThreadTasksPanel
-                          attached
-                          threadId={activeThread.id}
-                          tasks={effectiveThreadTasks}
-                          open={tasksPanelOpen}
-                          summary={taskPanelSummary}
-                          onToggle={() =>
-                            setTasksPanelOpen((open) => {
-                              tasksPanelManuallyCollapsedRef.current = open;
-                              return !open;
-                            })
-                          }
-                        />
-                      ) : null}
-                      {isServerThread &&
-                      worktreeSetup &&
-                      shouldShowWorktreeSetupCard(worktreeSetup, {
-                        firstTurnQueued:
-                          nextTurnQueueState.snapshot?.items.some(
-                            (item) => item.itemId === worktreeSetup.itemId,
-                          ) ?? false,
-                      }) ? (
-                        <WorktreeSetupCard
-                          snapshot={worktreeSetup}
-                          busy={worktreeSetupBusy}
-                          onCancel={
-                            worktreeSetup.agentStarted
-                              ? null
-                              : () => void runWorktreeSetupAction("cancel")
-                          }
-                          onRetry={
-                            worktreeSetup.phase === "failed" ||
-                            worktreeSetup.phase === "cancelled" ||
-                            worktreeSetup.phase === "cancelled_kept"
-                              ? () => void runWorktreeSetupAction("retry")
-                              : null
-                          }
-                          onWorkLocally={
-                            worktreeSetup.agentStarted || worktreeSetup.phase === "done"
-                              ? null
-                              : () => void runWorktreeSetupAction("workLocally")
-                          }
-                        />
-                      ) : null}
-                      {isServerThread ? (
-                        <NextTurnQueuePanel
-                          turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
-                          threadId={activeThread.id}
-                          provider={selectedProvider}
-                          runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
-                          projectSkills={activeProject?.skills}
-                        />
-                      ) : null}
-                      {activeThread?.pendingUserInputs
-                        ?.filter((input) => input.responseMode === "message")
-                        .map((input) => (
-                          <AsyncUserInputPanel
-                            key={input.requestId}
-                            threadId={activeThread.id}
-                            input={input}
-                          />
-                        ))}
-                      {activePendingUserInput && activeThread ? (
-                        <UserInputAttachments
-                          key={activePendingUserInput.requestId}
-                          threadId={activeThread.id}
-                          attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
-                          onChange={(update) =>
-                            setAnswerAttachments((current) => ({
-                              ...current,
-                              [activePendingUserInput.requestId]: update(
-                                current[activePendingUserInput.requestId] ?? [],
-                              ),
-                            }))
-                          }
-                          onUploadBusyChange={(busy) =>
-                            setRespondingUserInputRequestIds((current) =>
-                              busy
-                                ? [...new Set([...current, activePendingUserInput.requestId])]
-                                : current.filter((id) => id !== activePendingUserInput.requestId),
-                            )
-                          }
-                          disabled={activePendingIsResponding}
-                          onDismiss={() =>
-                            void onRespondToUserInput(activePendingUserInput.requestId, {}, true)
-                          }
-                        />
-                      ) : null}
-                      {/* One keyed list, so the panel keeps its identity (and doesn't
-                    replay its entrance) when the real draft replaces the provisional one. */}
-                      {activeThread
-                        ? visibleRewindDrafts.map((entry) => (
-                            <RewindDraftPanel
-                              key={entry.operationId}
-                              threadId={activeThread.id}
-                              draft={entry.draft}
-                              provisional={entry.provisional}
-                              onFocusComposer={focusComposer}
-                            />
-                          ))
-                        : null}
-                    </>
-                  }
                   composerFormRef={composerFormRef}
                   onSend={onSend}
                   isDragOverComposer={isDragOverComposer}

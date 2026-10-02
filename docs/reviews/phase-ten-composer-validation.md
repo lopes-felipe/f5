@@ -16,10 +16,12 @@ readable regardless of the capability.
 - Tasks, worktree setup, queued turns, asynchronous questions, answer attachments
   and rewind drafts are attached to the composer in a bounded, scrollable dock.
   The dock occupies normal document flow, so it cannot cover conversation text.
+  The complete composer stack is capped at 55% of the chat column remaining
+  above the terminal, with scrolling for a long draft plus drawers.
   Blocking approval/question and plan controls remain attached to the editor.
-  Command suggestions attach immediately above the editor.
+  Command suggestions sit above the editor in normal flow inside the bounded input stack.
 - The web-local `composerCollapseOnScroll` setting defaults to true. It is exposed
-  in General settings and settings search. It is persisted through `appSettings.ts`,
+  in General settings and settings search only when the capability is available. It is persisted through `appSettings.ts`,
   without adding a server setting or a client/server routing allowlist.
 - An existing thread can collapse after 24 pixels of timeline wheel input. The
   gesture resets after 120 ms of inactivity. A non-overflowing timeline, scrolling
@@ -57,7 +59,8 @@ September classification file remains a historical planning artifact.
 
 ## Validation
 
-Full-app browser tests run with the capability enabled and cover:
+The existing full-app tests use the default, capability-off layout. The composer
+redesign describe block opts in explicitly and covers:
 
 - Collapse/expansion with an existing draft and selected text, asserting the exact
   editor DOM identity and historical reading anchor remain stable.
@@ -67,6 +70,9 @@ Full-app browser tests run with the capability enabled and cover:
 - End pinning through collapse and expansion.
 - Long task lists in a short viewport, including bounded dock/body heights and a keyboard-focusable task body.
 - Nested output panes, pinch zoom, timeline selections, gesture thresholds, and empty conversations.
+- History removal without viewport resizing, attachment errors during collapse,
+  accessible attachment expansion, and bootstrap capability arrival.
+- Long tasks plus a tall draft and an open terminal in a short viewport.
 
 The existing Phase 3 browser tests also run: send/stop, draft routing, image/file
 insertion, queue actions, IME, Plan/workflow actions, provider controls, and
@@ -85,7 +91,7 @@ same repaired fixture, runtime and browser, with five warmups, 30 repetitions an
 a ten-minute soak. The shortened soak and final-five-minute memory window follow
 `docs/performance.md`.
 
-Passed on the final implementation:
+Passed on the initial implementation (review follow-up results below):
 
 - `bun fmt`
 - `bun lint` (existing warnings, no errors)
@@ -143,3 +149,32 @@ Restart the server when changing this flag, then reload the client so it receive
 the new authenticated bootstrap. The local scroll-collapse preference remains
 available in General settings; disabling it keeps the attached drawers while
 leaving the editor expanded.
+
+## PR review follow-up
+
+State panels again render from ChatView, preserving their full-width legacy
+placement without the capability. The shared task toggle removes duplicated state
+updates. Closed task bodies remain inert in both layouts, an intentional
+accessibility improvement that prevents focus entering visually hidden content.
+
+The collapsed wheel path now skips layout, popup and style queries while tracking
+momentum. A resize/content observer also follows late-mounted timelines and history
+removal. Blocking an already-expanded editor does not suppress an unrelated gesture.
+Attachment validation errors prevent collapse; the count control uses singular/plural
+labels and ARIA state/control references, and the form names its collapsed state.
+The screenshot environment hooks were removed from committed tests.
+
+The performance measurements above apply to the original implementation commit,
+not the review follow-up. The redesign remains opt-in and the existing performance
+release gates remain open; the follow-up does not claim a fresh full performance sign-off.
+
+Review validation: `bun fmt`, `bun lint` (13 existing warnings, no errors),
+`bun typecheck`, the production web build/bundle budget, and all 546 browser
+tests across 57 files pass. All 102 ChatView tests passed again after the final
+observer cleanup. The initial full browser run hit a transient failure in the
+unchanged workflow drag test; the complete rerun passed without changing that test.
+
+`bun run test:full` also passes, including all 133 exhaustive real-Git cases,
+as does `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`. The first workspace
+run hit timeouts in unchanged ledger tests while browser/build jobs were running;
+the isolated full rerun passed without changing timeouts or those tests.

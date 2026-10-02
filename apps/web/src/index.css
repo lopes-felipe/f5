@@ -729,3 +729,12 @@ label:has(> select#reasoning-effort) select {
   padding-top: 0.625rem;
   padding-bottom: 0.375rem;
 }
+
+/* Reserve history space relative to the chat column remaining above the terminal.
+   The complete input stack scrolls when drawers plus a tall draft exceed it. */
+[data-composer-input-bar] {
+  max-height: 55cqh;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
