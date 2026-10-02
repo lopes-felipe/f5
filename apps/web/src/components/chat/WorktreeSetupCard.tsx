@@ -6,6 +6,8 @@ import {
 } from "@t3tools/contracts";
 import {
   CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   CircleAlertIcon,
   CircleIcon,
   GitBranchIcon,
@@ -104,6 +106,18 @@ export function shouldShowWorktreeSetupCard(
   return context.firstTurnQueued;
 }
 
+/**
+ * A setup that finished with only warnings needs no action, so it starts
+ * collapsed to its header. Failures, running and cancelled setups stay open.
+ */
+export function isWorktreeSetupCollapsible(snapshot: WorktreeSetupSnapshot): boolean {
+  return (
+    snapshot.phase === "done" &&
+    !snapshot.stages.some((stage) => stage.status === "failed") &&
+    snapshot.error === null
+  );
+}
+
 function StageRow({
   stage,
   nowMs,
@@ -134,7 +148,10 @@ function StageRow({
       <StageIcon status={stage.status} />
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing ? (
-        <span className="min-w-0 max-w-[50%] truncate text-muted-foreground tabular-nums">
+        <span
+          className="min-w-0 max-w-[45%] truncate text-muted-foreground tabular-nums"
+          title={trailing}
+        >
           {trailing}
         </span>
       ) : null}
@@ -179,48 +196,73 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
   const started = Date.parse(snapshot.startedAt);
   const ended = snapshot.endedAt ? Date.parse(snapshot.endedAt) : nowMs;
   const scriptStage = snapshot.stages.find((stage) => stage.id === "setup-script");
+  const collapsible = isWorktreeSetupCollapsible(snapshot);
+  const [expanded, setExpanded] = useState(false);
+  const collapsed = collapsible && !expanded;
+  const warningCount = snapshot.stages.filter((stage) => stage.status === "warning").length;
   return (
     <section
       aria-label="Worktree setup"
-      className="mb-2 rounded-lg border border-border bg-card/60 px-3 py-2"
+      className="mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border/70 bg-card/95 px-3 py-2 shadow-sm"
       data-worktree-setup-phase={snapshot.phase}
+      data-worktree-setup-collapsed={collapsed || undefined}
     >
-      <header className="flex min-w-0 items-center gap-2 text-sm">
+      <header className="flex min-h-6 min-w-0 items-center gap-2 text-xs">
         <GitBranchIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
         <span
           className={cn(
-            "min-w-0 flex-1 truncate",
+            "min-w-0 flex-1 truncate font-medium",
             snapshot.phase === "failed" && "text-destructive-foreground",
             snapshot.phase === "cancelled_kept" && "text-warning-foreground",
           )}
         >
           {worktreeSetupHeadline(snapshot)}
-          <span className="ml-2 text-xs text-muted-foreground">{snapshot.request.branch}</span>
+          <span className="ml-2 font-normal text-muted-foreground">{snapshot.request.branch}</span>
         </span>
+        {collapsible && warningCount > 0 ? (
+          <span className="flex shrink-0 items-center gap-1 text-warning-foreground">
+            <CircleAlertIcon aria-hidden className="size-3.5" />
+            {warningCount === 1 ? "1 warning" : `${warningCount} warnings`}
+          </span>
+        ) : null}
         {Number.isFinite(started) && Number.isFinite(ended) ? (
-          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+          <span className="shrink-0 text-muted-foreground tabular-nums">
             {formatElapsed(ended - started)}
           </span>
         ) : null}
+        {collapsible ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label={collapsed ? "Show setup details" : "Hide setup details"}
+            aria-expanded={!collapsed}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            {collapsed ? <ChevronDownIcon /> : <ChevronUpIcon />}
+          </Button>
+        ) : null}
       </header>
-      <div className="mt-1.5 flex flex-col gap-0.5">
-        {snapshot.stages.map((stage) => (
-          <div key={stage.id} className="flex flex-col gap-1">
-            <StageRow
-              stage={stage}
-              nowMs={nowMs}
-              label={
-                stage.id === "setup-script" && snapshot.setupScript
-                  ? `${snapshot.setupScript.name}${snapshot.setupScript.async ? "" : " (agent waits)"}`
-                  : worktreeSetupStageLabel(stage.id)
-              }
-            />
-            {stage.id === "setup-script" && scriptStage && scriptStage.tail.length > 0 ? (
-              <OutputTail lines={scriptStage.tail} failed={scriptStage.status === "failed"} />
-            ) : null}
-          </div>
-        ))}
-      </div>
+      {collapsed ? null : (
+        <div className="mt-1.5 flex flex-col gap-0.5">
+          {snapshot.stages.map((stage) => (
+            <div key={stage.id} className="flex flex-col gap-1">
+              <StageRow
+                stage={stage}
+                nowMs={nowMs}
+                label={
+                  stage.id === "setup-script" && snapshot.setupScript
+                    ? `${snapshot.setupScript.name}${snapshot.setupScript.async ? "" : " (agent waits)"}`
+                    : worktreeSetupStageLabel(stage.id)
+                }
+              />
+              {stage.id === "setup-script" && scriptStage && scriptStage.tail.length > 0 ? (
+                <OutputTail lines={scriptStage.tail} failed={scriptStage.status === "failed"} />
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
       {snapshot.error ? (
         <p className="mt-1.5 text-xs text-muted-foreground" role="status">
           {snapshot.error}

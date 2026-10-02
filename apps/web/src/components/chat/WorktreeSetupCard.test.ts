@@ -2,7 +2,11 @@ import { EventId, type OrchestrationThreadActivity, ThreadId } from "@t3tools/co
 import { describe, expect, it } from "vitest";
 
 import { isNewerWorktreeSetup, persistedWorktreeSetup } from "../../hooks/useWorktreeSetup";
-import { shouldShowWorktreeSetupCard, worktreeSetupHeadline } from "./WorktreeSetupCard";
+import {
+  isWorktreeSetupCollapsible,
+  shouldShowWorktreeSetupCard,
+  worktreeSetupHeadline,
+} from "./WorktreeSetupCard";
 import { makeWorktreeSetupSnapshot } from "./worktreeSetupFixtures";
 
 describe("worktree setup card logic", () => {
@@ -26,6 +30,27 @@ describe("worktree setup card logic", () => {
     expect(worktreeSetupHeadline(doneWithScriptFailure)).toBe(
       "Worktree ready; setup script failed",
     );
+  });
+
+  it("collapses only finished setups that need no action", () => {
+    const done = makeWorktreeSetupSnapshot({ phase: "done" });
+    const doneWithWarning = makeWorktreeSetupSnapshot({
+      phase: "done",
+      stages: done.stages.map((stage) =>
+        stage.id === "fetch" ? { ...stage, status: "warning" } : stage,
+      ),
+    });
+    expect(isWorktreeSetupCollapsible(doneWithWarning)).toBe(true);
+    expect(
+      isWorktreeSetupCollapsible({
+        ...doneWithWarning,
+        stages: doneWithWarning.stages.map((stage) =>
+          stage.id === "setup-script" ? { ...stage, status: "failed" } : stage,
+        ),
+      }),
+    ).toBe(false);
+    expect(isWorktreeSetupCollapsible(makeWorktreeSetupSnapshot())).toBe(false);
+    expect(isWorktreeSetupCollapsible(makeWorktreeSetupSnapshot({ phase: "failed" }))).toBe(false);
   });
 
   it("accepts newer sequences and a newer retry, never an older snapshot", () => {

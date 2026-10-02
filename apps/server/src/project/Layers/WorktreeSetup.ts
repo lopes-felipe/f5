@@ -468,13 +468,28 @@ export const makeWorktreeSetup = Effect.gen(function* () {
                   allowMissingBranch: true,
                 })
                 .pipe(
+                  // The raw git error is internal and unreadable in the card; log it
+                  // and show the user what actually happened instead.
                   Effect.catch((error) =>
-                    Effect.sync(() => {
-                      update(threadId, (snapshot) =>
-                        stageStatus(snapshot, "fetch", "warning", error.message),
-                      );
-                      return null;
-                    }),
+                    Effect.logWarning("worktree setup could not fetch the remote base branch", {
+                      threadId,
+                      baseBranch: request.baseBranch,
+                      error: error.message,
+                    }).pipe(
+                      Effect.andThen(
+                        Effect.sync(() => {
+                          update(threadId, (snapshot) =>
+                            stageStatus(
+                              snapshot,
+                              "fetch",
+                              "warning",
+                              `Couldn't reach the remote; using local ${request.baseBranch}`,
+                            ),
+                          );
+                          return null;
+                        }),
+                      ),
+                    ),
                   ),
                 );
               if (remote) {
