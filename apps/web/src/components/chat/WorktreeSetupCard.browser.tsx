@@ -52,6 +52,43 @@ describe("WorktreeSetupCard", () => {
     }
   });
 
+  it("collapses a finished setup with warnings to its header until expanded", async () => {
+    const base = makeWorktreeSetupSnapshot({
+      phase: "done",
+      endedAt: "2026-10-01T10:00:02.000Z",
+      agentStarted: true,
+    });
+    const fetchWarning = "Couldn't reach the remote; using local main";
+    const screen = await render(
+      <WorktreeSetupCard
+        snapshot={{
+          ...base,
+          stages: base.stages.map((stage) =>
+            stage.id === "fetch"
+              ? { ...stage, status: "warning" as const, detail: fetchWarning }
+              : { ...stage, status: "done" as const },
+          ),
+        }}
+        busy={false}
+        onCancel={null}
+        onRetry={null}
+        onWorkLocally={null}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("Worktree ready")).toBeVisible();
+      await expect.element(page.getByText("1 warning")).toBeVisible();
+      await expect.element(page.getByText(fetchWarning)).not.toBeInTheDocument();
+      await page.getByRole("button", { name: "Show setup details" }).click();
+      await expect.element(page.getByText(fetchWarning)).toBeVisible();
+      await expect.element(page.getByText(fetchWarning)).toHaveAttribute("title", fetchWarning);
+      await page.getByRole("button", { name: "Hide setup details" }).click();
+      await expect.element(page.getByText(fetchWarning)).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("offers retry and discard after a cancelled setup kept its worktree", async () => {
     const onCancel = vi.fn();
     const onRetry = vi.fn();
