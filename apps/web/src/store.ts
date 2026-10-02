@@ -7,6 +7,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThreadTailDetails,
   type ProjectSkill,
+  type RewindDraft,
   type ThreadReference,
   type ThreadSessionNotes,
 } from "@t3tools/contracts";
@@ -1110,7 +1111,7 @@ function buildThreadFromReadModel(
     existing.turnDiffSummaries === nextDetailFields.turnDiffSummaries &&
     existing.activities === activities &&
     areUnknownEqual(existing.pendingUserInputs, thread.pendingUserInputs) &&
-    areUnknownEqual(existing.rewindDrafts, thread.rewindDrafts) &&
+    areUnknownEqual(existing.rewindDrafts, thread.rewindDrafts ?? existing.rewindDrafts) &&
     existing.detailsLoaded === nextDetailFields.detailsLoaded &&
     existing.tasks === nextDetailFields.tasks &&
     existing.tasksTurnId === nextDetailFields.tasksTurnId &&
@@ -1131,7 +1132,9 @@ function buildThreadFromReadModel(
     ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,
     pendingUserInputs: thread.pendingUserInputs,
-    rewindDrafts: thread.rewindDrafts,
+    // Only projection snapshots carry drafts; the in-memory read model behind
+    // `getSnapshot` leaves them undefined, which means "unknown", not "none".
+    rewindDrafts: thread.rewindDrafts ?? existing?.rewindDrafts,
     interactionMode: thread.interactionMode,
     session,
     messages: nextDetailFields.messages,
@@ -1745,6 +1748,18 @@ export function drainBufferedThreadDetailEvents(
   return nextState;
 }
 
+/** Replaces one thread's rewind drafts with a fresh server read. */
+export function setThreadRewindDrafts(
+  state: AppState,
+  threadId: ThreadId,
+  drafts: ReadonlyArray<RewindDraft>,
+): AppState {
+  const threads = updateThread(state.threads, threadId, (thread) =>
+    areUnknownEqual(thread.rewindDrafts, drafts) ? thread : { ...thread, rewindDrafts: drafts },
+  );
+  return threads === state.threads ? state : { ...state, threads };
+}
+
 /**
  * @deprecated Production hydration now uses `syncStartupSnapshot`.
  * Keep this full-sync path for tests and debug-only callers.
@@ -1983,6 +1998,7 @@ export function setThreadBranch(
 interface AppStore extends AppState {
   invalidateThreadDetails: (options?: { preserveThreadIds?: Iterable<ThreadId> }) => void;
   syncServerReadModel: (readModel: OrchestrationReadModel) => void;
+  setThreadRewindDrafts: (threadId: ThreadId, drafts: ReadonlyArray<RewindDraft>) => void;
   syncStartupSnapshot: (readModel: OrchestrationReadModel) => void;
   syncThreadTailDetails: (
     threadId: ThreadId,
@@ -2033,6 +2049,8 @@ export const useStore = create<AppStore>((set) => ({
   ...readPersistedState(),
   invalidateThreadDetails: (options) => set((state) => invalidateThreadDetails(state, options)),
   syncServerReadModel: (readModel) => set((state) => syncServerReadModel(state, readModel)),
+  setThreadRewindDrafts: (threadId, drafts) =>
+    set((state) => setThreadRewindDrafts(state, threadId, drafts)),
   syncStartupSnapshot: (readModel) => set((state) => syncStartupSnapshot(state, readModel)),
   syncThreadTailDetails: (threadId, details, options) =>
     set((state) => syncThreadTailDetails(state, threadId, details, options)),

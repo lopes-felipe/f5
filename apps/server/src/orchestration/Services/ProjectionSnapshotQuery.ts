@@ -11,6 +11,8 @@ import type {
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetStartupSnapshotResult,
   OrchestrationGetThreadTailDetailsInput,
+  OrchestrationGetRewindDraftsInput,
+  OrchestrationGetRewindDraftsResult,
   OrchestrationThreadHistoryPage,
   OrchestrationThreadTailDetails,
   OrchestrationGetThreadDetailsInput,
@@ -62,6 +64,14 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadTailDetails: (
     input: OrchestrationGetThreadTailDetailsInput,
   ) => Effect.Effect<OrchestrationThreadTailDetails, ProjectionRepositoryError>;
+
+  /**
+   * Read one thread's unresolved rewind drafts. They are not part of the
+   * in-memory read model, so clients fetch them here after rewind events.
+   */
+  readonly getRewindDrafts: (
+    input: OrchestrationGetRewindDraftsInput,
+  ) => Effect.Effect<OrchestrationGetRewindDraftsResult, ProjectionRepositoryError>;
 
   /**
    * Read the next older page of thread history to prepend.

@@ -759,6 +759,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.getStartupSnapshot, input),
       getThreadTailDetails: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadTailDetails, input),
+      getRewindDrafts: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.getRewindDrafts, input),
       getThreadHistoryPage: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadHistoryPage, input),
       getThreadDetails: (input) =>

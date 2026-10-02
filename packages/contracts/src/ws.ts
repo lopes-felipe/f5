@@ -58,6 +58,7 @@ import {
   OrchestrationGetSnapshotInput,
   OrchestrationGetStartupSnapshotInput,
   OrchestrationGetThreadTailDetailsInput,
+  OrchestrationGetRewindDraftsInput,
   OrchestrationGetTurnDiffInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationRetryInvestigationWorkflowInput,
@@ -482,6 +483,7 @@ const WebSocketRequestBody = Schema.Union([
     ORCHESTRATION_WS_METHODS.getThreadTailDetails,
     OrchestrationGetThreadTailDetailsInput,
   ),
+  tagRequestBody(ORCHESTRATION_WS_METHODS.getRewindDrafts, OrchestrationGetRewindDraftsInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.getThreadHistoryPage,
     OrchestrationGetThreadHistoryPageInput,

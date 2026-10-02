@@ -512,6 +512,7 @@ describe("OrchestrationEngine", () => {
             detail: "unused in orchestration engine test",
           }),
         ),
+      getRewindDrafts: ({ threadId }) => Effect.succeed({ threadId, drafts: [] }),
       getThreadTailDetails: (_input) =>
         Effect.fail(
           new PersistenceSqlError({

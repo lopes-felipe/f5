@@ -1577,26 +1577,44 @@ export default function ChatView({
     setExpandedCommandExecutions({});
   }, [alwaysExpandAgentCommandTranscripts, threadId]);
 
+  // Rewind drafts live outside the event-sourced read model, so `getSnapshot`
+  // never carries them. Read them from their own endpoint when the thread opens
+  // and after every rewind event; only the newest response is applied.
   useEffect(() => {
     const api = readNativeApi();
     if (!api) return;
-    return api.orchestration.onDomainEvent((event) => {
+    let latestRequest = 0;
+    let disposed = false;
+    const refreshRewindDrafts = () => {
+      const request = ++latestRequest;
+      void api.orchestration
+        .getRewindDrafts({ threadId })
+        .then((result) => {
+          if (disposed || request !== latestRequest) return;
+          useStore.getState().setThreadRewindDrafts(threadId, result.drafts);
+        })
+        .catch((error) => {
+          if (disposed || request !== latestRequest) return;
+          setStoreThreadError(
+            threadId,
+            error instanceof Error ? error.message : "Could not refresh the reverted prompt.",
+          );
+        });
+    };
+    refreshRewindDrafts();
+    const unsubscribe = api.orchestration.onDomainEvent((event) => {
       const affectsDraft =
         (event.type === "thread.reverted" && event.payload.operationId) ||
         event.type === "thread.rewind-draft-resolved" ||
         (event.type === "thread.activity-appended" &&
           event.payload.activity.kind === "conversation.rewind.failed");
       if (affectsDraft && "threadId" in event.payload && event.payload.threadId === threadId)
-        void api.orchestration
-          .getSnapshot()
-          .then((snapshot) => useStore.getState().syncServerReadModel(snapshot))
-          .catch((error) =>
-            setStoreThreadError(
-              threadId,
-              error instanceof Error ? error.message : "Could not refresh the rewind draft.",
-            ),
-          );
+        refreshRewindDrafts();
     });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
   }, [threadId, setStoreThreadError]);
   useEffect(() => {
     if (!showFileChangeDiffsInline) {

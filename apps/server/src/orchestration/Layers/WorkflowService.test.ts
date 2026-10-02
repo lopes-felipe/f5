@@ -643,6 +643,7 @@ async function createHarness(
               snapshot,
               threadTailDetails: null,
             }),
+          getRewindDrafts: ({ threadId }) => Effect.succeed({ threadId, drafts: [] }),
           getThreadTailDetails: (input) =>
             Effect.succeed({
               threadId: input.threadId,

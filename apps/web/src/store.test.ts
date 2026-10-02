@@ -1,4 +1,5 @@
 import {
+  CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
   InvestigationWorkflowId,
   EventId,
@@ -9,6 +10,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThreadTailDetails,
+  type RewindDraft,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -24,6 +26,7 @@ import {
   pruneChangedFilesExpandedForThreads,
   reorderProjects,
   setChangedFilesExpandedForThread,
+  setThreadRewindDrafts,
   syncServerReadModel,
   syncStartupSnapshot,
   syncThreadDetails,
@@ -534,6 +537,47 @@ describe("store pure functions", () => {
   });
 });
 
+function makeRewindDraft(overrides: Partial<RewindDraft> = {}): RewindDraft {
+  return {
+    operationId: CommandId.makeUnsafe("rewind-op-1"),
+    targetMessageId: MessageId.makeUnsafe("message-1"),
+    restoreFiles: false,
+    error: null,
+    text: "try again",
+    attachments: [],
+    state: "completed",
+    ...overrides,
+  };
+}
+
+describe("setThreadRewindDrafts", () => {
+  it("replaces one thread's drafts", () => {
+    const state = makeState(makeThread({ rewindDrafts: [] }));
+    const draft = makeRewindDraft();
+
+    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("thread-1"), [draft]);
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([draft]);
+  });
+
+  it("returns the same state when the drafts are unchanged", () => {
+    const draft = makeRewindDraft();
+    const state = makeState(makeThread({ rewindDrafts: [draft] }));
+
+    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("thread-1"), [{ ...draft }]);
+
+    expect(next).toBe(state);
+  });
+
+  it("ignores unknown threads", () => {
+    const state = makeState(makeThread());
+
+    const next = setThreadRewindDrafts(state, ThreadId.makeUnsafe("missing"), [makeRewindDraft()]);
+
+    expect(next).toBe(state);
+  });
+});
+
 describe("store read model sync", () => {
   it("syncs active investigation workflows from full read model snapshots", () => {
     const initialState = makeState(makeThread());
@@ -634,6 +678,35 @@ describe("store read model sync", () => {
     const next = syncServerReadModel(initialState, readModel);
 
     expect(next.threads[0]?.estimatedThinkingTokens).toBe(3_200);
+  });
+
+  it("keeps known rewind drafts when a read model omits them", () => {
+    const draft = makeRewindDraft();
+    const initialThread = makeThread({
+      model: "gpt-5.3-codex",
+      createdAt: "2026-02-27T00:00:00.000Z",
+      lastInteractionAt: "2026-02-27T00:00:00.000Z",
+      lastVisitedAt: "2026-02-27T00:00:00.000Z",
+      rewindDrafts: [draft],
+    });
+
+    const next = syncServerReadModel(
+      makeState(initialThread),
+      makeReadModel(makeReadModelThread({})),
+    );
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([draft]);
+  });
+
+  it("clears rewind drafts when a read model reports none", () => {
+    const initialThread = makeThread({ rewindDrafts: [makeRewindDraft()] });
+
+    const next = syncServerReadModel(
+      makeState(initialThread),
+      makeReadModel(makeReadModelThread({ rewindDrafts: [] })),
+    );
+
+    expect(next.threads[0]?.rewindDrafts).toEqual([]);
   });
 
   it("preserves the current project order when syncing incoming read model updates", () => {
