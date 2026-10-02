@@ -22,7 +22,9 @@ export function ForgeComposer({
   replyTo,
 }: {
   pr: TrackedPullRequest;
-  anchor?: { path: string; line: number; side: "old" | "new" } | undefined;
+  anchor?:
+    | { path: string; line: number; side: "old" | "new"; baseOid?: string | undefined }
+    | undefined;
   replyTo?: string | undefined;
 }) {
   const caps = pr.forgeCapabilities;

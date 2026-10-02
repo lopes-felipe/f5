@@ -114,6 +114,7 @@ export const ForgeMutationPayload = Schema.Union([
     path: Schema.optional(Schema.String),
     line: Schema.optional(Schema.Int),
     side: Schema.optional(Schema.Literals(["old", "new"])),
+    baseOid: Schema.optional(Schema.String),
     replyTo: Schema.optional(Schema.String),
   }),
   Schema.Struct({

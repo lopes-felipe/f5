@@ -26,15 +26,23 @@ export interface PrReviewAnchor {
   readonly line: number;
 }
 
+export interface PrReviewPosition {
+  readonly kind: "added" | "deleted" | "context";
+  readonly oldLine?: number;
+  readonly newLine?: number;
+}
+
 export function prReplyBody(body: string, id: string): string {
   return `${body}\n\n<!-- F5 reply ${id} -->`;
 }
 
 /** Only lines actually present in a complete provider hunk are commentable. */
-export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", ReadonlySet<number>> {
-  const left = new Set<number>();
-  const right = new Set<number>();
-  const empty = new Map<"LEFT" | "RIGHT", ReadonlySet<number>>();
+function prReviewPositions(
+  patch: string,
+): ReadonlyMap<"LEFT" | "RIGHT", ReadonlyMap<number, PrReviewPosition>> {
+  const left = new Map<number, PrReviewPosition>();
+  const right = new Map<number, PrReviewPosition>();
+  const empty = new Map<"LEFT" | "RIGHT", ReadonlyMap<number, PrReviewPosition>>();
   let oldLine = 0;
   let newLine = 0;
   let oldRemaining = 0;
@@ -64,14 +72,19 @@ export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", Read
       return empty;
     }
     if (line === "") line = " ";
+    const position: PrReviewPosition = line.startsWith(" ")
+      ? { kind: "context", oldLine, newLine }
+      : line.startsWith("-")
+        ? { kind: "deleted", oldLine }
+        : { kind: "added", newLine };
     if (line.startsWith(" ") || line.startsWith("-")) {
-      if (oldRemaining <= 0 || oldLine < 1) return empty;
-      left.add(oldLine++);
+      if (oldRemaining <= 0 || oldLine < 1 || left.has(oldLine)) return empty;
+      left.set(oldLine++, position);
       oldRemaining--;
     }
     if (line.startsWith(" ") || line.startsWith("+")) {
-      if (newRemaining <= 0 || newLine < 1) return empty;
-      right.add(newLine++);
+      if (newRemaining <= 0 || newLine < 1 || right.has(newLine)) return empty;
+      right.set(newLine++, position);
       newRemaining--;
     }
     if (!/^[ +-]/.test(line) || left.size + right.size > 200_000) return empty;
@@ -83,12 +96,23 @@ export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", Read
   ]);
 }
 
-export function isPrReviewAnchorInPatch(anchor: PrReviewAnchor, patch: string): boolean {
-  return (
-    Number.isSafeInteger(anchor.line) &&
-    anchor.line > 0 &&
-    (prReviewLines(patch).get(anchor.side)?.has(anchor.line) ?? false)
+export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", ReadonlySet<number>> {
+  return new Map(
+    [...prReviewPositions(patch)].map(([side, positions]) => [side, new Set(positions.keys())]),
   );
+}
+
+/** Resolves native old/new coordinates only after validating the entire hunk stream. */
+export function resolvePrReviewPosition(
+  anchor: PrReviewAnchor,
+  patch: string,
+): PrReviewPosition | null {
+  if (!Number.isSafeInteger(anchor.line) || anchor.line <= 0) return null;
+  return prReviewPositions(patch).get(anchor.side)?.get(anchor.line) ?? null;
+}
+
+export function isPrReviewAnchorInPatch(anchor: PrReviewAnchor, patch: string): boolean {
+  return resolvePrReviewPosition(anchor, patch) !== null;
 }
 
 /** Hide whole whitespace-only hunks without rewriting any provider line numbers. */

@@ -36,6 +36,101 @@ function fixture(kind: ForgeKind, responses: unknown[] = [], login = `viewer-${+
 }
 
 describe("forge adapters", () => {
+  it("posts GitLab context discussions with both native coordinates and rename paths", async () => {
+    const { provider, ref, calls } = fixture("gitlab");
+    await Effect.runPromise(
+      provider.writeComment({
+        ref,
+        body: "Context",
+        path: "new.ts",
+        oldPath: "old.ts",
+        side: "new",
+        position: { kind: "context", oldLine: 5, newLine: 8 },
+        headSha: "head",
+        baseSha: "base",
+        startSha: "start",
+      }),
+    );
+    expect(JSON.parse(String(calls[0]?.init.body)).position).toEqual({
+      position_type: "text",
+      old_path: "old.ts",
+      new_path: "new.ts",
+      old_line: 5,
+      new_line: 8,
+      head_sha: "head",
+      base_sha: "base",
+      start_sha: "start",
+    });
+  });
+  it("posts Forgejo reviews with native side coordinates, rename paths and pinned commit", async () => {
+    const { provider, ref, calls } = fixture("forgejo");
+    for (const [side, position] of [
+      ["old", { kind: "deleted", oldLine: 5 }],
+      ["new", { kind: "added", newLine: 8 }],
+      ["old", { kind: "context", oldLine: 5, newLine: 8 }],
+      ["new", { kind: "context", oldLine: 5, newLine: 8 }],
+    ] as const) {
+      await Effect.runPromise(
+        provider.writeComment({
+          ref,
+          body: "Inline",
+          path: "new.ts",
+          oldPath: "old.ts",
+          side,
+          position,
+          headSha: "head",
+        }),
+      );
+    }
+    expect(calls.map((call) => JSON.parse(String(call.init.body)))).toEqual([
+      {
+        body: "Inline",
+        event: "COMMENT",
+        commit_id: "head",
+        comments: [{ path: "old.ts", body: "Inline", old_position: 5, new_position: 0 }],
+      },
+      {
+        body: "Inline",
+        event: "COMMENT",
+        commit_id: "head",
+        comments: [{ path: "new.ts", body: "Inline", old_position: 0, new_position: 8 }],
+      },
+      {
+        body: "Inline",
+        event: "COMMENT",
+        commit_id: "head",
+        comments: [{ path: "old.ts", body: "Inline", old_position: 5, new_position: 0 }],
+      },
+      {
+        body: "Inline",
+        event: "COMMENT",
+        commit_id: "head",
+        comments: [{ path: "new.ts", body: "Inline", old_position: 0, new_position: 8 }],
+      },
+    ]);
+  });
+  it("refuses native inline writes without validated coordinates before sending HTTP", async () => {
+    for (const kind of ["gitlab", "forgejo"] as const) {
+      const { provider, ref, calls } = fixture(kind);
+      const result = await Effect.runPromise(
+        provider
+          .writeComment({
+            ref,
+            body: "Inline",
+            path: "a.ts",
+            line: 4,
+            side: "new",
+            headSha: "head",
+            baseSha: "base",
+            startSha: "start",
+          })
+          .pipe(Effect.result),
+      );
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.requestDispatched).toBe(false);
+      expect(calls).toHaveLength(0);
+    }
+  });
   it("shares rate-limit cooldown across instances while isolating other accounts", async () => {
     const login = `limited-${++nextAccount}`;
     const first = fixture(
@@ -150,6 +245,7 @@ describe("forge adapters", () => {
         body: "line comment",
         path: "src/a.ts",
         line: 4,
+        position: { kind: "added", newLine: 4 },
         side: "new",
         baseSha: "base",
         startSha: "start",

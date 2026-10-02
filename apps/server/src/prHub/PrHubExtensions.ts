@@ -17,6 +17,7 @@ import {
   parseSourceControlPullRequestKey,
   formatSourceControlPullRequestKey,
 } from "@t3tools/shared/sourceControl";
+import { resolvePrReviewPosition, type PrReviewPosition } from "@t3tools/shared/prReview";
 import { ServerConfig } from "../config.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { PrHubFederation, type PrHubAccountRuntime } from "./Layers/PrHubFederation.ts";
@@ -328,6 +329,20 @@ export const makePrHubExtensions = Effect.gen(function* () {
           "The pull request changed. Refresh before preparing the operation.",
           "forbidden",
         );
+      if (input.payload.kind === "comment" && input.payload.path) {
+        const p = input.payload;
+        if (
+          !p.baseOid ||
+          forgeComparison(ref, detail)?.baseOid !== p.baseOid ||
+          !p.line ||
+          p.line < 1 ||
+          !p.side
+        )
+          return yield* failure(
+            "The inline comment comparison changed or is incomplete.",
+            "forbidden",
+          );
+      }
       const prior = yield* load(runtime.account.id, input.operationId);
       if (prior) {
         if (
@@ -410,7 +425,46 @@ export const makePrHubExtensions = Effect.gen(function* () {
               });
             const run = Effect.gen(function* () {
               switch (p.kind) {
-                case "comment":
+                case "comment": {
+                  let position: PrReviewPosition | undefined;
+                  let oldPath: string | undefined;
+                  if (p.path) {
+                    if (
+                      !p.baseOid ||
+                      forgeComparison(ref, detail)?.baseOid !== p.baseOid ||
+                      !p.line ||
+                      !p.side
+                    )
+                      return yield* failure("The inline comment comparison changed.", "forbidden");
+                    const files = yield* runtime.provider.getFiles(ref);
+                    const file = files.find((file) => file.path === p.path);
+                    const resolved = file?.patch
+                      ? resolvePrReviewPosition(
+                          {
+                            path: p.path,
+                            line: p.line,
+                            side: p.side === "old" ? "LEFT" : "RIGHT",
+                          },
+                          file.patch,
+                        )
+                      : null;
+                    if (!resolved)
+                      return yield* failure(
+                        "The inline comment line is outside the complete diff.",
+                        "forbidden",
+                      );
+                    const latest = yield* runtime.provider.getDetail(ref);
+                    if (
+                      latest.headRefOid !== saved.operation.expectedHeadOid ||
+                      forgeComparison(ref, latest)?.baseOid !== p.baseOid
+                    )
+                      return yield* failure(
+                        "The inline comment comparison changed while loading files.",
+                        "forbidden",
+                      );
+                    position = resolved;
+                    oldPath = file?.previousPath ?? p.path;
+                  }
                   return yield* dispatch(
                     runtime.provider.writeComment({
                       ref,
@@ -418,6 +472,8 @@ export const makePrHubExtensions = Effect.gen(function* () {
                       ...(p.path
                         ? {
                             path: p.path,
+                            ...(position ? { position } : {}),
+                            ...(oldPath ? { oldPath } : {}),
                             ...(p.line === undefined ? {} : { line: p.line }),
                             ...(p.side === undefined ? {} : { side: p.side }),
                             headSha: saved.operation.expectedHeadOid,
@@ -436,6 +492,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
                       ...(p.replyTo ? { replyTo: p.replyTo } : {}),
                     }),
                   );
+                }
                 case "review": {
                   const separated = ref.provider === "gitlab" || ref.provider === "bitbucket";
                   if (

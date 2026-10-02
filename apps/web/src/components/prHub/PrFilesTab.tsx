@@ -187,6 +187,7 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
           key={selectedAnchor.nonce}
           pr={pr}
           anchor={{
+            baseOid: pages[0]?.comparison?.baseOid,
             path: selectedAnchor.path,
             line: selectedAnchor.line,
             side: selectedAnchor.side === "LEFT" ? "old" : "new",
