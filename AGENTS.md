@@ -9,6 +9,15 @@
   intervals define coverage; refresh it only from the read-only `upstream` remote with
   `bun scripts/check-upstream-ports.ts --refresh`.
 
+## Claude Token Usage and Sub-agents
+
+Claude must conserve token usage because sub-agents consume additional usage allowance and concurrent chats can exhaust shared limits quickly.
+
+- Default to serial execution in the main conversation.
+- Spawn sub-agents only when strictly necessary to complete the task reliably, or when the user explicitly requests delegation.
+- Faster completion or independent subtasks alone do not justify spawning sub-agents. Perform routine exploration, implementation, review, and verification serially.
+- When delegation is necessary, briefly explain why, use the minimum number of sub-agents, keep their tasks narrowly scoped, and avoid duplicate work.
+
 ## Git and GitHub Command Policy
 
 The user grants standing authorization for non-destructive Git and GitHub mutations. When the user requests an allowed operation, or an allowed operation is required to complete an explicitly requested Git/GitHub workflow, agents must execute it instead of asking for confirmation, merely explaining the command, or asking the user to run it. The request itself is sufficient authorization.
