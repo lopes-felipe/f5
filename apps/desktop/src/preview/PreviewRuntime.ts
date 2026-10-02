@@ -1,3 +1,4 @@
+import { captureBoundedPage } from "./capture";
 import path from "node:path";
 
 import type {
@@ -13,6 +14,10 @@ import { PreviewArtifactStore } from "./PreviewArtifactStore";
 
 export interface PreviewTabEntry {
   ownerWebContentsId: number | null;
+  partition?: string;
+  browserProfileId?: string;
+  muted?: boolean;
+  defaultsApplied?: boolean;
   webContentsId: number | null;
   zoomFactor: number;
   viewport: PreviewViewportSize | null;
@@ -149,12 +154,12 @@ export class PreviewRuntime {
 
   async captureScreenshot(tabId: string): Promise<PreviewArtifact> {
     const guest = this.#requireGuest(tabId);
-    const image = await guest.capturePage();
-    const size = image.getSize();
+    const bounded = await captureBoundedPage(guest);
+    const boundedSize = bounded.getSize();
     return this.#artifactStore.captureScreenshot({
-      png: image.toPNG(),
-      width: size.width,
-      height: size.height,
+      png: bounded.toPNG(),
+      width: boundedSize.width,
+      height: boundedSize.height,
     });
   }
 
@@ -164,7 +169,7 @@ export class PreviewRuntime {
     }
     const guest = this.#requireGuest(tabId);
     const viewport = this.lookupTab(tabId)?.viewport;
-    const capture = await guest.capturePage();
+    const capture = await captureBoundedPage(guest);
     const captureSize = capture.getSize();
     const recordingHandle = await this.#artifactStore.beginRecording({
       tabId,
@@ -233,6 +238,8 @@ export class PreviewRuntime {
       await guest.debugger.sendCommand("Page.startScreencast", {
         format: "jpeg",
         quality: 75,
+        maxWidth: 2560,
+        maxHeight: 2560,
         everyNthFrame: 1,
       });
     } catch (cause) {

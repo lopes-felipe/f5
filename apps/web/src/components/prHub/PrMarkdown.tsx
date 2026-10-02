@@ -1,3 +1,4 @@
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getServerHttpOrigin } from "../../lib/serverHttpOrigin";
@@ -46,9 +47,9 @@ export function PrMarkdown({ body, host }: { body: string; host: string }) {
                 />
               );
             return (
-              <a href={href} target="_blank" rel="noreferrer">
+              <OpenLinkAnchor href={href} target="_blank" rel="noreferrer">
                 {children}
-              </a>
+              </OpenLinkAnchor>
             );
           },
         }}

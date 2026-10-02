@@ -1,3 +1,4 @@
+import { BrowserSettings } from "../BrowserSettings";
 import { GithubAccountPanel } from "../GithubAccountPanel";
 import { useMemo } from "react";
 
@@ -27,6 +28,7 @@ export function IntegrationsSettings() {
 
   return (
     <>
+      <BrowserSettings />
       <SettingsCard
         title="Keybindings"
         searchTarget="integrations.keybindings"

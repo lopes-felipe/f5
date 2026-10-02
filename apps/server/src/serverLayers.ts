@@ -187,7 +187,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       canonical: canonicalEventLogger,
     });
     const serverSettingsLayer = ServerSettingsLive;
-    const previewAutomationBrokerLayer = PreviewAutomationBrokerLive;
+    const previewAutomationBrokerLayer = PreviewAutomationBrokerLive.pipe(
+      Layer.provide(serverSettingsLayer),
+    );
     const previewMcpHttpServerLayer = PreviewMcpHttpServerLive.pipe(
       Layer.provide(previewAutomationBrokerLayer),
     );

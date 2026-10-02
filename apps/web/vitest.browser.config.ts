@@ -38,6 +38,7 @@ export default mergeConfig(
         "src/components/WebSocketConnectionSurface.browser.tsx",
         "src/components/settings/DisplayProfileSelector.browser.tsx",
         "src/components/settings/GithubAccountPanel.browser.tsx",
+        "src/components/settings/BrowserSettings.browser.tsx",
         "src/components/settings/SessionNotesSettings.browser.tsx",
         "src/components/settings/KeybindingEditor.browser.tsx",
         "src/components/settings/McpServersSettings.browser.tsx",

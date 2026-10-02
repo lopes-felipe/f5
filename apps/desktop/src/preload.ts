@@ -112,9 +112,47 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(UPDATE_STATE_CHANNEL, wrappedListener);
     };
   },
+  snapShot: {
+    permissions: () => ipcRenderer.invoke("snapshot:permissions"),
+    capture: () => ipcRenderer.invoke("snapshot:capture"),
+    configure: (shortcut, enabled) => ipcRenderer.invoke("snapshot:configure", shortcut, enabled),
+    openPermissions: () => ipcRenderer.invoke("snapshot:permissions-open"),
+    onCapture: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: Parameters<typeof listener>[0]) =>
+        listener(result);
+      ipcRenderer.on("snapshot:captured", handler);
+      return () => {
+        ipcRenderer.removeListener("snapshot:captured", handler);
+      };
+    },
+  },
   preview: {
     getPreviewConfig: () => ipcRenderer.invoke(PREVIEW_GET_CONFIG_CHANNEL),
-    createTab: (tabId) => ipcRenderer.invoke(PREVIEW_CREATE_TAB_CHANNEL, tabId),
+    createTab: (tabId, defaults) => ipcRenderer.invoke(PREVIEW_CREATE_TAB_CHANNEL, tabId, defaults),
+    profiles: {
+      list: () => ipcRenderer.invoke("browser-profiles:list"),
+      create: (name, persistent) => ipcRenderer.invoke("browser-profiles:create", name, persistent),
+      select: (id) => ipcRenderer.invoke("browser-profiles:select", id),
+      delete: (id) => ipcRenderer.invoke("browser-profiles:delete", id),
+    },
+    browserImport: {
+      openPermissions: () => ipcRenderer.invoke("browser-import:permissions"),
+      sources: () => ipcRenderer.invoke("browser-import:sources"),
+      start: (source, profile, name) =>
+        ipcRenderer.invoke("browser-import:start", source, profile, name),
+      cancel: (id) => ipcRenderer.invoke("browser-import:cancel", id),
+      status: (id) => ipcRenderer.invoke("browser-import:status", id),
+    },
+    setLinkOpenTarget: (target) => ipcRenderer.invoke("desktop-preview:link-target", target),
+    onOpenLink: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, url: string) => listener(url);
+      ipcRenderer.on("desktop-preview:open-link", handler);
+      return () => {
+        ipcRenderer.removeListener("desktop-preview:open-link", handler);
+      };
+    },
+    setMuted: (tab, muted) => ipcRenderer.invoke("desktop-preview:muted", tab, muted),
+    setZoom: (tab, factor) => ipcRenderer.invoke("desktop-preview:zoom", tab, factor),
     closeTab: (tabId) => ipcRenderer.invoke(PREVIEW_CLOSE_TAB_CHANNEL, tabId),
     registerWebview: (tabId, webContentsId) =>
       ipcRenderer.invoke(PREVIEW_REGISTER_WEBVIEW_CHANNEL, tabId, webContentsId),

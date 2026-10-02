@@ -1,3 +1,4 @@
+import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
@@ -7150,5 +7151,9 @@ export default function ChatView({
       </div>
     </FileNavigationProvider>
   );
-  return <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>;
+  return (
+    <OpenLinkThread.Provider value={threadId}>
+      <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>
+    </OpenLinkThread.Provider>
+  );
 }

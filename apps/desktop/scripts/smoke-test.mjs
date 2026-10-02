@@ -77,6 +77,28 @@ try {
     .getByRole("button", { name: "Add your first project", exact: true })
     .waitFor({ timeout: 60_000 });
   await page.screenshot({ path: join(directory, "welcome.png") });
+  await page.evaluate(async () => {
+    const bridge = window.desktopBridge.preview;
+    const original = await bridge.getPreviewConfig();
+    const persistent = await bridge.profiles.create("Smoke work", true);
+    const privateProfile = await bridge.profiles.create("Smoke incognito", false);
+    await bridge.profiles.select(privateProfile.id);
+    const config = await bridge.createTab("smoke-private-tab", { zoomFactor: 1.25, muted: true });
+    if (config.partition.startsWith("persist:") || config.partition === original.partition)
+      throw new Error("Incognito isolation failed");
+    if (!config.preload.startsWith("file:")) throw new Error("Guest preload is missing");
+    let blocked = false;
+    try {
+      await bridge.profiles.delete(privateProfile.id);
+    } catch {
+      blocked = true;
+    }
+    if (!blocked) throw new Error("Active profile deletion was allowed");
+    await bridge.closeTab("smoke-private-tab");
+    await bridge.profiles.delete(privateProfile.id);
+    await bridge.profiles.delete(persistent.id);
+    await bridge.profiles.select("default");
+  });
   const backendOrigin = await page.evaluate(() => {
     const url = new URL(window.desktopBridge.getWsUrl());
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";

@@ -1,3 +1,4 @@
+import { browserAccessAllowed } from "./browserAccess";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -159,7 +160,9 @@ function responseErrorToPreviewError(
   }
 }
 
-export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
+export function makePreviewAutomationBroker(
+  authorize?: (threadId: ThreadId) => Effect.Effect<boolean>,
+): PreviewAutomationBrokerShape {
   const owners = new Map<string, LeasedOwner>();
   const pending = new Map<string, PendingRequest>();
   const sessionTargets = new Map<string, { tabId: PreviewTabId; connectionId: string }>();
@@ -287,139 +290,150 @@ export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
       }),
 
     invoke: <A = unknown>(input: PreviewAutomationInvokeInput) =>
-      Effect.tryPromise({
-        try: () =>
-          new Promise<A>((resolve, reject) => {
-            sweepExpiredOwners();
-            const capability = requiredCapability(input.operation);
-            const candidates = Array.from(owners.values())
-              .filter(
-                (leased) =>
-                  leased.owner.threadId === input.threadId &&
-                  leased.owner.supportsAutomation &&
-                  (leased.owner.capabilities ?? ["automation"]).includes(capability),
-              )
-              .sort(
-                (left, right) =>
-                  Number(right.owner.visible) - Number(left.owner.visible) ||
-                  right.owner.focusedAt.localeCompare(left.owner.focusedAt),
-              );
-            const leased = candidates[0];
-            if (!leased) {
-              reject(
-                new PreviewAutomationNoFocusedOwnerError({
-                  message: "No desktop browser preview is available for this thread.",
-                }),
-              );
-              return;
-            }
+      Effect.gen(function* () {
+        if (authorize && !(yield* authorize(input.threadId)))
+          return yield* new PreviewAutomationUnavailableError({
+            message: "Agent browser access is disabled for this project.",
+          });
+        return yield* Effect.tryPromise({
+          try: () =>
+            new Promise<A>((resolve, reject) => {
+              sweepExpiredOwners();
+              const capability = requiredCapability(input.operation);
+              const candidates = Array.from(owners.values())
+                .filter(
+                  (leased) =>
+                    leased.owner.threadId === input.threadId &&
+                    leased.owner.supportsAutomation &&
+                    (leased.owner.capabilities ?? ["automation"]).includes(capability),
+                )
+                .sort(
+                  (left, right) =>
+                    Number(right.owner.visible) - Number(left.owner.visible) ||
+                    right.owner.focusedAt.localeCompare(left.owner.focusedAt),
+                );
+              const leased = candidates[0];
+              if (!leased) {
+                reject(
+                  new PreviewAutomationNoFocusedOwnerError({
+                    message: "No desktop browser preview is available for this thread.",
+                  }),
+                );
+                return;
+              }
 
-            const { owner, client } = leased;
-            const sessionKey = input.automationSessionId
-              ? `${input.threadId}\u0000${input.automationSessionId}`
-              : null;
-            const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
-            const mappedTabId =
-              mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
-            const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
-            if (sessionKey && input.tabId) {
-              sessionTargets.set(sessionKey, {
-                tabId: input.tabId,
+              const { owner, client } = leased;
+              const sessionKey = input.automationSessionId
+                ? `${input.threadId}\u0000${input.automationSessionId}`
+                : null;
+              const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
+              const mappedTabId =
+                mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
+              const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
+              if (sessionKey && input.tabId) {
+                sessionTargets.set(sessionKey, {
+                  tabId: input.tabId,
+                  connectionId: leased.connectionId,
+                });
+              }
+
+              if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
+                reject(
+                  new PreviewAutomationTabNotFoundError({
+                    message: "The browser preview does not have an active tab.",
+                  }),
+                );
+                return;
+              }
+
+              const timeoutMs = input.timeoutMs ?? 15_000;
+              const brokerTimeoutMs = timeoutMs + 2_000;
+              const requestId = `preview-${randomUUID()}`;
+              const timeout = setTimeout(() => {
+                const entry = removePending(requestId);
+                entry?.reject(
+                  new PreviewAutomationTimeoutError({
+                    message: `Preview automation response timed out after ${brokerTimeoutMs}ms.`,
+                  }),
+                );
+              }, brokerTimeoutMs);
+
+              pending.set(requestId, {
+                clientId: client.clientId,
+                rendererClientId: leased.rendererClientId,
                 connectionId: leased.connectionId,
+                timeout,
+                resolve: (value) => {
+                  if (
+                    sessionKey &&
+                    value &&
+                    typeof value === "object" &&
+                    "tabId" in value &&
+                    typeof value.tabId === "string" &&
+                    value.tabId.length > 0
+                  ) {
+                    sessionTargets.set(sessionKey, {
+                      tabId: value.tabId as PreviewTabId,
+                      connectionId: leased.connectionId,
+                    });
+                  }
+                  resolve(value as A);
+                },
+                reject,
               });
-            }
 
-            if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
-              reject(
-                new PreviewAutomationTabNotFoundError({
-                  message: "The browser preview does not have an active tab.",
+              void Effect.runPromise(
+                client.send({
+                  requestId,
+                  clientId: leased.rendererClientId,
+                  connectionId: leased.connectionId,
+                  threadId: input.threadId,
+                  ...(targetTabId ? { tabId: targetTabId } : {}),
+                  operation: input.operation,
+                  input: input.input,
+                  timeoutMs,
                 }),
+              ).then(
+                (delivered) => {
+                  if (delivered) return;
+                  const entry = removePending(requestId);
+                  entry?.reject(
+                    new PreviewAutomationUnavailableError({
+                      message: "The preview automation client is no longer connected.",
+                    }),
+                  );
+                },
+                (cause) => {
+                  const entry = removePending(requestId);
+                  entry?.reject(
+                    new PreviewAutomationUnavailableError({
+                      message:
+                        cause instanceof Error
+                          ? cause.message
+                          : "Failed to send preview automation request.",
+                    }),
+                  );
+                },
               );
-              return;
-            }
-
-            const timeoutMs = input.timeoutMs ?? 15_000;
-            const brokerTimeoutMs = timeoutMs + 2_000;
-            const requestId = `preview-${randomUUID()}`;
-            const timeout = setTimeout(() => {
-              const entry = removePending(requestId);
-              entry?.reject(
-                new PreviewAutomationTimeoutError({
-                  message: `Preview automation response timed out after ${brokerTimeoutMs}ms.`,
+            }),
+          catch: (cause) =>
+            isPreviewAutomationError(cause)
+              ? cause
+              : new PreviewAutomationExecutionError({
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  detail: cause,
                 }),
-              );
-            }, brokerTimeoutMs);
-
-            pending.set(requestId, {
-              clientId: client.clientId,
-              rendererClientId: leased.rendererClientId,
-              connectionId: leased.connectionId,
-              timeout,
-              resolve: (value) => {
-                if (
-                  sessionKey &&
-                  value &&
-                  typeof value === "object" &&
-                  "tabId" in value &&
-                  typeof value.tabId === "string" &&
-                  value.tabId.length > 0
-                ) {
-                  sessionTargets.set(sessionKey, {
-                    tabId: value.tabId as PreviewTabId,
-                    connectionId: leased.connectionId,
-                  });
-                }
-                resolve(value as A);
-              },
-              reject,
-            });
-
-            void Effect.runPromise(
-              client.send({
-                requestId,
-                clientId: leased.rendererClientId,
-                connectionId: leased.connectionId,
-                threadId: input.threadId,
-                ...(targetTabId ? { tabId: targetTabId } : {}),
-                operation: input.operation,
-                input: input.input,
-                timeoutMs,
-              }),
-            ).then(
-              (delivered) => {
-                if (delivered) return;
-                const entry = removePending(requestId);
-                entry?.reject(
-                  new PreviewAutomationUnavailableError({
-                    message: "The preview automation client is no longer connected.",
-                  }),
-                );
-              },
-              (cause) => {
-                const entry = removePending(requestId);
-                entry?.reject(
-                  new PreviewAutomationUnavailableError({
-                    message:
-                      cause instanceof Error
-                        ? cause.message
-                        : "Failed to send preview automation request.",
-                  }),
-                );
-              },
-            );
-          }),
-        catch: (cause) =>
-          isPreviewAutomationError(cause)
-            ? cause
-            : new PreviewAutomationExecutionError({
-                message: cause instanceof Error ? cause.message : String(cause),
-                detail: cause,
-              }),
-      }) as Effect.Effect<A, PreviewAutomationBrokerError>,
+        }) as Effect.Effect<A, PreviewAutomationBrokerError>;
+      }),
   };
 }
 
 export const PreviewAutomationBrokerLive = Layer.effect(
   PreviewAutomationBroker,
-  Effect.sync(makePreviewAutomationBroker),
+  Effect.gen(function* () {
+    const services = yield* Effect.services<never>();
+    return makePreviewAutomationBroker((thread) =>
+      browserAccessAllowed(thread).pipe(Effect.provide(services)),
+    );
+  }),
 );

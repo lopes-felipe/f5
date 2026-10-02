@@ -1,10 +1,18 @@
+import { CaptureShortcut } from "./snapShot/CaptureShortcut";
+import { captureBoundedPage } from "./preview/capture";
+import { pathToFileURL } from "node:url";
+import { installGuestControls } from "./preview/guestControls";
+import { BrowserProfiles } from "./preview/BrowserProfiles";
+import { BrowserImport } from "./browserImport/BrowserImport";
+import { registerPreviewWindowOpen } from "./preview/previewWindowOpen";
+import { captureMacWindow } from "./snapShot/MacSnapShot";
+import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { installDesktopAttention } from "./desktopAttention";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
   profilePartition,
-  profilePreviewPartition,
   profileWindowArguments,
   singleProfileOpen,
   ensureProfileConnection,
@@ -23,6 +31,8 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  globalShortcut,
+  systemPreferences,
   Menu,
   nativeImage,
   nativeTheme,
@@ -230,6 +240,30 @@ const previewRuntime = new PreviewRuntime({
   emitRecordingFrame: emitPreviewRecordingFrame,
   onTabStateChanged: (tabId) => emitPreviewState(tabId),
 });
+const previewLinkTargets = new Map<number, "system" | "preview">();
+const browserStores = new Map<string, { profiles: BrowserProfiles; imports: BrowserImport }>();
+function browserStore(ownerId: number) {
+  const runtime = runtimeForRenderer(ownerId);
+  let store = browserStores.get(runtime.profile.id);
+  if (!store) {
+    const profiles = new BrowserProfiles(
+      profileStateDir(STATE_DIR, runtime.profile),
+      runtime.profile.id,
+      async (partition) => {
+        const session = electronSession.fromPartition(partition);
+        await session.clearStorageData();
+        await session.clearCache();
+        await session.cookies.flushStore();
+      },
+    );
+    store = {
+      profiles,
+      imports: new BrowserImport(profiles, (partition) => electronSession.fromPartition(partition)),
+    };
+    browserStores.set(runtime.profile.id, store);
+  }
+  return store;
+}
 const previewTabs = previewRuntime.tabs;
 interface PreviewRecordingOwnership {
   readonly ownerWebContentsId: number;
@@ -388,7 +422,12 @@ function isPreviewGuestWebContents(guest: Electron.WebContents): boolean {
   const runtime = profileId ? backends.get(profileId) : undefined;
   if (
     !runtime ||
-    guest.session !== electronSession.fromPartition(profilePreviewPartition(runtime.profile))
+    ![...previewRuntime.tabs.values()].some(
+      (entry) =>
+        entry.ownerWebContentsId === hostWebContents.id &&
+        entry.partition &&
+        guest.session === electronSession.fromPartition(entry.partition),
+    )
   )
     return false;
   const owner = BrowserWindow.fromWebContents(hostWebContents);
@@ -458,13 +497,54 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   entry.removeListeners = [];
   entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
-  entry.zoomFactor = guest.getZoomFactor();
-  guest.setWindowOpenHandler(({ url }) => {
-    const externalUrl = getSafeExternalUrl(url);
-    if (externalUrl) {
-      void shell.openExternal(externalUrl);
-    }
-    return { action: "deny" };
+  // Preserve the new-tab zoom default rather than inheriting an unrelated guest zoom.
+
+  const owner = guest.hostWebContents ? BrowserWindow.fromWebContents(guest.hostWebContents) : null;
+  if (owner)
+    registerPreviewWindowOpen(guest, owner, (url) => {
+      const id = owner.webContents.id;
+      if (previewLinkTargets.get(id) === "preview")
+        owner.webContents.send("desktop-preview:open-link", url);
+      else void shell.openExternal(url);
+    });
+  guest.setZoomFactor(entry.zoomFactor);
+  guest.setAudioMuted(entry.muted ?? false);
+  installGuestControls(guest);
+  guest.on("context-menu", (_event, params) => {
+    const items: MenuItemConstructorOptions[] = [
+      { role: "cut", enabled: params.editFlags.canCut },
+      { role: "copy", enabled: params.editFlags.canCopy },
+      { role: "paste", enabled: params.editFlags.canPaste },
+      { role: "selectAll" },
+      { type: "separator" },
+      {
+        label: "Back",
+        enabled: guest.navigationHistory.canGoBack(),
+        click: () => guest.navigationHistory.goBack(),
+      },
+      {
+        label: "Forward",
+        enabled: guest.navigationHistory.canGoForward(),
+        click: () => guest.navigationHistory.goForward(),
+      },
+      { label: "Reload", click: () => guest.reload() },
+      {
+        label: "Zoom in",
+        click: () => guest.setZoomFactor(Math.min(3, guest.getZoomFactor() + 0.1)),
+      },
+      {
+        label: "Zoom out",
+        click: () => guest.setZoomFactor(Math.max(0.25, guest.getZoomFactor() - 0.1)),
+      },
+      { label: "Reset zoom", click: () => guest.setZoomFactor(1) },
+      {
+        label: "Mute",
+        type: "checkbox",
+        checked: guest.isAudioMuted(),
+        click: (item) => guest.setAudioMuted(item.checked),
+      },
+    ];
+    Menu.buildFromTemplate(items).popup(owner ? { window: owner } : {});
   });
 
   const onState = () => emitPreviewState(tabId);
@@ -800,7 +880,7 @@ async function capturePreviewAnnotationScreenshot(
   guest: Electron.WebContents,
   rect: PreviewAnnotationRect,
 ): Promise<PreviewAnnotationPayload["screenshot"]> {
-  const image = await guest.capturePage(rect);
+  const image = await captureBoundedPage(guest, rect);
   const size = image.getSize();
   return {
     dataUrl: image.toDataURL(),
@@ -1049,7 +1129,7 @@ async function previewAutomationSnapshot(
         viewport,
       )
     : null;
-  const image = await guest.capturePage(rect ?? undefined);
+  const image = await captureBoundedPage(guest, rect ?? undefined);
   const size = image.getSize();
   const png = image.toPNG();
   return {
@@ -2610,6 +2690,144 @@ function registerIpcHandlers(): void {
     } satisfies DesktopUpdateActionResult;
   });
 
+  const previewHandle = (channel: string, run: (owner: number, ...args: unknown[]) => unknown) => {
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel, (event, ...args) => {
+      runtimeForRenderer(event.sender.id);
+      return run(event.sender.id, ...args);
+    });
+  };
+  const stringArg = (value: unknown) => {
+    if (typeof value !== "string" || value.length > 200 || !value.trim())
+      throw new Error("Invalid browser argument.");
+    return value;
+  };
+  previewHandle("browser-profiles:list", (id) => browserStore(id).profiles.list());
+  previewHandle("browser-profiles:create", (id, name, persistent) => {
+    if (typeof persistent !== "boolean") throw new Error("Invalid profile mode.");
+    return browserStore(id).profiles.create(stringArg(name), persistent);
+  });
+  previewHandle("browser-profiles:select", (id, profile) =>
+    browserStore(id).profiles.select(stringArg(profile)),
+  );
+  previewHandle("browser-profiles:delete", async (id, profile) => {
+    const profileId = stringArg(profile);
+    const partition = (await browserStore(id).profiles.config(profileId)).partition;
+    if ([...previewTabs.values()].some((tab) => tab.partition === partition))
+      throw new Error("Close this profile's tabs before deleting it.");
+    return browserStore(id).profiles.delete(profileId);
+  });
+  previewHandle("browser-import:permissions", () =>
+    process.platform === "darwin"
+      ? shell.openExternal(
+          "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        )
+      : undefined,
+  );
+  previewHandle("browser-import:sources", (id) => browserStore(id).imports.sources());
+  previewHandle("browser-import:start", (id, source, profile, name) =>
+    browserStore(id).imports.start(stringArg(source), stringArg(profile), stringArg(name)),
+  );
+  previewHandle("browser-import:cancel", (id, job) =>
+    browserStore(id).imports.cancel(stringArg(job)),
+  );
+  previewHandle("browser-import:status", (id, job) =>
+    browserStore(id).imports.status(stringArg(job)),
+  );
+  previewHandle("desktop-preview:link-target", (id, target) => {
+    if (target !== "system" && target !== "preview") throw new Error("Invalid link target.");
+    previewLinkTargets.set(id, target);
+  });
+  previewHandle("desktop-preview:muted", (id, tab, muted) => {
+    if (typeof muted !== "boolean") throw new Error("Invalid mute flag.");
+    getPreviewWebContents(scopedPreviewTabId(id, stringArg(tab)))?.setAudioMuted(muted);
+  });
+  previewHandle("desktop-preview:zoom", (id, tab, factor) => {
+    if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.25 || factor > 3)
+      throw new Error("Invalid zoom.");
+    getPreviewWebContents(scopedPreviewTabId(id, stringArg(tab)))?.setZoomFactor(factor);
+  });
+  ipcMain.on("preview:mouse-navigate", (event, direction) => {
+    const entry = [...previewTabs.values()].find(
+      (entry) => entry.webContentsId === event.sender.id,
+    );
+    if (!entry || !isPreviewGuestWebContents(event.sender)) return;
+    const history = event.sender.navigationHistory;
+    if (direction === "back" && history.canGoBack()) history.goBack();
+    if (direction === "forward" && history.canGoForward()) history.goForward();
+  });
+  let capturePending = false;
+  const capture = async (owner: number) => {
+    if (capturePending) throw new Error("A SnapShot is already being captured.");
+    if (process.platform !== "darwin") throw new Error("SnapShot is currently available on macOS.");
+    if (
+      systemPreferences.getMediaAccessStatus("screen") !== "granted" ||
+      !systemPreferences.isTrustedAccessibilityClient(false)
+    )
+      throw new Error(
+        "Grant Screen Recording and Accessibility permissions to F5 in System Settings.",
+      );
+    capturePending = true;
+    try {
+      return await captureMacWindow({
+        pid: process.pid,
+        image: (bytes) => nativeImage.createFromBuffer(bytes),
+        focus: () => {
+          const window = BrowserWindow.fromWebContents(electronWebContents.fromId(owner)!);
+          window?.show();
+          window?.focus();
+        },
+      });
+    } finally {
+      capturePending = false;
+    }
+  };
+  previewHandle("snapshot:permissions", () => ({
+    supported: process.platform === "darwin",
+    screen:
+      process.platform === "darwin" &&
+      systemPreferences.getMediaAccessStatus("screen") === "granted",
+    accessibility:
+      process.platform === "darwin" && systemPreferences.isTrustedAccessibilityClient(false),
+  }));
+  previewHandle("snapshot:capture", (id) => capture(id));
+  previewHandle("snapshot:permissions-open", () =>
+    shell.openExternal(
+      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+    ),
+  );
+  const captureShortcut = new CaptureShortcut(
+    (key, run) => globalShortcut.register(key, run),
+    (key) => globalShortcut.unregister(key),
+  );
+  const captureShortcutOwners = new Set<number>();
+  previewHandle("snapshot:configure", (id, shortcut, enabled) => {
+    if (typeof enabled !== "boolean") throw new Error("Invalid shortcut flag.");
+    const key = stringArg(shortcut);
+    if (process.platform !== "darwin") throw new Error("SnapShot is currently available on macOS.");
+    captureShortcut.configure(id, key, enabled, () => {
+      void capture(id)
+        .then((result) => {
+          const owner = electronWebContents.fromId(id);
+          if (owner && !owner.isDestroyed()) owner.send("snapshot:captured", result);
+        })
+        .catch(() => {
+          void dialog.showMessageBox({
+            type: "warning",
+            message: "SnapShot capture failed.",
+            detail:
+              "Check Screen Recording and Accessibility permissions in F5's Integrations settings, then retry.",
+          });
+        });
+    });
+    if (enabled && !captureShortcutOwners.has(id)) {
+      captureShortcutOwners.add(id);
+      electronWebContents.fromId(id)?.once("destroyed", () => {
+        captureShortcutOwners.delete(id);
+        captureShortcut.release(id);
+      });
+    }
+  });
   registerPreviewIpc(ipcMain, (ownerWebContentsId) => {
     const scopeTabId = (tabId: string) => scopedPreviewTabId(ownerWebContentsId, tabId);
     const requireOwnedRecording = (recordingId: string) => {
@@ -2618,15 +2836,31 @@ function registerIpcHandlers(): void {
       }
     };
     return {
-      getConfig: () => ({
-        partition: profilePreviewPartition(runtimeForRenderer(ownerWebContentsId).profile),
+      getConfig: async () => ({
+        partition: (await browserStore(ownerWebContentsId).profiles.config()).partition,
+        preload: pathToFileURL(Path.join(__dirname, "preview", "guestPreload.js")).href,
         webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
       }),
-      createTab: (tabId) => {
+      createTab: async (tabId, defaults) => {
         const entry = ensurePreviewTabEntry(scopeTabId(tabId));
-        if (!entry) return false;
+        if (!entry) throw new Error("Invalid tab.");
+        const config = await browserStore(ownerWebContentsId).profiles.config(
+          entry.browserProfileId,
+        );
         entry.ownerWebContentsId = ownerWebContentsId;
-        return true;
+        entry.partition = config.partition;
+        entry.browserProfileId = config.id;
+        if (defaults && !entry.defaultsApplied) {
+          entry.defaultsApplied = true;
+          entry.zoomFactor = defaults.zoomFactor;
+          entry.muted = defaults.muted;
+        }
+        return {
+          partition: config.partition,
+          profileId: config.id,
+          preload: pathToFileURL(Path.join(__dirname, "preview", "guestPreload.js")).href,
+          webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
+        };
       },
       closeTab: (tabId) => closePreviewTab(scopeTabId(tabId)),
       registerWebview: (tabId, webContentsId) => {
@@ -2634,6 +2868,10 @@ function registerIpcHandlers(): void {
         const entry = ensurePreviewTabEntry(scopedTabId);
         if (!entry) return false;
         entry.ownerWebContentsId = ownerWebContentsId;
+        if (!entry.partition) return false;
+        const guest = electronWebContents.fromId(webContentsId);
+        if (!guest || guest.session !== electronSession.fromPartition(entry.partition))
+          return false;
         return registerPreviewWebContents(scopedTabId, webContentsId);
       },
       navigate: async (tabId, rawUrl) => {
@@ -2768,15 +3006,12 @@ function createWindow(
   );
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
-    if (partition !== profilePreviewPartition(runtime.profile)) {
+    if (!browserStores.get(runtime.profile.id)?.profiles.ownsPartition(partition)) {
       event.preventDefault();
       return;
     }
     const src = typeof params.src === "string" ? params.src : "";
-    if (
-      params.allowpopups === "true" ||
-      (src.length > 0 && src !== "about:blank" && !getSafePreviewUrl(src))
-    ) {
+    if (src.length > 0 && src !== "about:blank" && !getSafePreviewUrl(src)) {
       event.preventDefault();
       return;
     }
@@ -2784,7 +3019,7 @@ function createWindow(
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
     webPreferences.contextIsolation = true;
-    delete webPreferences.preload;
+    webPreferences.preload = Path.join(__dirname, "preview", "guestPreload.js");
   });
 
   window.webContents.on("context-menu", (event, params) => {
@@ -2983,6 +3218,7 @@ async function cleanupBeforeExit(): Promise<void> {
 }
 
 app.on("web-contents-created", (_event, contents) => {
+  if (contents.getType() === "webview") contents.setWindowOpenHandler(() => ({ action: "deny" }));
   // Electron cancels quit on a renderer veto. Keep drafts and backends usable.
   contents.on("will-prevent-unload", () => {
     if (isQuitting) cancelQuit();

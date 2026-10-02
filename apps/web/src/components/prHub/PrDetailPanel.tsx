@@ -1,3 +1,4 @@
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { prAttentionText } from "@t3tools/shared/prHub";
 import { waitingLabel } from "./prHubPresentation";
@@ -281,7 +282,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
                         {reason.evidence.length ? (
                           <span className="flex flex-wrap gap-2">
                             {reason.evidence.slice(0, 5).map((evidence, index) => (
-                              <a
+                              <OpenLinkAnchor
                                 key={evidence.id}
                                 href={evidence.url}
                                 target="_blank"
@@ -289,7 +290,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
                                 className="underline"
                               >
                                 Evidence {index + 1}
-                              </a>
+                              </OpenLinkAnchor>
                             ))}
                           </span>
                         ) : null}

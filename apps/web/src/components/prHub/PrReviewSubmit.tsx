@@ -1,3 +1,4 @@
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import { PrOperationRecovery } from "./PrOperationRecovery";
 import { useState } from "react";
 import * as Schema from "effect/Schema";
@@ -97,9 +98,9 @@ export function PrReviewSubmit({
           Retry status check
         </Button>
       ) : null}
-      <a href={prUrl} target="_blank" rel="noreferrer" className="text-xs underline">
+      <OpenLinkAnchor href={prUrl} target="_blank" rel="noreferrer" className="text-xs underline">
         Open PR on GitHub
-      </a>
+      </OpenLinkAnchor>
       {active ? (
         <>
           <p className="text-sm font-medium">
