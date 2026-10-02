@@ -1,3 +1,4 @@
+import { updateBootstrapOutcome } from "../distribution/activation";
 import {
   ATTACHMENT_MAX_COUNT,
   ATTACHMENT_MAX_IMAGE_BYTES,
@@ -31,6 +32,7 @@ const sendLimits = {
 
 export const SERVER_BOOTSTRAP: ServerBootstrap = {
   protocolVersion: F5_PROTOCOL_VERSION,
+  ...(updateBootstrapOutcome() ? { update: updateBootstrapOutcome() } : {}),
   capabilities: [
     "image-attachments",
     "custom-model-metadata",

@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -86,7 +87,7 @@ export function profileSessionGitConfigPairs(input: {
   const toShellPath = (value: string) =>
     platform === "win32" ? value.replaceAll("\\", "/") : value;
   const script = toShellPath(Path.join(input.launcherDir, "gh.cjs"));
-  const node = toShellPath(input.execPath ?? process.execPath);
+  const node = toShellPath(input.execPath ?? javascriptRuntimeExecutable());
   const helper = `!ELECTRON_RUN_AS_NODE=1 ${shellQuote(node)} ${shellQuote(script)} auth git-credential`;
   return [
     ["include.path", profileGitAuthorConfigPath(input.stateDir)],

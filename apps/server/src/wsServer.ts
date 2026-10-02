@@ -1,3 +1,4 @@
+import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
 import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
@@ -2072,6 +2073,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const threadFileChangeQuery = yield* ThreadFileChangeQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
   const { openInEditor, revealInFileManager } = yield* Open;
+  const orchestrationPrepared = yield* Deferred.make<void, ServerLifecycleError>();
   const orchestrationRuntime = yield* Deferred.make<
     OrchestrationRuntimeServices,
     ServerLifecycleError
@@ -2331,6 +2333,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       // Before the queue dispatcher starts, so a setup that was running at
       // shutdown is already recorded as failed when its queue is examined.
+      yield* Deferred.succeed(orchestrationPrepared, undefined);
+      yield* Effect.tryPromise(waitForActivation).pipe(
+        Effect.mapError(
+          (cause) => new ServerLifecycleError({ operation: "updateActivation", cause }),
+        ),
+      );
       yield* Scope.provide(worktreeSetup.startup, subscriptionsScope);
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
@@ -2368,6 +2376,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   ).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
+        yield* Deferred.fail(
+          orchestrationPrepared,
+          new ServerLifecycleError({ operation: "orchestrationPrepare", cause }),
+        );
         yield* Deferred.fail(
           orchestrationRuntime,
           new ServerLifecycleError({
@@ -2414,7 +2426,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   let welcomeBootstrapProjectId: ProjectId | undefined;
   let welcomeBootstrapThreadId: ThreadId | undefined;
 
-  if (autoBootstrapProjectFromCwd) {
+  // A trial resumes an existing profile; it must not bootstrap a project before activation.
+  if (autoBootstrapProjectFromCwd && process.env.F5_UPDATE_TRIAL !== "1") {
     yield* Effect.gen(function* () {
       const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForBootstrap;
       const { snapshot } = yield* projectionReadModelQuery.getStartupSnapshot();
@@ -2554,6 +2567,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribePreviewEvents()));
   yield* readiness.markTerminalSubscriptionsReady;
 
+  if (process.env.F5_UPDATE_TRIAL === "1") yield* Deferred.await(orchestrationPrepared);
+  yield* Effect.tryPromise(() => awaitActivation()).pipe(
+    Effect.mapError((cause) => new ServerLifecycleError({ operation: "updateActivation", cause })),
+  );
+  if (process.env.F5_UPDATE_TRIAL === "1") yield* awaitOrchestrationRuntimeForBootstrap;
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
     Effect.tapError((cause) => {
       if (!serverConfig.profilesRoot) return Effect.void;
@@ -2572,6 +2590,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   yield* readiness.markHttpListening;
   yield* prHub.startMonitoring;
+  yield* Effect.sync(reportActive);
 
   yield* Effect.addFinalizer(() =>
     Effect.all([closeAllClients, closeWebSocketServer.pipe(Effect.ignoreCause({ log: true }))]),

@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import { prepareGithubShellStartup } from "./githubShellStartup";
 import {
   GITHUB_DISCONNECTED_PLACEHOLDER_TOKEN,
@@ -80,12 +81,12 @@ process.exit(result.status ?? 1);
   const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
   await FS.writeFile(
     Path.join(directory, "gh"),
-    `#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`,
+    `#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexec ${quote(javascriptRuntimeExecutable())} ${quote(script)} "$@"\n`,
     { mode: 0o700 },
   );
   await FS.writeFile(
     Path.join(directory, "gh.cmd"),
-    `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${process.execPath}" "${script}" %*\r\n`,
+    `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${javascriptRuntimeExecutable()}" "${script}" %*\r\n`,
     { mode: 0o700 },
   );
 }

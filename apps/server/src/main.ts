@@ -339,6 +339,15 @@ const ServerConfigLive = (input: CliInput) => {
         acpHardeningEnabled: env.acpHardeningEnabled,
       } satisfies ServerConfigShape;
 
+      if (
+        process.env.F5_LAUNCHER_CHILD === "1" &&
+        process.env.F5_LAUNCHER_DATABASE !== path.resolve(config.dbPath)
+      ) {
+        return yield* new StartupError({
+          message:
+            "Launcher profile database differs from the server database; refusing unsafe update ownership.",
+        });
+      }
       const legacyT3StateDir = legacyT3UserdataStateDir();
       if (path.resolve(config.stateDir) === path.resolve(legacyT3StateDir)) {
         return yield* new StartupError({

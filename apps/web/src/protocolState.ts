@@ -7,7 +7,12 @@ import {
 } from "@t3tools/contracts";
 
 let bootstrap: ServerBootstrap | null = null;
-let state = { upgradeRequired: false, activeUploads: 0, ready: false };
+let state = {
+  upgradeRequired: false,
+  activeUploads: 0,
+  ready: false,
+  update: null as ServerBootstrap["update"] | null,
+};
 const listeners = new Set<() => void>();
 export const subscribeProtocolState = (listener: () => void) => {
   listeners.add(listener);
@@ -28,7 +33,7 @@ export function requireProtocolUpgrade(): void {
 }
 export function setServerBootstrap(value: ServerBootstrap): void {
   bootstrap = value;
-  state = { ...state, ready: true };
+  state = { ...state, ready: true, update: value.update ?? null };
   emit();
 }
 export function getServerSendLimits() {
@@ -37,7 +42,12 @@ export function getServerSendLimits() {
 }
 export function resetProtocolStateForTests(): void {
   bootstrap = null;
-  state = { upgradeRequired: false, activeUploads: 0, ready: false };
+  state = {
+    upgradeRequired: false,
+    activeUploads: 0,
+    ready: false,
+    update: null as ServerBootstrap["update"] | null,
+  };
   emit();
 }
 
