@@ -483,6 +483,10 @@ export class CodexControlClient extends EventEmitter<{
     return await this.sendRequest("account/usage/read", undefined);
   }
 
+  async consumeResetCredit(idempotencyKey: string): Promise<unknown> {
+    return this.sendRequest("account/rateLimitResetCredit/consume", { idempotencyKey });
+  }
+
   async readAccountRateLimits(): Promise<unknown> {
     return await this.sendRequest("account/rateLimits/read", undefined);
   }

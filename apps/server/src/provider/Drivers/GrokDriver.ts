@@ -1,3 +1,4 @@
+import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { discoverGrokSkills, discoverGlobalGrokSkills } from "./GrokSkills.ts";
 /**
  * GrokDriver — `ProviderDriver` for the xAI Grok CLI runtime.
@@ -95,6 +96,13 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });
+      const accountUsage = yield* makeProviderLimits({
+        provider: "grok",
+        instanceId,
+        displayName: displayName || "Grok",
+        enabled,
+        environment: processEnv,
+      });
       const textGeneration = yield* makeGrokTextGeneration(effectiveConfig, processEnv);
 
       const checkProvider = checkGrokProviderStatus(effectiveConfig, processEnv).pipe(
@@ -137,6 +145,7 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv> = {
         enabled,
         snapshot,
         adapter,
+        accountUsage,
         textGeneration,
       } satisfies ProviderInstance;
     }),

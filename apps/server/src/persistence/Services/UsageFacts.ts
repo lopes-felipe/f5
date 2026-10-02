@@ -14,6 +14,8 @@ export interface HourlyUsageFactSummary {
   readonly hourStartedAt: IsoDateTime;
   readonly provider: string;
   readonly model: string | null;
+  readonly estimationEligibleTurnCount?: number;
+  readonly estimatedCostUsd?: number;
   readonly turnCount: number;
   readonly reportedTokenTurnCount: number;
   readonly inputTokens: number;

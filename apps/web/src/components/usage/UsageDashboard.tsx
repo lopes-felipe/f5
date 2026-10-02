@@ -1,3 +1,5 @@
+import { UsagePriceEditor } from "./UsagePriceEditor";
+import { ResetCreditButton } from "./ResetCreditButton";
 import type {
   UsageAccounts,
   AccountUsageErrorCode,
@@ -230,7 +232,7 @@ function CodexAccountUsageSection(props: {
 }
 
 function costLabel(metrics: UsageMetrics): string {
-  if (metrics.providerReportedCostUsd === null) return "Unreported";
+  if (metrics.providerReportedCostUsd === null && !metrics.pricedTurnCount) return "Unpriced";
 
   const formatted = new Intl.NumberFormat(undefined, {
     style: "currency",
@@ -240,9 +242,9 @@ function costLabel(metrics: UsageMetrics): string {
     minimumFractionDigits: 2,
 
     maximumFractionDigits: 4,
-  }).format(metrics.providerReportedCostUsd);
+  }).format((metrics.providerReportedCostUsd ?? 0) + (metrics.estimatedCostUsd ?? 0));
 
-  return metrics.unpricedTurnCount > 0 ? `${formatted} + unreported` : formatted;
+  return `${formatted}${metrics.estimatedCostUsd !== undefined && metrics.estimatedCostUsd !== null ? " (includes estimates)" : ""}${metrics.unpricedTurnCount > 0 ? " + unpriced" : ""}`;
 }
 
 function providerLabel(provider: UsageSummary["byProvider"][number]["provider"]): string {
@@ -361,6 +363,39 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
                         ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
                         : ""}
                     </p>
+                  )}
+                {section.kind === "provider-limits" && section.snapshot && (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {section.snapshot.data.windows.map((window) => (
+                      <QuotaMeter
+                        key={window.id}
+                        label={window.label}
+                        utilization={window.usedPercent}
+                        resetsAt={window.resetsAt}
+                        accessibleName={`${account.displayName} · ${window.label}`}
+                      />
+                    ))}
+                  </div>
+                )}
+                {section.kind === "codex-limits" &&
+                  section.snapshot?.data.resetCredits &&
+                  account.providerInstanceId && (
+                    <ResetCreditButton
+                      instanceId={account.providerInstanceId}
+                      accountName={account.displayName}
+                      count={section.snapshot.data.resetCredits.availableCount}
+                      windowName={
+                        section.snapshot.data.rateLimits
+                          .filter((limit) => limit.id === "codex")
+                          .flatMap((limit) => [limit.primary, limit.secondary])
+                          .flatMap((window) =>
+                            window && window.usedPercent >= 100
+                              ? [rateLimitWindowLabel(window, "main Codex allowance")]
+                              : [],
+                          )
+                          .join(" and ") || "the main Codex allowance"
+                      }
+                    />
                   )}
                 {section.kind === "claude-usage" && section.snapshot && (
                   <div className="space-y-3">
@@ -590,9 +625,9 @@ export function UsageDashboardView(props: {
           icon={RefreshCwIcon}
         />
         <MetricCard
-          label="Reported cost"
+          label="Cost"
           value={costLabel(summary.metrics)}
-          detail={`${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unreported`}
+          detail={`${summary.metrics.pricedTurnCount} priced · ${summary.metrics.unpricedTurnCount} unpriced`}
           icon={CoinsIcon}
         />
       </div>
@@ -623,7 +658,7 @@ export function UsageDashboardView(props: {
                   <th className="px-4 py-2 font-medium">Thread model</th>
                   <th className="px-4 py-2 text-right font-medium">Turns</th>
                   <th className="px-4 py-2 text-right font-medium">Tokens</th>
-                  <th className="px-4 py-2 text-right font-medium">Reported cost</th>
+                  <th className="px-4 py-2 text-right font-medium">Cost</th>
                 </tr>
               </thead>
               <tbody>
@@ -711,7 +746,13 @@ export function UsageDashboardView(props: {
   );
 }
 
-export function UsageDashboard() {
+export function UsageDashboard({
+  tab = "activity",
+  onTabChange,
+}: {
+  tab?: "activity" | "limits";
+  onTabChange?: (tab: "activity" | "limits") => void;
+}) {
   const [range, setRange] = useState<UsageRange>("7d");
 
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", []);
@@ -758,21 +799,7 @@ export function UsageDashboard() {
         await ensureNativeApi().usage.getAccounts({ refresh: "force" }),
       );
 
-      if (
-        !accountJobsPending(accounts) &&
-        accounts.some((account) => account.enabled) &&
-        accounts.every(
-          (account) =>
-            JSON.stringify(account.sections) ===
-            JSON.stringify(
-              accountsQuery.data?.find((prior) => prior.key === account.key)?.sections,
-            ),
-        )
-      ) {
-        setRefreshNotice(
-          "No new account refresh was scheduled. Refreshes have a 30-second minimum interval.",
-        );
-      }
+      setRefreshNotice("Account refresh requested.");
 
       queryClient.setQueryData(usageQueryKeys.accounts, accounts);
     } catch {
@@ -852,7 +879,37 @@ export function UsageDashboard() {
 
   return (
     <>
-      {history}
+      <div
+        className="mx-auto flex w-full max-w-6xl gap-2 px-4 pt-6"
+        role="tablist"
+        aria-label="Usage views"
+      >
+        {(["activity", "limits"] as const).map((value) => (
+          <Button
+            key={value}
+            role="tab"
+            aria-selected={tab === value}
+            variant={tab === value ? "default" : "outline"}
+            onClick={() => onTabChange?.(value)}
+          >
+            {value === "activity" ? "Activity" : "Limits"}
+          </Button>
+        ))}
+      </div>
+      {tab === "activity" ? (
+        history
+      ) : (
+        <div className="mx-auto w-full max-w-6xl px-4 py-4">
+          <Button
+            variant="outline"
+            disabled={refreshing || jobsPending}
+            onClick={() => void refresh()}
+          >
+            Refresh limits
+          </Button>
+          {refreshError && <p role="alert">{refreshError}</p>}
+        </div>
+      )}
       <div className="mx-auto w-full max-w-6xl space-y-3 px-4 pb-6 sm:px-6">
         {accountsQuery.isPending ? (
           <div role="status" aria-label="Loading account usage">
@@ -867,6 +924,7 @@ export function UsageDashboard() {
             </p>
           )}
         {accountsQuery.data && <AccountUsageCards accounts={accountsQuery.data} range={range} />}
+        {tab === "activity" && <UsagePriceEditor />}
       </div>
     </>
   );

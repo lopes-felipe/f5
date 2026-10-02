@@ -22,3 +22,13 @@ it("answers project settings polling without silently skipping a renderer query"
   ).toMatchObject({ settings: { defaultThreadEnvMode: "local" }, overrides: {} });
   expect([...fixture.unknownMethods]).toEqual([]);
 });
+
+it("answers rewind and setup subscriptions without adding work to the benchmark", () => {
+  const fixture = createBrowserFixture();
+  expect(fixture.rpc({ _tag: "orchestration.getRewindDrafts", threadId: "small" })).toEqual({
+    threadId: "small",
+    drafts: [],
+  });
+  expect(fixture.rpc({ _tag: "worktreeSetup.subscribe", threadId: "small" })).toBeNull();
+  expect([...fixture.unknownMethods]).toEqual([]);
+});

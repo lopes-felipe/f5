@@ -14,6 +14,7 @@ interface HourlyUsageDbRow {
   readonly hourStartedAt: string;
   readonly provider: string;
   readonly model: string | null;
+  readonly estimationEligibleTurnCount?: number;
   readonly turnCount: number;
   readonly reportedTokenTurnCount: number;
   readonly inputTokens: number;
@@ -127,6 +128,7 @@ const make = Effect.gen(function* () {
           provider_name AS provider,
           model,
           COUNT(*) AS "turnCount",
+          SUM(CASE WHEN input_tokens IS NOT NULL AND output_tokens IS NOT NULL THEN 1 ELSE 0 END) AS "estimationEligibleTurnCount",
           SUM(CASE WHEN token_provenance <> 'unreported' THEN 1 ELSE 0 END)
             AS "reportedTokenTurnCount",
           COALESCE(SUM(input_tokens), 0) AS "inputTokens",
@@ -147,7 +149,7 @@ const make = Effect.gen(function* () {
           AND completed_at < ${input.endedAt}
           AND (${input.provider ?? null} IS NULL OR provider_name = ${input.provider ?? null})
           AND COALESCE(recorded_at, completed_at) >= ${factCutoverAt}
-        GROUP BY hourStartedAt, provider_name, model
+        GROUP BY hourStartedAt, provider_name, model, provider_cost_usd IS NULL, token_provenance, input_tokens IS NOT NULL AND output_tokens IS NOT NULL
         ORDER BY hourStartedAt ASC, provider_name ASC, model ASC
       `;
 

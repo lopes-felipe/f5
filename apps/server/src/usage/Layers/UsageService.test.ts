@@ -170,3 +170,44 @@ it("computes disjoint provider-aware composition before aggregating mixed bucket
     bucket.metrics.totalTokens,
   );
 });
+
+it("prices only unreported costs, honors zero, and inherits blank cache rates", () => {
+  const summary = buildUsageSummary({
+    request: { range: "24h", timeZone: "UTC" },
+    now: new Date("2026-10-02T12:00:00Z"),
+    coverageStartedAt: "2026-10-01T00:00:00Z",
+    rangeStartedAt: "2026-10-01T13:00:00Z",
+    priceOverrides: [
+      {
+        provider: "codex",
+        model: "priced",
+        inputUsdPerMillion: 2,
+        outputUsdPerMillion: 0,
+        cacheReadUsdPerMillion: null,
+        cacheWriteUsdPerMillion: null,
+      },
+    ],
+    rows: [
+      row({
+        hourStartedAt: "2026-10-02T12:00:00.000Z",
+        provider: "codex",
+        model: "priced",
+        inputTokens: 1_000_000,
+        cacheReadTokens: 500_000,
+      }),
+      row({
+        hourStartedAt: "2026-10-02T12:00:00.000Z",
+        provider: "codex",
+        model: "priced",
+        providerReportedCostUsd: 0,
+        pricedTurnCount: 1,
+        unpricedTurnCount: 0,
+      }),
+      row({ hourStartedAt: "2026-10-02T12:00:00.000Z", provider: "grok" }),
+    ],
+  });
+  assert.equal(summary.metrics.estimatedCostUsd, 2);
+  assert.equal(summary.metrics.providerReportedCostUsd, 0);
+  assert.equal(summary.metrics.pricedTurnCount, 2);
+  assert.equal(summary.metrics.unpricedTurnCount, 1);
+});

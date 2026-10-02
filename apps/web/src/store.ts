@@ -1124,6 +1124,7 @@ function buildThreadFromReadModel(
     (existing.pinOrderKey ?? null) === pinOrderKey &&
     (existing.snoozedUntil ?? null) === snoozedUntil &&
     (existing.snoozedAt ?? null) === snoozedAt &&
+    JSON.stringify(existing.titleState) === JSON.stringify(thread.titleState) &&
     (existing.titleSource ?? "legacy") === titleSource &&
     (existing.titleRevision ?? 0) === titleRevision &&
     (existing.titleUpdatedAt ?? null) === titleUpdatedAt &&
@@ -1175,6 +1176,7 @@ function buildThreadFromReadModel(
     pinOrderKey,
     snoozedUntil,
     snoozedAt,
+    ...(thread.titleState !== undefined ? { titleState: thread.titleState } : {}),
     titleSource,
     titleRevision,
     titleUpdatedAt,

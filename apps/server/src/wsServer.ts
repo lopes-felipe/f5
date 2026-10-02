@@ -2728,6 +2728,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.consumeResetCredit: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .consumeResetCredit(stripRequestTag(request.body))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
       case USAGE_WS_METHODS.getAccounts: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* usageService

@@ -1,3 +1,4 @@
+import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import * as AcpErrors from "effect-acp/errors";
@@ -96,6 +97,13 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         },
       );
+      const accountUsage = yield* makeProviderLimits({
+        provider: "antigravity",
+        instanceId,
+        displayName: displayName || "Antigravity",
+        enabled,
+        environment: processEnv,
+      });
       const textGeneration = yield* makeGrokTextGeneration(
         { enabled, binaryPath: "", customModels: config.customModels },
         processEnv,
@@ -181,6 +189,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         accentColor,
         enabled,
         adapter,
+        accountUsage,
         textGeneration,
         snapshot,
       };

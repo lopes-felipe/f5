@@ -489,6 +489,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     });
 
     return {
+      ...(generated.needsRefinement !== undefined
+        ? { needsRefinement: generated.needsRefinement }
+        : {}),
       title: sanitizeThreadTitle(generated.title),
     };
   });

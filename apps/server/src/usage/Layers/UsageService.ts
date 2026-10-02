@@ -1,3 +1,5 @@
+import { makeResetCreditCoordinator } from "../resetCredits.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   type UsageTokenComposition,
   type UsageAccount,
@@ -31,6 +33,9 @@ interface MutableMetrics {
   cacheWriteTokens: number;
   totalTokens: number;
   providerReportedCostUsd: number;
+  estimatedCostUsd: number;
+  estimatedTurnCount: number;
+  reportedCostTurnCount: number;
   pricedTurnCount: number;
   unpricedTurnCount: number;
 }
@@ -70,12 +75,18 @@ function emptyMetrics(): MutableMetrics {
     cacheWriteTokens: 0,
     totalTokens: 0,
     providerReportedCostUsd: 0,
+    estimatedCostUsd: 0,
+    estimatedTurnCount: 0,
+    reportedCostTurnCount: 0,
     pricedTurnCount: 0,
     unpricedTurnCount: 0,
   };
 }
 
 function addMetrics(target: MutableMetrics, row: HourlyUsageFactSummary): void {
+  target.reportedCostTurnCount += row.providerReportedCostUsd === null ? 0 : row.pricedTurnCount;
+  target.estimatedTurnCount += row.estimatedCostUsd !== undefined ? row.turnCount : 0;
+  target.estimatedCostUsd += row.estimatedCostUsd ?? 0;
   target.turnCount += row.turnCount;
   target.reportedTokenTurnCount += row.reportedTokenTurnCount;
   target.inputTokens += row.inputTokens;
@@ -90,8 +101,18 @@ function addMetrics(target: MutableMetrics, row: HourlyUsageFactSummary): void {
 
 function freezeMetrics(metrics: MutableMetrics): UsageMetrics {
   return {
-    ...metrics,
-    providerReportedCostUsd: metrics.pricedTurnCount > 0 ? metrics.providerReportedCostUsd : null,
+    turnCount: metrics.turnCount,
+    reportedTokenTurnCount: metrics.reportedTokenTurnCount,
+    inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens,
+    cacheReadTokens: metrics.cacheReadTokens,
+    cacheWriteTokens: metrics.cacheWriteTokens,
+    totalTokens: metrics.totalTokens,
+    pricedTurnCount: metrics.pricedTurnCount,
+    unpricedTurnCount: metrics.unpricedTurnCount,
+    ...(metrics.estimatedTurnCount > 0 ? { estimatedCostUsd: metrics.estimatedCostUsd } : {}),
+    providerReportedCostUsd:
+      metrics.reportedCostTurnCount > 0 ? metrics.providerReportedCostUsd : null,
   };
 }
 
@@ -249,6 +270,7 @@ export function buildUsageSummary(input: {
   readonly coverageStartedAt: IsoDateTime;
   readonly rangeStartedAt: IsoDateTime;
   readonly rows: ReadonlyArray<HourlyUsageFactSummary>;
+  readonly priceOverrides?: ReadonlyArray<import("@t3tools/contracts").UsagePriceOverride>;
 }): UsageSummary {
   const formatter = assertTimeZone(input.request.timeZone);
   const emptyBuckets = makeEmptyBuckets({
@@ -265,7 +287,34 @@ export function buildUsageSummary(input: {
   const providerAggregate = new Map<ProviderKind, MutableMetrics>();
   let historicalCostTurnCount = 0;
 
-  for (const row of input.rows) {
+  for (const originalRow of input.rows) {
+    const override = input.priceOverrides?.find(
+      (price) => price.provider === originalRow.provider && price.model === originalRow.model,
+    );
+    const canEstimate =
+      override &&
+      originalRow.providerReportedCostUsd === null &&
+      (originalRow.estimationEligibleTurnCount ?? originalRow.reportedTokenTurnCount) ===
+        originalRow.turnCount &&
+      originalRow.turnCount > 0;
+    const row = canEstimate
+      ? {
+          ...originalRow,
+          estimatedCostUsd:
+            ((originalRow.provider === "claudeAgent"
+              ? originalRow.inputTokens
+              : Math.max(0, originalRow.inputTokens - originalRow.cacheReadTokens)) *
+              override.inputUsdPerMillion +
+              originalRow.outputTokens * override.outputUsdPerMillion +
+              originalRow.cacheReadTokens *
+                (override.cacheReadUsdPerMillion ?? override.inputUsdPerMillion) +
+              originalRow.cacheWriteTokens *
+                (override.cacheWriteUsdPerMillion ?? override.inputUsdPerMillion)) /
+            1_000_000,
+          pricedTurnCount: originalRow.turnCount,
+          unpricedTurnCount: 0,
+        }
+      : originalRow;
     const bucket = bucketMetrics.get(bucketKeyForRow(row, input.request.range, formatter));
     if (!bucket) continue;
     const composition = compositions.get(bucketKeyForRow(row, input.request.range, formatter))!;
@@ -347,8 +396,21 @@ export function buildUsageSummary(input: {
 
 const make = Effect.gen(function* () {
   const repository = yield* UsageFactRepository;
+  const settingsService = yield* ServerSettingsService;
+  const redeem = yield* makeResetCreditCoordinator;
   const registry = yield* ProviderInstanceRegistry;
   const permits = yield* Semaphore.make(2);
+  const consumeResetCredit: UsageServiceShape["consumeResetCredit"] = (input) =>
+    Effect.gen(function* () {
+      const instance = yield* registry.getInstance(input.providerInstanceId);
+      if (!instance?.enabled || !instance.consumeResetCredit)
+        return yield* Effect.fail(
+          new UsageQueryError({ message: "This account does not support reset credits." }),
+        );
+      const result = yield* redeem(input, () => instance.consumeResetCredit!(input.idempotencyKey));
+      if (instance.accountUsage) yield* instance.accountUsage.refresh("force", permits);
+      return result;
+    });
   const getAccounts: UsageServiceShape["getAccounts"] = (request) =>
     Effect.gen(function* () {
       const instances = yield* registry.listInstances;
@@ -361,17 +423,23 @@ const make = Effect.gen(function* () {
       const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
       const unavailable = yield* registry.listUnavailable;
       const shadows: Array<UsageAccount> = unavailable
-        .filter((entry) => entry.driver === "claudeAgent" || entry.driver === "codex")
+        .filter((entry) =>
+          ["claudeAgent", "codex", "cursor", "grok", "opencode", "antigravity"].includes(
+            entry.driver,
+          ),
+        )
         .map((entry) => ({
           key: `${entry.driver === "codex" ? "codex" : "claude"}:${entry.instanceId}`,
-          provider: entry.driver === "codex" ? "codex" : "claudeAgent",
+          provider: entry.driver as ProviderKind,
           providerInstanceId: entry.instanceId,
           displayName: entry.displayName ?? (entry.driver === "codex" ? "Codex" : "Claude"),
           enabled: entry.enabled,
           refreshState: "idle",
           sections: (entry.driver === "codex"
             ? [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")]
-            : [emptyAccountSection("claude-usage")]
+            : entry.driver === "claudeAgent"
+              ? [emptyAccountSection("claude-usage")]
+              : [emptyAccountSection("provider-limits")]
           ).map((section) => ({ ...section, errorCode: "temporary-failure" as const })),
         }));
       return [...snapshots, ...shadows];
@@ -400,7 +468,11 @@ const make = Effect.gen(function* () {
         ],
         { concurrency: 2 },
       );
+      const settings = yield* settingsService.getSettings.pipe(
+        Effect.mapError(() => new UsageQueryError({ message: "Usage prices are unavailable." })),
+      );
       return buildUsageSummary({
+        priceOverrides: settings.usagePriceOverrides,
         request,
         now,
         coverageStartedAt,
@@ -409,7 +481,14 @@ const make = Effect.gen(function* () {
       });
     });
 
-  return { getSummary, getAccounts } satisfies UsageServiceShape;
+  yield* Effect.forever(
+    Effect.sleep("5 minutes").pipe(
+      Effect.andThen(getAccounts({ refresh: "if-stale" })),
+      Effect.ignore,
+    ),
+  ).pipe(Effect.forkScoped);
+
+  return { getSummary, getAccounts, consumeResetCredit } satisfies UsageServiceShape;
 });
 
 export const UsageServiceLive = Layer.effect(UsageService, make).pipe(

@@ -379,6 +379,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     });
 
     return {
+      ...(generated.needsRefinement !== undefined
+        ? { needsRefinement: generated.needsRefinement }
+        : {}),
       title: sanitizeThreadTitle(generated.title),
     };
   });

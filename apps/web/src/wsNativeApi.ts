@@ -687,6 +687,7 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     usage: {
+      consumeResetCredit: (input) => transport.request(USAGE_WS_METHODS.consumeResetCredit, input),
       getAccounts: (input) => transport.request(USAGE_WS_METHODS.getAccounts, input),
       getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
     },

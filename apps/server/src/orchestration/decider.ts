@@ -1022,6 +1022,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? {
                 title: command.title,
                 titleSource: "manual" as const,
+                titleState: null,
                 titleRevision: (thread.titleRevision ?? 0) + 1,
                 titleUpdatedAt: occurredAt,
                 titleRegeneration: null,
@@ -1046,7 +1047,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       });
       if (
         thread.archivedAt !== null ||
-        thread.titleSource !== "default" ||
+        (command.trigger === "auto-refine"
+          ? thread.titleSource !== "generated" ||
+            !thread.titleState?.needsRefinement ||
+            thread.titleState.refinementCount >= 2 ||
+            ![1, 3].includes(command.refinementTurn ?? 0) ||
+            thread.titleState.lastRefinedTurn >= (command.refinementTurn ?? 0) ||
+            thread.titleRegeneration != null
+          : thread.titleSource !== "default") ||
         (thread.titleRevision ?? 0) !== command.expectedTitleRevision
       ) {
         return {
@@ -1080,7 +1088,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             startedAt: command.createdAt,
           },
           expectedTitleRevision: command.expectedTitleRevision,
-          origin: "first-turn",
+          origin: command.trigger ?? "first-turn",
+          ...(command.trigger === "auto-refine"
+            ? {
+                refinementTurn: command.refinementTurn,
+                titleState: {
+                  needsRefinement: true,
+                  refinementCount: (thread.titleState?.refinementCount ?? 0) + 1,
+                  lastRefinedTurn: command.refinementTurn ?? 0,
+                },
+              }
+            : {}),
           ...(command.titleSourceText !== undefined
             ? { titleSourceText: command.titleSourceText }
             : {}),
@@ -1134,6 +1152,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           requestId: command.requestId,
           title: command.title,
           titleSource: "generated",
+          titleState: {
+            needsRefinement: command.needsRefinement ?? false,
+            refinementCount: thread.titleState?.refinementCount ?? 0,
+            lastRefinedTurn: command.refinementTurn ?? thread.titleState?.lastRefinedTurn ?? 0,
+          },
           titleRevision: (thread.titleRevision ?? 0) + 1,
           titleUpdatedAt: command.createdAt,
         },

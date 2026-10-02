@@ -519,10 +519,11 @@ export const makeCodexTextGeneration = (
                 "Return a different title that represents the thread's current state.",
               ]
             : []),
-          "Return a JSON object with key: title.",
+          "Return a JSON object with keys: title, needsRefinement.",
           "Rules:",
           "- Title must be a short one-line thread title.",
           "- Prefer 2-6 words.",
+          "- Set needsRefinement to true only when the user intent is too vague for a specific title.",
           "- Describe the user's requested task, not the assistant response.",
           "- No markdown.",
           "- No quotes.",
@@ -547,6 +548,7 @@ export const makeCodexTextGeneration = (
           prompt: promptSections.join("\n"),
           outputSchemaJson: Schema.Struct({
             title: Schema.String,
+            needsRefinement: Schema.optional(Schema.Boolean),
           }),
           ...(input.model ? { model: input.model } : {}),
           ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
@@ -561,7 +563,12 @@ export const makeCodexTextGeneration = (
           });
         }
 
-        return { title } satisfies ThreadTitleGenerationResult;
+        return {
+          title,
+          ...(generated.needsRefinement !== undefined
+            ? { needsRefinement: generated.needsRefinement }
+            : {}),
+        } satisfies ThreadTitleGenerationResult;
       });
 
     const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = (input) =>

@@ -78,6 +78,8 @@ const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
 });
 
 const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings => ({
+  autoCompactWindow: 0,
+  resumeCompactionPrompt: false,
   enabled: false,
   binaryPath: "claude",
   homePath: "",

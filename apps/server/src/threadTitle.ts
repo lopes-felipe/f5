@@ -145,7 +145,7 @@ export function isUnsupportedCodexChatGptModelError(reason: string): boolean {
   return isUnsupportedCodexModelError(reason) && normalized.includes("chatgpt account");
 }
 
-export const resolveBestEffortGeneratedTitle = (input: {
+export const resolveBestEffortGeneratedTitleResult = (input: {
   readonly cwd: string | null | undefined;
   readonly titleSourceText: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
@@ -169,7 +169,7 @@ export const resolveBestEffortGeneratedTitle = (input: {
         `${input.logPrefix} could not resolve cwd for title generation; applying fallback title`,
         input.logContext ?? {},
       );
-      return fallbackTitle;
+      return { title: fallbackTitle, needsRefinement: false };
     }
 
     const cwd = input.cwd;
@@ -217,7 +217,10 @@ export const resolveBestEffortGeneratedTitle = (input: {
     }
 
     if (generatedResult._tag === "Success") {
-      return generatedResult.value.title;
+      return {
+        ...generatedResult.value,
+        needsRefinement: generatedResult.value.needsRefinement ?? false,
+      };
     }
 
     yield* Effect.logWarning(
@@ -228,5 +231,9 @@ export const resolveBestEffortGeneratedTitle = (input: {
         reason: Cause.pretty(generatedResult.cause),
       },
     );
-    return fallbackTitle;
+    return { title: fallbackTitle, needsRefinement: false };
   });
+
+export const resolveBestEffortGeneratedTitle = (
+  input: Parameters<typeof resolveBestEffortGeneratedTitleResult>[0],
+) => resolveBestEffortGeneratedTitleResult(input).pipe(Effect.map((result) => result.title));

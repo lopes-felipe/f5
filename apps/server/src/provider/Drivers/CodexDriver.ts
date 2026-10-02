@@ -1,3 +1,5 @@
+import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
+import { CodexControlClient } from "../../codex/CodexControlClient.ts";
 import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
 import {
   codexIsolationCompatibility,
@@ -253,6 +255,57 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         defaultProviderOptions,
         processEnvironment,
       });
+      const consumeResetCredit = (idempotencyKey: string) =>
+        Effect.gen(function* () {
+          const client = yield* Effect.acquireRelease(
+            Effect.tryPromise({
+              try: (signal) =>
+                CodexControlClient.create(
+                  {
+                    binaryPath: effectiveConfig.binaryPath,
+                    homePath: effectiveConfig.homePath,
+                    ...(defaultProviderOptions.codex?.launchArgs
+                      ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+                      : {}),
+                    cwd: process.cwd(),
+                    processEnvironment,
+                  },
+                  signal,
+                ),
+              catch: (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER_KIND,
+                  instanceId,
+                  detail: "Could not open the Codex account connection.",
+                  cause,
+                }),
+            }),
+            (client) => Effect.sync(() => client.close()),
+          );
+          return yield* Effect.tryPromise({
+            try: () => client.consumeResetCredit(idempotencyKey),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: "Could not redeem a Codex reset credit.",
+                cause,
+              }),
+          }).pipe(
+            Effect.flatMap((value) =>
+              Schema.decodeUnknownEffect(UsageConsumeResetCreditResult)(value),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER_KIND,
+                  instanceId,
+                  detail: "Invalid reset-credit response.",
+                  cause,
+                }),
+            ),
+          );
+        }).pipe(Effect.scoped);
       const accountUsage = yield* makeCodexAccountUsage(
         { instanceId, displayName: displayName ?? "Codex", enabled },
         {
@@ -325,6 +378,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
+        consumeResetCredit,
         accountUsage,
       } satisfies ProviderInstance;
     }),

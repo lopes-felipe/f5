@@ -720,6 +720,7 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.titleState !== undefined ? { titleState: payload.titleState } : {}),
               ...(payload.titleSource !== undefined ? { titleSource: payload.titleSource } : {}),
               ...(payload.titleRevision !== undefined
                 ? { titleRevision: payload.titleRevision }
@@ -760,6 +761,7 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.titleState ? { titleState: payload.titleState } : {}),
             titleRegeneration: payload.titleRegeneration,
             updatedAt: event.occurredAt,
           }),
@@ -777,6 +779,7 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             title: payload.title,
+            titleState: payload.titleState ?? null,
             titleSource: payload.titleSource,
             titleRevision: payload.titleRevision,
             titleUpdatedAt: payload.titleUpdatedAt,
