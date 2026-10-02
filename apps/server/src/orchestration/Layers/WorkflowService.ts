@@ -14,9 +14,7 @@ import {
   type TurnId,
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
-import { readFile, realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import path from "node:path";
 import { Cause, Duration, Effect, Layer, Stream } from "effect";
 import {
   defaultDocumentReaderSlot,
@@ -1209,16 +1207,8 @@ function validateCapturedPlanForTurn(input: {
   if (!plan?.planMarkdown.trim()) {
     return { valid: false, error: "No non-empty proposed plan record was captured." };
   }
-  if (capture === "exit-plan-mode") {
-    return { valid: true };
-  }
-
-  const finishedTurn = getFinishedConsumableLatestTurn(input.thread);
-  const assistantText = finishedTurn?.turnId === input.turnId ? finishedTurn.assistantText : null;
-  const validation = validateProposedPlanOutput(assistantText);
-  if (!validation.valid) {
-    return validation;
-  }
+  // Provider plan events (including ExitPlanMode) are already explicit captures.
+  // Text synthesis below validates the wrapper before creating such a record.
   return { valid: true };
 }
 
@@ -1695,7 +1685,15 @@ export const makeWorkflowService = Effect.gen(function* () {
           });
           return false;
         }
-        const validation = validateProposedPlanOutput(assistantText);
+        // Reasoning is useful review feedback, but it is not a submitted plan.
+        const finalMessage = input.thread.messages.find(
+          (message) =>
+            message.id === latestCompletedTurn?.assistantMessageId &&
+            message.turnId === input.turnId &&
+            message.role === "assistant" &&
+            !message.streaming,
+        );
+        const validation = validateProposedPlanOutput(finalMessage?.text);
         if (!validation.valid) {
           yield* Effect.logWarning("workflow proposed-plan wrapper validation failed", {
             workflowId: input.workflow.id,
@@ -1734,62 +1732,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       const strippedAssistantText = assistantText
         ? stripProposedPlanBlockTags(assistantText)
         : null;
-      const markdownFilePath = isDocumentWorkflow(input.workflow)
-        ? null
-        : latestMarkdownFileChangePath(input.thread, input.turnId);
-      const filePlanMarkdown = markdownFilePath
-        ? yield* Effect.gen(function* () {
-            const snapshot = yield* orchestrationEngine.getReadModel();
-            const project = snapshot.projects.find(
-              (candidate) => candidate.id === input.thread.projectId,
-            );
-            if (!project) {
-              return null;
-            }
-
-            const unresolvedRootPath = path.resolve(
-              input.thread.worktreePath ?? project.workspaceRoot,
-            );
-            const unresolvedCandidatePath = path.resolve(unresolvedRootPath, markdownFilePath);
-            const resolvedPaths = yield* Effect.tryPromise({
-              try: async () => ({
-                rootPath: await realpath(unresolvedRootPath),
-                candidatePath: await realpath(unresolvedCandidatePath),
-              }),
-              catch: () => null,
-            });
-            if (!resolvedPaths) return null;
-            const { rootPath, candidatePath } = resolvedPaths;
-            const relativePath = path.relative(rootPath, candidatePath);
-            if (
-              relativePath === ".." ||
-              relativePath.startsWith(`..${path.sep}`) ||
-              path.isAbsolute(relativePath)
-            ) {
-              yield* Effect.logWarning("workflow plan file path escaped its workspace", {
-                threadId: input.thread.id,
-                markdownFilePath,
-                rootPath,
-              });
-              return null;
-            }
-
-            return yield* Effect.tryPromise({
-              try: () => readFile(candidatePath, "utf8"),
-              catch: () => null,
-            }).pipe(
-              Effect.map((contents) => {
-                const trimmed = contents?.trim() ?? "";
-                return trimmed.length > 0 ? trimmed : null;
-              }),
-            );
-          })
-        : null;
-      let planMarkdown =
-        extractedPlanMarkdown ??
-        (filePlanMarkdown && filePlanMarkdown.length > (assistantText?.length ?? 0)
-          ? filePlanMarkdown
-          : strippedAssistantText || filePlanMarkdown);
+      let planMarkdown = extractedPlanMarkdown ?? strippedAssistantText;
       if (!planMarkdown) return false;
       const documentType = planningWorkflowDocumentType(input.workflow);
       if (documentType) {

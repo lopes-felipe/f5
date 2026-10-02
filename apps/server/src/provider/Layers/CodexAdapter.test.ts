@@ -747,6 +747,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("rejects multiple text-derived plan blocks while preserving task completion", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.started"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      lifecycleManager.emit("event", {
+        id: asEventId("bad-text-plan"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "codex/event/task_complete",
+        payload: {
+          id: "turn-1",
+          msg: {
+            last_agent_message:
+              "<proposed_plan>\nFirst\n</proposed_plan>\nMore text\n<proposed_plan>\nSecond\n</proposed_plan>",
+          },
+        },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        id: asEventId("after-bad-plan"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        turnId: asTurnId("turn-2"),
+        method: "turn/started",
+        payload: { turn: { id: "turn-2" } },
+      } satisfies ProviderEvent);
+      const events = yield* Fiber.join(eventsFiber);
+      assert.equal(
+        events.some((event) => event.type === "turn.proposed.completed"),
+        false,
+      );
+      assert.equal(
+        events.some((event) => event.type === "task.completed"),
+        true,
+      );
+    }),
+  );
+
   it.effect("maps completed plan items to canonical proposed-plan completion events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

@@ -5558,7 +5558,7 @@ describe("WorkflowService", () => {
               {
                 id: MessageId.makeUnsafe("assistant-author-b"),
                 role: "assistant",
-                text: "Revised plan B",
+                text: "<proposed_plan>\nRevised plan B\n</proposed_plan>",
                 turnId: TurnId.makeUnsafe("revision-turn-b"),
                 streaming: false,
                 createdAt: NOW,
@@ -7038,7 +7038,7 @@ describe("WorkflowService", () => {
     expect(harness.getSnapshot().planningWorkflows[0]?.merge.approvedPlanId).toBe("old-plan");
   });
 
-  it("synthesizes a revised plan from reasoning-only author output and starts merge", async () => {
+  it("synthesizes an explicitly wrapped revised plan and starts merge", async () => {
     const workflow = makeWorkflow({
       branchA: {
         ...makeWorkflow().branchA,
@@ -7220,8 +7220,8 @@ describe("WorkflowService", () => {
               {
                 id: MessageId.makeUnsafe("assistant-author-b"),
                 role: "assistant",
-                text: "",
-                reasoningText: "Reasoning-only revised plan B",
+                text: "<proposed_plan>\nRevised plan B\n</proposed_plan>",
+                reasoningText: "Private planning reasoning",
                 turnId: TurnId.makeUnsafe("revision-turn-b"),
                 streaming: false,
                 createdAt: NOW,
@@ -7238,8 +7238,8 @@ describe("WorkflowService", () => {
         threadId: ThreadId.makeUnsafe("author-b"),
         messageId: MessageId.makeUnsafe("assistant-author-b"),
         role: "assistant",
-        text: "",
-        reasoningText: "Reasoning-only revised plan B",
+        text: "<proposed_plan>\nRevised plan B\n</proposed_plan>",
+        reasoningText: "Private planning reasoning",
         turnId: TurnId.makeUnsafe("revision-turn-b"),
         streaming: false,
         createdAt: NOW,
@@ -7258,81 +7258,223 @@ describe("WorkflowService", () => {
         (command) =>
           command.type === "thread.proposed-plan.upsert" &&
           command.threadId === ThreadId.makeUnsafe("author-b") &&
-          command.proposedPlan.planMarkdown === "Reasoning-only revised plan B",
+          command.proposedPlan.planMarkdown === "Revised plan B",
       ),
     ).toBe(true);
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.status).toBe("revised");
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.merge.status).toBe("in_progress");
   });
 
-  it("accepts ordinary assistant text from v2 planning turns without format repair", async () => {
-    const turnId = TurnId.makeUnsafe("natural-plan-turn");
-    const workflow = makeWorkflow({
-      templateId: "builtin.planning.dual",
-      templateVersion: 2,
-      branchA: {
-        ...makeWorkflow().branchA,
-        status: "authoring",
-      },
-    });
-    harness = await createHarness(
-      makeReadModel({
-        workflow,
-        threads: [
-          makeThread({
-            id: workflow.branchA.authorThreadId,
-            latestTurn: {
-              turnId,
-              state: "completed",
-              requestedAt: NOW,
-              startedAt: NOW,
-              completedAt: NOW,
-              assistantMessageId: MessageId.makeUnsafe(`assistant-${turnId}`),
-            },
-            session: {
-              threadId: workflow.branchA.authorThreadId,
-              status: "ready",
-              providerName: "codex",
-              runtimeMode: "full-access",
-              activeTurnId: null,
-              lastError: null,
-              updatedAt: NOW,
-            },
-            messages: [
-              {
-                id: MessageId.makeUnsafe(`assistant-${turnId}`),
-                role: "assistant",
-                text: "A naturally structured implementation plan",
+  it.each([1, 2])(
+    "repairs ordinary assistant text instead of capturing a plan in v%s",
+    async (templateVersion) => {
+      const turnId = TurnId.makeUnsafe("natural-plan-turn");
+      const workflow = makeWorkflow({
+        templateId: "builtin.planning.dual",
+        templateVersion,
+        branchA: {
+          ...makeWorkflow().branchA,
+          status: "authoring",
+        },
+      });
+      harness = await createHarness(
+        makeReadModel({
+          workflow,
+          threads: [
+            makeThread({
+              id: workflow.branchA.authorThreadId,
+              latestTurn: {
                 turnId,
-                streaming: false,
-                createdAt: NOW,
+                state: "completed",
+                requestedAt: NOW,
+                startedAt: NOW,
+                completedAt: NOW,
+                assistantMessageId: MessageId.makeUnsafe(`assistant-${turnId}`),
+              },
+              session: {
+                threadId: workflow.branchA.authorThreadId,
+                status: "ready",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: null,
                 updatedAt: NOW,
               },
-            ],
-            proposedPlans: [],
-          }),
-        ],
-      }),
-    );
-    await harness.start();
+              messages: [
+                {
+                  id: MessageId.makeUnsafe(`assistant-${turnId}`),
+                  role: "assistant",
+                  text: "Three exploration agents are still running. Waiting on the explorers now.",
+                  turnId,
+                  streaming: false,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+              ],
+              proposedPlans: [],
+            }),
+          ],
+        }),
+      );
+      await harness.start();
 
-    await waitFor(
-      () => harness!.getSnapshot().planningWorkflows[0]?.branchA.status === "plan_saved",
-    );
-    expect(
-      harness.dispatched.some(
-        (command) =>
-          command.type === "thread.proposed-plan.upsert" &&
-          command.proposedPlan.planMarkdown === "A naturally structured implementation plan",
-      ),
-    ).toBe(true);
-    expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
-      0,
-    );
-    expect(
-      harness.getSnapshot().planningWorkflows[0]?.branchA.authorFormatRepairAttempts ?? 0,
-    ).toBe(0);
-  });
+      await waitFor(
+        () => harness!.getSnapshot().planningWorkflows[0]?.branchA.authorFormatRepairAttempts === 1,
+      );
+      expect(
+        harness.dispatched.some((command) => command.type === "thread.proposed-plan.upsert"),
+      ).toBe(false);
+      expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
+        1,
+      );
+      expect(
+        harness.getSnapshot().planningWorkflows[0]?.branchA.authorFormatRepairAttempts ?? 0,
+      ).toBe(1);
+    },
+  );
+
+  it.each([
+    {
+      name: "native Claude plan",
+      native: true,
+      text: "Plan submitted.",
+      running: false,
+      accepted: true,
+    },
+    {
+      name: "wrapped Claude plan",
+      native: false,
+      text: "<proposed_plan>\n# Plan\n</proposed_plan>",
+      running: false,
+      accepted: true,
+    },
+    {
+      name: "empty wrapper",
+      native: false,
+      text: "<proposed_plan>\n\n</proposed_plan>",
+      running: false,
+      accepted: false,
+    },
+    {
+      name: "unclosed wrapper",
+      native: false,
+      text: "<proposed_plan>\n# Plan",
+      running: false,
+      accepted: false,
+    },
+    { name: "reasoning-only wrapper", native: false, text: "", running: false, accepted: false },
+    {
+      name: "active native plan",
+      native: true,
+      text: "Still checking.",
+      running: true,
+      accepted: false,
+    },
+    {
+      name: "active waiting message",
+      native: false,
+      text: "Waiting on explorers.",
+      running: true,
+      accepted: false,
+    },
+  ])(
+    "enforces explicit capture and completion for $name",
+    async ({ native, text, running, accepted }) => {
+      const turnId = TurnId.makeUnsafe("capture-turn");
+      const messageId = MessageId.makeUnsafe("capture-message");
+      const workflow = makeWorkflow({
+        branchA: {
+          ...makeWorkflow().branchA,
+          authorSlot: { provider: "claudeAgent", model: "claude-opus-5-5" },
+          status: "authoring",
+          // Exercise the bounded repair path: invalid output must fail, not loop.
+          authorFormatRepairAttempts: 1,
+        },
+      });
+      harness = await createHarness(
+        makeReadModel({
+          workflow,
+          threads: [
+            makeThread({
+              id: workflow.branchA.authorThreadId,
+              latestTurn: {
+                turnId,
+                state: "completed",
+                requestedAt: NOW,
+                startedAt: NOW,
+                completedAt: NOW,
+                assistantMessageId: messageId,
+              },
+              session: {
+                threadId: workflow.branchA.authorThreadId,
+                providerName: "claudeAgent",
+                runtimeMode: "full-access",
+                status: running ? "running" : "ready",
+                activeTurnId: running ? turnId : null,
+                lastError: null,
+                updatedAt: NOW,
+              },
+              messages: [
+                {
+                  id: messageId,
+                  turnId,
+                  role: "assistant",
+                  text,
+                  reasoningText:
+                    "<proposed_plan>\nPrivate reasoning, not a submission\n</proposed_plan>",
+                  streaming: false,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+              ],
+              proposedPlans: native
+                ? [
+                    {
+                      id: "native-plan",
+                      turnId,
+                      planMarkdown: "# Plan",
+                      implementedAt: null,
+                      implementationThreadId: null,
+                      createdAt: NOW,
+                      updatedAt: NOW,
+                    },
+                  ]
+                : [],
+              activities: [
+                {
+                  id: EventId.makeUnsafe("markdown-edit"),
+                  turnId,
+                  createdAt: NOW,
+                  tone: "info",
+                  kind: "tool.completed",
+                  summary: "Edited unrelated Markdown",
+                  payload: { changedFiles: ["README.md"] },
+                },
+              ],
+            }),
+          ],
+        }),
+      );
+      await harness.start();
+      if (!running)
+        await waitFor(
+          () =>
+            harness!.getSnapshot().planningWorkflows[0]?.branchA.status ===
+            (accepted ? "plan_saved" : "error"),
+        );
+      const branch = harness.getSnapshot().planningWorkflows[0]?.branchA;
+      expect(branch?.status).toBe(running ? "authoring" : accepted ? "plan_saved" : "error");
+      expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
+        0,
+      );
+      if (!accepted) {
+        expect(
+          harness.dispatched.some((command) => command.type === "thread.proposed-plan.upsert"),
+        ).toBe(false);
+      }
+      if (!running && !accepted) expect(branch?.error).toContain("Invalid proposed-plan capture");
+    },
+  );
 
   it("ignores stale proposed-plan upserts while a branch is revising", async () => {
     const oldPlanTurnId = TurnId.makeUnsafe("plan-turn-old");
@@ -10415,7 +10557,7 @@ describe("WorkflowService", () => {
               {
                 id: MessageId.makeUnsafe("assistant-author-b"),
                 role: "assistant",
-                text: "Revised plan B",
+                text: "<proposed_plan>\nRevised plan B\n</proposed_plan>",
                 turnId: TurnId.makeUnsafe("revision-turn-b"),
                 streaming: false,
                 createdAt: NOW,
