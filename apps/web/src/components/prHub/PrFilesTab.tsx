@@ -1,3 +1,5 @@
+import { PrViewedFile } from "./PrViewedFile";
+import { ForgeComposer } from "./ForgeControls";
 import { CopyPathButton } from "../CopyPathButton";
 import { MiddleTruncate } from "../MiddleTruncate";
 import { ChangedFileTree } from "../ChangedFileTree";
@@ -161,7 +163,10 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
           </Button>
         </div>
       ) : null}
-      {!pr.repositoryArchived && pages[0]?.comparison && comparisonMode === "current_pr" ? (
+      {pr.provider === "github" &&
+      !pr.repositoryArchived &&
+      pages[0]?.comparison &&
+      comparisonMode === "current_pr" ? (
         <PrReviewDraftEditor
           prKey={pr.key}
           prUrl={pr.url}
@@ -174,6 +179,19 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
         <p className="text-xs text-muted-foreground">
           Click a diff line number to draft an inline comment.
         </p>
+      ) : null}
+      {pr.provider !== "github" &&
+      pr.forgeCapabilities?.review.inlineComment &&
+      selectedAnchor?.scope === selectionScope ? (
+        <ForgeComposer
+          key={selectedAnchor.nonce}
+          pr={pr}
+          anchor={{
+            path: selectedAnchor.path,
+            line: selectedAnchor.line,
+            side: selectedAnchor.side === "LEFT" ? "old" : "new",
+          }}
+        />
       ) : null}
       {warning ? (
         <Alert variant="warning">
@@ -205,6 +223,9 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
                     {file.changeType}
                   </Badge>
                 </button>
+                {pages[0]?.comparison ? (
+                  <PrViewedFile pr={pr} path={file.path} comparison={pages[0].comparison} />
+                ) : null}
                 <CopyPathButton path={file.path} />
               </div>
               {isExpanded(file.path) ? (
@@ -212,7 +233,8 @@ export function PrFilesTab({ pr, active }: { pr: TrackedPullRequest; active: boo
                   <LazyPrFileDiff
                     file={file}
                     onComment={
-                      pages[0]?.comparison?.mode === "current_pr"
+                      pages[0]?.comparison?.mode === "current_pr" &&
+                      (pr.provider === "github" || pr.forgeCapabilities?.review.inlineComment)
                         ? (anchor) =>
                             setSelectedAnchor({
                               ...anchor,

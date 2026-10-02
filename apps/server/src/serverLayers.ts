@@ -79,7 +79,9 @@ import {
 } from "./mcp/PreviewMcpHttpServer";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 import { PrHubAdvisoryServiceLive } from "./prHub/Layers/PrHubAdvisoryService";
-import { PrHubServiceLive } from "./prHub/Layers/PrHubService";
+import { PrHubFederationLive, PrHubFederatedServiceLive } from "./prHub/Layers/PrHubFederation";
+import { PrHubExtensionsLive } from "./prHub/PrHubExtensions";
+import { ForgeAccountsLive } from "./sourceControl/accountRouting";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
 import { KeybindingsLive } from "./keybindings";
@@ -273,6 +275,7 @@ export function makeServerRuntimeServicesLayer() {
   const gitCoreLayer = GitCoreLive.pipe(
     Layer.provideMerge(GitServiceLive.pipe(Layer.provideMerge(ServerSecretStoreLive))),
   );
+  const forgeAccountsLayer = ForgeAccountsLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
   const githubCliLayer = GitHubCliLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
   const textGenerationLayer = TextGenerationLive;
 
@@ -292,13 +295,15 @@ export function makeServerRuntimeServicesLayer() {
   const terminalLayer = TerminalManagerLive.pipe(Layer.provide(makeRuntimePtyAdapterLayer()));
 
   const gitManagerLayer = GitManagerLive.pipe(
+    Layer.provideMerge(forgeAccountsLayer),
     Layer.provideMerge(ProjectionProjectRepositoryLive),
     Layer.provideMerge(ProjectionThreadRepositoryLive),
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(githubCliLayer),
     Layer.provideMerge(textGenerationLayer),
   );
-  const prHubLayer = PrHubServiceLive.pipe(
+  const federationLayer = PrHubFederationLive.pipe(
+    Layer.provideMerge(forgeAccountsLayer),
     Layer.provide(PrHubReviewOperationsLive),
     Layer.provide(PrHubDiscoveryLive),
     Layer.provide(PrHubRepositoryLive),
@@ -307,6 +312,8 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(githubCliLayer),
     Layer.provideMerge(ProjectionProjectRepositoryLive),
   );
+  const prHubLayer = PrHubFederatedServiceLive.pipe(Layer.provideMerge(federationLayer));
+  const prHubExtensionsLayer = PrHubExtensionsLive.pipe(Layer.provideMerge(prHubLayer));
   const prHubAdvisoryLayer = PrHubAdvisoryServiceLive.pipe(
     Layer.provideMerge(prHubLayer),
     Layer.provideMerge(githubCliLayer),
@@ -323,6 +330,7 @@ export function makeServerRuntimeServicesLayer() {
     gitCoreLayer,
     gitManagerLayer,
     prHubLayer,
+    prHubExtensionsLayer,
     prHubAdvisoryLayer,
     terminalLayer,
     KeybindingsLive,

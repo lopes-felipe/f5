@@ -294,6 +294,10 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
 }
 
 export const AppSettingsSchema = Schema.Struct({
+  prHubAccountId: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some(null)),
+    Schema.withDecodingDefault(() => null),
+  ),
   usageTab: Schema.Literals(["activity", "limits"]).pipe(
     Schema.withConstructorDefault(() => Option.some("activity" as const)),
     Schema.withDecodingDefault(() => "activity" as const),

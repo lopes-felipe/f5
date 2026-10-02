@@ -1,3 +1,7 @@
+import { ForgeReactionControl } from "./ForgeReactionControl";
+import { ForgeOperationPanel } from "./ForgeOperationPanel";
+import { PrSendToAgent } from "./PrSendToAgent";
+import { PrMarkdown } from "./PrMarkdown";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { useEffect, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -66,7 +70,9 @@ function TimelineComment({
               {comment.reviewState.toLowerCase().replaceAll("_", " ")}
             </Badge>
           ) : null}
-          {comment.viewerCanUpdate && comment.kind !== "review" ? (
+          {comment.viewerCanUpdate &&
+          comment.kind !== "review" &&
+          (pr.provider === "github" || pr.forgeCapabilities?.edit.comment) ? (
             <Button
               size="icon-xs"
               variant="ghost"
@@ -84,6 +90,9 @@ function TimelineComment({
       </header>
 
       {comment.path ? (
+        <PrSendToAgent pr={pr} body={comment.body} path={comment.path} line={comment.line} />
+      ) : null}
+      {comment.path ? (
         <p className="font-mono text-xs text-muted-foreground">
           {comment.path}
           {comment.line !== null ? `:${comment.line}` : ""}
@@ -94,43 +103,60 @@ function TimelineComment({
         <div className="space-y-2">
           <Textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={!draft.trim() || mutations.updateComment.isPending}
-              onClick={() => {
-                if (!comment.databaseId || comment.kind === "review") return;
-                void mutations.updateComment
-                  .mutateAsync({
-                    key: pr.key,
-                    commentId: comment.databaseId,
-                    kind: comment.kind,
-                    body: draft.trim(),
-                  })
-                  .then(() => setIsEditing(false))
-                  .catch(() => undefined);
-              }}
-            >
-              {mutations.updateComment.isPending ? "Saving…" : "Save"}
-            </Button>
+            {pr.provider !== "github" ? (
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{
+                  kind: "edit-comment",
+                  commentId: comment.databaseId ?? comment.id,
+                  body: draft.trim(),
+                }}
+                label={`Edit comment ${comment.databaseId ?? comment.id}`}
+                onSucceeded={() => setIsEditing(false)}
+              />
+            ) : (
+              <Button
+                size="sm"
+                disabled={!draft.trim() || mutations.updateComment.isPending}
+                onClick={() => {
+                  if (!comment.databaseId || comment.kind === "review") return;
+                  void mutations.updateComment
+                    .mutateAsync({
+                      key: pr.key,
+                      commentId: comment.databaseId,
+                      kind: comment.kind,
+                      body: draft.trim(),
+                    })
+                    .then(() => setIsEditing(false))
+                    .catch(() => undefined);
+                }}
+              >
+                {mutations.updateComment.isPending ? "Saving…" : "Save"}
+              </Button>
+            )}
             <Button size="sm" variant="outline" onClick={() => setIsEditing(false)}>
               Cancel
             </Button>
           </div>
         </div>
       ) : comment.body.trim() ? (
-        <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{comment.body}</p>
+        <PrMarkdown body={comment.body} host={pr.host} />
       ) : (
         <p className="text-sm italic text-muted-foreground">No written comment.</p>
       )}
 
-      <PrReactionBar
-        prKey={pr.key}
-        subjectId={comment.kind === "review" ? null : comment.id}
-        reactions={comment.reactions}
-        disabledReason={reactionCapability.supported ? null : reactionCapability.reason}
-        isPending={mutations.setReaction.isPending}
-        onSetReaction={(input) => mutations.setReaction.mutate(input)}
-      />
+      {pr.provider === "github" ? (
+        <PrReactionBar
+          prKey={pr.key}
+          subjectId={comment.kind === "review" ? null : comment.id}
+          reactions={comment.reactions}
+          disabledReason={reactionCapability.supported ? null : reactionCapability.reason}
+          isPending={mutations.setReaction.isPending}
+          onSetReaction={(input) => mutations.setReaction.mutate(input)}
+        />
+      ) : comment.kind !== "review" ? (
+        <ForgeReactionControl pr={pr} commentId={comment.databaseId ?? comment.id} />
+      ) : null}
     </article>
   );
 }
@@ -164,7 +190,9 @@ export function PrTimelineTab({
         <AlertTitle>Timeline unavailable</AlertTitle>
         <AlertDescription>
           <span>
-            {query.error instanceof Error ? query.error.message : "GitHub timeline failed."}
+            {query.error instanceof Error
+              ? query.error.message
+              : "The timeline could not be loaded."}
           </span>
           <Button size="xs" variant="outline" onClick={() => void query.refetch()}>
             Retry
@@ -188,7 +216,7 @@ export function PrTimelineTab({
           <AlertTriangleIcon />
           <AlertTitle>Some review comments are omitted</AlertTitle>
           <AlertDescription>
-            Open the pull request on GitHub for the complete thread.
+            Open the pull request on its forge for the complete thread.
           </AlertDescription>
         </Alert>
       ) : null}

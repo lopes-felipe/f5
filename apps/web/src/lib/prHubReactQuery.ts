@@ -2,7 +2,7 @@ import { infiniteQueryOptions, queryOptions, type InfiniteData } from "@tanstack
 import type { PrHubListInput, PrHubListPage, PullRequestKey } from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../nativeApi";
-import { getPrHubAccountGeneration } from "./prHubAccount";
+import { getPrHubSelectedAccountId, getPrHubAccountGeneration } from "./prHubAccount";
 
 export const prHubQueryKeys = {
   overview: ["prHub", "overview"] as const,
@@ -16,10 +16,19 @@ export const prHubQueryKeys = {
 
 export function prHubOverviewQueryOptions(stalledBefore?: string) {
   return queryOptions({
-    queryKey: [...prHubQueryKeys.overview, getPrHubAccountGeneration(), stalledBefore],
+    queryKey: [
+      ...prHubQueryKeys.overview,
+      getPrHubAccountGeneration(),
+      stalledBefore,
+      getPrHubSelectedAccountId(),
+    ],
     placeholderData: (previous, query) =>
       query?.queryKey[2] === getPrHubAccountGeneration() ? previous : undefined,
-    queryFn: async () => ensureNativeApi().prHub.getOverview({ stalledBefore }),
+    queryFn: async () =>
+      ensureNativeApi().prHub.getOverview({
+        stalledBefore,
+        accountId: getPrHubSelectedAccountId(),
+      }),
     staleTime: 30_000,
   });
 }
