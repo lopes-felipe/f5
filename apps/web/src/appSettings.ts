@@ -294,6 +294,10 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
 }
 
 export const AppSettingsSchema = Schema.Struct({
+  composerCollapseOnScroll: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
   composerRichTextEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),

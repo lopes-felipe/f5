@@ -165,6 +165,17 @@ export function GeneralSettings() {
       <SettingsCard title="Composer" description="How the message composer behaves.">
         <div className="space-y-3">
           <SettingsRow
+            title="Collapse composer while scrolling"
+            description="Make room for the conversation when you scroll. Typing or clicking the editor expands it; leaving the editor never collapses it."
+            control={
+              <Switch
+                aria-label="Collapse composer while scrolling"
+                checked={settings.composerCollapseOnScroll}
+                onCheckedChange={(checked) => updateSettings({ composerCollapseOnScroll: checked })}
+              />
+            }
+          />
+          <SettingsRow
             title="Rich text editor"
             description="Style Markdown while keeping its source editable. Turn off for plain text."
             control={

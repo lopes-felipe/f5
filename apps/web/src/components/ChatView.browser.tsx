@@ -1,6 +1,6 @@
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
-import { serverBootstrapFixture } from "../test/serverBootstrap";
+import { serverBootstrapFixture as baseServerBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
 
@@ -68,6 +68,11 @@ import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
 }));
+
+const serverBootstrapFixture = {
+  ...baseServerBootstrapFixture,
+  capabilities: [...baseServerBootstrapFixture.capabilities, "composer-redesign"],
+};
 
 const THREAD_ID = "thread-browser-test" as ThreadId;
 const UUID_ROUTE_RE = /^\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -1982,6 +1987,317 @@ describe("ChatView timeline (full app)", () => {
   afterEach(() => {
     useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
+  });
+
+  async function composerScrollFixture() {
+    useComposerDraftStore
+      .getState()
+      .setPrompt(THREAD_ID, "Keep this draft and its selection\nSecond line\nThird line");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "collapse-target" as MessageId,
+        targetText: "Reading anchor",
+        fillerPairCount: 40,
+      }),
+    });
+    const editor = await waitForComposerEditor();
+    const form = editor.closest("form")!;
+    const timeline = await waitForElement(
+      () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
+      "Timeline missing",
+    );
+    await vi.waitFor(() =>
+      expect(timeline.scrollHeight).toBeGreaterThan(timeline.clientHeight + 100),
+    );
+    timeline.scrollTop = timeline.scrollHeight / 2;
+    timeline.dispatchEvent(new Event("scroll"));
+    await waitForLayout();
+    const wheel = (deltaY = -30, target: Element = timeline) =>
+      target.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY }));
+    return { mounted, editor, form, timeline, wheel };
+  }
+
+  it("scroll-collapses without remounting the editor or moving the reading anchor; blur does nothing", async () => {
+    const { mounted, editor, form, timeline, wheel } = await composerScrollFixture();
+    try {
+      editor.focus();
+      const selection = window.getSelection()!;
+      const text = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT).nextNode()!;
+      selection.setBaseAndExtent(text, 2, text, 8);
+      await waitForLayout();
+      timeline.scrollTop = (timeline.scrollHeight - timeline.clientHeight) / 2;
+      timeline.dispatchEvent(new Event("scroll"));
+      await waitForLayout();
+      expect(timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop).toBeGreaterThan(
+        200,
+      );
+      const expandedHeight = form.getBoundingClientRect().height;
+      const scrollTop = timeline.scrollTop;
+      const anchor = Array.from(
+        timeline.querySelectorAll<HTMLElement>("[data-timeline-row-id]"),
+      ).find((row) => row.getBoundingClientRect().top >= timeline.getBoundingClientRect().top)!;
+      const anchorTop = anchor.getBoundingClientRect().top;
+      wheel();
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+      await waitForLayout();
+      expect(form.getBoundingClientRect().height).toBeLessThan(expandedHeight);
+      expect(await waitForComposerEditor()).toBe(editor);
+      expect(selection.toString()).toBe("ep thi");
+      if (import.meta.env.VITE_COMPOSER_REVIEW_SCREENSHOTS === "1") {
+        await page.screenshot({ path: "/tmp/f5-phase10-collapsed.png" });
+      }
+      expect(Math.abs(timeline.scrollTop - scrollTop)).toBeLessThanOrEqual(2);
+      expect(Math.abs(anchor.getBoundingClientRect().top - anchorTop)).toBeLessThanOrEqual(2);
+      wheel(); // A fresh momentum event immediately before editing.
+      editor.dispatchEvent(
+        new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: "x" }),
+      );
+      wheel(); // Momentum from the gesture cannot immediately hide typing.
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      expect(Math.abs(anchor.getBoundingClientRect().top - anchorTop)).toBeLessThanOrEqual(2);
+      editor.blur();
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
+        "Keep this draft",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the composer expanded during IME and leaves open model menus usable at rest", async () => {
+    const { mounted, editor, form, wheel } = await composerScrollFixture();
+    try {
+      editor.focus();
+      editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      wheel();
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      wheel();
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+      window.dispatchEvent(new Event("focus"));
+      editor.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("true");
+      const modelButton = form.querySelector<HTMLElement>("[data-chat-provider-model-picker]");
+      expect(modelButton).toBeTruthy();
+      await page.elementLocator(modelButton!).click();
+      const menu = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-slot="popover-popup"], [data-slot="menu-popup"]',
+          ),
+        "Model menu missing",
+      );
+      wheel();
+      await waitForLayout();
+      expect(menu.isConnected).toBe(true);
+      editor.dispatchEvent(
+        new InputEvent("beforeinput", { bubbles: true, inputType: "insertText", data: "x" }),
+      );
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      wheel();
+      await waitForLayout();
+      expect(menu.isConnected).toBe(true);
+      expect(form.dataset.composerCollapsed).toBe("false");
+      await userEvent.keyboard("{Escape}");
+      editor.dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, clipboardData: new DataTransfer() }),
+      );
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it.each(["capability", "setting"])(
+    "keeps the legacy expanded layout when disabled by %s",
+    async (disabledBy) => {
+      if (disabledBy === "setting") persistAppSettings({ composerCollapseOnScroll: false });
+      const { mounted, form, wheel } = await composerScrollFixture();
+      try {
+        if (disabledBy === "capability") setServerBootstrap(baseServerBootstrapFixture);
+        await waitForLayout();
+        wheel();
+        await waitForLayout();
+        expect(form.dataset.composerCollapsed).toBe("false");
+      } finally {
+        await mounted.cleanup();
+      }
+    },
+  );
+
+  it("expands a different draft after leaving a scroll-collapsed thread", async () => {
+    const { mounted, form, wheel } = await composerScrollFixture();
+    try {
+      wheel();
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+      await vi.waitFor(() =>
+        expect(mounted.router.options.context.queryClient.isFetching()).toBe(0),
+      );
+      const draftId = "phase-ten-other-draft" as ThreadId;
+      useComposerDraftStore.setState((state) => ({
+        draftThreadsByThreadId: {
+          ...state.draftThreadsByThreadId,
+          [draftId]: {
+            projectId: PROJECT_ID,
+            createdAt: NOW_ISO,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            envMode: "local",
+          },
+        },
+      }));
+      useComposerDraftStore.getState().setPrompt(draftId, "A separate draft");
+      await mounted.router.navigate({ to: "/$threadId", params: { threadId: draftId } });
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-testid="composer-editor"]')?.textContent).toContain(
+          "A separate draft",
+        ),
+      );
+      expect(
+        document.querySelector<HTMLFormElement>("[data-chat-composer-form]")!.dataset
+          .composerCollapsed,
+      ).toBe("false");
+      await vi.waitFor(() =>
+        expect(mounted.router.options.context.queryClient.isFetching()).toBe(0),
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
+        "Keep this draft",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the last message visible through collapse and expansion at the end", async () => {
+    const { mounted, editor, form, timeline, wheel } = await composerScrollFixture();
+    try {
+      timeline.scrollTop = timeline.scrollHeight;
+      timeline.dispatchEvent(new Event("scroll"));
+      await waitForLayout();
+      wheel();
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+      await waitForLayout();
+      expect(
+        timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
+      ).toBeLessThanOrEqual(2);
+      editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+      await waitForLayout();
+      expect(
+        timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
+      ).toBeLessThanOrEqual(2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps long task drawers bounded and their content scrollable", async () => {
+    const mounted = await mountChatView({
+      viewport: { name: "small", width: 760, height: 600 },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "tasks-scroll" as MessageId,
+        targetText: "Task drawer",
+        tasks: Array.from({ length: 60 }, (_, i) => ({
+          id: `task-${i}`,
+          content: `Task ${i}`,
+          activeForm: `Working on ${i}`,
+          status: i === 0 ? ("in_progress" as const) : ("pending" as const),
+        })),
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      const dock = document.querySelector<HTMLElement>("[data-composer-state-drawers]")!;
+      const taskPanel = dock.querySelector<HTMLElement>("[data-composer-task-drawer]")!;
+      const toggle = taskPanel.querySelector<HTMLButtonElement>("button")!;
+      if (toggle.getAttribute("aria-expanded") !== "true")
+        await page.elementLocator(toggle).click();
+      const contents = taskPanel.querySelector<HTMLElement>("[id^=thread-task-panel] > div")!;
+      await vi.waitFor(() => expect(contents.scrollHeight).toBeGreaterThan(contents.clientHeight));
+      await vi.waitFor(() =>
+        expect(contents.parentElement!.clientHeight).toBeGreaterThanOrEqual(contents.clientHeight),
+      );
+      expect(getComputedStyle(taskPanel).backdropFilter).toBe("none");
+      expect(getComputedStyle(taskPanel).backgroundColor).toBe(
+        getComputedStyle(dock).backgroundColor,
+      );
+      expect(dock.getBoundingClientRect().height).toBeLessThanOrEqual(
+        window.innerHeight * 0.45 + 1,
+      );
+      if (import.meta.env.VITE_COMPOSER_REVIEW_SCREENSHOTS === "1") {
+        await page.screenshot({ path: "/tmp/f5-phase10-task-drawer.png" });
+      }
+      contents.scrollTop = contents.scrollHeight;
+      expect(contents.scrollTop).toBeGreaterThan(0);
+      expect(editor.getBoundingClientRect().bottom).toBeLessThan(window.innerHeight);
+      await page.elementLocator(toggle).click();
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("ignores nested pane scrolling, zoom, and timeline selections before accumulating a gesture", async () => {
+    const { mounted, form, timeline, wheel } = await composerScrollFixture();
+    const pane = document.createElement("pre");
+    try {
+      pane.style.cssText = "height: 30px; overflow-y: auto; overscroll-behavior-y: contain";
+      pane.textContent = "Nested output\n".repeat(30);
+      timeline.append(pane);
+      wheel(-50, pane);
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      pane.remove();
+      timeline.dispatchEvent(
+        new WheelEvent("wheel", { bubbles: true, deltaY: -50, ctrlKey: true }),
+      );
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      const row = timeline.querySelector("[data-timeline-row-id]")!;
+      window.getSelection()!.selectAllChildren(row);
+      wheel(-50);
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      window.getSelection()!.removeAllRanges();
+      wheel(-12);
+      await waitForLayout();
+      expect(form.dataset.composerCollapsed).toBe("false");
+      wheel(-12);
+      await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+    } finally {
+      pane.remove();
+      await mounted.cleanup();
+    }
+  });
+
+  it("never collapses an empty conversation without scrollable history", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "empty-scroll" as MessageId,
+      targetText: "",
+      fillerPairCount: 0,
+    });
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+    try {
+      const editor = await waitForComposerEditor();
+      const timeline = document.querySelector<HTMLElement>(
+        '[data-slot="messages-scroll-container"]',
+      )!;
+      timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+      await waitForLayout();
+      expect(editor.closest("form")!.dataset.composerCollapsed).toBe("false");
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("submits a form with required free text and an empty optional field", async () => {

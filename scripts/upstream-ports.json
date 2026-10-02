@@ -4,10 +4,14 @@
     {
       "upstreamSha": "0009aacdf146e0532327fa3d9d0109d5adca68b9",
       "subject": "fix(web): keep long task drawers usable on small screens (#8313)",
-      "reason": "Phase 10: fix(web): keep long task drawers usable on small screens. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Task content and the attached state dock have bounded viewport-relative heights and independent scrolling; the task body is inert while closed. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ThreadTasksPanel.tsx:1",
+        "apps/web/src/index.css:1"
+      ]
     },
     {
       "upstreamSha": "001f06d543beb92cc66bb7e8d54d233a20d802b4",
@@ -248,10 +252,14 @@
     {
       "upstreamSha": "03728361aa7beb9c13da320097450e6fe65aac3e",
       "subject": "feat(web): let users turn off composer collapse on blur and scroll (#9469)",
-      "reason": "Phase 10: feat(web): let users turn off composer collapse on blur and scroll. Reimplement the applicable behavior in f5; not yet delivered. Use the final scroll-collapse behavior only; never collapse on blur alone.",
+      "reason": "Phase 10 working-tree implementation: The web-local composerCollapseOnScroll setting defaults on and can be disabled in General settings. Blur never collapses the composer. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/appSettings.ts:1",
+        "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"
+      ]
     },
     {
       "upstreamSha": "038560e58036d51b2576b3c2cd9170a194cefe9e",
@@ -318,10 +326,14 @@
     {
       "upstreamSha": "044ea8e347d980a215057c325de8335d38f0f9aa",
       "subject": "fix(web): stop the resting composer layout loop (#9393)",
-      "reason": "Phase 10 (composer redesign): fix(web): stop the resting composer layout loop. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Controls stay mounted at fixed form-width breakpoints; collapse does not measure its own contents or feed measured child widths back into the layout. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
+        "apps/web/src/components/composerFooterLayout.ts:1"
+      ]
     },
     {
       "upstreamSha": "04df98db4c90790fb5171426894baa3bca57a935",
@@ -868,10 +880,11 @@
     {
       "upstreamSha": "0a46daaf63e78cdd188f6eb944ce5ee463e63216",
       "subject": "fix(web): keep messages clear of composer banners (#7792)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep messages clear of composer banners. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The attached drawer stack occupies normal flow above the composer, leaving the timeline its own unobstructed viewport. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/index.css:1"]
     },
     {
       "upstreamSha": "0a590fa01af66ec135d2ebf2d5542b08a37dc275",
@@ -970,10 +983,11 @@
     {
       "upstreamSha": "0ba06a122bc73f705bfc18875366b4eeb1160992",
       "subject": "fix(web): settle the resting composer layout with a pixel of slack (#9482)",
-      "reason": "Phase 10 (composer redesign): fix(web): settle the resting composer layout with a pixel of slack. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: F5 uses the existing fixed form-width breakpoints instead of the upstream content-width fit loop, avoiding subpixel oscillation. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/ChatView.tsx:1"]
     },
     {
       "upstreamSha": "0bbecfabf189349b16ad2d7e6558a95a98a3b196",
@@ -1386,10 +1400,11 @@
     {
       "upstreamSha": "11601da846e7d82db63a6f4773e3a02421619b60",
       "subject": "fix(web): chat text no longer shows through a 1px gap under composer banners (#10635)",
-      "reason": "Phase 10 (composer redesign): fix(web): chat text no longer shows through a 1px gap under composer banners. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The normal-flow state dock has an opaque card background and no overlay mask or one-pixel gap through which messages can show. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/index.css:1"]
     },
     {
       "upstreamSha": "11639bf4391d9d49e48052bae755f748cbd22ff2",
@@ -1464,10 +1479,11 @@
     {
       "upstreamSha": "126afb56fca56c663f4f40acd46f123ab27eee2b",
       "subject": "fix(web): banner buttons no longer expand the resting composer (#9452)",
-      "reason": "Phase 10 (composer redesign): fix(web): banner buttons no longer expand the resting composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Only editor-area interaction expands a resting composer; drawer and toolbar buttons keep their layout and action. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "126ea5c3bcf888df4a918438ae7d68a4a4a905f2",
@@ -3607,10 +3623,11 @@
     {
       "upstreamSha": "2d8f9a8f55d2195ac820c91f0f1e8f66a055f841",
       "subject": "fix(web): keep the timeline still when the resting composer expands (#12771)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep the timeline still when the resting composer expands. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The Lexical editor retains its DOM and selection across CSS-only layout changes. Full-app tests assert the historical reading anchor survives collapse and expansion. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/ChatView.browser.tsx:1"]
     },
     {
       "upstreamSha": "2d9066e089c241c3befd7a4632efe493fabd70d9",
@@ -3813,10 +3830,11 @@
     {
       "upstreamSha": "30175a8af04c0daa359652b5e8dc8230b40b462a",
       "subject": "fix(web): restore unified activity logs and composer banners (#8734)",
-      "reason": "Phase 10 (composer redesign): fix(web): restore unified activity logs and composer banners. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The final F5 layout retains its existing activity timeline and attaches queue, worktree, task and input states above the composer; it does not import the reverted upstream banner subsystem. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/ChatView.tsx:1"]
     },
     {
       "upstreamSha": "3060cc461458e66842dfb656d979c4acca4dfb20",
@@ -4824,10 +4842,11 @@
     {
       "upstreamSha": "3d32797f6f4614205debf8a61f09e950f5f9a81c",
       "subject": "fix(web): unify activity logs and composer banners (#8693)",
-      "reason": "Phase 10 (composer redesign): fix(web): unify activity logs and composer banners. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: F5 keeps the existing activity projection and timeline as the source of work logs, with state panels attached to the composer rather than a duplicate activity log. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/ChatView.tsx:1"]
     },
     {
       "upstreamSha": "3d429662c9bd7b731c059dc3a84ccdfc43bf3701",
@@ -5424,10 +5443,14 @@
     {
       "upstreamSha": "4749035bda13b4b6260499caedbc0d69a2f60e6f",
       "subject": "fix(web): keep composer banners compact and readable (#12166)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep composer banners compact and readable. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: State panels are attached with shared opaque styling and a bounded scrollable dock; task summaries remain visible above independently scrolling task content. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ThreadTasksPanel.tsx:1",
+        "apps/web/src/index.css:1"
+      ]
     },
     {
       "upstreamSha": "474cc5fb017a13dbdb403dd3bf714ddbf867205a",
@@ -6267,10 +6290,11 @@
     {
       "upstreamSha": "522ebe65a542ace6f22d9ad95f95ef9ade7e87f1",
       "subject": "fix(web): keep the composer open while selecting timeline text (#9499)",
-      "reason": "Phase 10: fix(web): keep the composer open while selecting timeline text. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: A timeline text selection blocks scroll-collapse. Blur and selection elsewhere never trigger collapse. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "52ad70ec43b5dcfcdc72ac79c0964da8e4d163db",
@@ -6441,10 +6465,14 @@
     {
       "upstreamSha": "54aef6fbe16f637092505b30bd25230c4b0744d8",
       "subject": "fix(web): restore composer controls as space becomes available (#9539)",
-      "reason": "Phase 10 (composer redesign): fix(web): restore composer controls as space becomes available. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: F5 preserves its existing responsive form-width controls and compact menu, which restore when the form widens. Collapse never unmounts toolbar controls. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
+        "apps/web/src/components/ChatView.tsx:1"
+      ]
     },
     {
       "upstreamSha": "54bbed660fc5dc99c6bfe335981e6d431275c91e",
@@ -6995,10 +7023,14 @@
     {
       "upstreamSha": "5b8445b7a777ab1070aa97b062b1618971073a96",
       "subject": "fix(web): collapse the resting composer (#7855)",
-      "reason": "Phase 10 (composer redesign): fix(web): collapse the resting composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: An existing scrollable thread rests after a 24px timeline wheel gesture; the same editable surface becomes one line and attachments have an expansion badge. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1",
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1"
+      ]
     },
     {
       "upstreamSha": "5b8a69c7b90b751507d0ab762dd77aaa2048408b",
@@ -7606,10 +7638,11 @@
     {
       "upstreamSha": "6382268323f86e01b2d40206bcf33beccb3fb64a",
       "subject": "fix(web): let paste expand a resting composer (#9498)",
-      "reason": "Phase 10 (composer redesign): fix(web): let paste expand a resting composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Paste and beforeinput expand the mounted editor and suppress the active gesture momentum. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "63e6faef62218c9d1b5277933154516e278f7cb2",
@@ -8189,10 +8222,11 @@
     {
       "upstreamSha": "6cc7f7006e24283072cc3e0b3ed8ced80c6d71a5",
       "subject": "fix(web): keep composer controls visible while they fit (#12837)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep composer controls visible while they fit. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The toolbar remains visible at rest, using the existing F5 responsive compact menu and form-width breakpoints rather than removing controls to fit a measured strip. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"]
     },
     {
       "upstreamSha": "6cdbf76fa4b0509913046abe6105037ded9e52bb",
@@ -8691,10 +8725,11 @@
     {
       "upstreamSha": "720e126b761ba0da112d8c68b589d20ab98a7eb0",
       "subject": "fix(web): restore composer expansion after tool calls (#9782)",
-      "reason": "Phase 10: fix(web): restore composer expansion after tool calls. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Expansion is scoped to editor interaction and thread identity, independent of provider activity and tool-call completion. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "7220dfe2c949476eaa7d21eccbcd3a0ce0eddb49",
@@ -9024,10 +9059,11 @@
     {
       "upstreamSha": "77138cf33194a303adfbbd69cc93efa69f84245d",
       "subject": "fix(web): dont collapse composer when interacting with bottom row (#9490)",
-      "reason": "Phase 10: fix(web): dont collapse composer when interacting with bottom row. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Blur has no collapse handler. Interacting with footer controls never requests collapse, and open popups suppress timeline scroll-collapse. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "772ea1473a4a8f8fb0e0a5c9ba6d7a2ef14eac6e",
@@ -9184,10 +9220,14 @@
     {
       "upstreamSha": "792a1404f6d25838597f8f31b0af144dc1beee12",
       "subject": "feat(web): attach composer state drawers (#7150)",
-      "reason": "Phase 10 (composer redesign): feat(web): attach composer state drawers. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Tasks, setup, queue, asynchronous questions and rewind drafts share an attached bounded state dock. Approvals, blocking questions, plan actions and command suggestions retain their live controls and editor. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
+        "apps/web/src/components/ChatView.tsx:1"
+      ]
     },
     {
       "upstreamSha": "7931227977ca3e6f3354a63467caa634ab79796f",
@@ -9574,10 +9614,11 @@
     {
       "upstreamSha": "7fbc545ae8c7866ac2b39648120cb2a17250d8b4",
       "subject": "fix(web): keep the composer footer still while thread data loads (#10768)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep the composer footer still while thread data loads. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The same footer controls stay mounted while thread data hydrates and layout changes. Compactness depends on form width, not asynchronously loaded model-label measurements. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"]
     },
     {
       "upstreamSha": "803f94e787faef498edecba5dbd07493ac8bc817",
@@ -10651,10 +10692,11 @@
     {
       "upstreamSha": "8dcb96314c976899e4df6951fb9af03131c2a46f",
       "subject": "revert(web): restore previous composer banners (#8733)",
-      "reason": "Phase 10 (composer redesign): revert(web): restore previous composer banners. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The final F5 state-drawer design is implemented directly; the intermediate upstream banner revert is not replayed. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/ChatComposer.tsx:1"]
     },
     {
       "upstreamSha": "8dd02470b1e7603b8d36a21ae27c510480351f18",
@@ -10689,10 +10731,14 @@
     {
       "upstreamSha": "8e056a0e5124775b9439751667bac483d7b5320a",
       "subject": "fix(web): open composer selectors below controls (#9767)",
-      "reason": "Phase 10 (composer redesign): fix(web): open composer selectors below controls. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Existing Base UI popovers retain their collision-aware placement and mounted triggers. No alternate collapsed toolbar or portal relocation is introduced. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:1",
+        "apps/web/src/components/ui/popover.tsx:1"
+      ]
     },
     {
       "upstreamSha": "8e129a0dfb35ac2c03a7320245b5bfb976f5d3bf",
@@ -11477,10 +11523,14 @@
     {
       "upstreamSha": "9842518c9a0af14fb3a3e90993692a6e34032682",
       "subject": "fix(web): address composer banner review follow-ups (#8850)",
-      "reason": "Phase 10 (composer redesign): fix(web): address composer banner review follow-ups. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: State panels remain in normal document flow with opaque backgrounds and bounded scrolling; collapse does not add overlay click interception or duplicate activity subscriptions. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
+        "apps/web/src/index.css:1"
+      ]
     },
     {
       "upstreamSha": "98469159dd9e162a9c2f5cc4bbb2fbe89b3c4f67",
@@ -11900,10 +11950,14 @@
     {
       "upstreamSha": "9e1bc36a0843699db54ee28abbdac70584ae8f33",
       "subject": "fix(web): keep the last message visible when the resting composer expands (#9553)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep the last message visible when the resting composer expands. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: LegendList retains end pinning on layout changes. Full-app tests verify the last message remains visible after collapse and expansion. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/ChatView.browser.tsx:1",
+        "apps/web/src/components/chat/MessagesTimeline.tsx:1"
+      ]
     },
     {
       "upstreamSha": "9e1fb459a985d13c1d4e57080f49d70dabf3b681",
@@ -12143,10 +12197,11 @@
     {
       "upstreamSha": "a12589dc0bec60b498e72bdd2190871ee6b5c80d",
       "subject": "fix(web): stop collapsing the composer when it loses focus (#10437)",
-      "reason": "Phase 10 (composer redesign): fix(web): stop collapsing the composer when it loses focus. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The final scroll-only behavior is used: no blur collapse, no window-refocus expansion, and editor interactions cancel active scroll momentum. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "a135f2c2d32bcded09fca32d4147c06df90ec84d",
@@ -13738,10 +13793,14 @@
     {
       "upstreamSha": "b919d6389929698ddf223d35d20139f01c8bc899",
       "subject": "fix(web): keep composer toolbar controls anchored during transitions (#10478)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep composer toolbar controls anchored during transitions. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Toolbar controls retain the same DOM position and width across transitions; the editor height changes without animating or relocating controls. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1",
+        "apps/web/src/index.css:1"
+      ]
     },
     {
       "upstreamSha": "b91a000a17ddb4937397151a0a39a07990ad6473",
@@ -14567,10 +14626,11 @@
     {
       "upstreamSha": "c1d27e593b278e7d997c05efdbcc043bae653e83",
       "subject": "fix(web): keep the composer expanded until the thread can scroll (#9965)",
-      "reason": "Phase 10: fix(web): keep the composer expanded until the thread can scroll. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: A gesture cannot collapse a non-overflowing timeline or one that cannot scroll in the gesture direction. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1"]
     },
     {
       "upstreamSha": "c1e279eca52e02ee3fb9c8d133057a30526f282c",
@@ -14848,10 +14908,11 @@
     {
       "upstreamSha": "c726c30a148c2add6a3ec7f31f54ae48dc5d2f0c",
       "subject": "fix(web): keep opencode icon hollow in collapsed composer (#9492)",
-      "reason": "Phase 10 (composer redesign): fix(web): keep opencode icon hollow in collapsed composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The resting composer reuses the existing provider picker and icon classes, including the hollow OpenCode icon, without rendering a separate collapsed copy. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/chat/ProviderInstanceModelPicker.tsx:1"]
     },
     {
       "upstreamSha": "c742edd46c5b6792ec8647f934a4703f9103aa82",
@@ -16538,10 +16599,11 @@
     {
       "upstreamSha": "dda44ed33280106aa46612fd9e1f1475bb5a0712",
       "subject": "fix(web): show tooltips for composer environment and workspace controls (#11787)",
-      "reason": "Phase 10 (composer redesign): fix(web): show tooltips for composer environment and workspace controls. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: The existing F5 branch/worktree controls remain outside the collapsing editor and retain their labels/tooltips; multi-machine environment controls are outside the approved scope. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": ["apps/web/src/components/BranchToolbar.tsx:1"]
     },
     {
       "upstreamSha": "ddaa6afef55e0da53950c7ed45f7d91b717475a5",
@@ -18196,10 +18258,14 @@
     {
       "upstreamSha": "f239b77df93077e40c27cc5c5909e94266571859",
       "subject": "fix(web): close composer menus when their controls hide (#9541)",
-      "reason": "Phase 10 (composer redesign): fix(web): close composer menus when their controls hide. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 10 working-tree implementation: Collapse never hides or replaces toolbar triggers, so their popups retain valid anchors; visible popups block new collapse gestures. Delivery remains deferred pending the existing performance release gates and implementation-commit f5Shas; see docs/reviews/phase-ten-composer-validation.md.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "10"
+      "plannedWorkstream": "10",
+      "evidence": [
+        "apps/web/src/components/chat/composer/useComposerScrollCollapse.ts:1",
+        "apps/web/src/components/chat/composer/ChatComposer.tsx:1"
+      ]
     },
     {
       "upstreamSha": "f25a8e4b72c1164f2ab7b1c8481496f168d17f55",

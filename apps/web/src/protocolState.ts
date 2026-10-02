@@ -21,6 +21,14 @@ const emit = () => {
 export const getProtocolState = () => state;
 export const useProtocolState = () =>
   useSyncExternalStore(subscribeProtocolState, getProtocolState, getProtocolState);
+/** Capabilities come from the authenticated server bootstrap, never local storage. */
+export function useServerCapability(capability: string): boolean {
+  return useSyncExternalStore(
+    subscribeProtocolState,
+    () => bootstrap?.capabilities.includes(capability) ?? false,
+    () => false,
+  );
+}
 export function requireProtocolUpgrade(): void {
   if (state.upgradeRequired) return;
   state = { ...state, upgradeRequired: true };
