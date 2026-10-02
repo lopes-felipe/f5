@@ -2,6 +2,7 @@ import { useSettings, useUpdateSettings } from "../../../hooks/useSettings";
 import { toastManager } from "../../ui/toast";
 import { buildAppSettingsPatch } from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
+import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { Button } from "../../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
@@ -12,6 +13,24 @@ const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
   "24-hour": "24-hour",
+} as const;
+
+const MERGE_METHOD_LABELS = {
+  "last-used": "Last used for the repository",
+  squash: "Squash",
+  merge: "Merge commit",
+  rebase: "Rebase",
+} as const;
+
+const FOLLOW_UP_BEHAVIOR_LABELS = {
+  queue: "Queue",
+  steer: "Steer the active turn",
+} as const;
+
+const SEND_SHORTCUT_LABELS = {
+  enter: "Enter",
+  "mod-enter": "Command/Ctrl+Enter",
+  "mod-enter-multiline": "Command/Ctrl+Enter for multiline prompts",
 } as const;
 
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
@@ -32,6 +51,7 @@ export function GeneralSettings() {
       }),
     );
   };
+  const mergeMethodValue = defaultMergeMethod ?? "last-used";
 
   return (
     <>
@@ -113,147 +133,156 @@ export function GeneralSettings() {
         </section>
       )}
 
-      <section className="rounded-2xl border border-border bg-card p-5">
-        <h2 className="text-sm font-medium">Pull requests</h2>
-        <p className="my-2 text-xs text-muted-foreground">
-          Used when the repository allows it. Your choice in a merge dialog takes precedence.
-        </p>
-        <Select
-          value={defaultMergeMethod ?? "last-used"}
-          onValueChange={(value) => {
-            if (value === "last-used") setDefaultMergeMethod(null);
-            else if (value === "merge" || value === "squash" || value === "rebase")
-              setDefaultMergeMethod(value);
-          }}
-        >
-          <SelectTrigger aria-label="Default PR merge method">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            <SelectItem value="last-used">Last used for the repository</SelectItem>
-            <SelectItem value="squash">Squash</SelectItem>
-            <SelectItem value="merge">Merge commit</SelectItem>
-            <SelectItem value="rebase">Rebase</SelectItem>
-          </SelectPopup>
-        </Select>
-      </section>
-      <section className="rounded-2xl border border-border bg-card p-5">
-        <h2 className="text-sm font-medium">Composer</h2>
-        <label className="my-3 flex items-center justify-between gap-3 text-sm">
-          <span>
-            Rich text editor
-            <span className="block text-xs text-muted-foreground">
-              Style Markdown while keeping its source editable. Turn off for plain text.
-            </span>
-          </span>
-          <Switch
-            aria-label="Rich text editor"
-            checked={settings.composerRichTextEnabled}
-            onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
-          />
-        </label>
-        <label className="flex items-center justify-between gap-4 py-2">
-          <span>
-            Load remote images in chat
-            <span className="block text-xs text-muted-foreground">
-              Allow HTTPS images from external websites.
-            </span>
-          </span>
-          <Switch
-            aria-label="Load remote images in chat"
-            checked={settings.loadRemoteImagesInChat}
-            onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
-          />
-        </label>
-        <label className="flex items-center justify-between gap-4 py-2">
-          <span>Resume active turns after restart</span>
-          <Switch
-            aria-label="Resume active turns after restart"
-            checked={resumeActiveTurnsAfterRestart}
-            onCheckedChange={(value) =>
-              void updateServerSettings({ resumeActiveTurnsAfterRestart: value })
-            }
-          />
-        </label>
-        <label className="flex items-center justify-between gap-4 py-2">
-          <span>Follow-up behavior</span>
-          <select
-            aria-label="Follow-up behavior"
-            value={settings.followUpBehavior}
-            onChange={(event) =>
-              updateSettings({
-                followUpBehavior: event.target.value === "steer" ? "steer" : "queue",
-              })
-            }
-          >
-            <option value="queue">Queue</option>
-            <option value="steer">Steer the active turn</option>
-          </select>
-        </label>
-        <p className="my-2 text-xs text-muted-foreground">Shift+Enter always inserts a new line.</p>
-        <Select
-          value={settings.sendShortcut}
-          onValueChange={(value) => {
-            if (value === "enter" || value === "mod-enter" || value === "mod-enter-multiline")
-              updateSettings({ sendShortcut: value });
-          }}
-        >
-          <SelectTrigger aria-label="Send shortcut">
-            <SelectValue>
-              {settings.sendShortcut === "enter"
-                ? "Enter"
-                : settings.sendShortcut === "mod-enter"
-                  ? "Command/Ctrl+Enter"
-                  : "Command/Ctrl+Enter for multiline prompts"}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup>
-            <SelectItem value="enter">Enter</SelectItem>
-            <SelectItem value="mod-enter">Command/Ctrl+Enter</SelectItem>
-            <SelectItem value="mod-enter-multiline">
-              Command/Ctrl+Enter for multiline prompts
-            </SelectItem>
-          </SelectPopup>
-        </Select>
-      </section>
-      <section className="rounded-2xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Time & locale</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Choose how dates and times appear across the app.
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">Timestamp format</p>
-              <p className="text-xs text-muted-foreground">
-                System default follows your browser or OS time format. <code>12-hour</code> and{" "}
-                <code>24-hour</code> force the hour cycle.
-              </p>
-            </div>
+      <SettingsCard
+        title="Pull requests"
+        description="Used when the repository allows it. Your choice in a merge dialog takes precedence."
+      >
+        <SettingsRow
+          title="Default merge method"
+          control={
             <Select
-              value={settings.timestampFormat}
+              value={mergeMethodValue}
               onValueChange={(value) => {
-                if (value !== "locale" && value !== "12-hour" && value !== "24-hour") {
-                  return;
-                }
-                updateSettings({
-                  timestampFormat: value,
-                });
+                if (value === "last-used") setDefaultMergeMethod(null);
+                else if (value === "merge" || value === "squash" || value === "rebase")
+                  setDefaultMergeMethod(value);
               }}
             >
-              <SelectTrigger className="w-40" aria-label="Timestamp format">
-                <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
+              <SelectTrigger className="w-56" aria-label="Default PR merge method">
+                <SelectValue>{MERGE_METHOD_LABELS[mergeMethodValue]}</SelectValue>
               </SelectTrigger>
               <SelectPopup align="end">
-                <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
-                <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
-                <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
+                <SelectItem value="last-used">{MERGE_METHOD_LABELS["last-used"]}</SelectItem>
+                <SelectItem value="squash">{MERGE_METHOD_LABELS.squash}</SelectItem>
+                <SelectItem value="merge">{MERGE_METHOD_LABELS.merge}</SelectItem>
+                <SelectItem value="rebase">{MERGE_METHOD_LABELS.rebase}</SelectItem>
               </SelectPopup>
             </Select>
-          </div>
+          }
+        />
+      </SettingsCard>
+
+      <SettingsCard title="Composer" description="How the message composer behaves.">
+        <div className="space-y-3">
+          <SettingsRow
+            title="Rich text editor"
+            description="Style Markdown while keeping its source editable. Turn off for plain text."
+            control={
+              <Switch
+                aria-label="Rich text editor"
+                checked={settings.composerRichTextEnabled}
+                onCheckedChange={(checked) => updateSettings({ composerRichTextEnabled: checked })}
+              />
+            }
+          />
+          <SettingsRow
+            title="Load remote images in chat"
+            description="Allow HTTPS images from external websites."
+            control={
+              <Switch
+                aria-label="Load remote images in chat"
+                checked={settings.loadRemoteImagesInChat}
+                onCheckedChange={(checked) => updateSettings({ loadRemoteImagesInChat: checked })}
+              />
+            }
+          />
+          <SettingsRow
+            title="Resume active turns after restart"
+            description="Continue turns that were running when the app restarted."
+            control={
+              <Switch
+                aria-label="Resume active turns after restart"
+                checked={resumeActiveTurnsAfterRestart}
+                onCheckedChange={(value) =>
+                  void updateServerSettings({ resumeActiveTurnsAfterRestart: value })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="Follow-up behavior"
+            description="What sending a message does while a turn is running."
+            control={
+              <Select
+                value={settings.followUpBehavior}
+                onValueChange={(value) => {
+                  if (value === "queue" || value === "steer")
+                    updateSettings({ followUpBehavior: value });
+                }}
+              >
+                <SelectTrigger className="w-48" aria-label="Follow-up behavior">
+                  <SelectValue>{FOLLOW_UP_BEHAVIOR_LABELS[settings.followUpBehavior]}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  <SelectItem value="queue">{FOLLOW_UP_BEHAVIOR_LABELS.queue}</SelectItem>
+                  <SelectItem value="steer">{FOLLOW_UP_BEHAVIOR_LABELS.steer}</SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+          <SettingsRow
+            title="Send shortcut"
+            description="Shift+Enter always inserts a new line."
+            control={
+              <Select
+                value={settings.sendShortcut}
+                onValueChange={(value) => {
+                  if (value === "enter" || value === "mod-enter" || value === "mod-enter-multiline")
+                    updateSettings({ sendShortcut: value });
+                }}
+              >
+                <SelectTrigger className="w-48" aria-label="Send shortcut">
+                  <SelectValue>{SEND_SHORTCUT_LABELS[settings.sendShortcut]}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  <SelectItem value="enter">{SEND_SHORTCUT_LABELS.enter}</SelectItem>
+                  <SelectItem value="mod-enter">{SEND_SHORTCUT_LABELS["mod-enter"]}</SelectItem>
+                  <SelectItem value="mod-enter-multiline">
+                    {SEND_SHORTCUT_LABELS["mod-enter-multiline"]}
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </div>
+      </SettingsCard>
+
+      <SettingsCard
+        title="Time & locale"
+        description="Choose how dates and times appear across the app."
+      >
+        <div className="space-y-4">
+          <SettingsRow
+            title="Timestamp format"
+            description={
+              <>
+                System default follows your browser or OS time format. <code>12-hour</code> and{" "}
+                <code>24-hour</code> force the hour cycle.
+              </>
+            }
+            control={
+              <Select
+                value={settings.timestampFormat}
+                onValueChange={(value) => {
+                  if (value !== "locale" && value !== "12-hour" && value !== "24-hour") {
+                    return;
+                  }
+                  updateSettings({
+                    timestampFormat: value,
+                  });
+                }}
+              >
+                <SelectTrigger className="w-40" aria-label="Timestamp format">
+                  <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  <SelectItem value="locale">{TIMESTAMP_FORMAT_LABELS.locale}</SelectItem>
+                  <SelectItem value="12-hour">{TIMESTAMP_FORMAT_LABELS["12-hour"]}</SelectItem>
+                  <SelectItem value="24-hour">{TIMESTAMP_FORMAT_LABELS["24-hour"]}</SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
 
           {settings.timestampFormat !== defaults.timestampFormat ? (
             <div className="flex justify-end">
@@ -273,52 +302,43 @@ export function GeneralSettings() {
             </div>
           ) : null}
         </div>
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Threads</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Choose the default workspace mode for newly created draft threads.
-          </p>
-        </div>
-
+      <SettingsCard
+        title="Threads"
+        description="Choose the default workspace mode for newly created draft threads."
+      >
         <div className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">Default to New worktree</p>
-              <p className="text-xs text-muted-foreground">
-                New threads start in New worktree mode instead of Local.
-              </p>
-            </div>
-            <Switch
-              checked={settings.defaultThreadEnvMode === "worktree"}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  defaultThreadEnvMode: checked ? "worktree" : "local",
-                })
-              }
-              aria-label="Default new threads to New worktree mode"
-            />
-          </div>
-
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-            <div>
-              <p className="text-sm font-medium text-foreground">Open task sidebar automatically</p>
-              <p className="text-xs text-muted-foreground">
-                Show task and plan sidebars automatically when a thread starts tracking steps.
-              </p>
-            </div>
-            <Switch
-              checked={settings.tasksPanelAutoOpen}
-              onCheckedChange={(checked) =>
-                updateSettings({
-                  tasksPanelAutoOpen: Boolean(checked),
-                })
-              }
-              aria-label="Open task sidebar automatically"
-            />
-          </div>
+          <SettingsRow
+            title="Default to New worktree"
+            description="New threads start in New worktree mode instead of Local."
+            control={
+              <Switch
+                checked={settings.defaultThreadEnvMode === "worktree"}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    defaultThreadEnvMode: checked ? "worktree" : "local",
+                  })
+                }
+                aria-label="Default new threads to New worktree mode"
+              />
+            }
+          />
+          <SettingsRow
+            title="Open task sidebar automatically"
+            description="Show task and plan sidebars automatically when a thread starts tracking steps."
+            control={
+              <Switch
+                checked={settings.tasksPanelAutoOpen}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    tasksPanelAutoOpen: Boolean(checked),
+                  })
+                }
+                aria-label="Open task sidebar automatically"
+              />
+            }
+          />
         </div>
 
         {settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ||
@@ -338,33 +358,27 @@ export function GeneralSettings() {
             </Button>
           </div>
         ) : null}
-      </section>
+      </SettingsCard>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Safety</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Additional guardrails for destructive local actions.
-          </p>
-        </div>
-
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-          <div>
-            <p className="text-sm font-medium text-foreground">Confirm thread deletion</p>
-            <p className="text-xs text-muted-foreground">
-              Ask for confirmation before deleting a thread and its chat history.
-            </p>
-          </div>
-          <Switch
-            checked={settings.confirmThreadDelete}
-            onCheckedChange={(checked) =>
-              updateSettings({
-                confirmThreadDelete: Boolean(checked),
-              })
-            }
-            aria-label="Confirm thread deletion"
-          />
-        </div>
+      <SettingsCard
+        title="Safety"
+        description="Additional guardrails for destructive local actions."
+      >
+        <SettingsRow
+          title="Confirm thread deletion"
+          description="Ask for confirmation before deleting a thread and its chat history."
+          control={
+            <Switch
+              checked={settings.confirmThreadDelete}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  confirmThreadDelete: Boolean(checked),
+                })
+              }
+              aria-label="Confirm thread deletion"
+            />
+          }
+        />
 
         {settings.confirmThreadDelete !== defaults.confirmThreadDelete ? (
           <div className="mt-3 flex justify-end">
@@ -377,7 +391,7 @@ export function GeneralSettings() {
             </Button>
           </div>
         ) : null}
-      </section>
+      </SettingsCard>
     </>
   );
 }
