@@ -51,9 +51,8 @@ upstream banner rewrites/reverts, Tiptap changes and environment controls are no
 copied into unrelated F5 subsystems.
 
 The ledger deliberately retains `deferred` delivery status while the existing
-performance release failures remain open and an implementation commit is still
-needed to record `f5Shas`. The plan permits commits only when requested;
-no uncommitted change is attributed to an unrelated existing commit. The original
+performance release failures remain open. All 30 entries record implementation
+commit `0640ab8e001cebf7dc8ca7b15b9e0ffc8f9d97b4` in `f5Shas`. The original
 September classification file remains a historical planning artifact.
 
 ## Validation
