@@ -73,7 +73,7 @@ const CommandIdRowSchema = Schema.Struct({
   commandId: CommandId,
 });
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
-const READ_PAGE_SIZE = 500;
+const READ_PAGE_SIZE = 200;
 
 function inferActorKind(
   event: Omit<OrchestrationEvent, "sequence">,

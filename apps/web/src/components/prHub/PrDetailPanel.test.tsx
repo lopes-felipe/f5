@@ -11,6 +11,11 @@ function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest
   return {
     key: PullRequestKey.makeUnsafe("github:github.com/octo/repo#1"),
     provider: "github",
+    capabilities: [
+      { action: "approve", supported: true },
+      { action: "comment", supported: true },
+      { action: "request-changes", supported: true },
+    ],
     nodeId: "PR_1",
     number: 1,
     title: "Improve advisory flow",

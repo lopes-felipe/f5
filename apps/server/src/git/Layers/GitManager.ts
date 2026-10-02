@@ -1,7 +1,7 @@
 import { readProjectSettings, isInsideProjectWorkspace } from "../../project/projectSettings";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads";
-import { GitCommandError } from "../Errors.ts";
+import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import {
   isSshRemoteUrl,
   parseSourceControlRemoteUrl,
@@ -10,7 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, Option } from "effect";
 import {
   resolveAutoFeatureBranchName,
   sanitizeBranchFragment,
@@ -27,6 +27,8 @@ import { isPullRequestTrackingAlias, extractBranchNameFromRemoteRef } from "../r
 import { GitManager, type GitManagerShape } from "../Services/GitManager.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
+import { makeGitHubCli } from "./GitHubCli.ts";
+import { GitHubCredentialScope } from "../githubApi.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
 import { ServerConfig } from "../../config.ts";
@@ -36,6 +38,9 @@ import {
   buildDeterministicPrContent,
   prefixGeneratedBranchName,
 } from "../Prompts.ts";
+import { ForgeAccounts } from "../../sourceControl/accountRouting.ts";
+import { makeForgeSourceControlProvider } from "../../sourceControl/ForgeSourceControlProvider.ts";
+import { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
 import { makeGitHubSourceControlProvider } from "../../sourceControl/GitHubSourceControlProvider.ts";
 import {
   makeSourceControlProviderRegistry,
@@ -422,8 +427,181 @@ function toPullRequestHeadRemoteInfo(pr: {
 export const makeGitManager = Effect.gen(function* () {
   const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
+  const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
+  const resolveGitHubAccount = (cwd: string) =>
+    Effect.gen(function* () {
+      if (Option.isNone(forgeAccounts))
+        return yield* new SourceControlProviderError({
+          provider: "github",
+          operation: "account.resolve",
+          kind: "unauthenticated",
+          detail: "Configure a forge account before using this repository.",
+        });
+      const identity = yield* resolveSourceControlProviderIdentity(cwd);
+      if (identity.kind !== "github" || !identity.host || !identity.owner || !identity.repository)
+        return yield* new SourceControlProviderError({
+          provider: "github",
+          operation: "account.resolve",
+          kind: "forbidden",
+          detail: "The repository does not identify a configured GitHub account.",
+        });
+      return yield* forgeAccounts.value.resolveAccount({
+        cwd,
+        ref: {
+          provider: "github",
+          host: identity.host,
+          repository: `${identity.owner}/${identity.repository}`,
+          number: 1,
+        },
+      });
+    });
+  const routedGitHub = Option.isSome(forgeAccounts)
+    ? yield* makeGitHubCli({
+        resolveToken: (host, cwd) =>
+          resolveGitHubAccount(cwd).pipe(
+            Effect.flatMap((account) =>
+              account.host.toLowerCase() === host.toLowerCase()
+                ? Effect.succeed(account.token)
+                : Effect.fail(
+                    new SourceControlProviderError({
+                      provider: "github",
+                      operation: "account.resolve",
+                      kind: "forbidden",
+                      detail: "GitHub account host does not match the repository.",
+                    }),
+                  ),
+            ),
+            Effect.mapError(
+              (error) =>
+                new GitHubCliError({
+                  operation: "account.resolve",
+                  kind: "forbidden",
+                  detail: error.detail,
+                  requestDispatched: false,
+                }),
+            ),
+          ),
+      })
+    : gitHubCli;
+  const baseGitHubProvider = makeGitHubSourceControlProvider(routedGitHub);
+  const legacyGitHubProvider = makeGitHubSourceControlProvider(gitHubCli);
+  const scopedGitHubProvider = Option.isSome(forgeAccounts)
+    ? (Object.fromEntries(
+        Object.entries(baseGitHubProvider).map(([name, value]) => {
+          if (typeof value !== "function" || name === "capability" || name === "requireCapability")
+            return [name, value];
+          const call = value as (input: {
+            cwd: string;
+          }) => Effect.Effect<unknown, SourceControlProviderError>;
+          return [
+            name,
+            (input: { cwd: string }) =>
+              Effect.gen(function* () {
+                const identity = yield* resolveSourceControlProviderIdentity(input.cwd);
+                const accounts = Option.isSome(forgeAccounts)
+                  ? yield* forgeAccounts.value.listAccounts()
+                  : [];
+                if (
+                  !accounts.some(
+                    (account) =>
+                      account.provider === "github" &&
+                      account.host.toLowerCase() === identity.host?.toLowerCase(),
+                  )
+                ) {
+                  const legacyCall = legacyGitHubProvider[
+                    name as keyof SourceControlProvider
+                  ] as typeof call;
+                  return yield* legacyCall(input);
+                }
+                const account = yield* resolveGitHubAccount(input.cwd);
+                const context = yield* routedGitHub
+                  .getCredentialContext({ cwd: input.cwd, host: account.host })
+                  .pipe(
+                    Effect.mapError(
+                      (error) =>
+                        new SourceControlProviderError({
+                          provider: "github",
+                          operation: "account.resolve",
+                          kind: "forbidden",
+                          detail: error.detail,
+                          requestDispatched: false,
+                        }),
+                    ),
+                  );
+                if (
+                  String(context.viewerId) !== account.viewerId ||
+                  context.login !== account.login
+                )
+                  return yield* new SourceControlProviderError({
+                    provider: "github",
+                    operation: "account.resolve",
+                    kind: "forbidden",
+                    detail: "GitHub credentials do not match the routed account.",
+                    requestDispatched: false,
+                  });
+                return yield* call(input).pipe(
+                  Effect.provideService(GitHubCredentialScope, context),
+                );
+              }),
+          ];
+        }),
+      ) as SourceControlProvider)
+    : baseGitHubProvider;
   const sourceControlProviders = makeSourceControlProviderRegistry([
-    makeGitHubSourceControlProvider(gitHubCli),
+    scopedGitHubProvider,
+    ...(["gitlab", "bitbucket", "azure-devops", "forgejo"] as const).map((kind) =>
+      makeForgeSourceControlProvider({
+        kind,
+        resolveAccount: (input) =>
+          Effect.gen(function* () {
+            if (Option.isNone(forgeAccounts))
+              return yield* new SourceControlProviderError({
+                provider: kind,
+                operation: "account.resolve",
+                detail: "Configure a forge account before using this repository.",
+                kind: "unauthenticated",
+              });
+            let ref = input.ref;
+            if (!ref && input.cwd) {
+              const identity = yield* resolveSourceControlProviderIdentity(input.cwd);
+              if (
+                identity.kind !== kind ||
+                !identity.host ||
+                !identity.owner ||
+                !identity.repository
+              )
+                return yield* new SourceControlProviderError({
+                  provider: kind,
+                  operation: "account.resolve",
+                  detail: "Repository does not match the selected forge.",
+                  kind: "unsupported",
+                });
+              ref = {
+                provider: kind,
+                host: identity.host,
+                repository: `${identity.owner}/${identity.repository}`,
+                number: 1,
+              };
+            }
+            const resolved = yield* forgeAccounts.value.resolveAccount({
+              ...(ref ? { ref } : {}),
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+            });
+            if (resolved.kind !== kind)
+              return yield* new SourceControlProviderError({
+                provider: kind,
+                operation: "account.resolve",
+                detail: "Account does not match selected forge.",
+                kind: "forbidden",
+              });
+            return {
+              ...resolved,
+              kind,
+              login: kind === "azure-devops" ? resolved.viewerId : resolved.login,
+            };
+          }),
+      }),
+    ),
   ]);
   const githubProvider = yield* sourceControlProviders.get("github");
   const textGeneration = yield* TextGeneration;
@@ -496,6 +674,46 @@ export const makeGitManager = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const repositoryNameWithOwner = resolveHeadRepositoryNameWithOwner(pullRequest) ?? "";
+      if (provider.kind !== "github") {
+        if ((yield* gitCore.listLocalBranchNames(cwd)).includes(localBranch)) {
+          const existing = yield* gitCore.resolveCommit(cwd, localBranch);
+          if (pullRequest.headOid && existing !== pullRequest.headOid)
+            return yield* gitManagerError(
+              "preparePullRequestThread",
+              `Local branch '${localBranch}' contains a different commit; select a fresh worktree branch to preserve it.`,
+            );
+          return;
+        }
+        const identity = yield* resolveSourceControlProviderIdentity(cwd);
+        let remoteName = identity.remoteName ?? "origin";
+        if (provider.kind === "bitbucket" && repositoryNameWithOwner) {
+          const cloneUrls = yield* provider.getRepositoryCloneUrls({
+            cwd,
+            repository: repositoryNameWithOwner,
+          });
+          const origin = yield* gitCore.readConfigValue(cwd, "remote.origin.url");
+          remoteName = yield* gitCore.ensureRemote({
+            cwd,
+            preferredName: pullRequest.headRepositoryOwnerLogin ?? "fork",
+            url: shouldPreferSshRemote(origin) ? cloneUrls.sshUrl : cloneUrls.url,
+          });
+        }
+        const remoteBranch = pullRequest.headBranch;
+        yield* gitCore.fetchRemoteBranch({
+          cwd,
+          remoteName,
+          remoteBranch,
+          localBranch,
+          preserveExisting: true,
+          ...(provider.kind === "gitlab"
+            ? { remoteRef: `refs/merge-requests/${pullRequest.number}/head` }
+            : provider.kind === "forgejo"
+              ? { remoteRef: `refs/pull/${pullRequest.number}/head` }
+              : {}),
+        });
+        yield* gitCore.setBranchUpstream({ cwd, branch: localBranch, remoteName, remoteBranch });
+        return;
+      }
 
       if (repositoryNameWithOwner.length === 0) {
         yield* gitCore.fetchPullRequestBranch({
@@ -535,12 +753,14 @@ export const makeGitManager = Effect.gen(function* () {
         remoteBranch: pullRequest.headBranch,
       });
     }).pipe(
-      Effect.catch(() =>
-        gitCore.fetchPullRequestBranch({
-          cwd,
-          prNumber: pullRequest.number,
-          branch: localBranch,
-        }),
+      Effect.catch((cause) =>
+        provider.kind !== "github"
+          ? Effect.fail(cause)
+          : gitCore.fetchPullRequestBranch({
+              cwd,
+              prNumber: pullRequest.number,
+              branch: localBranch,
+            }),
       ),
     );
   const fileSystem = yield* FileSystem.FileSystem;
@@ -562,9 +782,16 @@ export const makeGitManager = Effect.gen(function* () {
           : yield* readConfigValueNullable(cwd, "remote.origin.url").pipe(
               Effect.map((url) => (url ? [{ name: "origin", url }] : [])),
             );
+      const accounts = Option.isSome(forgeAccounts)
+        ? yield* forgeAccounts.value.listAccounts().pipe(Effect.catch(() => Effect.succeed([])))
+        : [];
       return selectPrimarySourceControlProviderIdentity(
         discoverSourceControlProviderIdentities(remotes, {
-          githubHosts: process.env.GH_HOST ? [process.env.GH_HOST] : [],
+          githubHosts: [
+            ...(process.env.GH_HOST ? [process.env.GH_HOST] : []),
+            ...accounts.filter((a) => a.provider === "github").map((a) => a.host),
+          ],
+          providerHosts: accounts.map((a) => ({ kind: a.provider, host: a.host })),
         }),
         {
           availableProviderKinds: sourceControlProviders.providers.map((provider) => provider.kind),
@@ -695,6 +922,7 @@ export const makeGitManager = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const headContext = yield* resolveBranchHeadContext(cwd, details);
+      if (provider.kind !== "github") return yield* findOpenPr(cwd, headContext, provider);
       const parsedByNumber = new Map<number, PullRequestInfo>();
 
       for (const headSelector of headContext.headSelectors) {
@@ -1039,20 +1267,24 @@ export const makeGitManager = Effect.gen(function* () {
 
     const latestPr =
       details.branch !== null &&
-      (sourceControlProvider.kind === "github" || sourceControlProvider.kind === "unknown")
+      sourceControlProviders.providers.some(
+        (provider) =>
+          provider.kind === sourceControlProvider.kind || sourceControlProvider.kind === "unknown",
+      )
         ? yield* findLatestPr(
             input.cwd,
             {
               branch: details.branch,
               upstreamRef: details.upstreamRef,
             },
-            githubProvider,
+            yield* sourceControlProviderForIdentity(sourceControlProvider),
           ).pipe(
             Effect.flatMap((latest) => {
               if (!latest) return Effect.succeed(null);
               if (latest.state === "open") return Effect.succeed(latest);
 
-              return githubProvider.getDefaultBranch({ cwd: input.cwd }).pipe(
+              return sourceControlProviderForIdentity(sourceControlProvider).pipe(
+                Effect.flatMap((provider) => provider.getDefaultBranch({ cwd: input.cwd })),
                 Effect.map((defaultBranch) =>
                   defaultBranch !== null && details.branch === defaultBranch ? null : latest,
                 ),
@@ -1124,12 +1356,23 @@ export const makeGitManager = Effect.gen(function* () {
       const changeRequest = toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider);
 
       if (input.mode === "local") {
-        yield* gitCore.statusDetails(input.cwd);
-        yield* provider.checkoutPullRequest({
-          cwd: input.cwd,
-          reference: normalizedReference,
-          force: true,
-        });
+        const initialStatus = yield* gitCore.statusDetails(input.cwd);
+        if (provider.kind !== "github") {
+          if (initialStatus.hasWorkingTreeChanges)
+            return yield* gitManagerError(
+              "preparePullRequestThread",
+              "Commit or stash working tree changes before checking out a pull request.",
+            );
+          yield* materializePullRequestHeadBranch(input.cwd, pullRequestWithRemoteInfo, provider);
+          yield* Effect.scoped(
+            gitCore.checkoutBranch({ cwd: input.cwd, branch: pullRequest.headBranch }),
+          );
+        } else
+          yield* provider.checkoutPullRequest({
+            cwd: input.cwd,
+            reference: normalizedReference,
+            force: true,
+          });
         const details = yield* gitCore.statusDetails(input.cwd);
         yield* configurePullRequestHeadUpstream(
           input.cwd,

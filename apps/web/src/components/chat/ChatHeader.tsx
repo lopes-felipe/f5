@@ -1,3 +1,4 @@
+import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
   type ProjectScript,
@@ -148,6 +149,7 @@ export const ChatHeader = memo(function ChatHeader({
             {activeThreadTitle}
           </h2>
         )}
+        {isServerThread ? <ThreadPrLinks threadId={activeThreadId} /> : null}
         <ThreadQueueCountBadge threadId={activeThreadId} />
         {activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
           <Menu>

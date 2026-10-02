@@ -1,7 +1,12 @@
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { PrHubResolvedCheckout, PrRepositoryRef, ProjectId } from "@t3tools/contracts";
+import type {
+  PrHubResolvedCheckout,
+  PrRepositoryRef,
+  ProjectId,
+  SourceControlProviderKind,
+} from "@t3tools/contracts";
 import { NONINTERACTIVE_GIT_ENV, parseRemoteFetchUrls } from "../git/remoteInspection.ts";
 import { runProcess } from "../processRunner.ts";
 import { discoverSourceControlProviderIdentities } from "../sourceControl/discovery.ts";
@@ -16,6 +21,7 @@ const expandPath = (value: string) => path.resolve(value.replace(/^~(?=$|[\\/])/
 
 /** A shallow, read-only search. Only explicit selections may follow directory links. */
 interface CheckoutInput {
+  provider?: SourceControlProviderKind;
   repository: PrRepositoryRef;
   host: string;
   projects: readonly Project[];
@@ -95,12 +101,12 @@ async function discover(input: CheckoutInput): Promise<PrHubResolvedCheckout[]> 
       });
       const identities = discoverSourceControlProviderIdentities(
         [...parseRemoteFetchUrls(remotes.stdout)].map(([name, url]) => ({ name, url })),
-        { githubHosts: [input.host] },
+        { providerHosts: [{ kind: input.provider ?? "github", host: input.host }] },
       );
       if (
         !identities.some(
           (identity) =>
-            identity.kind === "github" &&
+            identity.kind === (input.provider ?? "github") &&
             identity.host?.toLowerCase() === input.host.toLowerCase() &&
             `${identity.owner}/${identity.repository}`.toLowerCase() ===
               input.repository.nameWithOwner.toLowerCase(),
