@@ -10,6 +10,8 @@ The hub displays only advertised actions. Permissions can further narrow GitHub 
 
 Forge controls first prepare an immutable operation, showing its account and pinned revision. Confirmation dispatches it once. Prepared operations can be canceled. Reloading restores the saved operation. If a response is lost, **Check saved operation** looks for verified host evidence; it never blindly sends the mutation again. An unresolved operation blocks preparing another mutation for that pull request. GitLab/Bitbucket reviews persist their comment and verdict as separate phases, so a recovered comment cannot be mistaken for an accepted verdict. Stack actions verify layer revisions and preserve partial progress.
 
+Native inline comments pin the compared head and base. The server derives native line coordinates from the complete provider diff and checks both revisions again before dispatch; unavailable or changed comparisons must be refreshed. GitLab context comments include both line coordinates, and Forgejo comments identify the side and pinned commit.
+
 Viewed marks use the reader and compared head/base revision. GitHub stores them on the host; the other forges store them in F5. A changed revision does not inherit an old mark. Cached data stays visible with a stale warning when refresh fails. Reads, pagination, and account runtimes are bounded.
 
 PR markdown renders authenticated GitHub images and videos through the media proxy. Its allowlist permits GitHub user attachments, GitHubusercontent hosts, and configured Enterprise hosts. Tokens go only to their own host, including through redirects. Images/videos have a 100 MB limit and support single byte ranges. Arbitrary HTML is escaped.

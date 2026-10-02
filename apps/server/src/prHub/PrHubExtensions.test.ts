@@ -43,6 +43,10 @@ const identify = (input: ForgePrepareOperationInput) => ({
 type Mode = "success" | "unsent" | "ambiguous";
 interface State {
   head: string;
+  base: string;
+  patch: string;
+  moveBase: boolean;
+  inlineInputs: Parameters<ReturnType<typeof makeForgeSourceControlProvider>["writeComment"]>[0][];
   mode: Mode;
   verdictMode: Mode;
   comments: Readonly<Record<string, unknown>>[];
@@ -64,6 +68,10 @@ const fixture = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const state: State = {
     head: "head-1",
+    base: "base-1",
+    patch: "@@ -3,2 +5,2 @@\n shared\n-old\n+new",
+    moveBase: false,
+    inlineInputs: [],
     mode: "success",
     verdictMode: "success",
     comments: [],
@@ -90,15 +98,30 @@ const fixture = Effect.gen(function* () {
         target_branch: "main",
         state: "opened",
         sha: state.head,
+        diff_refs: { head_sha: state.head, base_sha: "merge-base", start_sha: state.base },
         web_url: "https://gitlab.example/team/repo/-/merge_requests/7",
       })) as unknown as typeof fetch,
   });
   const provider = {
     ...native,
     getComments: () => Effect.succeed(state.comments),
+    getFiles: () =>
+      Effect.sync(() => {
+        if (state.moveBase) state.base = "base-2";
+        return [
+          {
+            path: "src/file.ts",
+            previousPath: "src/old.ts",
+            status: "changed" as const,
+            patch: state.patch,
+            revision: state.head,
+          },
+        ];
+      }),
     writeComment: (input: Parameters<typeof native.writeComment>[0]) =>
       Effect.gen(function* () {
         state.writes.push(input.body);
+        state.inlineInputs.push(input);
         if (state.delay)
           yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
         if (state.mode !== "success") return yield* transportFailure(state.mode);
@@ -402,4 +425,70 @@ it.effect(
         assert.equal(state.writes.length, 1);
       }),
     ),
+);
+
+const inline = (id: string, line = 5) =>
+  prepared(id, {
+    kind: "comment",
+    body: "Pinned context",
+    path: "src/file.ts",
+    line,
+    side: "new",
+    baseOid: "base-1",
+  });
+it.effect(
+  "derives native inline context coordinates and rename paths from the pinned complete diff",
+  () =>
+    run(({ engine, state }) =>
+      Effect.gen(function* () {
+        const input = inline("context");
+        yield* engine.prepareOperation(input);
+        assert.equal((yield* engine.submitOperation(identify(input))).status, "succeeded");
+        assert.deepEqual(state.inlineInputs[0]?.position, {
+          kind: "context",
+          oldLine: 3,
+          newLine: 5,
+        });
+        assert.equal(state.inlineInputs[0]?.oldPath, "src/old.ts");
+        assert.equal(state.inlineInputs[0]?.baseSha, "merge-base");
+        assert.equal(state.inlineInputs[0]?.startSha, "base-1");
+      }),
+    ),
+);
+it.effect("rejects missing or stale inline comparison pins during preparation", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = inline("missing");
+      if (input.payload.kind !== "comment") throw new Error("fixture");
+      const { baseOid: _base, ...payload } = input.payload;
+      assert.equal(
+        (yield* Effect.exit(engine.prepareOperation({ ...input, payload })))._tag,
+        "Failure",
+      );
+      state.base = "base-2";
+      assert.equal((yield* Effect.exit(engine.prepareOperation(inline("stale"))))._tag, "Failure");
+      assert.equal(state.writes.length, 0);
+    }),
+  ),
+);
+it.effect("rejects out-of-diff inline coordinates before sending a mutation", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = inline("outside", 500);
+      yield* engine.prepareOperation(input);
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "failed");
+      assert.equal(state.writes.length, 0);
+    }),
+  ),
+);
+it.effect("fences inline comments when the base changes during file loading", () =>
+  run(({ engine, state }) =>
+    Effect.gen(function* () {
+      const input = inline("moving-base");
+      yield* engine.prepareOperation(input);
+      state.moveBase = true;
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "failed");
+      assert.equal(state.writes.length, 0);
+    }),
+  ),
 );

@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { quoteGitPatchPath, unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
 import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
+import type { PrReviewPosition } from "@t3tools/shared/prReview";
 import { forgeRequestBudget, updateForgeRequestBudget } from "./forgeRequestBudget.ts";
 import {
   SourceControlProviderError,
@@ -151,6 +152,8 @@ export interface ForgeCommentInput {
   readonly ref: SourceControlPullRequestRef;
   readonly body: string;
   readonly path?: string;
+  readonly oldPath?: string;
+  readonly position?: PrReviewPosition;
   readonly line?: number;
   readonly side?: "old" | "new";
   readonly replyTo?: string;
@@ -540,6 +543,26 @@ export function makeForgeSourceControlProvider(options: {
       (input.replyTo && !caps.review.reply)
     )
       return unsupported("comment");
+    if (input.path && !input.replyTo && (kind === "gitlab" || kind === "forgejo")) {
+      const position = input.position;
+      const validLine = (line: number | undefined) => Number.isSafeInteger(line) && (line ?? 0) > 0;
+      if (
+        !position ||
+        !input.headSha ||
+        (input.side === "old" && position.kind === "added") ||
+        (input.side !== "old" && position.kind === "deleted") ||
+        (position.kind !== "added" && !validLine(position.oldLine)) ||
+        (position.kind !== "deleted" && !validLine(position.newLine)) ||
+        (kind === "gitlab" && (!input.baseSha || !input.startSha))
+      )
+        return Effect.fail(
+          error(
+            "comment.position",
+            "A validated native position and pinned diff revisions are required.",
+            "invalid_response",
+          ),
+        );
+    }
     if (kind === "gitlab")
       return request(
         input.ref,
@@ -548,16 +571,21 @@ export function makeForgeSourceControlProvider(options: {
         "POST",
         {
           body: input.body,
-          ...(input.path
+          ...(input.path && !input.replyTo
             ? {
                 position: {
                   position_type: "text",
                   base_sha: input.baseSha,
                   start_sha: input.startSha,
                   head_sha: input.headSha,
-                  old_path: input.path,
+                  old_path: input.oldPath ?? input.path,
                   new_path: input.path,
-                  [input.side === "old" ? "old_line" : "new_line"]: input.line,
+                  ...(input.position?.oldLine === undefined
+                    ? {}
+                    : { old_line: input.position.oldLine }),
+                  ...(input.position?.newLine === undefined
+                    ? {}
+                    : { new_line: input.position.newLine }),
                 },
               }
             : {}),
@@ -575,7 +603,24 @@ export function makeForgeSourceControlProvider(options: {
       ? request(input.ref, undefined, `${pull(input.ref)}/reviews`, "POST", {
           body: input.body,
           event: "COMMENT",
-          comments: [{ path: input.path, body: input.body, position: input.line }],
+          commit_id: input.headSha,
+          comments: [
+            {
+              path:
+                input.position?.kind === "deleted" || input.side === "old"
+                  ? (input.oldPath ?? input.path)
+                  : input.path,
+              body: input.body,
+              old_position:
+                input.position?.kind === "deleted" || input.side === "old"
+                  ? input.position?.oldLine
+                  : 0,
+              new_position:
+                input.position?.kind === "deleted" || input.side === "old"
+                  ? 0
+                  : input.position?.newLine,
+            },
+          ],
         })
       : request(input.ref, undefined, `${issue(input.ref)}/comments`, "POST", { body: input.body });
   };
