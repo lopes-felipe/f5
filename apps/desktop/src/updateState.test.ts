@@ -34,16 +34,16 @@ describe("shouldBroadcastDownloadProgress", () => {
     ).toBe(true);
   });
 
-  it("skips progress updates within the same 10% bucket", () => {
+  it("skips progress updates within the same 1% bucket", () => {
     expect(
       shouldBroadcastDownloadProgress(
         { ...baseState, status: "downloading", downloadPercent: 11.2 },
-        18.7,
+        11.7,
       ),
     ).toBe(false);
   });
 
-  it("broadcasts progress updates when a new 10% bucket is reached", () => {
+  it("broadcasts progress updates when a new 1% bucket is reached", () => {
     expect(
       shouldBroadcastDownloadProgress(
         { ...baseState, status: "downloading", downloadPercent: 19.9 },

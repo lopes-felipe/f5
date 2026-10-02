@@ -157,7 +157,9 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
 export const resolveStaticDir = Effect.fn(function* () {
   const { join, resolve } = yield* Path.Path;
   const { exists } = yield* FileSystem.FileSystem;
-  const bundledClient = resolve(join(import.meta.dirname, "client"));
+  const bundledClient = resolve(
+    join(process.env.F5_STANDALONE_DIR ?? import.meta.dirname, "client"),
+  );
   const bundledStat = yield* exists(join(bundledClient, "index.html")).pipe(
     Effect.orElseSucceed(() => false),
   );

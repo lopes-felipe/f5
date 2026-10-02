@@ -1,3 +1,4 @@
+import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
 import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
 import { useDesktopLinkRouting } from "../hooks/useDesktopLinkRouting";
 import { QuitHoldOverlay } from "../components/QuitHoldOverlay";
@@ -51,6 +52,7 @@ function CollapsedSidebarControl() {
 function ChatRouteLayout() {
   useDesktopLinkRouting();
   useSnapShotRouting();
+  useServerUpdateOutcome();
   const location = useLocation();
   const navigate = useNavigate();
   const [initialThreadSidebarWidth, setInitialThreadSidebarWidth] = useState(() =>

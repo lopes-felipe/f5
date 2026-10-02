@@ -127,7 +127,9 @@ export function reduceDesktopUpdateStateOnDownloadProgress(
   return {
     ...state,
     status: "downloading",
-    downloadPercent: percent,
+    downloadPercent: Number.isFinite(percent)
+      ? Math.max(0, Math.min(100, percent))
+      : (state.downloadPercent ?? 0),
     message: null,
     errorContext: null,
     canRetry: false,

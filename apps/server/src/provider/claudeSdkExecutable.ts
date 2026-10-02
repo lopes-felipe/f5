@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as NodePath from "node:path";
@@ -109,7 +110,8 @@ export function resolveClaudeCliInvocation(
   const executable = sdkOptions.pathToClaudeCodeExecutable;
   if (!executable) throw new CommandNotFoundError(binaryPath ?? DEFAULT_CLAUDE_BINARY);
   if (sdkOptions.executable === "node") {
-    const node = platform === "win32" ? resolveExecutable("node", environment) : process.execPath;
+    const node =
+      platform === "win32" ? resolveExecutable("node", environment) : javascriptRuntimeExecutable();
     if (!node) {
       throw new CommandNotFoundError(
         binaryPath ?? DEFAULT_CLAUDE_BINARY,
