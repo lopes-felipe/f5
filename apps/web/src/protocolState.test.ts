@@ -84,3 +84,20 @@ it("does not report missing compression limits as a corrupt image", async () => 
     await compressImageForComposer(new File(["image"], "clipboard.png", { type: "image/png" })),
   ).toEqual({ ok: false, reason: "not-ready" });
 });
+
+it("correlates update outcomes with the server bootstrap, independently of reconnect success", () => {
+  setServerBootstrap(serverBootstrapFixture);
+  expect(getProtocolState().update).toBeNull();
+  const update = { id: "update-rollback", outcome: "rolled-back" as const, version: "1.0.0" };
+  setServerBootstrap({ ...serverBootstrapFixture, update });
+  expect(getProtocolState().update).toEqual(update);
+  setServerBootstrap({
+    ...serverBootstrapFixture,
+    update: { ...update, id: "update-committed", outcome: "committed", version: "2.0.0" },
+  });
+  expect(getProtocolState().update).toEqual({
+    id: "update-committed",
+    outcome: "committed",
+    version: "2.0.0",
+  });
+});
