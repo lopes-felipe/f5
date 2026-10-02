@@ -16,6 +16,6 @@ export default defineConfig([
   },
   {
     ...shared,
-    entry: ["src/preload.ts"],
+    entry: ["src/preload.ts", "src/preview/guestPreload.ts"],
   },
 ]);

@@ -272,6 +272,15 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
           />
         </label>
         {badge("autoPullDefaultBranch")}
+        <label>
+          <input
+            type="checkbox"
+            checked={settings.enableAgentBrowserAccess}
+            onChange={(event) => set("enableAgentBrowserAccess", event.target.checked)}
+          />
+          Enable agent browser access
+        </label>
+        {badge("enableAgentBrowserAccess")}
         <div>
           Text generation model {badge("textGenerationModelSelection")}
           <select

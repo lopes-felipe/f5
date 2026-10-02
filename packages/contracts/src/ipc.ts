@@ -388,9 +388,36 @@ export interface DesktopPreviewTabState {
   updatedAt: string;
 }
 
+export interface DesktopBrowserProfile {
+  id: string;
+  name: string;
+  persistent: boolean;
+}
+export interface DesktopBrowserImportSource {
+  id: string;
+  name: string;
+  profiles: Array<{ id: string; name: string }>;
+  available: boolean;
+  remediation?: string;
+}
+export interface DesktopBrowserImportProgress {
+  id: string;
+  status: "reading" | "writing" | "completed" | "canceled" | "failed";
+  imported: number;
+  skipped: number;
+  failed: number;
+  profileId?: string;
+  error?: string;
+}
+export interface DesktopSnapShotResult {
+  image: { name: string; mimeType: string; bytes: Uint8Array };
+  context: { name: string; mimeType: string; bytes: Uint8Array };
+}
 export interface DesktopPreviewWebviewConfig {
   partition: string;
   webPreferences: string;
+  preload?: string;
+  profileId?: string;
 }
 
 export interface DesktopPreviewRecordingStartResult {
@@ -475,12 +502,39 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  snapShot?: {
+    permissions: () => Promise<{ supported: boolean; screen: boolean; accessibility: boolean }>;
+    capture: () => Promise<DesktopSnapShotResult>;
+    configure: (shortcut: string, enabled: boolean) => Promise<void>;
+    openPermissions: () => Promise<void>;
+    onCapture: (listener: (result: DesktopSnapShotResult) => void) => () => void;
+  };
   preview?: DesktopPreviewBridge;
 }
 
 export interface DesktopPreviewBridge {
   getPreviewConfig: () => Promise<DesktopPreviewWebviewConfig>;
-  createTab: (tabId: string) => Promise<void>;
+  profiles?: {
+    list: () => Promise<DesktopBrowserProfile[]>;
+    create: (name: string, persistent: boolean) => Promise<DesktopBrowserProfile>;
+    select: (id: string) => Promise<void>;
+    delete: (id: string) => Promise<void>;
+  };
+  browserImport?: {
+    openPermissions?: () => Promise<void>;
+    sources: () => Promise<DesktopBrowserImportSource[]>;
+    start: (source: string, profile: string, name: string) => Promise<string>;
+    cancel: (id: string) => Promise<void>;
+    status: (id: string) => Promise<DesktopBrowserImportProgress>;
+  };
+  setLinkOpenTarget?: (target: "system" | "preview") => Promise<void>;
+  onOpenLink?: (listener: (url: string) => void) => () => void;
+  setMuted?: (tabId: string, muted: boolean) => Promise<void>;
+  setZoom?: (tabId: string, factor: number) => Promise<void>;
+  createTab: (
+    tabId: string,
+    defaults?: { zoomFactor: number; muted: boolean },
+  ) => Promise<DesktopPreviewWebviewConfig | void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
   navigate: (tabId: string, url: string) => Promise<void>;

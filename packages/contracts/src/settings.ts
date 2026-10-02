@@ -283,6 +283,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
@@ -329,6 +330,7 @@ export const ServerSettings = Schema.Struct({
   /** Project-scopable worktree cleanup policy; null uses `storageCleanup.worktree`. */
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
   /** Fast-forward clean default branches in the background. Off by default. */
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -457,6 +459,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({
@@ -499,6 +502,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableAssistantStreaming",
   "prHubDefaultMergeMethod",
   "worktreeCleanup",
+  "enableAgentBrowserAccess",
   "autoPullDefaultBranch",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];

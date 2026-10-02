@@ -1225,10 +1225,15 @@
     {
       "upstreamSha": "0e2905eb783fd2385f358a95f0b25bbf07ff7122",
       "subject": "fix(desktop): oauth popups open from the browser preview (#8435)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): oauth popups open from the browser preview. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Owned, sandboxed same-session OAuth child windows with nested popup blocking.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/preview/previewWindowOpen.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "0e512db34d787b21b827f07c6a62fba7fb00369e",
@@ -1651,10 +1656,15 @@
     {
       "upstreamSha": "134d51096ea0d00a53a499e8f0c87e31fafb0006",
       "subject": "feat(desktop): browser profiles for the preview browser (#7254)",
-      "reason": "Phase 13a (preview profiles): feat(desktop): browser profiles for the preview browser. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Scoped persistent/incognito profiles, clear-before-delete and unpublished import staging.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13a"
+      "disposition": "ported",
+      "plannedWorkstream": "13a",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/preview/BrowserProfiles.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "135dc156e3f600a79a415b06e4c234677aa318d0",
@@ -2030,10 +2040,12 @@
     {
       "upstreamSha": "18062da9425909a0a92bce0b692c9de6fbba56ee",
       "subject": "feat(web): choose whether links open in the default browser or in T3 Code (#9339)",
-      "reason": "Phase 13b (preview browser controls): feat(web): choose whether links open in the default browser or in T3 Code. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Web-local link destination and shared desktop/web routing.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/web/src/hooks/useOpenLink.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "181e45110f2d14950a5c1ec415faf3a049cb9b2e",
@@ -2233,10 +2245,12 @@
     {
       "upstreamSha": "19c97ea56d30b3a2de31a060f8f47d6b7404b78f",
       "subject": "fix(web): unlock the composer when preview capture fails (#9127)",
-      "reason": "Phase 13b (preview browser controls): fix(web): unlock the composer when preview capture fails. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Capture failures time out and a later capture can recover.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/capture.test.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "19d8ab2ae9fc562ee7b216a0d72903fbfafa9572",
@@ -2717,10 +2731,15 @@
     {
       "upstreamSha": "20e2e899ecded6b30e12fa23c8f18847c2bf12e1",
       "subject": "fix(desktop): defer keyring loading until macOS cookie import (#10667)",
-      "reason": "Phase 13c (cookie import): fix(desktop): defer keyring loading until macOS cookie import. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Acquire browser keys only for encrypted rows that need them.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/browserImport/readCookies.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "20e5a3396858f93157a4ad6b1f3a2f565c032fee",
@@ -3348,10 +3367,12 @@
     {
       "upstreamSha": "28ddaf75917140e5e4355d4386bc5d14d9dad7b6",
       "subject": "fix(web): confirm closing agent-controlled browsers (#9272)",
-      "reason": "Phase 13b (preview browser controls): fix(web): confirm closing agent-controlled browsers. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Confirmation before closing automation-created tabs.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/web/src/components/PreviewPanel.tsx:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "2919147c80e4daae326a25f870a1c7b19cd16f42",
@@ -3400,10 +3421,12 @@
     {
       "upstreamSha": "299404a754f52c02c69634528d8856b3c93b378c",
       "subject": "feat(desktop): add cross-platform window capture (#8103)",
-      "reason": "Phase 13d (SnapShots): feat(desktop): add cross-platform window capture. Reimplement in f5; not yet delivered. Port macOS first; Linux and Windows require dependency license and size review and packaged platform tests.",
+      "reason": "Phase 13 ships macOS SnapShot. Linux/Windows capture remains deferred pending native dependency license/size review and packaged platform tests, as permitted by the plan.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "13d"
+      "plannedWorkstream": "13d",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/snapShot/MacSnapShot.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "29a23fdf1481485593d7d90e195b7c8bf2a705a8",
@@ -4464,18 +4487,28 @@
     {
       "upstreamSha": "3653cb22ffb30bf133fecc30c955941fe267cf1c",
       "subject": "fix(desktop): address the browser import review left over from the stack (#9516)",
-      "reason": "Phase 13c (cookie import): fix(desktop): address the browser import review left over from the stack. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Private read-only SQLite copies, bounded inputs and sanitized failure recovery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/browserImport/readCookies.test.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "36668dbe4fe2f8c881cc4f93bc675413eef1406f",
       "subject": "feat(desktop): share macOS permission onboarding (#11289)",
-      "reason": "Phase 13d: feat(desktop): share macOS permission onboarding. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Phase 13: macOS screen/accessibility permission setup and browser import Full Disk Access remediation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13d"
+      "disposition": "ported",
+      "plannedWorkstream": "13d",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/web/src/components/settings/BrowserSettings.tsx:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "3689c98d2739c6e5bf788850bc1a82a7372d313d",
@@ -4718,10 +4751,15 @@
     {
       "upstreamSha": "39449e53e31a56103192aa7905e89fc92c977a4a",
       "subject": "feat(desktop): import browser cookies into a profile (#7255)",
-      "reason": "Phase 13c (cookie import): feat(desktop): import browser cookies into a profile. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Cancelable staged cookie imports publish a new profile only after cookie flush.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/browserImport/BrowserImport.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "394af73e02238e551db14f44d57f1469dd2942aa",
@@ -4802,10 +4840,12 @@
     {
       "upstreamSha": "3a02c9cf1d6767cad60e5056cb5b722931f6cc5d",
       "subject": "feat(desktop): mute a browser tab (#7252)",
-      "reason": "Phase 13b (preview browser controls): feat(desktop): mute a browser tab. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Independent tab mute controls and defaults.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/web/src/components/PreviewPanel.tsx:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "3afb4a9ef9e71ddf44035797cd224301bc5645a1",
@@ -5516,10 +5556,15 @@
     {
       "upstreamSha": "43bafd4674841fb8782f5174033b684aa0d83f67",
       "subject": "fix(web): open PR toast actions in app (#9006)",
-      "reason": "Phase 13b (preview browser controls): fix(web): open PR toast actions in app. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: PR links and notifications honor the common link destination.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/web/src/components/GitActionsControl.tsx:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "43f723f807e8cc05d7fcd36ee7c3e57c9b3c4980",
@@ -5931,10 +5976,15 @@
     {
       "upstreamSha": "498ab9c399d5e8c3097a286be14d03238e071ac1",
       "subject": "feat(desktop): resolve Chromium cookie keys on Linux (#7261)",
-      "reason": "Phase 13c (cookie import): feat(desktop): resolve Chromium cookie keys on Linux. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Linux v10 and secret-tool v11 Chromium cookie decryption.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": [
+        "apps/desktop/src/browserImport/readCookies.ts:1",
+        "docs/user/preview-browser.md:1"
+      ]
     },
     {
       "upstreamSha": "49964e38c02ca26783449e56a3083b124a1d04c8",
@@ -7075,10 +7125,12 @@
     {
       "upstreamSha": "57b23a09f9dff15d57e3fa288c111381259a9a12",
       "subject": "fix(desktop): preserve long offscreen text in SnapShots (#11250)",
-      "reason": "Phase 13d (SnapShots): fix(desktop): preserve long offscreen text in SnapShots. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Bound accessibility traversal and retain up to 20k characters with an image fallback.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13d"
+      "disposition": "ported",
+      "plannedWorkstream": "13d",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/snapShot/MacSnapShot.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "5821b778fd29e9c5b6945f4e7150f92d19a0a3da",
@@ -9893,10 +9945,12 @@
     {
       "upstreamSha": "7c8848ebb054c1f4c1279f634633cddc37cb1fac",
       "subject": "fix(desktop): route mouse thumb buttons to the in-app browser (#4459)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): route mouse thumb buttons to the in-app browser. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Dedicated guest preload exposes only mouse back/forward navigation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/guestPreload.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "7cafe52bb8f1a4f26e9a8504c53ceae5cb32548a",
@@ -11826,10 +11880,12 @@
     {
       "upstreamSha": "949feb61e4bfd96669ba0e8cf3dca7c6d7f885b3",
       "subject": "feat(web): configurable browser defaults in Settings \u2192 Integrations (#7082)",
-      "reason": "Phase 13b (preview browser controls): feat(web): configurable browser defaults in Settings \u2192 Integrations. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Authoritative web-local preview defaults with Integrations controls.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/web/src/appSettings.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "94cc8152fff5fd06baafd25964f54d7ec1a34f8d",
@@ -14222,18 +14278,22 @@
     {
       "upstreamSha": "b5f7fa0ede2a0d791226e6474c9cc4374dd89cc9",
       "subject": "fix(desktop): enable context menus in the browser (#10670)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): enable context menus in the browser. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Native preview context menus for editing, navigation, zoom and mute.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/main.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "b5fb3fba0fb3dbd1bc2e29886232321cc06863d5",
       "subject": "fix(desktop): isolate preview keyboard shortcuts from the host (#9840)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): isolate preview keyboard shortcuts from the host. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Guest shortcuts stay within the preview.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/guestControls.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "b60a2c0b99c8d5d8f02b6705171da694d12e77e3",
@@ -15538,10 +15598,12 @@
     {
       "upstreamSha": "c542b781c6c4c766e66dcb764b2142d95600e890",
       "subject": "fix(desktop): keep the native preview User-Agent so Turnstile passes (#7110)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): keep the native preview User-Agent so Turnstile passes. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Keep Electron native preview User-Agent; no custom override.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/main.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "c557bb10aa7cbb78a50df230d1e8e24af79cb662",
@@ -16099,10 +16161,12 @@
     {
       "upstreamSha": "cd096b9ad5a4156ffeab85de617cbb219057007f",
       "subject": "feat(server): let users withhold browser access from agents (#7083)",
-      "reason": "Phase 13b (preview browser controls): feat(server): let users withhold browser access from agents. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Live global/project browser policy controls MCP advertisement and every broker invocation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/server/src/mcp/browserAccess.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "cd14b3ec21471ac8525e060ffe278674a7eba19b",
@@ -17036,10 +17100,12 @@
     {
       "upstreamSha": "d8a6dfd31539a86d08bd4fbd030f8252b3c405ac",
       "subject": "fix(desktop): app zoom no longer zooms the preview browser (#6649)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): app zoom no longer zooms the preview browser. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Guest tab zoom is independent from host application zoom.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/main.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "d8bc6831cd822b294d875364cf3aa0a17c999258",
@@ -17502,10 +17568,12 @@
     {
       "upstreamSha": "de1b798c6ed4223cabd64f56eadcc8f512963043",
       "subject": "fix(preview): bound automation waits and screenshot captures (#4685)",
-      "reason": "Phase 13b (preview browser controls): fix(preview): bound automation waits and screenshot captures. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Bounded screenshot waits, size limits and recovery after timeouts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/capture.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "de28fa1ff3ac3c3a96bebd9ec5ce23dd09f61af0",
@@ -17761,10 +17829,12 @@
     {
       "upstreamSha": "e0e0bcb115fa29a2afc670b817fcb4463b620923",
       "subject": "fix(desktop): preserve browser editing shortcuts (#10621)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): preserve browser editing shortcuts. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Preserve copy, paste, selection and undo in preview guests.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/guestControls.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "e106fe95cc814797cfb3dad6d78c062e96d0060f",
@@ -18312,10 +18382,12 @@
     {
       "upstreamSha": "e816064945144957b6eb9b268912a98b0555644b",
       "subject": "fix(desktop): keep preview keystrokes out of the composer (#11354)",
-      "reason": "Phase 13b (preview browser controls): fix(desktop): keep preview keystrokes out of the composer. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Guest editing keystrokes do not reach host menu shortcuts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13b"
+      "disposition": "ported",
+      "plannedWorkstream": "13b",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/preview/guestControls.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "e84f23a97d587e0e58215f1fba2eab12717bec28",
@@ -18735,10 +18807,12 @@
     {
       "upstreamSha": "ed2bdbb278c4fedf6ce79d4925908b759f7fd992",
       "subject": "feat(desktop): import cookies from Safari (#7262)",
-      "reason": "Phase 13c (cookie import): feat(desktop): import cookies from Safari. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Bounds-checked Safari binary cookies and Full Disk Access remediation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/browserImport/safari.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "ed6fe339d71863f39a1d5405554a3bac892e55b6",
@@ -20150,10 +20224,12 @@
     {
       "upstreamSha": "ff5843410d44796676b06627788d94354849c4d7",
       "subject": "feat(desktop): import from Chrome, Edge, Brave, Vivaldi, Opera, Arc and Firefox (#7260)",
-      "reason": "Phase 13c (cookie import): feat(desktop): import from Chrome, Edge, Brave, Vivaldi, Opera, Arc and Firefox. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 13: Chromium and Firefox source catalogs with profile selection.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "13c"
+      "disposition": "ported",
+      "plannedWorkstream": "13c",
+      "f5Shas": ["5c1905c433673b48aa152789b2a98cda20cdb090"],
+      "evidence": ["apps/desktop/src/browserImport/sources.ts:1", "docs/user/preview-browser.md:1"]
     },
     {
       "upstreamSha": "ff93aba61dc1f7839713580bc8ee08da2a395f9a",

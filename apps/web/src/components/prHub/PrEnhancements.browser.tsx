@@ -15,7 +15,10 @@ const api = vi.hoisted(() => ({
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({ prHub: api, orchestration: { dispatchCommand: api.dispatchCommand } }),
 }));
-vi.mock("@tanstack/react-router", () => ({ useRouter: () => ({ navigate: api.navigate }) }));
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useRouter: () => ({ navigate: api.navigate }),
+}));
 const thread = ThreadId.makeUnsafe("phase12-thread");
 const pr = {
   key: PullRequestKey.makeUnsafe("github:github.com/team/repo#7"),

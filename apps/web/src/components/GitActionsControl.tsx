@@ -1,3 +1,4 @@
+import { useOpenLink } from "../hooks/useOpenLink";
 import { MiddleTruncate } from "./MiddleTruncate";
 import { githubThreadLink } from "../linkedPullRequest";
 import { newCommandId } from "../lib/utils";
@@ -202,6 +203,7 @@ export default function GitActionsControl({
   isServerThread,
 }: GitActionsControlProps) {
   const { settings } = useAppSettings();
+  const openLink = useOpenLink(activeThreadId ?? undefined);
   const threadToastData = useMemo(
     () => (activeThreadId ? { threadId: activeThreadId } : undefined),
     [activeThreadId],
@@ -401,7 +403,7 @@ export default function GitActionsControl({
       });
       return;
     }
-    void api.shell.openExternal(prUrl).catch((err) => {
+    void openLink(prUrl).catch((err) => {
       toastManager.add({
         type: "error",
         title: "Unable to open PR link",
@@ -596,7 +598,7 @@ export default function GitActionsControl({
                       const api = readNativeApi();
                       if (!api) return;
                       closeResultToast();
-                      void api.shell.openExternal(prUrl);
+                      void openLink(prUrl);
                     },
                   },
                 }

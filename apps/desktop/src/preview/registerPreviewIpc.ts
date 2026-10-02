@@ -43,7 +43,7 @@ export const PREVIEW_IPC_CHANNELS = {
 
 export interface PreviewIpcOperations {
   readonly getConfig: () => unknown;
-  readonly createTab: (tabId: string) => unknown;
+  readonly createTab: (tabId: string, defaults?: { zoomFactor: number; muted: boolean }) => unknown;
   readonly closeTab: (tabId: string) => unknown;
   readonly registerWebview: (tabId: string, webContentsId: number) => unknown;
   readonly navigate: (tabId: string, url: string) => unknown;
@@ -99,8 +99,31 @@ export function registerPreviewIpc(
   replaceHandler(ipcMain, channels.getConfig, operationsForSender, (operations) =>
     operations.getConfig(),
   );
-  replaceHandler(ipcMain, channels.createTab, operationsForSender, (operations, tabId) =>
-    operations.createTab(nonEmptyString(tabId, "Preview tab id")),
+  replaceHandler(
+    ipcMain,
+    channels.createTab,
+    operationsForSender,
+    (operations, tabId, defaults) => {
+      if (defaults !== undefined) {
+        if (
+          !defaults ||
+          typeof defaults !== "object" ||
+          !("zoomFactor" in defaults) ||
+          typeof defaults.zoomFactor !== "number" ||
+          defaults.zoomFactor < 0.25 ||
+          defaults.zoomFactor > 3 ||
+          !Number.isFinite(defaults.zoomFactor) ||
+          !("muted" in defaults) ||
+          typeof defaults.muted !== "boolean"
+        )
+          throw new Error("Invalid preview defaults.");
+        return operations.createTab(nonEmptyString(tabId, "Preview tab id"), {
+          zoomFactor: defaults.zoomFactor,
+          muted: defaults.muted,
+        });
+      }
+      return operations.createTab(nonEmptyString(tabId, "Preview tab id"));
+    },
   );
   replaceHandler(ipcMain, channels.closeTab, operationsForSender, (operations, tabId) =>
     operations.closeTab(nonEmptyString(tabId, "Preview tab id")),

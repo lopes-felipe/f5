@@ -693,3 +693,17 @@ it.effect("lease expiry fails pending work and drops automation-session tab assi
     assert.equal(seenTabs.at(-1), "tab-new-active");
   }),
 );
+
+it.effect("rejects automation before dispatch when project browser access is disabled", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker(() => Effect.succeed(false));
+    const result = yield* Effect.exit(
+      broker.invoke({
+        threadId: ThreadId.makeUnsafe("disabled-thread"),
+        operation: "status",
+        input: {},
+      }),
+    );
+    assert.equal(result._tag, "Failure");
+  }),
+);
