@@ -2,6 +2,14 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GENERAL_SETTINGS_DESCRIPTORS = [
   {
+    id: "general.composer-collapse",
+    category: "general",
+    label: "Collapse composer while scrolling",
+    description: "Keep the composer expanded or let timeline scrolling collapse it.",
+    keywords: ["composer", "scroll", "resting", "collapse"],
+    targetSelector: '[aria-label="Collapse composer while scrolling"]',
+  },
+  {
     id: "general.quit-shortcut",
     category: "general",
     label: "Quit shortcut",
