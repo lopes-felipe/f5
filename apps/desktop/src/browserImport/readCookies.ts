@@ -105,6 +105,7 @@ export async function readCookies(
     try {
       db.exec("PRAGMA busy_timeout=1000");
       if (profile.engine === "firefox") {
+        const schemaVersion = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
         const columns = db
           .prepare("PRAGMA table_info(moz_cookies)")
           .all()
@@ -137,10 +138,13 @@ export async function readCookies(
                 ? "strict"
                 : row.sameSite === 1
                   ? "lax"
-                  : row.rawSameSite === 0
+                  : row.rawSameSite === 0 || (schemaVersion >= 15 && row.sameSite === 0)
                     ? "no_restriction"
                     : "unspecified",
-            ...(Number(row.expiry) > 0 ? { expirationDate: Number(row.expiry) } : {}),
+            // Firefox schema 16 migrated persisted expiry from seconds to milliseconds.
+            ...(Number(row.expiry) > 0
+              ? { expirationDate: Number(row.expiry) / (schemaVersion >= 16 ? 1000 : 1) }
+              : {}),
           });
         }
       } else {

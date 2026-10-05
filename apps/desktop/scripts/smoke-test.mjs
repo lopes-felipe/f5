@@ -96,8 +96,12 @@ try {
     if (!blocked) throw new Error("Active profile deletion was allowed");
     await bridge.closeTab("smoke-private-tab");
     await bridge.profiles.delete(privateProfile.id);
-    const fallback = await bridge.createTab("smoke-default-after-delete", {zoomFactor: 1, muted: false});
-    if (fallback.partition !== original.partition) throw new Error("Deleting the selected profile did not restore the default");
+    const fallback = await bridge.createTab("smoke-default-after-delete", {
+      zoomFactor: 1,
+      muted: false,
+    });
+    if (fallback.partition !== original.partition)
+      throw new Error("Deleting the selected profile did not restore the default");
     await bridge.closeTab("smoke-default-after-delete");
     await bridge.profiles.delete(persistent.id);
     await bridge.profiles.select("default");
@@ -185,7 +189,8 @@ try {
   }, backendOrigin);
   if (popupStatus !== 401) throw new Error("Popup received backend authorization");
   const previewConfig = await page.evaluate(() => window.desktopBridge.preview.getPreviewConfig());
-  if (!previewConfig.preload || !existsSync(new URL(previewConfig.preload))) throw new Error("Built guest preload is missing on disk");
+  if (!previewConfig.preload || !existsSync(new URL(previewConfig.preload)))
+    throw new Error("Built guest preload is missing on disk");
   await application.evaluate(
     ({ session }, { origin, partition }) => {
       const guestSession = session.fromPartition(partition);

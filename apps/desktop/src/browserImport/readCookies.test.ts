@@ -44,3 +44,32 @@ it("sanitizes corrupt database and denied source failures", async () => {
     ),
   ).rejects.not.toThrow("COOKIE_SECRET");
 });
+
+it.each([15, 16])(
+  "converts Firefox schema %i expiry and preserves explicit SameSite",
+  async (version) => {
+    const root = await mkdtemp(path.join(tmpdir(), "f5-firefox-version-test-"));
+    const database = path.join(root, "cookies.sqlite");
+    const db = new DatabaseSync(database);
+    db.exec(
+      `PRAGMA user_version=${version}; CREATE TABLE moz_cookies(host TEXT,name TEXT,value TEXT,path TEXT,expiry INTEGER,isSecure INTEGER,isHttpOnly INTEGER,sameSite INTEGER,originAttributes TEXT)`,
+    );
+    const expirySeconds = 2000000000;
+    const insert = db.prepare(
+      "INSERT INTO moz_cookies VALUES('example.test',?,'synthetic','/',?,1,1,?,'')",
+    );
+    insert.run("explicit-none", expirySeconds * (version >= 16 ? 1000 : 1), 0);
+    insert.run("unset", 0, 256);
+    db.close();
+    const result = await readCookies(
+      { id: "fixture", name: "Fixture", database, root, engine: "firefox" },
+      new AbortController().signal,
+    );
+    expect(result.cookies[0]).toMatchObject({
+      expirationDate: expirySeconds,
+      sameSite: "no_restriction",
+    });
+    expect(result.cookies[1]).toMatchObject({ sameSite: "unspecified" });
+    expect(result.cookies[1]).not.toHaveProperty("expirationDate");
+  },
+);
