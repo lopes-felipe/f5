@@ -202,15 +202,15 @@ it.effect("cancels a prepared operation without dispatching it", () =>
     }),
   ),
 );
-it.effect("does not cancel an operation with an ambiguous dispatched write", () =>
+it.effect("acknowledges an ambiguous dispatched write without allowing redispatch", () =>
   run(({ engine, state }) =>
     Effect.gen(function* () {
       const input = prepared("cancel-unknown");
       state.mode = "ambiguous";
       yield* engine.prepareOperation(input);
       assert.equal((yield* engine.submitOperation(identify(input))).status, "outcome_unknown");
-      assert.equal((yield* engine.cancelOperation(identify(input))).status, "outcome_unknown");
-      assert.equal((yield* engine.submitOperation(identify(input))).status, "outcome_unknown");
+      assert.equal((yield* engine.cancelOperation(identify(input))).status, "canceled");
+      assert.equal((yield* engine.submitOperation(identify(input))).status, "canceled");
       assert.equal(state.writes.length, 1);
     }),
   ),

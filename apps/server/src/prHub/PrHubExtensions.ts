@@ -412,7 +412,7 @@ export const makePrHubExtensions = Effect.gen(function* () {
               id = input.operationId,
               account = runtime.account.id;
             const claimed = yield* db(
-              sql`UPDATE forge_operations SET status='running' WHERE account_id=${account} AND operation_id=${id} AND status='prepared' RETURNING operation_id`,
+              sql`UPDATE forge_operations SET status='running' WHERE account_id=${account} AND operation_id=${id} AND status IN ('prepared','outcome_unknown') RETURNING operation_id`,
             );
             if (!claimed.length) return (yield* load(account, id))!.operation;
             const tag = marker(id, input.key, account);
@@ -689,7 +689,9 @@ export const makePrHubExtensions = Effect.gen(function* () {
                 }
               }
             });
-            const outcome = yield* Effect.result(run.pipe(Effect.timeout("30 seconds")));
+            const outcome = yield* Effect.result(
+              run.pipe(Effect.interruptible, Effect.timeout("30 seconds")),
+            );
             if (outcome._tag === "Success") yield* update(account, id, "succeeded");
             else {
               const error = outcome.failure;
@@ -716,7 +718,18 @@ export const makePrHubExtensions = Effect.gen(function* () {
     });
   const getOperation = (input: ForgeOperationInput) =>
     resolve(input).pipe(
-      Effect.flatMap(({ runtime }) => load(runtime.account.id, input.operationId)),
+      Effect.flatMap(({ runtime }) =>
+        Effect.gen(function* () {
+          const saved = yield* load(runtime.account.id, input.operationId);
+          if (saved) return saved;
+          const blocked = yield* db(
+            sql<{
+              operation_id: string;
+            }>`SELECT operation_id FROM forge_operations WHERE account_id=${runtime.account.id} AND pr_key=${input.key} AND status IN ('running','outcome_unknown') LIMIT 1`,
+          );
+          return blocked[0] ? yield* load(runtime.account.id, blocked[0].operation_id) : null;
+        }),
+      ),
       Effect.flatMap((row) =>
         row && row.operation.key !== input.key
           ? Effect.fail(failure("Saved operation identity mismatch.", "forbidden"))
@@ -729,88 +742,102 @@ export const makePrHubExtensions = Effect.gen(function* () {
       const saved = yield* getOperation(input);
       if (!saved) return yield* failure("Saved operation not found.", "not_found");
       yield* db(
-        sql`UPDATE forge_operations SET status='canceled' WHERE account_id=${runtime.account.id} AND operation_id=${input.operationId} AND status='prepared'`,
+        sql`UPDATE forge_operations SET status='canceled' WHERE account_id=${runtime.account.id} AND operation_id=${input.operationId} AND status IN ('prepared','outcome_unknown')`,
       );
       return (yield* getOperation(input))!;
     });
   const recoverOperation = (input: ForgeOperationInput) =>
-    Effect.gen(function* () {
-      const { runtime, ref } = yield* resolve(input);
-      const saved = yield* load(runtime.account.id, input.operationId);
-      if (!saved || saved.operation.key !== input.key)
-        return yield* failure("Saved operation not found.", "not_found");
-      if (!["running", "outcome_unknown"].includes(saved.operation.status)) return saved.operation;
-      const p = saved.operation.payload;
-      const tag = marker(input.operationId, input.key, runtime.account.id);
-      if (p.kind === "comment" || p.kind === "review") {
-        const comments = yield* runtime.provider.getComments(ref);
-        const matchingComment = (value: unknown): boolean => {
-          if (!value || typeof value !== "object") return false;
-          const c = value as Record<string, unknown>;
-          const a = (c.user ?? c.author ?? c.createdBy) as Record<string, unknown> | undefined;
-          const authorId = a?.id ?? a?.uuid ?? a?.account_id;
-          const login = a?.login ?? a?.username ?? a?.nickname;
-          const ownAuthor =
-            authorId !== undefined
-              ? String(authorId) === runtime.account.viewerId
-              : typeof login === "string" && login === runtime.account.login;
-          const content = c.content as Record<string, unknown> | undefined;
-          const body = c.body ?? c.note ?? c.text ?? content?.raw;
-          if (ownAuthor && typeof body === "string" && body.includes(tag)) return true;
-          return [c.notes, c.comments].some(
-            (items) => Array.isArray(items) && items.some(matchingComment),
-          );
-        };
-        const found = comments.some(matchingComment);
-        if (
-          found &&
-          p.kind === "review" &&
-          (ref.provider === "gitlab" || ref.provider === "bitbucket") &&
-          p.verdict !== "comment"
-        ) {
-          if (!saved.progress.verdictStarted) {
-            yield* progress(runtime.account.id, input.operationId, { commentDone: true });
-            yield* update(runtime.account.id, input.operationId, "prepared");
-          }
-          // A dispatched verdict requires direct host evidence; never infer it from its comment.
-        } else if (found) yield* update(runtime.account.id, input.operationId, "succeeded");
-      } else if (p.kind === "stack" && saved.progress.uuid && runtime.github) {
-        const context = yield* runtime.github
-          .getCredentialContext({ cwd: config.cwd, host: ref.host })
-          .pipe(Effect.mapError(mapGitHubCliError));
-        const response = yield* runtime.github
-          .request({
-            cwd: config.cwd,
-            context,
-            method: "GET",
-            endpoint: `repos/${ref.repository}/pulls/${ref.number}/merge-async/${encodeURIComponent(saved.progress.uuid)}`,
-          })
-          .pipe(Effect.mapError(mapGitHubCliError));
-        if (["merged", "enqueued"].includes((response.body as { status?: string })?.status ?? ""))
-          yield* update(runtime.account.id, input.operationId, "succeeded");
-      } else {
-        const detail = yield* runtime.provider.getDetail(ref);
-        const observed =
-          p.kind === "edit"
-            ? (p.title === undefined || detail.title === p.title) &&
-              (p.body === undefined || detail.body === p.body)
-            : p.kind === "action"
-              ? (p.action === "merge" && detail.state === "merged") ||
-                (p.action === "close" && detail.state === "closed") ||
-                (p.action === "reopen" && detail.state === "open")
-              : false;
-        if (observed) yield* update(runtime.account.id, input.operationId, "succeeded");
-      }
-      const result = (yield* load(runtime.account.id, input.operationId))!.operation;
-      if (result.status === "running")
-        yield* update(
-          runtime.account.id,
-          input.operationId,
-          "outcome_unknown",
-          "The server stopped before confirmation. Verify the result on the forge; this operation will not be resent automatically.",
-        );
-      return (yield* load(runtime.account.id, input.operationId))!.operation;
-    });
+    resolve(input).pipe(
+      Effect.flatMap(({ runtime }) => gateFor(runtime.account.id)),
+      Effect.flatMap((gate) =>
+        gate.withPermits(1)(
+          Effect.gen(function* () {
+            const { runtime, ref } = yield* resolve(input);
+            const saved = yield* load(runtime.account.id, input.operationId);
+            if (!saved || saved.operation.key !== input.key)
+              return yield* failure("Saved operation not found.", "not_found");
+            if (!["running", "outcome_unknown"].includes(saved.operation.status))
+              return saved.operation;
+            const p = saved.operation.payload;
+            const tag = marker(input.operationId, input.key, runtime.account.id);
+            if (p.kind === "comment" || p.kind === "review") {
+              const comments = yield* runtime.provider.getComments(ref);
+              const matchingComment = (value: unknown): boolean => {
+                if (!value || typeof value !== "object") return false;
+                const c = value as Record<string, unknown>;
+                const a = (c.user ?? c.author ?? c.createdBy) as
+                  | Record<string, unknown>
+                  | undefined;
+                const authorId = a?.id ?? a?.uuid ?? a?.account_id;
+                const login = a?.login ?? a?.username ?? a?.nickname;
+                const ownAuthor =
+                  authorId !== undefined
+                    ? String(authorId) === runtime.account.viewerId
+                    : typeof login === "string" && login === runtime.account.login;
+                const content = c.content as Record<string, unknown> | undefined;
+                const body = c.body ?? c.note ?? c.text ?? content?.raw;
+                if (ownAuthor && typeof body === "string" && body.includes(tag)) return true;
+                return [c.notes, c.comments].some(
+                  (items) => Array.isArray(items) && items.some(matchingComment),
+                );
+              };
+              const found = comments.some(matchingComment);
+              if (
+                found &&
+                p.kind === "review" &&
+                (ref.provider === "gitlab" || ref.provider === "bitbucket") &&
+                p.verdict !== "comment"
+              ) {
+                if (!saved.progress.verdictStarted) {
+                  yield* progress(runtime.account.id, input.operationId, { commentDone: true });
+                  yield* update(runtime.account.id, input.operationId, "prepared");
+                }
+                // A dispatched verdict requires direct host evidence; never infer it from its comment.
+              } else if (found) yield* update(runtime.account.id, input.operationId, "succeeded");
+            } else if (p.kind === "stack" && saved.progress.uuid && runtime.github) {
+              const context = yield* runtime.github
+                .getCredentialContext({ cwd: config.cwd, host: ref.host })
+                .pipe(Effect.mapError(mapGitHubCliError));
+              const response = yield* runtime.github
+                .request({
+                  cwd: config.cwd,
+                  context,
+                  method: "GET",
+                  endpoint: `repos/${ref.repository}/pulls/${ref.number}/merge-async/${encodeURIComponent(saved.progress.uuid)}`,
+                })
+                .pipe(Effect.mapError(mapGitHubCliError));
+              if (
+                ["merged", "enqueued"].includes(
+                  (response.body as { status?: string })?.status ?? "",
+                )
+              )
+                yield* update(runtime.account.id, input.operationId, "succeeded");
+            } else {
+              const detail = yield* runtime.provider.getDetail(ref);
+              const observed =
+                p.kind === "edit"
+                  ? (p.title === undefined || detail.title === p.title) &&
+                    (p.body === undefined || detail.body === p.body)
+                  : p.kind === "action"
+                    ? (p.action === "merge" && detail.state === "merged") ||
+                      (p.action === "close" && detail.state === "closed") ||
+                      (p.action === "reopen" && detail.state === "open")
+                    : false;
+              if (observed) yield* update(runtime.account.id, input.operationId, "succeeded");
+            }
+            const result = (yield* load(runtime.account.id, input.operationId))!.operation;
+            if (result.status === "running")
+              yield* update(
+                runtime.account.id,
+                input.operationId,
+                "outcome_unknown",
+                "The server stopped before confirmation. Verify the result on the forge; this operation will not be resent automatically.",
+              );
+            return (yield* load(runtime.account.id, input.operationId))!.operation;
+          }),
+        ),
+      ),
+    );
   const listReviewerCandidates = (input: PrHubStackInput) =>
     resolve(input).pipe(
       Effect.flatMap(({ runtime, ref }) =>

@@ -5,6 +5,7 @@ import type { ForgeAccount } from "./ForgeSourceControlProvider.ts";
 interface RequestBudget {
   readonly gate: Semaphore.Semaphore;
   blockedUntil: number;
+  users: number;
 }
 
 // Shared by provider instances, including the PR hub and GitManager. Secret rotation
@@ -21,8 +22,14 @@ export function forgeRequestBudget(account: ForgeAccount): RequestBudget | undef
   ]);
   let budget = budgets.get(identity);
   if (!budget) {
-    if (budgets.size >= MAX_IDENTITIES) return undefined;
-    budget = { gate: Semaphore.makeUnsafe(4), blockedUntil: 0 };
+    if (budgets.size >= MAX_IDENTITIES) {
+      const idle = [...budgets].find(
+        ([, value]) => value.users === 0 && value.blockedUntil <= Date.now(),
+      );
+      if (!idle) return undefined;
+      budgets.delete(idle[0]);
+    }
+    budget = { gate: Semaphore.makeUnsafe(4), blockedUntil: 0, users: 0 };
     budgets.set(identity, budget);
   }
   return budget;

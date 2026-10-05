@@ -39,6 +39,7 @@ function setup() {
   let values: readonly ForgeAccount[] = [alice, bob];
   let builds = 0;
   const router = makePrHubAccountRouter({
+    removeAccount: () => Effect.void,
     listAccounts: () => Effect.succeed(values),
     routeAccount: (ref) =>
       ref.repository === "org/alice"

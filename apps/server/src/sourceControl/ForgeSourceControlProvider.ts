@@ -50,8 +50,8 @@ export const FORGE_CAPABILITIES: Readonly<Record<ForgeKind, ForgeCapabilities>> 
   bitbucket: {
     ...COMMON,
     comment: true,
-    actions: ["merge", "close"],
-    mergeMethods: ["merge", "squash", "rebase"],
+    actions: ["close"],
+    mergeMethods: [],
     updateMethods: [],
     search: true,
     reactions: false,
@@ -334,112 +334,126 @@ export function makeForgeSourceControlProvider(options: {
       const budget = forgeRequestBudget(a);
       if (!budget)
         return yield* error(method, "The bounded account request budget is full.", "rate_limited");
-      return yield* budget.gate.withPermits(1)(
-        Effect.suspend(() => {
-          if (budget.blockedUntil > Date.now())
-            return Effect.fail(
-              new SourceControlProviderError({
-                provider: kind,
-                operation: method,
-                detail: "Forge requests are paused until the account rate limit resets.",
-                kind: "rate_limited",
-                requestDispatched: false,
-                retryAfterSeconds: Math.ceil((budget.blockedUntil - Date.now()) / 1000),
-              }),
-            );
-          return Effect.tryPromise({
-            try: async (signal) => {
-              const headers: Record<string, string> = {
-                Accept: raw ? "text/plain" : "application/json",
-              };
-              if (kind === "gitlab") headers["PRIVATE-TOKEN"] = a.token;
-              else
-                headers.Authorization =
-                  kind === "azure-devops"
-                    ? `Basic ${Buffer.from(`:${a.token}`).toString("base64")}`
-                    : `Bearer ${a.token}`;
-              if (body !== undefined) headers["Content-Type"] = "application/json";
-              const response = await (options.fetch ?? globalThis.fetch)(url, {
-                method,
-                headers,
-                body: body === undefined ? undefined : JSON.stringify(body),
-                redirect: "error",
-                signal,
-              });
-              updateForgeRequestBudget(budget, response);
-              if (!response.ok) {
-                const retry = response.headers.get("retry-after");
-                const retryAfterSeconds =
-                  retry && /^\d+$/.test(retry)
-                    ? Number(retry)
-                    : retry
-                      ? Math.max(0, Math.ceil((Date.parse(retry) - Date.now()) / 1000))
-                      : undefined;
-                throw new SourceControlProviderError({
+      budget.users++;
+      return yield* budget.gate
+        .withPermits(1)(
+          Effect.suspend(() => {
+            if (budget.blockedUntil > Date.now())
+              return Effect.fail(
+                new SourceControlProviderError({
                   provider: kind,
                   operation: method,
-                  detail: `Forge returned HTTP ${response.status}.`,
-                  kind:
-                    response.status === 401
-                      ? "unauthenticated"
-                      : response.status === 403
-                        ? "forbidden"
-                        : response.status === 404
-                          ? "not_found"
-                          : response.status === 429
-                            ? "rate_limited"
-                            : "generic",
-                  requestDispatched: true,
-                  ...(retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)
-                    ? { retryAfterSeconds }
-                    : {}),
+                  detail: "Forge requests are paused until the account rate limit resets.",
+                  kind: "rate_limited",
+                  requestDispatched: false,
+                  retryAfterSeconds: Math.ceil((budget.blockedUntil - Date.now()) / 1000),
+                }),
+              );
+            return Effect.tryPromise({
+              try: async (signal) => {
+                const headers: Record<string, string> = {
+                  Accept: raw ? "text/plain" : "application/json",
+                };
+                if (kind === "gitlab") headers["PRIVATE-TOKEN"] = a.token;
+                else
+                  headers.Authorization =
+                    kind === "azure-devops"
+                      ? `Basic ${Buffer.from(`:${a.token}`).toString("base64")}`
+                      : `Bearer ${a.token}`;
+                if (body !== undefined) headers["Content-Type"] = "application/json";
+                const response = await (options.fetch ?? globalThis.fetch)(url, {
+                  method,
+                  headers,
+                  body: body === undefined ? undefined : JSON.stringify(body),
+                  redirect: "error",
+                  signal,
                 });
-              }
-              const reader = response.body?.getReader();
-              const chunks: Uint8Array[] = [];
-              let bytes = 0;
-              if (reader)
-                try {
-                  while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    bytes += value.byteLength;
-                    if (bytes > 16 * 1024 * 1024)
-                      throw error(
-                        method,
-                        "Response exceeds the 16 MiB limit.",
-                        "invalid_response",
-                        true,
-                      );
-                    chunks.push(value);
-                  }
-                } finally {
-                  await reader.cancel().catch(() => undefined);
+                updateForgeRequestBudget(budget, response);
+                if (!response.ok) {
+                  const retry = response.headers.get("retry-after");
+                  const retryAfterSeconds =
+                    retry && /^\d+$/.test(retry)
+                      ? Number(retry)
+                      : retry
+                        ? Math.max(0, Math.ceil((Date.parse(retry) - Date.now()) / 1000))
+                        : undefined;
+                  throw new SourceControlProviderError({
+                    provider: kind,
+                    operation: method,
+                    detail: `Forge returned HTTP ${response.status}.`,
+                    kind:
+                      response.status === 401
+                        ? "unauthenticated"
+                        : response.status === 403
+                          ? "forbidden"
+                          : response.status === 404
+                            ? "not_found"
+                            : response.status === 429
+                              ? "rate_limited"
+                              : "generic",
+                    requestDispatched: true,
+                    ...(retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)
+                      ? { retryAfterSeconds }
+                      : {}),
+                  });
                 }
-              const content = Buffer.concat(chunks).toString("utf8");
-              if (Buffer.byteLength(content) > 16 * 1024 * 1024)
-                throw error(method, "Response exceeds the 16 MiB limit.", "invalid_response", true);
-              if (raw) return content;
-              if (!content) return null;
-              try {
-                return JSON.parse(content) as unknown;
-              } catch {
-                throw error(method, "Forge returned invalid JSON.", "invalid_response", true);
-              }
-            },
-            catch: (cause) =>
-              Schema.is(SourceControlProviderError)(cause)
-                ? cause
-                : error(method, "Forge request failed.", "network", true),
-          }).pipe(
-            Effect.timeoutOrElse({
-              duration: "30 seconds",
-              onTimeout: () =>
-                Effect.fail(error(method, "Forge request timed out.", "timeout", true)),
+                const reader = response.body?.getReader();
+                const chunks: Uint8Array[] = [];
+                let bytes = 0;
+                if (reader)
+                  try {
+                    while (true) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      bytes += value.byteLength;
+                      if (bytes > 16 * 1024 * 1024)
+                        throw error(
+                          method,
+                          "Response exceeds the 16 MiB limit.",
+                          "invalid_response",
+                          true,
+                        );
+                      chunks.push(value);
+                    }
+                  } finally {
+                    await reader.cancel().catch(() => undefined);
+                  }
+                const content = Buffer.concat(chunks).toString("utf8");
+                if (Buffer.byteLength(content) > 16 * 1024 * 1024)
+                  throw error(
+                    method,
+                    "Response exceeds the 16 MiB limit.",
+                    "invalid_response",
+                    true,
+                  );
+                if (raw) return content;
+                if (!content) return null;
+                try {
+                  return JSON.parse(content) as unknown;
+                } catch {
+                  throw error(method, "Forge returned invalid JSON.", "invalid_response", true);
+                }
+              },
+              catch: (cause) =>
+                Schema.is(SourceControlProviderError)(cause)
+                  ? cause
+                  : error(method, "Forge request failed.", "network", true),
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: "30 seconds",
+                onTimeout: () =>
+                  Effect.fail(error(method, "Forge request timed out.", "timeout", true)),
+              }),
+            );
+          }),
+        )
+        .pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              budget.users--;
             }),
-          );
-        }),
-      );
+          ),
+        );
     });
   const pagedRows = (ref: SourceControlPullRequestRef, suffix: string) =>
     Effect.gen(function* () {
@@ -535,7 +549,24 @@ export function makeForgeSourceControlProvider(options: {
       return ref;
     });
   const getDetail = (ref: SourceControlPullRequestRef) =>
-    request(ref, undefined, pull(ref)).pipe(Effect.map((value) => summary(value, ref)));
+    request(ref, undefined, pull(ref)).pipe(
+      Effect.flatMap((value) =>
+        Effect.gen(function* () {
+          const detail = summary(value, ref);
+          if (kind === "gitlab" && detail.isCrossRepository) {
+            const source = object(value).source_project_id;
+            const project = object(
+              yield* request(ref, undefined, "", "GET", undefined, false, String(source)),
+            );
+            return {
+              ...detail,
+              headRepositoryNameWithOwner: text(project.path_with_namespace) || null,
+            };
+          }
+          return detail;
+        }),
+      ),
+    );
   const writeComment = (input: ForgeCommentInput) => {
     if (
       !caps.comment ||
@@ -868,22 +899,24 @@ export function makeForgeSourceControlProvider(options: {
       );
     return getDetail(input.ref).pipe(
       Effect.flatMap((detail) => {
-        const remove = rows(detail.raw.reviewers)
-          .map((v) => text(v.id))
-          .filter((id) => !input.reviewers.includes(id));
+        const existing = rows(detail.raw.reviewers).map((v) => text(v.id));
+        const add = input.reviewers.filter((id) => !existing.includes(id));
+        const remove = existing.filter((id) => !input.reviewers.includes(id));
         return Effect.forEach(
-          remove,
+          add,
           (id) =>
-            request(input.ref, undefined, `${pull(input.ref)}/reviewers/${enc(id)}`, "DELETE"),
+            request(input.ref, undefined, `${pull(input.ref)}/reviewers/${enc(id)}`, "PUT", {
+              id,
+              vote: 0,
+            }),
           { concurrency: 1 },
         ).pipe(
           Effect.andThen(
-            request(
-              input.ref,
-              undefined,
-              `${pull(input.ref)}/reviewers`,
-              "PUT",
-              input.reviewers.map((id) => ({ id, vote: 0 })),
+            Effect.forEach(
+              remove,
+              (id) =>
+                request(input.ref, undefined, `${pull(input.ref)}/reviewers/${enc(id)}`, "DELETE"),
+              { concurrency: 1 },
             ),
           ),
         );
@@ -972,10 +1005,26 @@ export function makeForgeSourceControlProvider(options: {
             ),
           ),
     getComments: (ref) =>
-      pagedRows(
-        ref,
-        `${kind === "forgejo" ? issue(ref) : pull(ref)}/${kind === "gitlab" ? "discussions" : kind === "azure-devops" ? "threads" : "comments"}`,
-      ),
+      kind === "forgejo"
+        ? Effect.all([
+            pagedRows(ref, `${issue(ref)}/comments`),
+            pagedRows(ref, `${pull(ref)}/reviews`).pipe(
+              Effect.flatMap((reviews) =>
+                Effect.forEach(
+                  rows(reviews),
+                  (review) =>
+                    pagedRows(ref, `${pull(ref)}/reviews/${enc(String(review.id))}/comments`).pipe(
+                      Effect.map((comments) => ({ ...review, comments })),
+                    ),
+                  { concurrency: 4 },
+                ),
+              ),
+            ),
+          ]).pipe(Effect.map(([comments, reviews]) => [...rows(comments), ...reviews]))
+        : pagedRows(
+            ref,
+            `${pull(ref)}/${kind === "gitlab" ? "discussions" : kind === "azure-devops" ? "threads" : "comments"}`,
+          ),
     getDiff: (ref) =>
       kind === "azure-devops"
         ? azureFiles(ref).pipe(Effect.map((files) => files.map((f) => f.patch ?? "").join("\n")))
@@ -1122,8 +1171,14 @@ export function makeForgeSourceControlProvider(options: {
           ? `/merge_requests?state=opened&source_branch=${enc(input.headSelector)}&per_page=${Math.min(input.limit ?? 100, 100)}`
           : kind === "azure-devops"
             ? `/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${enc(`refs/heads/${input.headSelector}`)}`
-            : `/${kind === "forgejo" ? "pulls" : "pullrequests"}?${kind === "bitbucket" ? `q=${enc(`state="OPEN" AND source.branch.name="${input.headSelector.replace(/["\\]/g, "")}"`)}` : "state=open"}`,
-      ).pipe(Effect.map((result) => rows(result).map((value) => summary(value)))),
+            : `/${kind === "forgejo" ? "pulls" : "pullrequests"}?${kind === "bitbucket" ? `q=${enc(`state="OPEN" AND source.branch.name="${input.headSelector.replace(/["\\]/g, "")}"`)}` : `state=open&head=${enc(input.headSelector)}&limit=${Math.min(input.limit ?? 100, 100)}`}`,
+      ).pipe(
+        Effect.map((result) =>
+          rows(result)
+            .map((value) => summary(value))
+            .filter((value) => kind !== "forgejo" || value.headRefName === input.headSelector),
+        ),
+      ),
     searchPullRequests: (input) =>
       !caps.search
         ? unsupported("search")
@@ -1251,9 +1306,9 @@ export function makeForgeSourceControlProvider(options: {
             { provider: kind, host: input.host, repository: input.repository, number: 1 },
             input.cwd,
             kind === "gitlab"
-              ? `/merge_requests/${input.commentId.split(":")[0]}/notes/${enc(input.commentId.split(":")[1] ?? input.commentId)}`
+              ? `/merge_requests/${enc(input.commentId.split(":")[0] ?? "")}/notes/${enc(input.commentId.split(":")[1] ?? input.commentId)}`
               : kind === "bitbucket"
-                ? `/pullrequests/${input.commentId.split(":")[0]}/comments/${enc(input.commentId.split(":")[1] ?? input.commentId)}`
+                ? `/pullrequests/${enc(input.commentId.split(":")[0] ?? "")}/comments/${enc(input.commentId.split(":")[1] ?? input.commentId)}`
                 : `/issues/comments/${enc(input.commentId)}`,
             kind === "forgejo" ? "PATCH" : "PUT",
             kind === "bitbucket" ? { content: { raw: input.body } } : { body: input.body },

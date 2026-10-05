@@ -13,6 +13,7 @@ import { SourceControlProviderError } from "./SourceControlProvider.ts";
 
 export interface ForgeAccountsShape {
   readonly listAccounts: () => Effect.Effect<readonly ForgeAccount[], SourceControlProviderError>;
+  readonly removeAccount: (accountId: string) => Effect.Effect<void, SourceControlProviderError>;
   readonly saveAccount: (
     input: ForgeAccountInput,
   ) => Effect.Effect<ForgeAccount, SourceControlProviderError>;
@@ -258,6 +259,7 @@ export const makeForgeAccounts = (
             ...identity,
             generation: randomUUID(),
           };
+          const previous = yield* byId(id);
           // Immutable generation secrets ensure failed SQL publication cannot replace a routed token.
           yield* secrets
             .set(secretName(account), new TextEncoder().encode(input.token))
@@ -269,7 +271,34 @@ export const makeForgeAccounts = (
           yield* sql`INSERT INTO forge_accounts (id,provider,host,login,viewer_id,generation) VALUES (${id},${provider},${host},${identity.login},${identity.viewerId},${account.generation}) ON CONFLICT(provider,host,login) DO UPDATE SET viewer_id=excluded.viewer_id,generation=excluded.generation`.pipe(
             Effect.mapError(dbError),
           );
+          if (previous) yield* secrets.remove(secretName(previous)).pipe(Effect.mapError(dbError));
           return account;
+        }),
+      );
+    const removeAccount = (id: string) =>
+      gate.withPermits(1)(
+        Effect.gen(function* () {
+          const account = yield* byId(id);
+          if (!account) return;
+          const running =
+            yield* sql`SELECT operation_id FROM forge_operations WHERE account_id=${id} AND status IN ('running','outcome_unknown')`.pipe(
+              Effect.mapError(dbError),
+            );
+          if (running.length)
+            return yield* failure(
+              account.provider,
+              "Resolve outstanding operations before removing this account.",
+              "forbidden",
+            );
+          yield* secrets.remove(secretName(account)).pipe(Effect.mapError(dbError));
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`DELETE FROM forge_account_routing WHERE account_id=${id}`;
+                yield* sql`DELETE FROM forge_accounts WHERE id=${id}`;
+              }),
+            )
+            .pipe(Effect.mapError(dbError));
         }),
       );
     const listRouting = () =>
@@ -367,6 +396,7 @@ export const makeForgeAccounts = (
     return {
       listAccounts,
       saveAccount,
+      removeAccount,
       getToken,
       route,
       setRouting,

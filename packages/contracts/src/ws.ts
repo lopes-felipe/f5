@@ -704,6 +704,7 @@ const WebSocketRequestBody = Schema.Union([
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
   tagRequestBody(PR_HUB_WS_METHODS.saveAccount, ForgeAccountInput),
+  tagRequestBody(PR_HUB_WS_METHODS.removeAccount, Schema.Struct({ accountId: Schema.String })),
   tagRequestBody(PR_HUB_WS_METHODS.listAccountRouting, Schema.Struct({})),
   tagRequestBody(PR_HUB_WS_METHODS.setAccountRouting, ForgeAccountRouting),
   tagRequestBody(PR_HUB_WS_METHODS.peek, PrHubPeekInput),

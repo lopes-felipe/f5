@@ -686,7 +686,12 @@ export const makeGitManager = Effect.gen(function* () {
         }
         const identity = yield* resolveSourceControlProviderIdentity(cwd);
         let remoteName = identity.remoteName ?? "origin";
-        if (provider.kind === "bitbucket" && repositoryNameWithOwner) {
+        if (pullRequest.isCrossRepository && !repositoryNameWithOwner)
+          return yield* gitManagerError(
+            "preparePullRequestThread",
+            "The fork repository identity is unavailable; refusing to configure a push target.",
+          );
+        if (pullRequest.isCrossRepository && repositoryNameWithOwner) {
           const cloneUrls = yield* provider.getRepositoryCloneUrls({
             cwd,
             repository: repositoryNameWithOwner,
@@ -705,9 +710,9 @@ export const makeGitManager = Effect.gen(function* () {
           remoteBranch,
           localBranch,
           preserveExisting: true,
-          ...(provider.kind === "gitlab"
+          ...(!pullRequest.isCrossRepository && provider.kind === "gitlab"
             ? { remoteRef: `refs/merge-requests/${pullRequest.number}/head` }
-            : provider.kind === "forgejo"
+            : !pullRequest.isCrossRepository && provider.kind === "forgejo"
               ? { remoteRef: `refs/pull/${pullRequest.number}/head` }
               : {}),
         });
