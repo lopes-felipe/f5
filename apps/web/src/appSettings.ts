@@ -298,6 +298,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some("activity" as const)),
     Schema.withDecodingDefault(() => "activity" as const),
   ),
+  composerCollapseOnScroll: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
+  ),
   composerRichTextEnabled: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),

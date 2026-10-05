@@ -23,12 +23,18 @@ it("answers project settings polling without silently skipping a renderer query"
   expect([...fixture.unknownMethods]).toEqual([]);
 });
 
-it("answers rewind and setup subscriptions without adding work to the benchmark", () => {
+it("answers worktree setup subscriptions without adding setup work", () => {
   const fixture = createBrowserFixture();
-  expect(fixture.rpc({ _tag: "orchestration.getRewindDrafts", threadId: "small" })).toEqual({
-    threadId: "small",
+  expect(fixture.rpc({ _tag: "worktreeSetup.subscribe", threadId: "perf-small" })).toBeNull();
+  expect([...fixture.unknownMethods]).toEqual([]);
+});
+
+it("answers rewind draft reads without adding draft work", () => {
+  const fixture = createBrowserFixture();
+  expect(fixture.rpc({ _tag: "orchestration.getRewindDrafts", threadId: "perf-small" })).toEqual({
+    threadId: "perf-small",
     drafts: [],
   });
-  expect(fixture.rpc({ _tag: "worktreeSetup.subscribe", threadId: "small" })).toBeNull();
+
   expect([...fixture.unknownMethods]).toEqual([]);
 });

@@ -1,4 +1,6 @@
 import { formatUsageLimits } from "../lib/usageLimits";
+import { useServerCapability } from "~/protocolState";
+import { ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
@@ -197,7 +199,7 @@ import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelSt
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
 import { investigationWorkflowContainsThread } from "./workflow/investigationWorkflowUtils";
-import { ChevronDownIcon, ChevronRightIcon, ListTodoIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { Button } from "./ui/button";
 
 import { cn, randomUUID } from "~/lib/utils";
@@ -482,27 +484,6 @@ const terminalContextIdListsEqual = (
 ): boolean =>
   contexts.length === ids.length && contexts.every((context, index) => context.id === ids[index]);
 
-const TASK_STATUS_META = {
-  pending: {
-    label: "Pending",
-    accentClass: "border-amber-500/30 bg-amber-500/6 text-amber-700 dark:text-amber-300",
-    dotClass: "bg-amber-500/80",
-  },
-  in_progress: {
-    label: "In progress",
-    accentClass: "border-sky-500/30 bg-sky-500/8 text-sky-700 dark:text-sky-300",
-    dotClass: "bg-sky-500",
-  },
-  completed: {
-    label: "Completed",
-    accentClass: "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
-    dotClass: "bg-emerald-500",
-  },
-} as const satisfies Record<
-  ThreadTaskItem["status"],
-  { label: string; accentClass: string; dotClass: string }
->;
-
 function summarizeTaskCounts(tasks: ReadonlyArray<ThreadTaskItem>): string {
   const counts = {
     pending: 0,
@@ -541,84 +522,6 @@ function deriveFallbackTasksFromPlan(
           ? "in_progress"
           : "pending",
   }));
-}
-
-function ThreadTasksPanel(input: {
-  readonly threadId: ThreadId;
-  readonly tasks: ReadonlyArray<ThreadTaskItem>;
-  readonly open: boolean;
-  readonly summary: string;
-  readonly onToggle: () => void;
-}) {
-  const panelId = `thread-task-panel-${input.threadId}`;
-
-  return (
-    <section className="overflow-hidden rounded-2xl border border-border/70 bg-card/70 shadow-sm backdrop-blur-sm">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/35"
-        onClick={input.onToggle}
-        aria-controls={panelId}
-        aria-expanded={input.open}
-      >
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <ListTodoIcon className="size-4 text-muted-foreground" />
-            <span className="font-medium text-foreground text-sm">Task list</span>
-          </div>
-          <p className="truncate pt-0.5 text-muted-foreground text-xs">{input.summary}</p>
-        </div>
-        {input.open ? (
-          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
-        ) : (
-          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
-        )}
-      </button>
-
-      <div
-        className={cn(
-          "grid transition-[grid-template-rows,opacity] duration-200 ease-out",
-          input.open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-70",
-        )}
-      >
-        <div id={panelId} className="overflow-hidden">
-          <div className="space-y-2 border-t border-border/60 px-4 py-3">
-            {input.tasks.map((task) => {
-              const meta = TASK_STATUS_META[task.status];
-              return (
-                <div
-                  key={task.id}
-                  className={cn(
-                    "flex items-start gap-3 rounded-xl border px-3 py-2 transition-colors duration-200",
-                    meta.accentClass,
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full transition-colors duration-200",
-                      meta.dotClass,
-                      task.status === "in_progress" ? "animate-pulse" : "",
-                    )}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium text-sm">{task.activeForm}</p>
-                    {task.content !== task.activeForm ? (
-                      <p className="truncate pt-0.5 text-muted-foreground text-xs">
-                        {task.content}
-                      </p>
-                    ) : null}
-                  </div>
-                  <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 font-medium text-[11px] uppercase tracking-[0.08em]">
-                    {meta.label}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
 }
 
 interface ChatViewProps {
@@ -790,6 +693,11 @@ export default function ChatView({
   } = useComposerState(prompt, composerDraft.mentions);
   const promptRef = useRef(prompt);
   const composerMentionsRef = useRef(composerDraft.mentions);
+  const composerRedesign = useServerCapability("composer-redesign");
+  const getComposerTimeline = useCallback(() => {
+    const node = legendListRef.current?.getScrollableNode?.();
+    return node instanceof HTMLElement ? node : null;
+  }, []);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
@@ -843,6 +751,12 @@ export default function ChatView({
   const previousTaskPanelThreadIdRef = useRef<ThreadId | null>(null);
   const previousThreadTaskCountRef = useRef(0);
   const tasksPanelManuallyCollapsedRef = useRef(false);
+  const onToggleTasksPanel = useCallback(() => {
+    setTasksPanelOpen((open) => {
+      tasksPanelManuallyCollapsedRef.current = open;
+      return !open;
+    });
+  }, []);
   const planSidebarOpen = useRightPanelStore((store) => {
     const state = selectThreadRightPanelState(store.byThreadId, threadId);
     return state.isOpen && state.surfaces.some((surface) => surface.id === "plan");
@@ -6743,7 +6657,10 @@ export default function ChatView({
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div
+            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            style={composerRedesign ? { containerType: "size" } : undefined}
+          >
             {/* Messages Wrapper */}
             <div className="relative flex min-h-0 flex-1 flex-col">
               {shouldRenderTimeline ? (
@@ -6800,20 +6717,16 @@ export default function ChatView({
                         // Tasks come only from the detail payload, so keep this
                         // gated on `detailsLoaded` even though the timeline can
                         // render from live events earlier.
-                        activeThread.detailsLoaded && effectiveThreadTasks.length > 0 ? (
+                        !composerRedesign &&
+                        activeThread.detailsLoaded &&
+                        effectiveThreadTasks.length > 0 ? (
                           <div className="mx-auto mb-4 w-full max-w-3xl">
                             <ThreadTasksPanel
                               threadId={activeThread.id}
                               tasks={effectiveThreadTasks}
                               open={tasksPanelOpen}
                               summary={taskPanelSummary}
-                              onToggle={() =>
-                                setTasksPanelOpen((open) => {
-                                  const nextOpen = !open;
-                                  tasksPanelManuallyCollapsedRef.current = !nextOpen;
-                                  return nextOpen;
-                                })
-                              }
+                              onToggle={onToggleTasksPanel}
                             />
                           </div>
                         ) : null
@@ -6843,98 +6756,119 @@ export default function ChatView({
             </div>
 
             {/* Input bar */}
-            <div className="pb-safe-add">
+            <div className="pb-safe-add" data-composer-input-bar={composerRedesign || undefined}>
               <div
-                className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}
+                data-composer-redesign={composerRedesign || undefined}
+                className={cn(
+                  "px-3 pt-1.5 sm:px-5 sm:pt-2",
+                  composerRedesign && "mx-auto w-full max-w-3xl",
+                  isGitRepo ? "pb-1" : "pb-3 sm:pb-4",
+                )}
               >
-                {isServerThread &&
-                worktreeSetup &&
-                shouldShowWorktreeSetupCard(worktreeSetup, {
-                  firstTurnQueued:
-                    nextTurnQueueState.snapshot?.items.some(
-                      (item) => item.itemId === worktreeSetup.itemId,
-                    ) ?? false,
-                }) ? (
-                  <WorktreeSetupCard
-                    snapshot={worktreeSetup}
-                    busy={worktreeSetupBusy}
-                    onCancel={
-                      worktreeSetup.agentStarted
-                        ? null
-                        : () => void runWorktreeSetupAction("cancel")
-                    }
-                    onRetry={
-                      worktreeSetup.phase === "failed" ||
-                      worktreeSetup.phase === "cancelled" ||
-                      worktreeSetup.phase === "cancelled_kept"
-                        ? () => void runWorktreeSetupAction("retry")
-                        : null
-                    }
-                    onWorkLocally={
-                      worktreeSetup.agentStarted || worktreeSetup.phase === "done"
-                        ? null
-                        : () => void runWorktreeSetupAction("workLocally")
-                    }
-                  />
-                ) : null}
-                {isServerThread ? (
-                  <NextTurnQueuePanel
-                    turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
-                    threadId={activeThread.id}
-                    provider={selectedProvider}
-                    runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
-                    projectSkills={activeProject?.skills}
-                  />
-                ) : null}
-                {activeThread?.pendingUserInputs
-                  ?.filter((input) => input.responseMode === "message")
-                  .map((input) => (
-                    <AsyncUserInputPanel
-                      key={input.requestId}
+                <div data-composer-state-drawers={composerRedesign || undefined}>
+                  {composerRedesign &&
+                  activeThread.detailsLoaded &&
+                  effectiveThreadTasks.length > 0 ? (
+                    <ThreadTasksPanel
+                      attached
                       threadId={activeThread.id}
-                      input={input}
+                      tasks={effectiveThreadTasks}
+                      open={tasksPanelOpen}
+                      summary={taskPanelSummary}
+                      onToggle={onToggleTasksPanel}
                     />
-                  ))}
-                {activePendingUserInput && activeThread ? (
-                  <UserInputAttachments
-                    key={activePendingUserInput.requestId}
-                    threadId={activeThread.id}
-                    attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
-                    onChange={(update) =>
-                      setAnswerAttachments((current) => ({
-                        ...current,
-                        [activePendingUserInput.requestId]: update(
-                          current[activePendingUserInput.requestId] ?? [],
-                        ),
-                      }))
-                    }
-                    onUploadBusyChange={(busy) =>
-                      setRespondingUserInputRequestIds((current) =>
-                        busy
-                          ? [...new Set([...current, activePendingUserInput.requestId])]
-                          : current.filter((id) => id !== activePendingUserInput.requestId),
-                      )
-                    }
-                    disabled={activePendingIsResponding}
-                    onDismiss={() =>
-                      void onRespondToUserInput(activePendingUserInput.requestId, {}, true)
-                    }
-                  />
-                ) : null}
-                {/* One keyed list, so the panel keeps its identity (and doesn't
-                    replay its entrance) when the real draft replaces the provisional one. */}
-                {activeThread
-                  ? visibleRewindDrafts.map((entry) => (
-                      <RewindDraftPanel
-                        key={entry.operationId}
+                  ) : null}
+                  {isServerThread &&
+                  worktreeSetup &&
+                  shouldShowWorktreeSetupCard(worktreeSetup, {
+                    firstTurnQueued:
+                      nextTurnQueueState.snapshot?.items.some(
+                        (item) => item.itemId === worktreeSetup.itemId,
+                      ) ?? false,
+                  }) ? (
+                    <WorktreeSetupCard
+                      snapshot={worktreeSetup}
+                      busy={worktreeSetupBusy}
+                      onCancel={
+                        worktreeSetup.agentStarted
+                          ? null
+                          : () => void runWorktreeSetupAction("cancel")
+                      }
+                      onRetry={
+                        worktreeSetup.phase === "failed" ||
+                        worktreeSetup.phase === "cancelled" ||
+                        worktreeSetup.phase === "cancelled_kept"
+                          ? () => void runWorktreeSetupAction("retry")
+                          : null
+                      }
+                      onWorkLocally={
+                        worktreeSetup.agentStarted || worktreeSetup.phase === "done"
+                          ? null
+                          : () => void runWorktreeSetupAction("workLocally")
+                      }
+                    />
+                  ) : null}
+                  {isServerThread ? (
+                    <NextTurnQueuePanel
+                      turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
+                      threadId={activeThread.id}
+                      provider={selectedProvider}
+                      runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
+                      projectSkills={activeProject?.skills}
+                    />
+                  ) : null}
+                  {activeThread?.pendingUserInputs
+                    ?.filter((input) => input.responseMode === "message")
+                    .map((input) => (
+                      <AsyncUserInputPanel
+                        key={input.requestId}
                         threadId={activeThread.id}
-                        draft={entry.draft}
-                        provisional={entry.provisional}
-                        onFocusComposer={focusComposer}
+                        input={input}
                       />
-                    ))
-                  : null}
+                    ))}
+                  {activePendingUserInput && activeThread ? (
+                    <UserInputAttachments
+                      key={activePendingUserInput.requestId}
+                      threadId={activeThread.id}
+                      attachments={answerAttachments[activePendingUserInput.requestId] ?? []}
+                      onChange={(update) =>
+                        setAnswerAttachments((current) => ({
+                          ...current,
+                          [activePendingUserInput.requestId]: update(
+                            current[activePendingUserInput.requestId] ?? [],
+                          ),
+                        }))
+                      }
+                      onUploadBusyChange={(busy) =>
+                        setRespondingUserInputRequestIds((current) =>
+                          busy
+                            ? [...new Set([...current, activePendingUserInput.requestId])]
+                            : current.filter((id) => id !== activePendingUserInput.requestId),
+                        )
+                      }
+                      disabled={activePendingIsResponding}
+                      onDismiss={() =>
+                        void onRespondToUserInput(activePendingUserInput.requestId, {}, true)
+                      }
+                    />
+                  ) : null}
+                  {/* One keyed list, so the panel keeps its identity (and doesn't
+                    replay its entrance) when the real draft replaces the provisional one. */}
+                  {activeThread
+                    ? visibleRewindDrafts.map((entry) => (
+                        <RewindDraftPanel
+                          key={entry.operationId}
+                          threadId={activeThread.id}
+                          draft={entry.draft}
+                          provisional={entry.provisional}
+                          onFocusComposer={focusComposer}
+                        />
+                      ))
+                    : null}
+                </div>
                 <ChatComposer
+                  redesignEnabled={composerRedesign}
+                  getTimeline={getComposerTimeline}
                   composerFormRef={composerFormRef}
                   onSend={onSend}
                   isDragOverComposer={isDragOverComposer}

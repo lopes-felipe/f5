@@ -18,6 +18,7 @@ export default mergeConfig(
     },
     test: {
       include: [
+        "src/protocolState.browser.tsx",
         "src/components/WorkspaceMediaView.browser.tsx",
         "src/components/AssetImageGallery.browser.tsx",
         "src/hooks/useMigrateClientSettings.browser.ts",
