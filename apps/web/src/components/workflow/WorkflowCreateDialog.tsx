@@ -873,7 +873,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogPopup className="max-w-3xl" onKeyDownCapture={onDialogKeyDown}>
+      <DialogPopup className="max-w-4xl" onKeyDownCapture={onDialogKeyDown}>
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
@@ -882,7 +882,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          <div className="grid gap-x-6 gap-y-5 md:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
+          <div className="grid gap-x-6 gap-y-5 md:grid-cols-[minmax(0,1fr)_minmax(0,28rem)]">
             <div className="flex min-w-0 flex-col gap-4">
               <ToggleGroup
                 className="grid w-full grid-cols-2 gap-2"
