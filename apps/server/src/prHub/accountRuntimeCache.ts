@@ -13,7 +13,7 @@ export const makeAccountRuntimeCache = <A, E>(
     const gate = yield* Semaphore.make(1);
     const entries = new Map<
       string,
-      { generation: string; value: Deferred.Deferred<A, E>; scope: Scope.Closeable }
+      { generation: string; pending: Deferred.Deferred<A, E>; value?: A; scope: Scope.Closeable }
     >();
     const reserve = (account: { readonly id: string; readonly generation: string }) =>
       gate.withPermits(1)(
@@ -22,7 +22,7 @@ export const makeAccountRuntimeCache = <A, E>(
           if (old?.generation === account.generation) {
             entries.delete(account.id);
             entries.set(account.id, old);
-            return old.value;
+            return old.pending;
           }
           if (old) {
             entries.delete(account.id);
@@ -44,17 +44,18 @@ export const makeAccountRuntimeCache = <A, E>(
                 if (exit._tag === "Failure") {
                   yield* gate.withPermits(1)(
                     Effect.sync(() => {
-                      if (entries.get(account.id)?.value === value) entries.delete(account.id);
+                      if (entries.get(account.id)?.pending === value) entries.delete(account.id);
                     }),
                   );
                   yield* Scope.close(scope, Exit.void);
                 }
+                if (exit._tag === "Success") { const entry = entries.get(account.id); if (entry?.pending === value) entry.value = exit.value; }
                 yield* Deferred.done(value, exit);
               }),
             ),
             Effect.forkIn(parentScope),
           );
-          entries.set(account.id, { generation: account.generation, value, scope });
+          entries.set(account.id, { generation: account.generation, pending: value, scope });
           return value;
         }),
       );
