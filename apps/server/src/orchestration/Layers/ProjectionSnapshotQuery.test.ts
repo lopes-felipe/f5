@@ -1220,4 +1220,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       );
     }),
   );
+
+  it.effect("reads mid-turn checkpoints of a still-running turn", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+          created_at, last_interaction_at, updated_at, deleted_at
+        )
+        VALUES (
+          'thread-running-diff', 'project-1', 'Running diff', 'gpt-5-codex', NULL, NULL,
+          'turn-running-diff', '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:00.000Z',
+          '2026-02-24T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state,
+          requested_at, started_at, completed_at, checkpoint_turn_count,
+          checkpoint_ref, checkpoint_status, checkpoint_files_json
+        )
+        VALUES (
+          'thread-running-diff', 'turn-running-diff', NULL, NULL, 'running',
+          '2026-02-24T00:00:01.000Z', '2026-02-24T00:00:02.000Z', NULL, 3,
+          'provider-diff:turn-running-diff', 'missing', '[]'
+        )
+      `;
+
+      const details = yield* snapshotQuery.getThreadTailDetails({
+        threadId: ThreadId.makeUnsafe("thread-running-diff"),
+      });
+
+      assert.deepEqual(
+        details.checkpoints.map((checkpoint) => [
+          checkpoint.turnId,
+          checkpoint.checkpointTurnCount,
+          checkpoint.completedAt,
+        ]),
+        [["turn-running-diff", 3, "2026-02-24T00:00:02.000Z"]],
+      );
+    }),
+  );
 });

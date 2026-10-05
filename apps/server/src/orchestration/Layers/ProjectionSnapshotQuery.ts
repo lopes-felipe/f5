@@ -1216,7 +1216,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
           assistant_message_id AS "assistantMessageId",
-          completed_at AS "completedAt"
+          COALESCE(completed_at, started_at, requested_at) AS "completedAt"
         FROM projection_turns
         WHERE checkpoint_turn_count IS NOT NULL
         ORDER BY thread_id ASC, checkpoint_turn_count ASC
@@ -1237,7 +1237,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             checkpoint_status AS "status",
             checkpoint_files_json AS "files",
             assistant_message_id AS "assistantMessageId",
-            completed_at AS "completedAt",
+            COALESCE(completed_at, started_at, requested_at) AS "completedAt",
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY checkpoint_turn_count DESC, turn_id DESC
@@ -1669,7 +1669,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           checkpoint_status AS "status",
           checkpoint_files_json AS "files",
           assistant_message_id AS "assistantMessageId",
-          completed_at AS "completedAt"
+          COALESCE(completed_at, started_at, requested_at) AS "completedAt"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND checkpoint_turn_count IS NOT NULL
@@ -1726,7 +1726,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               checkpoint_status AS "status",
               checkpoint_files_json AS "files",
               assistant_message_id AS "assistantMessageId",
-              completed_at AS "completedAt"
+              COALESCE(completed_at, started_at, requested_at) AS "completedAt"
             FROM projection_turns
             WHERE thread_id = ${threadId}
               AND checkpoint_turn_count IS NOT NULL
@@ -1753,7 +1753,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               checkpoint_status AS "status",
               checkpoint_files_json AS "files",
               assistant_message_id AS "assistantMessageId",
-              completed_at AS "completedAt"
+              COALESCE(completed_at, started_at, requested_at) AS "completedAt"
             FROM projection_turns
             WHERE thread_id = ${threadId}
               AND 1 = 0
@@ -1767,7 +1767,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               checkpoint_status AS "status",
               checkpoint_files_json AS "files",
               assistant_message_id AS "assistantMessageId",
-              completed_at AS "completedAt"
+              COALESCE(completed_at, started_at, requested_at) AS "completedAt"
             FROM projection_turns
             WHERE thread_id = ${threadId}
               AND checkpoint_turn_count IS NOT NULL
