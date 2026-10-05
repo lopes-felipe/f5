@@ -1,3 +1,5 @@
+import { useOpenLink } from "../hooks/useOpenLink";
+import { PrLinkPreview } from "./prHub/PrLinkPreview";
 import { ChatAssetImage } from "./ChatAssetImage";
 import { useContext } from "react";
 import { RepositoryLinks } from "../repositoryLinkContext";
@@ -330,6 +332,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   cwd: string | undefined;
   mode: MarkdownRenderMode;
 }) {
+  const openLink = useOpenLink();
   const repositoryLinks = useContext(RepositoryLinks);
   const { text, cwd, mode } = props;
   const wordWrap = useDiffWordWrap();
@@ -364,6 +367,13 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         // disambiguation.
         const meta = href ? resolveMarkdownFileLinkMeta(href, cwd) : null;
         if (!meta || !href) {
+          if (
+            href &&
+            /^https:\/\/[^/]+\/.*\/(?:pull|pulls|pull-requests|pullrequests|merge_requests|pullrequest)\/\d+(?:[/?#]|$)/.test(
+              href,
+            )
+          )
+            return <PrLinkPreview url={href}>{children}</PrLinkPreview>;
           let isGitHub = false;
           try {
             isGitHub = href !== undefined && new URL(href).hostname === "github.com";
@@ -371,7 +381,18 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
             /* Relative and incomplete links have no host. */
           }
           return (
-            <a {...props} href={href} target="_blank" rel="noreferrer">
+            <a
+              {...props}
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(event) => {
+                if (!href || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0)
+                  return;
+                event.preventDefault();
+                void openLink(href).catch(() => undefined);
+              }}
+            >
               {isGitHub ? (
                 <GitHubIcon aria-hidden="true" className="mr-1 inline size-3 align-baseline" />
               ) : null}
@@ -491,7 +512,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
         );
       },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap],
+    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap, openLink],
   );
 
   return (

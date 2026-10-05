@@ -2,11 +2,7 @@ import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
 import { Cache, Cause, Clock, Effect, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
 
-import {
-  ACCOUNT_ATTEMPT_TTL_MS,
-  ACCOUNT_FORCE_COOLDOWN_MS,
-  type AccountUsageCapability,
-} from "../accountUsage.ts";
+import { ACCOUNT_ATTEMPT_TTL_MS, type AccountUsageCapability } from "../accountUsage.ts";
 export type { AccountUsageCapability } from "../accountUsage.ts";
 export function emptyAccountSection(kind: AccountUsageSection["kind"]): AccountUsageSection {
   return { kind, outcome: "unavailable", lastAttemptAt: null, snapshot: null, errorCode: null };
@@ -21,18 +17,13 @@ export const makeAccountUsageCapability = <E>(
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const state = yield* Ref.make(initial);
-    // Cache TTL starts at completion; force cooldown starts only on a real miss.
-    // A cache hit must never postpone the next eligible attempt.
-    const lastStarted = yield* Ref.make<number | null>(null);
+    // TTL starts at completion, including failure. Forced refresh bypasses it.
     const lastCompleted = yield* Ref.make<number | null>(null);
     const attempts = yield* Cache.make({
       capacity: 4,
       timeToLive: ACCOUNT_ATTEMPT_TTL_MS,
       lookup: () =>
-        Effect.gen(function* () {
-          yield* Ref.set(lastStarted, yield* Clock.currentTimeMillis);
-          return yield* options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"));
-        }).pipe(
+        (options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"))).pipe(
           // Readers return section failures independently. Only a connection-level
           // failure (or defect) here applies to every section. Never swallow retirement.
           Effect.catchCause((cause) =>
@@ -62,13 +53,12 @@ export const makeAccountUsageCapability = <E>(
         Effect.gen(function* () {
           if (!initial.enabled || mode === "none") return;
           const now = yield* Clock.currentTimeMillis;
-          const previous = yield* Ref.get(mode === "force" ? lastStarted : lastCompleted);
+          const previous = yield* Ref.get(lastCompleted);
           const scheduled = yield* Ref.modify(state, (current) => {
             if (
               current.refreshState !== "idle" ||
               (previous !== null &&
-                now - previous <
-                  (mode === "force" ? ACCOUNT_FORCE_COOLDOWN_MS : ACCOUNT_ATTEMPT_TTL_MS))
+                now - previous < (mode === "force" ? 5_000 : ACCOUNT_ATTEMPT_TTL_MS))
             )
               return [false, current] as const;
             return [true, { ...current, refreshState: "queued" as const }] as const;

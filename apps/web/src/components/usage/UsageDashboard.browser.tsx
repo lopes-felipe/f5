@@ -16,9 +16,20 @@ import {
   usageAccountsQueryOptions,
   usageQueryKeys,
 } from "../../lib/usageReactQuery";
+import { ResetCreditButton } from "./ResetCreditButton";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { UsageDashboard, UsageDashboardView } from "./UsageDashboard";
 
-const api = vi.hoisted(() => ({ getSummary: vi.fn(), getAccounts: vi.fn() }));
+const api = vi.hoisted(() => ({
+  getSummary: vi.fn(),
+  getAccounts: vi.fn(),
+  consumeResetCredit: vi.fn(),
+}));
+vi.mock("../../hooks/useSettings", () => ({
+  useSettings: (select: (settings: { usagePriceOverrides: [] }) => unknown) =>
+    select({ usagePriceOverrides: [] }),
+  useUpdateSettings: () => ({ updateSettings: vi.fn() }),
+}));
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ usage: api }) }));
 
 function metrics(overrides: Partial<UsageMetrics> = {}): UsageMetrics {
@@ -178,9 +189,9 @@ describe("UsageDashboardView", () => {
         .element(page.getByRole("img", { name: "Token usage chart for 7 days (UTC)" }))
         .toBeVisible();
       await expect
-        .element(page.getByText("$0.42 + unreported", { exact: true }).first())
+        .element(page.getByText("$0.42 + unpriced", { exact: true }).first())
         .toBeVisible();
-      await expect.element(page.getByText("Unreported", { exact: true }).first()).toBeVisible();
+      await expect.element(page.getByText("Unpriced", { exact: true }).first()).toBeVisible();
       await expect.element(page.getByText(/no price was estimated/i)).toBeVisible();
       await expect
         .element(page.getByText("Codex — default configuration", { exact: true }))
@@ -367,7 +378,7 @@ it("renders Claude unknown and zero meters distinctly alongside Codex, with neut
       .not.toHaveAttribute("aria-valuenow");
     await expect
       .element(page.getByRole("progressbar", { name: "Claude · Weekly limit" }))
-      .toHaveAttribute("aria-valuenow", "0");
+      .toHaveAttribute("aria-valuenow", "100");
     await expect
       .element(page.getByRole("progressbar", { name: "Codex · 5-hour limit" }))
       .toBeVisible();
@@ -375,10 +386,10 @@ it("renders Claude unknown and zero meters distinctly alongside Codex, with neut
     await expect.element(page.getByText("Extra usage enabled")).toBeVisible();
     await expect
       .element(page.getByRole("progressbar", { name: "Claude \u00b7 Extra usage" }))
-      .toHaveAttribute("aria-valuetext", "105% used");
+      .toHaveAttribute("aria-valuetext", "0% remaining");
     await expect
       .element(page.getByRole("progressbar", { name: "Claude \u00b7 Extra usage" }))
-      .toHaveAttribute("aria-valuenow", "100");
+      .toHaveAttribute("aria-valuenow", "0");
   } finally {
     await screen.unmount();
   }
@@ -557,7 +568,7 @@ it("uses absolute freshness timestamps that stay truthful after idle time withou
   }
 });
 
-it("reports the refresh cooldown and shows an account loading placeholder", async () => {
+it("requests an uncached refresh and shows an account loading placeholder", async () => {
   api.getSummary.mockResolvedValue(summary());
   let finishAccounts!: (value: UsageAccounts) => void;
   api.getAccounts
@@ -581,17 +592,46 @@ it("reports the refresh cooldown and shows an account loading placeholder", asyn
       .element(page.getByRole("region", { name: "Account usage and limits" }))
       .toBeVisible();
     await page.getByRole("button", { name: "Refresh usage" }).click();
-    await expect
-      .element(
-        page.getByText(
-          "No new account refresh was scheduled. Refreshes have a 30-second minimum interval.",
-        ),
-      )
-      .toBeVisible();
+    await expect.element(page.getByText("Account refresh requested.")).toBeVisible();
     expect(api.getAccounts).toHaveBeenCalledTimes(2);
   } finally {
     await screen.unmount();
     client.clear();
     vi.resetAllMocks();
+  }
+});
+
+it("confirms the named account and window before redeeming and reuses ambiguous keys", async () => {
+  api.consumeResetCredit
+    .mockRejectedValueOnce(new Error("lost connection"))
+    .mockResolvedValue({ outcome: "alreadyRedeemed" });
+  const client = new QueryClient();
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <ResetCreditButton
+        instanceId={ProviderInstanceId.make("codex-test")}
+        accountName="Work account"
+        windowName="5-hour window"
+        count={1}
+      />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "Use reset credit (1)" }).click();
+    await expect
+      .element(page.getByText("This redeems one credit for Work account to reset 5-hour window."))
+      .toBeVisible();
+    expect(api.consumeResetCredit).not.toHaveBeenCalled();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(api.consumeResetCredit).not.toHaveBeenCalled();
+    await page.getByRole("button", { name: "Use reset credit (1)" }).click();
+    await page.getByRole("button", { name: "Confirm redemption" }).click();
+    await expect.element(page.getByRole("alert")).toBeVisible();
+    await page.getByRole("button", { name: "Confirm redemption" }).click();
+    await expect.poll(() => api.consumeResetCredit.mock.calls.length).toBe(2);
+    expect(api.consumeResetCredit.mock.calls[0]).toEqual(api.consumeResetCredit.mock.calls[1]);
+  } finally {
+    await screen.unmount();
+    client.clear();
   }
 });

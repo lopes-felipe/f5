@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -77,6 +77,35 @@ try {
     .getByRole("button", { name: "Add your first project", exact: true })
     .waitFor({ timeout: 60_000 });
   await page.screenshot({ path: join(directory, "welcome.png") });
+  await page.evaluate(async () => {
+    const bridge = window.desktopBridge.preview;
+    const original = await bridge.getPreviewConfig();
+    const persistent = await bridge.profiles.create("Smoke work", true);
+    const privateProfile = await bridge.profiles.create("Smoke incognito", false);
+    await bridge.profiles.select(privateProfile.id);
+    const config = await bridge.createTab("smoke-private-tab", { zoomFactor: 1.25, muted: true });
+    if (config.partition.startsWith("persist:") || config.partition === original.partition)
+      throw new Error("Incognito isolation failed");
+    if (!config.preload.startsWith("file:")) throw new Error("Guest preload is missing");
+    let blocked = false;
+    try {
+      await bridge.profiles.delete(privateProfile.id);
+    } catch {
+      blocked = true;
+    }
+    if (!blocked) throw new Error("Active profile deletion was allowed");
+    await bridge.closeTab("smoke-private-tab");
+    await bridge.profiles.delete(privateProfile.id);
+    const fallback = await bridge.createTab("smoke-default-after-delete", {
+      zoomFactor: 1,
+      muted: false,
+    });
+    if (fallback.partition !== original.partition)
+      throw new Error("Deleting the selected profile did not restore the default");
+    await bridge.closeTab("smoke-default-after-delete");
+    await bridge.profiles.delete(persistent.id);
+    await bridge.profiles.select("default");
+  });
   const backendOrigin = await page.evaluate(() => {
     const url = new URL(window.desktopBridge.getWsUrl());
     url.protocol = url.protocol === "wss:" ? "https:" : "http:";
@@ -160,6 +189,8 @@ try {
   }, backendOrigin);
   if (popupStatus !== 401) throw new Error("Popup received backend authorization");
   const previewConfig = await page.evaluate(() => window.desktopBridge.preview.getPreviewConfig());
+  if (!previewConfig.preload || !existsSync(new URL(previewConfig.preload)))
+    throw new Error("Built guest preload is missing on disk");
   await application.evaluate(
     ({ session }, { origin, partition }) => {
       const guestSession = session.fromPartition(partition);

@@ -1529,6 +1529,7 @@ describe("WebSocket Server", () => {
           changes: Stream.empty,
         }),
         Layer.succeed(usageServiceModule.UsageService, {
+          consumeResetCredit: () => Effect.die("unused reset credit"),
           getSummary: () => Effect.die("unused usage summary"),
           getAccounts: () => Effect.succeed([]),
         }),
@@ -1797,6 +1798,7 @@ describe("WebSocket Server", () => {
           changes: Stream.empty,
         }),
         Layer.succeed(usageServiceModule.UsageService, {
+          consumeResetCredit: () => Effect.die("unused reset credit"),
           getSummary: () => Effect.die("unused usage summary"),
           getAccounts: () => Effect.succeed([]),
         }),

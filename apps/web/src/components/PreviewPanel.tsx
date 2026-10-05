@@ -1,3 +1,4 @@
+import { useAppSettings } from "../appSettings";
 import { setAttachmentSource } from "../lib/attachmentUploadQueue";
 import { notifyPreviewFocused } from "../lib/previewFocus";
 import {
@@ -342,6 +343,9 @@ function PreviewBrowserWebview(props: {
     navStatus: PreviewNavStatus,
   ) => void;
 }) {
+  const { settings } = useAppSettings();
+  const defaults = useRef(settings.previewDefaults);
+  const [tabConfig, setTabConfig] = useState<DesktopPreviewWebviewConfig | null>(null);
   const webviewRef = useRef<PreviewWebviewElement | null>(null);
   const sessionRef = useRef(props.session);
   sessionRef.current = props.session;
@@ -353,7 +357,16 @@ function PreviewBrowserWebview(props: {
   activeTitleRef.current = activeTitle;
 
   useEffect(() => {
-    void props.desktopPreview.createTab(props.session.tabId);
+    let canceled = false;
+    void props.desktopPreview
+      .createTab(props.session.tabId, defaults.current)
+      .then((config) => {
+        if (!canceled) setTabConfig(config ?? props.config);
+      })
+      .catch(() => undefined);
+    return () => {
+      canceled = true;
+    };
   }, [props.desktopPreview, props.session.tabId]);
 
   useEffect(() => {
@@ -439,7 +452,7 @@ function PreviewBrowserWebview(props: {
       webview.removeEventListener("page-title-updated", onSuccess);
       webview.removeEventListener("did-fail-load", onFail);
     };
-  }, [props.desktopPreview, props.onStatus, props.session.tabId]);
+  }, [props.desktopPreview, props.onStatus, props.session.tabId, tabConfig]);
 
   const dimensions = props.dimensions ?? props.hiddenDimensions;
   return (
@@ -458,15 +471,19 @@ function PreviewBrowserWebview(props: {
           : { width: dimensions.width, height: dimensions.height }
       }
     >
-      <webview
-        ref={(node) => {
-          webviewRef.current = node as PreviewWebviewElement | null;
-        }}
-        src={activeUrl || "about:blank"}
-        partition={props.config.partition}
-        webpreferences={props.config.webPreferences}
-        className="h-full w-full bg-background"
-      />
+      {tabConfig ? (
+        <webview
+          ref={(node) => {
+            webviewRef.current = node as PreviewWebviewElement | null;
+            node?.setAttribute("allowpopups", "");
+          }}
+          src={activeUrl || "about:blank"}
+          partition={tabConfig?.partition ?? props.config.partition}
+          webpreferences={tabConfig?.webPreferences ?? props.config.webPreferences}
+          preload={tabConfig?.preload ?? props.config.preload}
+          className="h-full w-full bg-background"
+        />
+      ) : null}
       {props.visible && props.session.navStatus._tag === "LoadFailed" ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/92 p-6 text-center">
           <div className="max-w-sm">
@@ -531,10 +548,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const lastViewportPersistAtRef = useRef(0);
   const activeRecordingRef = useRef<ActivePreviewRecording | null>(null);
   const automationResponseCacheRef = useRef(new PreviewAutomationResponseCache());
+  const automationOwnedTabs = useRef(new Set<string>());
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
   const sessionsRef = useRef<PreviewSessionSnapshot[]>([]);
   sessionsRef.current = sessions;
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const { settings: previewSettings } = useAppSettings();
+  const [zoomTabs, setZoomTabs] = useState<Record<string, number>>({});
+  const [mutedTabs, setMutedTabs] = useState<Record<string, boolean>>({});
   const [webviewConfig, setWebviewConfig] = useState<{
     partition: string;
     webPreferences: string;
@@ -793,7 +814,10 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           setActiveTabId((current) => current ?? list.sessions.at(-1)?.tabId ?? null);
           return;
         }
-        const snapshot = await api.preview.open({ threadId });
+        const snapshot = await api.preview.open({
+          threadId,
+          colorScheme: previewSettings.previewDefaults.colorScheme,
+        });
         if (cancelled) return;
         setSessions([snapshot]);
         setActiveTabId(snapshot.tabId);
@@ -819,6 +843,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   useEffect(() => {
     if (!desktopPreview) return;
     return desktopPreview.onStateChange((tabId, state) => {
+      setZoomTabs((current) => ({ ...current, [tabId]: state.zoomFactor }));
+      if (state.muted !== undefined)
+        setMutedTabs((current) => ({ ...current, [tabId]: state.muted! }));
       setDesktopStateByTabId((current) => {
         const previous = current[tabId];
         return {
@@ -1177,10 +1204,12 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           if (!session || input.reuseExistingTab === false) {
             const openedSession = await api.preview.open({
               threadId,
+              colorScheme: previewSettings.previewDefaults.colorScheme,
               ...(input.url ? { url: input.url } : {}),
             });
             session = openedSession;
             createdSession = true;
+            automationOwnedTabs.current.add(openedSession.tabId);
             await desktopPreview.createTab(openedSession.tabId);
             setSessions((current) =>
               applyPreviewEvent(current, {
@@ -1382,6 +1411,12 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
 
   const closePreview = useCallback(async () => {
     if (activeSession) {
+      if (
+        automationOwnedTabs.current.has(activeSession.tabId) &&
+        !window.confirm("This tab is owned by browser automation. Close it?")
+      )
+        return;
+      automationOwnedTabs.current.delete(activeSession.tabId);
       await stopPreviewRecording(activeSession.tabId).catch(() => undefined);
       await api.preview.close({ threadId, tabId: activeSession.tabId }).catch(() => undefined);
       await desktopPreview?.closeTab(activeSession.tabId).catch(() => undefined);
@@ -1620,6 +1655,47 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         >
           {viewportLinked ? <LinkIcon /> : <UnlinkIcon />}
         </Button>
+        {desktopPreview?.setMuted && activeSession ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="text-muted-foreground"
+            aria-label="Toggle tab mute"
+            onClick={() => {
+              const value = !(
+                mutedTabs[activeSession.tabId] ?? previewSettings.previewDefaults.muted
+              );
+              setMutedTabs((current) => ({ ...current, [activeSession.tabId]: value }));
+              void desktopPreview.setMuted!(activeSession.tabId, value);
+            }}
+          >
+            {(mutedTabs[activeSession.tabId] ?? previewSettings.previewDefaults.muted)
+              ? "Unmute"
+              : "Mute"}
+          </Button>
+        ) : null}
+        {desktopPreview?.setZoom && activeSession ? (
+          <select
+            aria-label="Tab zoom"
+            className="h-7 rounded-md border border-input bg-background px-1.5 text-2xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            value={String(
+              zoomTabs[activeSession.tabId] ?? previewSettings.previewDefaults.zoomFactor,
+            )}
+            key={activeSession.tabId}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              setZoomTabs((current) => ({ ...current, [activeSession.tabId]: value }));
+              void desktopPreview.setZoom!(activeSession.tabId, value);
+            }}
+          >
+            {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((value) => (
+              <option key={value} value={value}>
+                {Math.round(value * 100)}%
+              </option>
+            ))}
+          </select>
+        ) : null}
         <span className="min-w-20 text-2xs tabular-nums text-muted-foreground">
           {activeViewport ? `${activeViewport.width} × ${activeViewport.height}` : "Fit panel"}
         </span>

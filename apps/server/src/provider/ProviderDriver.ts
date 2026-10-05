@@ -75,6 +75,13 @@ export interface ProviderInstance {
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGenerationShape;
   /** Fourth, optional capability, consumed only by account usage; owned by this instance scope. */
+  readonly resetCreditIdentity?: string;
+  readonly consumeResetCredit?: (
+    idempotencyKey: string,
+  ) => Effect.Effect<
+    import("@t3tools/contracts").UsageConsumeResetCreditResult,
+    ProviderDriverError
+  >;
   readonly accountUsage?: AccountUsageCapability;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
 }

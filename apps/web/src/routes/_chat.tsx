@@ -1,3 +1,6 @@
+import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
+import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
+import { useDesktopLinkRouting } from "../hooks/useDesktopLinkRouting";
 import { QuitHoldOverlay } from "../components/QuitHoldOverlay";
 import { ProjectCloneController } from "../components/ProjectCloneController";
 import { ThreadNavigationController } from "../components/ThreadNavigationController";
@@ -47,6 +50,9 @@ function WorkflowCreateDialogHost() {
 }
 
 function ChatRouteLayout() {
+  useDesktopLinkRouting();
+  useSnapShotRouting();
+  useServerUpdateOutcome();
   const location = useLocation();
   const navigate = useNavigate();
   const [initialThreadSidebarWidth, setInitialThreadSidebarWidth] = useState(() =>

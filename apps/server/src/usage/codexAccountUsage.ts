@@ -100,6 +100,26 @@ export function normalizeRateLimits(value: unknown): ReadonlyArray<CodexAccountR
   return legacy ? [legacy] : [];
 }
 
+export function normalizeResetCredits(record: Record<string, unknown>) {
+  if (!("rateLimitResetCredits" in record)) return {};
+  const credits = asRecord(record.rateLimitResetCredits);
+  const availableCount = asNonNegativeInteger(credits?.availableCount);
+  if (availableCount === null) return { resetCredits: null };
+  const expiries = (Array.isArray(credits?.credits) ? credits.credits : []).flatMap((value) => {
+    const credit = asRecord(value);
+    const expiry = asNonNegativeInteger(credit?.expiresAt);
+    return credit?.status === "available" && expiry !== null && expiry * 1000 < 8.64e15
+      ? [expiry]
+      : [];
+  });
+  return {
+    resetCredits: {
+      availableCount,
+      nextExpiresAt: expiries.length ? new Date(Math.min(...expiries) * 1000).toISOString() : null,
+    },
+  };
+}
+
 /** Own a dedicated client: cancelling startup or either scoped read retires its process.
  * The shared admin pool cannot provide this guarantee without cancelling unrelated callers.
  */
@@ -139,7 +159,7 @@ export function readCodexAccountSections(client: CodexControlClient, timeoutMs =
               tokenSummary: normalizeTokenSummary(record.summary),
               dailyUsageBuckets: normalizeDailyUsageBuckets(record.dailyUsageBuckets),
             }
-          : { rateLimits: normalizeRateLimits(record) };
+          : { rateLimits: normalizeRateLimits(record), ...normalizeResetCredits(record) };
       const fetchedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return {
         kind,

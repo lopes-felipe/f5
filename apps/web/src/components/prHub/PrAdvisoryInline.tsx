@@ -1,3 +1,4 @@
+import { useOpenLink } from "../../hooks/useOpenLink";
 import { useState } from "react";
 import { ChevronDownIcon, SparklesIcon } from "lucide-react";
 import type { PrHubAdvisory } from "@t3tools/contracts";
@@ -9,7 +10,6 @@ import {
   advisoryRecommendationLabel,
   advisoryStatusLabel,
   advisoryVariant,
-  openExternalHttps,
   safeHttpsUrl,
 } from "./prHubPresentation";
 
@@ -20,6 +20,7 @@ export function PrAdvisoryInline({
   advisory: PrHubAdvisory;
   defaultExpanded?: boolean;
 }) {
+  const openLink = useOpenLink();
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const statusLabel = advisoryStatusLabel(advisory);
   const hasDetails =
@@ -82,7 +83,7 @@ export function PrAdvisoryInline({
                     className="block rounded-sm px-2 py-1 hover:bg-accent hover:text-foreground"
                     onClick={(event) => {
                       event.preventDefault();
-                      void openExternalHttps(finding.url, "finding");
+                      void openLink(finding.url).catch(() => undefined);
                     }}
                   >
                     <span className="font-medium text-foreground">

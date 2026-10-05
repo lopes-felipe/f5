@@ -30,7 +30,7 @@ const settle = Effect.gen(function* () {
   for (let i = 0; i < 40; i++) yield* Effect.yieldNow;
 });
 
-it.effect("coalesces concurrent requests, respects TTL/cooldown, and never reads on none", () =>
+it.effect("coalesces concurrent requests, bypasses caches on force, and never reads on none", () =>
   Effect.gen(function* () {
     const calls = yield* Ref.make(0);
     const permits = yield* Semaphore.make(2);

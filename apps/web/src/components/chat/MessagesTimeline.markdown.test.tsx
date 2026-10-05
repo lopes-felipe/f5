@@ -44,6 +44,8 @@ vi.mock("../../appSettings", () => ({
   useDiffWordWrap: () => false,
   useAppSettings: () => ({
     settings: {
+      linkOpenTarget: "system",
+      previewDefaults: { zoomFactor: 1, muted: false, colorScheme: "system" },
       expandMcpToolCalls: false,
       expandMcpToolCallCardsByDefault: true,
       showReasoningExpanded: false,

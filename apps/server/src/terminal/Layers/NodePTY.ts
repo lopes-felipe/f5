@@ -97,7 +97,11 @@ export const NodePtyAdapterLive = Layer.effect(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
-    const nodePty = yield* Effect.promise(() => import("node-pty"));
+    const nodePty = yield* Effect.promise(() =>
+      process.env.F5_STANDALONE_DIR
+        ? Promise.resolve(createRequire(process.execPath)("node-pty") as typeof import("node-pty"))
+        : import("node-pty"),
+    );
 
     const ensureNodePtySpawnHelperExecutableCached = yield* Effect.cached(
       ensureNodePtySpawnHelperExecutable().pipe(

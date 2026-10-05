@@ -13,8 +13,9 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { ForgeAccounts, type ForgeAccountsShape } from "../../sourceControl/accountRouting.ts";
 import { makeGitManager } from "./GitManager.ts";
 import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import { GitCore, type GitCoreShape, type GitStatusDetails } from "../Services/GitCore.ts";
@@ -90,6 +91,7 @@ async function makeManager(options?: {
   readonly projects?: readonly ProjectionProject[];
   readonly textGeneration?: Partial<TextGenerationShape>;
   readonly gitHub?: FakeGitHubCliOptions;
+  readonly forgeAccounts?: ForgeAccountsShape;
 }) {
   const git = makeFakeGitCore(options?.gitCore);
   const github = makeFakeGitHubCli(options?.gitHub);
@@ -102,7 +104,12 @@ async function makeManager(options?: {
     makeGitProjectRepositories(options?.projects, options?.projectLookup),
     NodeServices.layer,
   );
-  const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
+  const run = makeGitManager.pipe(Effect.provide(layer));
+  const manager = await Effect.runPromise(
+    options?.forgeAccounts
+      ? run.pipe(Effect.provideService(ForgeAccounts, options.forgeAccounts))
+      : run,
+  );
   return { manager, git, github };
 }
 
@@ -221,7 +228,7 @@ describe("GitManager unit", () => {
 
     await expect(
       Effect.runPromise(manager.resolvePullRequest({ cwd, reference: "7" })),
-    ).rejects.toThrow("provider 'gitlab' is not available");
+    ).rejects.toThrow("Configure a forge account");
     expect(github.calls).toEqual([]);
   });
 
@@ -489,4 +496,123 @@ it("does not write tracking config if the index locks after PR checkout", async 
   expect(result._tag).toBe("Failure");
   expect(github.calls).toContain("checkoutPullRequest:42");
   expect(git.calls.setBranchUpstream).toEqual([]);
+});
+
+function forgeAccountFixture(): ForgeAccountsShape {
+  const a = {
+    id: "forge-account",
+    provider: "gitlab" as const,
+    host: "gitlab.com",
+    login: "reviewer",
+    viewerId: "42",
+    generation: "1",
+  };
+  return {
+    removeAccount: () => Effect.void,
+    listAccounts: () => Effect.succeed([a]),
+    saveAccount: () => Effect.succeed(a),
+    getToken: () => Effect.succeed("token"),
+    route: () => Effect.succeed(a),
+    removeRouting: () => Effect.void,
+    setRouting: () => Effect.void,
+    listRouting: () => Effect.succeed([]),
+    resolveAccount: ({ ref }) =>
+      Effect.succeed({
+        ...a,
+        kind: a.provider,
+        token: "token",
+        repository: ref?.repository ?? "team/repo",
+      }),
+  };
+}
+it("preserves profile GitHub behavior when the account service has no managed host account", async () => {
+  const fixture = forgeAccountFixture();
+  const { manager, github } = await makeManager({
+    forgeAccounts: {
+      ...fixture,
+      removeAccount: () => Effect.void,
+      listAccounts: () => Effect.succeed([]),
+      resolveAccount: () =>
+        Effect.die("An empty account service must not resolve managed credentials"),
+    },
+    gitCore: {
+      listRemotes: () => Effect.succeed([{ name: "origin", url: "git@github.com:team/repo.git" }]),
+    },
+  });
+  await Effect.runPromise(manager.preparePullRequestThread({ cwd, reference: "7", mode: "local" }));
+  expect(github.calls).toContain("getPullRequest:7");
+});
+it("routes native forge status and preserves dirty local work before checkout", async () => {
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          iid: 7,
+          title: "Native MR",
+          web_url: "https://gitlab.com/team/repo/-/merge_requests/7",
+          source_branch: "feature/test",
+          target_branch: "main",
+          state: "opened",
+          sha: "head-sha",
+        }),
+        { status: 200 },
+      ),
+  );
+  try {
+    const { manager, git, github } = await makeManager({
+      forgeAccounts: forgeAccountFixture(),
+      gitCore: {
+        listRemotes: () =>
+          Effect.succeed([{ name: "origin", url: "git@gitlab.com:team/repo.git" }]),
+        statusDetails: () => Effect.succeed(dirtyStatus),
+      },
+    });
+    await expect(
+      Effect.runPromise(manager.preparePullRequestThread({ cwd, reference: "7", mode: "local" })),
+    ).rejects.toThrow("Commit or stash");
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(github.calls).toHaveLength(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+it("preserves an existing forge branch with a different commit", async () => {
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          iid: 7,
+          title: "Native MR",
+          web_url: "https://gitlab.com/team/repo/-/merge_requests/7",
+          source_branch: "feature/test",
+          target_branch: "main",
+          state: "opened",
+          sha: "remote-sha",
+        }),
+        { status: 200 },
+      ),
+  );
+  try {
+    const { manager, git, github } = await makeManager({
+      forgeAccounts: forgeAccountFixture(),
+      gitCore: {
+        listRemotes: () =>
+          Effect.succeed([{ name: "origin", url: "git@gitlab.com:team/repo.git" }]),
+        statusDetails: () => Effect.succeed(cleanStatus),
+        listLocalBranchNames: () => Effect.succeed(["feature/test"]),
+        resolveCommit: () => Effect.succeed("local-work-sha"),
+      },
+    });
+    await expect(
+      Effect.runPromise(manager.preparePullRequestThread({ cwd, reference: "7", mode: "local" })),
+    ).rejects.toThrow("different commit");
+    expect(git.calls.fetchRemoteBranch).toHaveLength(0);
+    expect(git.calls.checkoutBranch).toHaveLength(0);
+    expect(github.calls).toHaveLength(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

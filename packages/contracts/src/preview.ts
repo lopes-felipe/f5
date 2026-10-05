@@ -55,6 +55,7 @@ export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
 
 export const PreviewOpenInput = Schema.Struct({
   threadId: ThreadId,
+  colorScheme: Schema.optional(PreviewColorScheme),
   url: Schema.optional(Url),
 });
 export type PreviewOpenInput = typeof PreviewOpenInput.Type;

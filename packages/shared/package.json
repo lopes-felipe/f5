@@ -239,6 +239,18 @@
     "./providerRuntimeCapabilities": {
       "types": "./src/providerRuntimeCapabilities.ts",
       "import": "./src/providerRuntimeCapabilities.ts"
+    },
+    "./gitPatchPath": {
+      "types": "./src/gitPatchPath.ts",
+      "import": "./src/gitPatchPath.ts"
+    },
+    "./cliRelease": {
+      "types": "./src/cliRelease.ts",
+      "import": "./src/cliRelease.ts"
+    },
+    "./hostRuntime": {
+      "types": "./src/hostRuntime.ts",
+      "import": "./src/hostRuntime.ts"
     }
   },
   "scripts": {

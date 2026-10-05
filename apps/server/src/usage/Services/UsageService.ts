@@ -1,4 +1,6 @@
 import type {
+  UsageConsumeResetCreditInput,
+  UsageConsumeResetCreditResult,
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
@@ -14,6 +16,9 @@ export class UsageQueryError extends Schema.TaggedErrorClass<UsageQueryError>()(
 }) {}
 
 export interface UsageServiceShape {
+  readonly consumeResetCredit: (
+    input: UsageConsumeResetCreditInput,
+  ) => Effect.Effect<UsageConsumeResetCreditResult, UsageQueryError>;
   readonly getAccounts: (
     input: UsageGetAccountsInput,
   ) => Effect.Effect<UsageAccounts, UsageQueryError>;

@@ -4,6 +4,7 @@ import {
   prReviewLines,
   substantivePrPatch,
   prComparisonsEqual,
+  resolvePrReviewPosition,
 } from "./prReview";
 
 describe("PR review anchors", () => {
@@ -17,6 +18,35 @@ describe("PR review anchors", () => {
     expect([...prReviewLines(patch).get("LEFT")!]).toEqual([5, 6]);
     expect([...prReviewLines(patch).get("RIGHT")!]).toEqual([8, 9, 10]);
     expect(isPrReviewAnchorInPatch({ path: "a", side: "RIGHT", line: 6 }, patch)).toBe(false);
+  });
+  it("resolves complete native added, deleted and paired context coordinates", () => {
+    expect(resolvePrReviewPosition({ path: "a", side: "RIGHT", line: 8 }, patch)).toEqual({
+      kind: "context",
+      oldLine: 5,
+      newLine: 8,
+    });
+    expect(resolvePrReviewPosition({ path: "a", side: "LEFT", line: 5 }, patch)).toEqual({
+      kind: "context",
+      oldLine: 5,
+      newLine: 8,
+    });
+    expect(resolvePrReviewPosition({ path: "a", side: "LEFT", line: 6 }, patch)).toEqual({
+      kind: "deleted",
+      oldLine: 6,
+    });
+    expect(resolvePrReviewPosition({ path: "a", side: "RIGHT", line: 10 }, patch)).toEqual({
+      kind: "added",
+      newLine: 10,
+    });
+    expect(
+      resolvePrReviewPosition({ path: "a", side: "RIGHT", line: 8 }, patch.replace("+extra\n", "")),
+    ).toBeNull();
+    expect(
+      resolvePrReviewPosition(
+        { path: "a", side: "RIGHT", line: 1 },
+        "@@ -1 +1 @@\n one\n@@ -1 +2 @@\n overlap\n",
+      ),
+    ).toBeNull();
   });
   it("rejects incomplete hunks and lines outside the patch", () => {
     expect(prReviewLines(patch.replace("+extra\n", "")).size).toBe(0);

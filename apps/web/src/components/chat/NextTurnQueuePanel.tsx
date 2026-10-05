@@ -531,21 +531,17 @@ export function NextTurnQueuePanel({
                       );
                     })
                   }
+                  canRunNow={
+                    !thread?.session?.activeTurnId && snapshot.reasonCode !== "active_turn"
+                  }
                   onRunNow={async (candidate) =>
                     runItemMutation(candidate, async () => {
                       const api = readNativeApi();
                       if (!api) throw new Error("Server connection is unavailable.");
-                      const activeTurn = snapshot.reasonCode === "active_turn";
-                      if (
-                        activeTurn &&
-                        !window.confirm("Stop the active turn and run this queued turn now?")
-                      ) {
-                        return;
-                      }
                       applySnapshot(
                         await api.nextTurnQueue.promote({
                           itemId: candidate.itemId,
-                          interruptActive: activeTurn,
+                          interruptActive: false,
                           expectedRevision: snapshot.revision,
                         }),
                       );

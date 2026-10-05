@@ -82,6 +82,9 @@ export interface CodexAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  readonly canAccessBrowser?: (
+    threadId: import("@t3tools/contracts").ThreadId,
+  ) => Effect.Effect<boolean>;
   readonly defaultProviderOptions?: ProviderStartOptions;
   readonly processEnvironment?: NodeJS.ProcessEnv;
 }
@@ -2260,7 +2263,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
-          serverConfig.mode === "desktop"
+          serverConfig.mode === "desktop" &&
+          (!options?.canAccessBrowser || (yield* options.canAccessBrowser(input.threadId)))
             ? options?.previewMcpHttpServer?.createSessionConfig({
                 threadId: input.threadId,
                 ...(input.providerInstanceId

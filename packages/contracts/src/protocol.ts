@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { NonNegativeInt } from "./baseSchemas";
 
 /** Bump when a client must decode a new union variant or persisted state shape. */
-export const F5_PROTOCOL_VERSION = 12;
+export const F5_PROTOCOL_VERSION = 14;
 export const F5_PROTOCOL_HEADER = "X-F5-Protocol";
 export const F5_PROTOCOL_QUERY = "protocol";
 export const F5_UPGRADE_REQUIRED_CLOSE_CODE = 4426;
@@ -25,6 +25,13 @@ export type ProviderSendLimits = typeof ProviderSendLimits.Type;
 
 export const ServerBootstrap = Schema.Struct({
   protocolVersion: NonNegativeInt,
+  update: Schema.optional(
+    Schema.Struct({
+      id: Schema.String,
+      outcome: Schema.Literals(["committed", "rolled-back"]),
+      version: Schema.String,
+    }),
+  ),
   capabilities: Schema.Array(Schema.String),
   uploadLimits: Schema.Struct({
     attachments: Schema.Struct({ enabled: Schema.Boolean, maxFileBytes: NonNegativeInt }),

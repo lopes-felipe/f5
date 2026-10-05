@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import path from "node:path";
@@ -142,8 +143,8 @@ export const makeAntigravityAcpRuntime = (input: {
         );
         const script =
           process.platform === "win32"
-            ? `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${process.execPath.replaceAll("%", "%%")}" "${helper.replaceAll("%", "%%")}" %1\r\n`
-            : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(process.execPath)} ${quote(helper)} "$1"\n`;
+            ? `@echo off\r\nsetlocal\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${javascriptRuntimeExecutable().replaceAll("%", "%%")}" "${helper.replaceAll("%", "%%")}" %1\r\n`
+            : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quote(javascriptRuntimeExecutable())} ${quote(helper)} "$1"\n`;
         await publishProfileFile(wrapper, script);
         await fs.chmod(wrapper, 0o700);
         // Python webbrowser shlex-splits commands containing %s, including quoted paths.

@@ -190,3 +190,52 @@ describe("SSH usernames", () => {
     });
   });
 });
+
+import { parseSourceControlPullRequestUrl } from "./sourceControl";
+it("parses provider-qualified URLs including nested namespaces and self-hosted Forgejo", () => {
+  expect(
+    parseSourceControlPullRequestUrl("https://gitlab.com/team/nested/repo/-/merge_requests/7"),
+  ).toEqual({ provider: "gitlab", host: "gitlab.com", repository: "team/nested/repo", number: 7 });
+  expect(
+    parseSourceControlPullRequestUrl("https://dev.azure.com/org/project/_git/repo/pullrequest/8"),
+  ).toEqual({
+    provider: "azure-devops",
+    host: "dev.azure.com",
+    repository: "org/project/repo",
+    number: 8,
+  });
+  expect(parseSourceControlPullRequestUrl("https://codeberg.org/team/repo/pulls/9")).toEqual({
+    provider: "forgejo",
+    host: "codeberg.org",
+    repository: "team/repo",
+    number: 9,
+  });
+  expect(
+    parseSourceControlPullRequestUrl(
+      "https://forge.example/team/repo/pulls/4",
+      "forgejo",
+      "forge.example",
+    )?.number,
+  ).toBe(4);
+  expect(
+    parseSourceControlPullRequestUrl(
+      "https://attacker.example/team/repo/pull/4",
+      "forgejo",
+      "forge.example",
+    ),
+  ).toBeNull();
+  expect(
+    parseSourceControlPullRequestUrl(
+      "https://forge.example/team/repo/pull/0",
+      "forgejo",
+      "forge.example",
+    ),
+  ).toBeNull();
+  expect(
+    parseSourceControlPullRequestUrl(
+      "https://user:password@forge.example/team/repo/pull/4",
+      "forgejo",
+      "forge.example",
+    ),
+  ).toBeNull();
+});

@@ -13,9 +13,9 @@ export function shouldBroadcastDownloadProgress(
     return true;
   }
 
-  const previousStep = Math.floor(currentPercent / 10);
-  const nextStep = Math.floor(nextPercent / 10);
-  return nextStep !== previousStep || nextPercent === 100;
+  const previousStep = Math.floor(currentPercent);
+  const nextStep = Math.floor(nextPercent);
+  return Number.isFinite(nextPercent) && (nextStep !== previousStep || nextPercent >= 100);
 }
 
 export function nextStatusAfterDownloadFailure(

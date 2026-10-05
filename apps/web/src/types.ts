@@ -175,6 +175,7 @@ export interface Thread {
   pinOrderKey?: number | null;
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
+  titleState?: import("@t3tools/contracts").ThreadTitleState | null;
   titleSource?: ThreadTitleSource;
   titleRevision?: number;
   titleUpdatedAt?: string | null;

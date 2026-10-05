@@ -10,6 +10,8 @@ const CodexProviderStartOptions = Schema.Struct({
 });
 
 export const ClaudeProviderStartOptions = Schema.Struct({
+  autoCompactWindow: Schema.optional(NonNegativeInt),
+  resumeCompactionPrompt: Schema.optional(Schema.Boolean),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   permissionMode: Schema.optional(TrimmedNonEmptyString),
   maxThinkingTokens: Schema.optional(NonNegativeInt),

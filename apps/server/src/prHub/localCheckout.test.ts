@@ -273,3 +273,22 @@ it.skipIf(process.platform === "win32")(
     expect(await resolveLocalCheckout({ ...input, baseDirectory: "C:\\dev" })).toEqual([]);
   },
 );
+
+it("matches explicitly configured forge hosts without treating another forge as GitHub", async () => {
+  const directory = await base();
+  const cwd = await repo(directory, "nested", "git@git.example.com:group/sub/repo.git");
+  const forge = {
+    provider: "gitlab" as const,
+    host: "git.example.com",
+    repository: { owner: "group/sub", repo: "repo", nameWithOwner: "group/sub/repo" },
+    projects: [],
+  };
+  expect(
+    (await resolveLocalCheckout({ ...forge, baseDirectory: directory })).map(
+      (candidate) => candidate.cwd,
+    ),
+  ).toEqual([cwd]);
+  expect(
+    await resolveLocalCheckout({ ...forge, host: "other.example.com", baseDirectory: directory }),
+  ).toEqual([]);
+});

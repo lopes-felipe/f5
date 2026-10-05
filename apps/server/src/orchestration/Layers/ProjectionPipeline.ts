@@ -852,6 +852,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.titleState !== undefined
+              ? {
+                  titleStateJson: event.payload.titleState
+                    ? JSON.stringify(event.payload.titleState)
+                    : null,
+                }
+              : {}),
             ...(event.payload.titleSource !== undefined
               ? { titleSource: event.payload.titleSource }
               : {}),
@@ -892,6 +899,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) return;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            ...(event.payload.titleState
+              ? { titleStateJson: JSON.stringify(event.payload.titleState) }
+              : {}),
             titleRegenerationRequestId: event.payload.titleRegeneration.requestId,
             titleRegenerationStartedAt: event.payload.titleRegeneration.startedAt,
             updatedAt: event.occurredAt,
@@ -907,6 +917,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             title: event.payload.title,
+            titleStateJson: event.payload.titleState
+              ? JSON.stringify(event.payload.titleState)
+              : null,
             titleSource: event.payload.titleSource,
             titleRevision: event.payload.titleRevision,
             titleUpdatedAt: event.payload.titleUpdatedAt,

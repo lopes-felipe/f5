@@ -55,6 +55,7 @@ export const ProjectionThread = Schema.Struct({
   snoozedAt: Schema.NullOr(IsoDateTime),
   titleSource: ThreadTitleSource,
   titleRevision: NonNegativeInt,
+  titleStateJson: Schema.optional(Schema.NullOr(Schema.String)),
   titleUpdatedAt: Schema.NullOr(IsoDateTime),
   titleRegenerationRequestId: Schema.NullOr(CommandId),
   titleRegenerationStartedAt: Schema.NullOr(IsoDateTime),

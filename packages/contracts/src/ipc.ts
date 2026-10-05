@@ -1,3 +1,20 @@
+import type { ThreadId } from "./baseSchemas";
+import type { PullRequestKey } from "./prHub";
+import type {
+  ForgeAccount,
+  ForgeAccountInput,
+  ForgeAccountRouting,
+  PrHubPeek,
+  PrHubPeekInput,
+  PrHubStack,
+  PrHubStackInput,
+  PrHubViewedFilesInput,
+  PrHubSetViewedFileInput,
+  ForgePrepareOperationInput,
+  ForgeOperationInput,
+  ForgeOperation,
+} from "./prHubExtensions";
+import type { ThreadPullRequestLink } from "./orchestration";
 import type {
   AttachmentUpload,
   AttachmentUploadsInput,
@@ -82,6 +99,8 @@ import type {
 } from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type {
+  UsageConsumeResetCreditInput,
+  UsageConsumeResetCreditResult,
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
@@ -363,15 +382,44 @@ export interface DesktopPreviewTabState {
   canGoBack: boolean;
   canGoForward: boolean;
   zoomFactor: number;
+  muted?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   faviconDataUrl?: string | null;
   viewport?: PreviewViewportSize;
   updatedAt: string;
 }
 
+export interface DesktopBrowserProfile {
+  selected?: boolean;
+  id: string;
+  name: string;
+  persistent: boolean;
+}
+export interface DesktopBrowserImportSource {
+  id: string;
+  name: string;
+  profiles: Array<{ id: string; name: string }>;
+  available: boolean;
+  remediation?: string;
+}
+export interface DesktopBrowserImportProgress {
+  id: string;
+  status: "reading" | "writing" | "completed" | "canceled" | "failed";
+  imported: number;
+  skipped: number;
+  failed: number;
+  profileId?: string;
+  error?: string;
+}
+export interface DesktopSnapShotResult {
+  image: { name: string; mimeType: string; bytes: Uint8Array };
+  context: { name: string; mimeType: string; bytes: Uint8Array };
+}
 export interface DesktopPreviewWebviewConfig {
   partition: string;
   webPreferences: string;
+  preload?: string;
+  profileId?: string;
 }
 
 export interface DesktopPreviewRecordingStartResult {
@@ -456,12 +504,39 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  snapShot?: {
+    permissions: () => Promise<{ supported: boolean; screen: boolean; accessibility: boolean }>;
+    capture: () => Promise<DesktopSnapShotResult>;
+    configure: (shortcut: string, enabled: boolean) => Promise<void>;
+    openPermissions: () => Promise<void>;
+    onCapture: (listener: (result: DesktopSnapShotResult) => void) => () => void;
+  };
   preview?: DesktopPreviewBridge;
 }
 
 export interface DesktopPreviewBridge {
   getPreviewConfig: () => Promise<DesktopPreviewWebviewConfig>;
-  createTab: (tabId: string) => Promise<void>;
+  profiles?: {
+    list: () => Promise<DesktopBrowserProfile[]>;
+    create: (name: string, persistent: boolean) => Promise<DesktopBrowserProfile>;
+    select: (id: string) => Promise<void>;
+    delete: (id: string) => Promise<void>;
+  };
+  browserImport?: {
+    openPermissions?: () => Promise<void>;
+    sources: () => Promise<DesktopBrowserImportSource[]>;
+    start: (source: string, profile: string, name: string) => Promise<string>;
+    cancel: (id: string) => Promise<void>;
+    status: (id: string) => Promise<DesktopBrowserImportProgress>;
+  };
+  setLinkOpenTarget?: (target: "system" | "preview") => Promise<void>;
+  onOpenLink?: (listener: (url: string) => void) => () => void;
+  setMuted?: (tabId: string, muted: boolean) => Promise<void>;
+  setZoom?: (tabId: string, factor: number) => Promise<void>;
+  createTab: (
+    tabId: string,
+    defaults?: { zoomFactor: number; muted: boolean },
+  ) => Promise<DesktopPreviewWebviewConfig | void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
   navigate: (tabId: string, url: string) => Promise<void>;
@@ -708,6 +783,9 @@ export interface NativeApi {
     onSnapshotUpdated: (callback: (snapshot: AgentsSnapshot) => void) => () => void;
   };
   usage: {
+    consumeResetCredit: (
+      input: UsageConsumeResetCreditInput,
+    ) => Promise<UsageConsumeResetCreditResult>;
     getAccounts: (input: UsageGetAccountsInput) => Promise<UsageAccounts>;
     getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
   };
@@ -719,6 +797,29 @@ export interface NativeApi {
     ) => Promise<WorkflowPlatformInspectRunResult>;
   };
   prHub: {
+    listAccounts: () => Promise<ReadonlyArray<ForgeAccount>>;
+    saveAccount: (input: ForgeAccountInput) => Promise<ForgeAccount>;
+    removeAccount: (input: { accountId: string }) => Promise<void>;
+    listAccountRouting: () => Promise<ReadonlyArray<ForgeAccountRouting>>;
+    setAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
+    removeAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
+    peek: (input: PrHubPeekInput) => Promise<PrHubPeek | null>;
+    getStack: (input: PrHubStackInput) => Promise<PrHubStack | null>;
+    getViewedFiles: (input: PrHubViewedFilesInput) => Promise<ReadonlyArray<string>>;
+    setViewedFile: (input: PrHubSetViewedFileInput) => Promise<ReadonlyArray<string>>;
+    getThreadLinks: (input: {
+      threadId: ThreadId;
+    }) => Promise<ReadonlyArray<ThreadPullRequestLink>>;
+    getThreadsForPr: (input: {
+      key: PullRequestKey;
+    }) => Promise<ReadonlyArray<{ threadId: ThreadId; title: string }>>;
+    prepareOperation: (input: ForgePrepareOperationInput) => Promise<ForgeOperation>;
+    submitOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    getOperation: (input: ForgeOperationInput) => Promise<ForgeOperation | null>;
+    recoverOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    cancelOperation: (input: ForgeOperationInput) => Promise<ForgeOperation>;
+    listReviewerCandidates: (input: PrHubStackInput) => Promise<unknown>;
+
     getOverview: (input?: PrHubOverviewInput) => Promise<PrHubOverview>;
     claimNotifications: (input: PrHubClaimNotificationsInput) => Promise<PrHubNotificationBatch>;
     acknowledgeNotifications: (input: PrHubAcknowledgeNotificationsInput) => Promise<PrHubOverview>;

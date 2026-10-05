@@ -129,7 +129,15 @@ import Migration0098 from "./Migrations/098_StorageAutomationAudit.ts";
 
 import Migration0099 from "./Migrations/099_RewindDraftThreadIndex.ts";
 
+import Migration0100 from "./Migrations/100_ProjectionThreadTitleState.ts";
+
+import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
+import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
+
 export const MIGRATIONS = {
+  "102_ForgeAccounts": Migration0102,
+  "101_UsageResetCreditRequests": Migration0101,
+  "100_ProjectionThreadTitleState": Migration0100,
   "99_RewindDraftThreadIndex": Migration0099,
   "98_StorageAutomationAudit": Migration0098,
   "97_RestartTurnMarkers": Migration0097,

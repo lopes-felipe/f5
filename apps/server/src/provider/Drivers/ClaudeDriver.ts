@@ -145,6 +145,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const adapter = yield* makeClaudeAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         oneOffProviderOptions: {
+          autoCompactWindow: effectiveConfig.autoCompactWindow,
+          resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,
           binaryPath: effectiveConfig.binaryPath,
           launchArgs,
         },

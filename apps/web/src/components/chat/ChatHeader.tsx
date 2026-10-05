@@ -1,3 +1,4 @@
+import { ThreadPrLinks } from "../prHub/ThreadPrLinks";
 import {
   type EditorId,
   type ProjectId,
@@ -299,6 +300,7 @@ export const ChatHeader = memo(function ChatHeader({
             {activeThreadTitle}
           </h2>
         )}
+        {isServerThread ? <ThreadPrLinks threadId={activeThreadId} /> : null}
         {threadStatus ? (
           <ThreadStatusPillBadge
             pill={threadStatus}

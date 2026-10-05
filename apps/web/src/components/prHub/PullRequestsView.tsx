@@ -1,3 +1,5 @@
+import { PrAccounts } from "./PrAccounts";
+import { getPrHubSelectedAccountId, setPrHubSelectedAccountId } from "../../lib/prHubAccount";
 import { PrTrackForm } from "./PrTrackForm";
 import { matchesPrHubFilter } from "@t3tools/shared/prHub";
 import { useAppSettings } from "../../appSettings";
@@ -128,7 +130,8 @@ function compactStatusDetail(message: string | undefined): string | null {
 }
 
 export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null }) {
-  const { settings } = useAppSettings();
+  const { settings, updateSettings } = useAppSettings();
+  setPrHubSelectedAccountId(settings.prHubAccountId ?? undefined);
   const stalledHours = settings.prHubStalledAfterHours;
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -397,6 +400,15 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
           </table>
         </details>
       ) : null}
+      <PrAccounts
+        selectedAccountId={getPrHubSelectedAccountId()}
+        onSelect={(accountId) => {
+          setPrHubSelectedAccountId(accountId);
+          updateSettings({ prHubAccountId: accountId ?? null });
+          setSelectedKey(null);
+          void queryClient.invalidateQueries({ queryKey: ["prHub"] });
+        }}
+      />
       <PrTrackForm
         onTracked={(pr) => {
           setVisibility("any");

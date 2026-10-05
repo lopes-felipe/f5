@@ -1,3 +1,8 @@
+import { browserAccessAllowed } from "../../mcp/browserAccess";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
+import { CodexControlClient } from "../../codex/CodexControlClient.ts";
 import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
 import {
   codexIsolationCompatibility,
@@ -5,7 +10,6 @@ import {
   validateProviderCompatibility,
   protectProfileAdapter,
 } from "../../profiles/providerIsolation";
-import { createHash } from "node:crypto";
 
 import {
   CodexSettings,
@@ -161,6 +165,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
       const previewMcpHttpServer = yield* PreviewMcpHttpServer;
+      const browserPolicyServices = yield* Effect.services<never>();
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -250,9 +255,62 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewMcpHttpServer,
+        canAccessBrowser: (thread) =>
+          browserAccessAllowed(thread).pipe(Effect.provide(browserPolicyServices)),
         defaultProviderOptions,
         processEnvironment,
       });
+      const consumeResetCredit = (idempotencyKey: string) =>
+        Effect.gen(function* () {
+          const client = yield* Effect.acquireRelease(
+            Effect.tryPromise({
+              try: (signal) =>
+                CodexControlClient.create(
+                  {
+                    binaryPath: effectiveConfig.binaryPath,
+                    homePath: effectiveConfig.homePath,
+                    ...(defaultProviderOptions.codex?.launchArgs
+                      ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+                      : {}),
+                    cwd: process.cwd(),
+                    processEnvironment,
+                  },
+                  signal,
+                ),
+              catch: (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER_KIND,
+                  instanceId,
+                  detail: "Could not open the Codex account connection.",
+                  cause,
+                }),
+            }),
+            (client) => Effect.sync(() => client.close()),
+          );
+          return yield* Effect.tryPromise({
+            try: () => client.consumeResetCredit(idempotencyKey),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: "Could not redeem a Codex reset credit.",
+                cause,
+              }),
+          }).pipe(
+            Effect.flatMap((value) =>
+              Schema.decodeUnknownEffect(UsageConsumeResetCreditResult)(value),
+            ),
+            Effect.mapError(
+              (cause) =>
+                new ProviderDriverError({
+                  driver: DRIVER_KIND,
+                  instanceId,
+                  detail: "Invalid reset-credit response.",
+                  cause,
+                }),
+            ),
+          );
+        }).pipe(Effect.scoped);
       const accountUsage = yield* makeCodexAccountUsage(
         { instanceId, displayName: displayName ?? "Codex", enabled },
         {
@@ -325,6 +383,22 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
+        resetCreditIdentity: `codex-home:${createHash("sha256")
+          .update(
+            (() => {
+              const home =
+                effectiveConfig.homePath.trim() ||
+                processEnvironment.CODEX_HOME ||
+                homeLayout.sharedHomePath;
+              try {
+                return realpathSync(home);
+              } catch {
+                return home;
+              }
+            })(),
+          )
+          .digest("hex")}`,
+        consumeResetCredit,
         accountUsage,
       } satisfies ProviderInstance;
     }),

@@ -141,3 +141,13 @@ describe("updateMachine", () => {
     expect(progress.errorContext).toBeNull();
   });
 });
+
+it("keeps desktop download progress finite and within bounds", () => {
+  const state = createInitialDesktopUpdateState("1.0.0", runtimeInfo);
+  expect(reduceDesktopUpdateStateOnDownloadProgress(state, 120).downloadPercent).toBe(100);
+  expect(reduceDesktopUpdateStateOnDownloadProgress(state, -20).downloadPercent).toBe(0);
+  expect(
+    reduceDesktopUpdateStateOnDownloadProgress({ ...state, downloadPercent: 42 }, Number.NaN)
+      .downloadPercent,
+  ).toBe(42);
+});

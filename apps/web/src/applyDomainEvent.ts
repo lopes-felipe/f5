@@ -966,6 +966,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           ...(event.payload.titleSource !== undefined
             ? { titleSource: event.payload.titleSource }
             : {}),
+          ...(event.payload.titleState !== undefined
+            ? { titleState: event.payload.titleState }
+            : {}),
           ...(event.payload.titleRevision !== undefined
             ? { titleRevision: event.payload.titleRevision }
             : {}),
@@ -994,6 +997,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
     case "thread.title-regeneration-started": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
         ...thread,
+        ...(event.payload.titleState ? { titleState: event.payload.titleState } : {}),
         titleRegeneration: event.payload.titleRegeneration,
       }));
       return threads === state.threads ? state : { ...state, threads };
@@ -1003,6 +1007,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
         ...thread,
         title: event.payload.title,
+        titleState: event.payload.titleState ?? null,
         titleSource: event.payload.titleSource,
         titleRevision: event.payload.titleRevision,
         titleUpdatedAt: event.payload.titleUpdatedAt,

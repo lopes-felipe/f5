@@ -1,3 +1,4 @@
+import { loadFff } from "./distribution/runtimeModules";
 import fs from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import os from "node:os";
@@ -103,8 +104,7 @@ interface WorkspaceFffIndex {
 
 let fffModuleLoadFailed = false;
 let fffModulePromise: Promise<FffModule | null> | null = null;
-let fffModuleLoader: () => Promise<FffModule> = () =>
-  import("@ff-labs/fff-node") as Promise<FffModule>;
+let fffModuleLoader: () => Promise<FffModule> = () => loadFff() as Promise<FffModule>;
 
 const workspaceFffIndexCache = new Map<string, Promise<WorkspaceFffIndex>>();
 
@@ -758,7 +758,7 @@ export function registerWorkspaceContentIndexInvalidator(
 export function setWorkspaceFffModuleLoaderForTests(
   loader: (() => Promise<FffModule>) | null,
 ): void {
-  fffModuleLoader = loader ?? (() => import("@ff-labs/fff-node") as Promise<FffModule>);
+  fffModuleLoader = loader ?? (() => loadFff() as Promise<FffModule>);
   fffModulePromise = null;
   fffModuleLoadFailed = false;
   for (const cwd of workspaceFffIndexCache.keys()) {

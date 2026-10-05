@@ -6,6 +6,7 @@ export const SourceControlProviderKind = Schema.Literals([
   "gitlab",
   "azure-devops",
   "bitbucket",
+  "forgejo",
   "unknown",
 ]);
 export type SourceControlProviderKind = typeof SourceControlProviderKind.Type;
@@ -114,3 +115,40 @@ export type ChangeRequest = typeof ChangeRequest.Type;
 
 export const GitHubPullRequestNumber = PositiveInt;
 export type GitHubPullRequestNumber = typeof GitHubPullRequestNumber.Type;
+
+/** Forge functionality is separate from the legacy Git workflow action seam. */
+export const ForgeAction = Schema.Literals([
+  "merge",
+  "ready",
+  "draft",
+  "close",
+  "reopen",
+  "update-branch",
+  "enable-auto-merge",
+  "disable-auto-merge",
+  "revert",
+  "approve-workflows",
+]);
+export type ForgeAction = typeof ForgeAction.Type;
+export const ForgeCapabilities = Schema.Struct({
+  diff: Schema.Boolean,
+  comment: Schema.Boolean,
+  actions: Schema.Array(ForgeAction),
+  mergeMethods: Schema.Array(Schema.Literals(["merge", "squash", "rebase"])),
+  updateMethods: Schema.Array(Schema.Literals(["merge", "rebase"])),
+  search: Schema.Boolean,
+  reactions: Schema.Boolean,
+  labels: Schema.Boolean,
+  viewedFiles: Schema.Literals(["host", "f5"]),
+  review: Schema.Struct({
+    inlineComment: Schema.Boolean,
+    reply: Schema.Boolean,
+    resolve: Schema.Boolean,
+    verdicts: Schema.Array(Schema.Literals(["comment", "approve", "request-changes"])),
+  }),
+  reviewers: Schema.Struct({ request: Schema.Boolean, listCandidates: Schema.Boolean }),
+  edit: Schema.Struct({ changeRequest: Schema.Boolean, comment: Schema.Boolean }),
+  stacks: Schema.Boolean,
+  stackActions: Schema.Boolean,
+});
+export type ForgeCapabilities = typeof ForgeCapabilities.Type;

@@ -80,6 +80,7 @@ export interface ThreadTitleGenerationInput {
 }
 
 export interface ThreadTitleGenerationResult {
+  needsRefinement?: boolean;
   title: string;
 }
 

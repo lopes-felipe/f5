@@ -1,3 +1,7 @@
+import { ForgeReactionControl } from "./ForgeReactionControl";
+import { PrMarkdown } from "./PrMarkdown";
+import { PrStackSection } from "./PrStackSection";
+import { ForgeControls } from "./ForgeControls";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, CheckCircle2Icon, LoaderCircleIcon } from "lucide-react";
@@ -56,15 +60,17 @@ export function PrSummaryTab({
   return (
     <div className="flex flex-col gap-5" role="tabpanel" aria-label="Summary">
       {summary}
+      <PrStackSection pr={pr} />
+      <ForgeControls pr={pr} />
 
       {detailQuery.isPending ? (
         <div className="flex items-center gap-2 border-t border-border pt-4 text-sm text-muted-foreground">
-          <LoaderCircleIcon className="size-4 animate-spin" /> Loading GitHub details…
+          <LoaderCircleIcon className="size-4 animate-spin" /> Loading pull request details…
         </div>
       ) : detailQuery.isError ? (
         <Alert variant="error">
           <AlertTriangleIcon />
-          <AlertTitle>GitHub details unavailable</AlertTitle>
+          <AlertTitle>Pull request details unavailable</AlertTitle>
           <AlertDescription>
             <span>
               {detailQuery.error instanceof Error
@@ -81,7 +87,7 @@ export function PrSummaryTab({
           {detailQuery.data.warning ? (
             <Alert variant="warning">
               <AlertTriangleIcon />
-              <AlertTitle>Showing cached GitHub details</AlertTitle>
+              <AlertTitle>Showing cached pull request details</AlertTitle>
               <AlertDescription>{detailQuery.data.warning}</AlertDescription>
             </Alert>
           ) : null}
@@ -89,9 +95,9 @@ export function PrSummaryTab({
           {detail.truncatedSections && detail.truncatedSections.length > 0 ? (
             <Alert variant="warning">
               <AlertTriangleIcon />
-              <AlertTitle>Some GitHub details are incomplete</AlertTitle>
+              <AlertTitle>Some pull request details are incomplete</AlertTitle>
               <AlertDescription>
-                GitHub returned only the first page of: {detail.truncatedSections.join(", ")}. Do
+                The forge returned only the first page of: {detail.truncatedSections.join(", ")}. Do
                 not treat the visible checks or reviewers as exhaustive.
               </AlertDescription>
             </Alert>
@@ -102,9 +108,7 @@ export function PrSummaryTab({
               Description
             </h3>
             {detail.body.trim() ? (
-              <div className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/20 p-3 text-sm leading-relaxed">
-                {detail.body}
-              </div>
+              <PrMarkdown body={detail.body} host={pr.host} />
             ) : (
               <p className="text-sm text-muted-foreground">No description provided.</p>
             )}
@@ -144,19 +148,25 @@ export function PrSummaryTab({
             )}
           </section>
 
-          <section className="space-y-2" aria-labelledby="pr-reactions-heading">
-            <h3 id="pr-reactions-heading" className="text-sm font-semibold">
-              Reactions
-            </h3>
-            <PrReactionBar
-              prKey={pr.key}
-              subjectId={githubDetails?.nodeId ?? null}
-              reactions={detail.reactions}
-              disabledReason={reactionCapability.supported ? null : reactionCapability.reason}
-              isPending={mutations.setReaction.isPending}
-              onSetReaction={(input) => mutations.setReaction.mutate(input)}
-            />
-          </section>
+          {pr.provider === "github" || pr.forgeCapabilities?.reactions ? (
+            <section className="space-y-2" aria-labelledby="pr-reactions-heading">
+              <h3 id="pr-reactions-heading" className="text-sm font-semibold">
+                Reactions
+              </h3>
+              {pr.provider === "github" ? (
+                <PrReactionBar
+                  prKey={pr.key}
+                  subjectId={githubDetails?.nodeId ?? null}
+                  reactions={detail.reactions}
+                  disabledReason={reactionCapability.supported ? null : reactionCapability.reason}
+                  isPending={mutations.setReaction.isPending}
+                  onSetReaction={(input) => mutations.setReaction.mutate(input)}
+                />
+              ) : (
+                <ForgeReactionControl pr={pr} />
+              )}
+            </section>
+          ) : null}
 
           <section className="space-y-3" aria-labelledby="pr-reviewers-heading">
             <div>
@@ -175,88 +185,100 @@ export function PrSummaryTab({
                 )}
               </div>
             </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <label className="space-y-1 text-xs text-muted-foreground">
-                Add reviewers
-                <Input
-                  size="sm"
-                  value={addReviewers}
-                  placeholder="alice, org/team"
-                  disabled={!reviewerCapability.supported || mutations.changeReviewers.isPending}
-                  onChange={(event) => setAddReviewers(event.target.value)}
-                />
-              </label>
-              <label className="space-y-1 text-xs text-muted-foreground">
-                Remove reviewers
-                <Input
-                  size="sm"
-                  value={removeReviewers}
-                  placeholder="bob"
-                  disabled={!reviewerCapability.supported || mutations.changeReviewers.isPending}
-                  onChange={(event) => setRemoveReviewers(event.target.value)}
-                />
-              </label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                title={reviewerCapability.reason ?? undefined}
-                disabled={
-                  !reviewerCapability.supported ||
-                  !reviewerChangesPresent ||
-                  mutations.changeReviewers.isPending
-                }
-                onClick={() => {
-                  void mutations.changeReviewers
-                    .mutateAsync({
-                      key: pr.key,
-                      add: splitReviewers(addReviewers),
-                      remove: splitReviewers(removeReviewers),
-                    })
-                    .then(() => {
-                      setAddReviewers("");
-                      setRemoveReviewers("");
-                    })
-                    .catch(() => undefined);
-                }}
-              >
-                {mutations.changeReviewers.isPending ? "Updating…" : "Apply reviewer changes"}
-              </Button>
-              {!reviewerCapability.supported ? (
-                <span className="text-xs text-muted-foreground">{reviewerCapability.reason}</span>
-              ) : null}
-            </div>
+            {pr.provider === "github" ? (
+              <>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Add reviewers
+                    <Input
+                      size="sm"
+                      value={addReviewers}
+                      placeholder="alice, org/team"
+                      disabled={
+                        !reviewerCapability.supported || mutations.changeReviewers.isPending
+                      }
+                      onChange={(event) => setAddReviewers(event.target.value)}
+                    />
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">
+                    Remove reviewers
+                    <Input
+                      size="sm"
+                      value={removeReviewers}
+                      placeholder="bob"
+                      disabled={
+                        !reviewerCapability.supported || mutations.changeReviewers.isPending
+                      }
+                      onChange={(event) => setRemoveReviewers(event.target.value)}
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    title={reviewerCapability.reason ?? undefined}
+                    disabled={
+                      !reviewerCapability.supported ||
+                      !reviewerChangesPresent ||
+                      mutations.changeReviewers.isPending
+                    }
+                    onClick={() => {
+                      void mutations.changeReviewers
+                        .mutateAsync({
+                          key: pr.key,
+                          add: splitReviewers(addReviewers),
+                          remove: splitReviewers(removeReviewers),
+                        })
+                        .then(() => {
+                          setAddReviewers("");
+                          setRemoveReviewers("");
+                        })
+                        .catch(() => undefined);
+                    }}
+                  >
+                    {mutations.changeReviewers.isPending ? "Updating…" : "Apply reviewer changes"}
+                  </Button>
+                  {!reviewerCapability.supported ? (
+                    <span className="text-xs text-muted-foreground">
+                      {reviewerCapability.reason}
+                    </span>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
           </section>
 
-          <section className="space-y-2" aria-labelledby="pr-branch-heading">
-            <h3 id="pr-branch-heading" className="text-sm font-semibold">
-              Branch update
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              Bring {detail.headRefName ?? "the pull request branch"} up to date with{" "}
-              {detail.baseRefName ?? "its base branch"}.
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              {(["merge", "rebase"] as const).map((method) => (
-                <Button
-                  key={method}
-                  size="sm"
-                  variant="outline"
-                  title={branchDisabledReason ?? undefined}
-                  disabled={Boolean(branchDisabledReason) || mutations.updateBranch.isPending}
-                  onClick={() => mutations.updateBranch.mutate({ key: pr.key, method })}
-                >
-                  {mutations.updateBranch.isPending
-                    ? "Updating…"
-                    : `${method === "merge" ? "Merge" : "Rebase"} base branch`}
-                </Button>
-              ))}
-              {branchDisabledReason ? (
-                <span className="text-xs text-muted-foreground">{branchDisabledReason}</span>
-              ) : null}
-            </div>
-          </section>
+          {pr.provider === "github" ? (
+            <section className="space-y-2" aria-labelledby="pr-branch-heading">
+              <h3 id="pr-branch-heading" className="text-sm font-semibold">
+                Branch update
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Bring {detail.headRefName ?? "the pull request branch"} up to date with{" "}
+                {detail.baseRefName ?? "its base branch"}.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {(["merge", "rebase"] as const).map((method) => (
+                  <Button
+                    key={method}
+                    size="sm"
+                    variant="outline"
+                    title={branchDisabledReason ?? undefined}
+                    disabled={Boolean(branchDisabledReason) || mutations.updateBranch.isPending}
+                    onClick={() => mutations.updateBranch.mutate({ key: pr.key, method })}
+                  >
+                    {mutations.updateBranch.isPending
+                      ? "Updating…"
+                      : `${method === "merge" ? "Merge" : "Rebase"} base branch`}
+                  </Button>
+                ))}
+                {branchDisabledReason ? (
+                  <span className="text-xs text-muted-foreground">{branchDisabledReason}</span>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
         </div>
       ) : null}
     </div>

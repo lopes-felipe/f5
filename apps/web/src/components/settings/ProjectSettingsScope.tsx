@@ -264,6 +264,18 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
               />
             }
           />
+          <ProjectSettingRow
+            title="Enable agent browser access"
+            source={badge("enableAgentBrowserAccess")}
+            control={
+              <Switch
+                aria-label="Enable agent browser access"
+                disabled={saving}
+                checked={settings.enableAgentBrowserAccess}
+                onCheckedChange={(checked) => set("enableAgentBrowserAccess", checked)}
+              />
+            }
+          />
         </SettingsCard>
         <SettingsCard title="Git and worktrees">
           <ProjectSettingRow

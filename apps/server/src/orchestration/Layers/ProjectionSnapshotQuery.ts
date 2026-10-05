@@ -1,3 +1,4 @@
+import { ThreadTitleState } from "@t3tools/contracts";
 import { RewindDraft, PendingUserInput } from "@t3tools/contracts";
 import {
   ChatAttachment,
@@ -139,6 +140,7 @@ const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
   pinOrderKey: ProjectionThread.fields.pinOrderKey,
   snoozedUntil: ProjectionThread.fields.snoozedUntil,
   snoozedAt: ProjectionThread.fields.snoozedAt,
+  titleStateJson: ProjectionThread.fields.titleStateJson,
   titleSource: ProjectionThread.fields.titleSource,
   titleRevision: ProjectionThread.fields.titleRevision,
   titleUpdatedAt: ProjectionThread.fields.titleUpdatedAt,
@@ -428,6 +430,13 @@ function buildThreadSnapshot(params: {
     pinOrderKey: row.pinOrderKey,
     snoozedUntil: row.snoozedUntil,
     snoozedAt: row.snoozedAt,
+    ...(() => {
+      if (!row.titleStateJson) return {};
+      const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(ThreadTitleState))(
+        row.titleStateJson,
+      );
+      return Option.isSome(decoded) ? { titleState: decoded.value } : {};
+    })(),
     titleSource: row.titleSource,
     titleRevision: row.titleRevision,
     titleUpdatedAt: row.titleUpdatedAt,
@@ -862,6 +871,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           snoozed_until AS "snoozedUntil",
           snoozed_at AS "snoozedAt",
+          title_state_json AS "titleStateJson",
           title_source AS "titleSource",
           title_revision AS "titleRevision",
           title_updated_at AS "titleUpdatedAt",
@@ -897,6 +907,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           snoozed_until AS "snoozedUntil",
           snoozed_at AS "snoozedAt",
+          title_state_json AS "titleStateJson",
           title_source AS "titleSource",
           title_revision AS "titleRevision",
           title_updated_at AS "titleUpdatedAt",

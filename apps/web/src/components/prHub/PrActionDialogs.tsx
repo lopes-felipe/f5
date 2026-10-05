@@ -1,3 +1,8 @@
+import * as Schema from "effect/Schema";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { getPrHubDraftIdentity } from "../../lib/prHubAccount";
+import { ForgeComposer } from "./ForgeControls";
+import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { useEffect, useState } from "react";
 import { Input } from "../ui/input";
 import { PrCommentSubmit } from "./PrCommentSubmit";
@@ -48,6 +53,18 @@ export function PrActionDialogs({
   selectFolder,
 }: PrActionDialogProps) {
   const [folderPath, setFolderPath] = useState("");
+  const [reviewBody, setReviewBody] = useLocalStorage(
+    JSON.stringify(["nativeQuickReview", getPrHubDraftIdentity(), pr.key, pendingAction]),
+    "",
+    Schema.String,
+  );
+  const native = pr.provider !== "github";
+  const nativeCaps = pr.forgeCapabilities;
+  const availableMergeMethods = native ? (nativeCaps?.mergeMethods ?? []) : allowedMergeMethods;
+  const nativeReviewers = reviewers
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   useEffect(() => {
     setFolderPath("");
   }, [candidatePicker === null, pr.key]);
@@ -66,19 +83,52 @@ export function PrActionDialogs({
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-3">
-            {pendingAction === "comment" ? <PrCommentSubmit key={pr.key} prKey={pr.key} /> : null}
-            {pendingAction === "approve" || pendingAction === "requestChanges" ? (
-              <PrReviewSubmit
-                key={`${pr.key}:${pendingAction}`}
-                prKey={pr.key}
-                prUrl={pr.url}
-                draft={null}
-                disabled={isRunning}
-                onBusyChange={() => {}}
-                quickEvent={pendingAction === "approve" ? "APPROVE" : "REQUEST_CHANGES"}
-              />
+            {pendingAction === "comment" ? (
+              pr.provider === "github" ? (
+                <PrCommentSubmit key={pr.key} prKey={pr.key} />
+              ) : (
+                <ForgeComposer pr={pr} />
+              )
             ) : null}
-            {pendingAction === "merge" ? (
+            {pendingAction === "approve" || pendingAction === "requestChanges" ? (
+              pr.provider !== "github" ? (
+                nativeCaps?.review.verdicts.includes(
+                  pendingAction === "approve" ? "approve" : "request-changes",
+                ) ? (
+                  <div className="space-y-2">
+                    <Textarea
+                      aria-label="Review explanation"
+                      value={reviewBody}
+                      onChange={(event) => setReviewBody(event.target.value)}
+                    />
+                    <ForgeOperationPanel
+                      pr={pr}
+                      payload={{
+                        kind: "review",
+                        body: reviewBody,
+                        verdict: pendingAction === "approve" ? "approve" : "request-changes",
+                      }}
+                      label={pendingAction === "approve" ? "Approve" : "Request changes"}
+                      onSucceeded={() => {
+                        setReviewBody("");
+                        setPendingAction(null);
+                      }}
+                    />
+                  </div>
+                ) : null
+              ) : (
+                <PrReviewSubmit
+                  key={`${pr.key}:${pendingAction}`}
+                  prKey={pr.key}
+                  prUrl={pr.url}
+                  draft={null}
+                  disabled={isRunning}
+                  onBusyChange={() => {}}
+                  quickEvent={pendingAction === "approve" ? "APPROVE" : "REQUEST_CHANGES"}
+                />
+              )
+            ) : null}
+            {pendingAction === "merge" && !native ? (
               <div className="space-y-1 text-xs">
                 {mergeComparison ? (
                   <p title={JSON.stringify(mergeComparison)}>
@@ -108,7 +158,7 @@ export function PrActionDialogs({
                   {mergeMethod ?? "Refresh PR hub to load merge methods"}
                 </SelectButton>
                 <SelectPopup>
-                  {allowedMergeMethods.map((method) => (
+                  {availableMergeMethods.map((method) => (
                     <SelectItem key={method} value={method}>
                       {method}
                     </SelectItem>
@@ -123,6 +173,36 @@ export function PrActionDialogs({
                 placeholder="reviewer1, reviewer2"
               />
             ) : null}
+            {native &&
+            pendingAction === "merge" &&
+            mergeMethod &&
+            availableMergeMethods.includes(mergeMethod) ? (
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{ kind: "action", action: "merge", method: mergeMethod }}
+                label="Merge"
+                onSucceeded={() => setPendingAction(null)}
+              />
+            ) : null}
+            {native && pendingAction === "markReady" && nativeCaps?.actions.includes("ready") ? (
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{ kind: "action", action: "ready" }}
+                label="Mark ready"
+                onSucceeded={() => setPendingAction(null)}
+              />
+            ) : null}
+            {native &&
+            pendingAction === "reRequestReview" &&
+            nativeReviewers.length > 0 &&
+            nativeCaps?.reviewers.request ? (
+              <ForgeOperationPanel
+                pr={pr}
+                payload={{ kind: "reviewers", reviewers: nativeReviewers }}
+                label="Request reviewers"
+                onSucceeded={() => setPendingAction(null)}
+              />
+            ) : null}
             {pendingAction === "snooze" ? (
               <SnoozePresetPicker value={snoozeUntil} onChange={setSnoozeUntil} />
             ) : null}
@@ -131,7 +211,8 @@ export function PrActionDialogs({
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
             {pendingAction !== "approve" &&
             pendingAction !== "requestChanges" &&
-            pendingAction !== "comment" ? (
+            pendingAction !== "comment" &&
+            (!native || pendingAction === "snooze") ? (
               <Button
                 onClick={() => void runAction()}
                 disabled={

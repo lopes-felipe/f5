@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -64,27 +65,32 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
   };
 }
 
-/** Wide enough for the inline panel toggles (they collapse into a menu below 36rem). */
-function renderHeader(overrides: Partial<ChatHeaderProps> = {}) {
+const queryClients: QueryClient[] = [];
+/** The default width fits the inline panel toggles (they collapse into a menu below 36rem). */
+function renderHeader(overrides: Partial<ChatHeaderProps> = {}, width = 900) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClients.push(client);
   return render(
-    <div style={{ width: 900 }}>
+    <div style={{ width }}>
       <ChatHeader {...makeProps(overrides)} />
     </div>,
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    },
   );
 }
 
 describe("ChatHeader", () => {
   afterEach(() => {
+    for (const client of queryClients.splice(0)) client.clear();
     document.body.innerHTML = "";
   });
 
   it("collapses the panel toggles into a Panels menu when the header is narrow", async () => {
     const onToggleDiff = vi.fn();
-    const screen = await render(
-      <div style={{ width: 320 }}>
-        <ChatHeader {...makeProps({ diffToggleShortcutLabel: "Mod+D", onToggleDiff })} />
-      </div>,
-    );
+    const screen = await renderHeader({ diffToggleShortcutLabel: "Mod+D", onToggleDiff }, 320);
 
     try {
       expect(document.querySelector('[aria-label="Toggle diff panel"]')).not.toBeNull();

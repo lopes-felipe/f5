@@ -1,4 +1,4 @@
-import { openExternalHttps } from "./prHubPresentation";
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 
 export function prAuthorUrl(prUrl: string, login: string): string | null {
   try {
@@ -22,18 +22,13 @@ export function PrAuthorLink({
   const href = prAuthorUrl(prUrl, login);
   if (!href) return <>{login}</>;
   return (
-    <a
+    <OpenLinkAnchor
       href={href}
       className="font-medium hover:underline"
       target="_blank"
       rel="noreferrer"
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        void openExternalHttps(href, "author profile");
-      }}
     >
       {login}
-    </a>
+    </OpenLinkAnchor>
   );
 }

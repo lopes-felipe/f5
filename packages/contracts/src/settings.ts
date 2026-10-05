@@ -1,3 +1,4 @@
+import { UsagePriceOverride } from "./usage";
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -124,7 +125,13 @@ export const CodexSettings = Schema.Struct({
 });
 export type CodexSettings = typeof CodexSettings.Type;
 
+const ClaudeAutoCompactWindow = Schema.Int.check(
+  Schema.makeFilter((value) => value === 0 || (value >= 100_000 && value <= 1_000_000)),
+);
+
 export const ClaudeSettings = Schema.Struct({
+  autoCompactWindow: ClaudeAutoCompactWindow.pipe(Schema.withDecodingDefault(() => 0)),
+  resumeCompactionPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -276,11 +283,13 @@ export const ProjectSettingsOverrides = Schema.Struct({
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
   ),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 export const ServerSettings = Schema.Struct({
+  usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   resumeActiveTurnsAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
   worktreeSubmodules: WorktreeSubmodules.pipe(
@@ -321,6 +330,7 @@ export const ServerSettings = Schema.Struct({
   /** Project-scopable worktree cleanup policy; null uses `storageCleanup.worktree`. */
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
   /** Fast-forward clean default branches in the background. Off by default. */
+  enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -391,6 +401,8 @@ const CodexSettingsPatch = Schema.Struct({
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
+  autoCompactWindow: Schema.optionalKey(ClaudeAutoCompactWindow),
+  resumeCompactionPrompt: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
@@ -425,6 +437,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
@@ -446,6 +459,7 @@ export const ServerSettingsPatch = Schema.Struct({
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
+  enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({
@@ -488,6 +502,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "enableAssistantStreaming",
   "prHubDefaultMergeMethod",
   "worktreeCleanup",
+  "enableAgentBrowserAccess",
   "autoPullDefaultBranch",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];

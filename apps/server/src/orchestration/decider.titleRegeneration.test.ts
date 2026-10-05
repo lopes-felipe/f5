@@ -169,3 +169,80 @@ describe("thread title regeneration", () => {
     });
   });
 });
+
+it("counts refinement attempts durably and stops at two or on manual rename", async () => {
+  const initial = await makeReadModel();
+  let state = {
+    ...initial,
+    threads: initial.threads.map((thread) => ({
+      ...thread,
+      titleSource: "generated" as const,
+      titleState: { needsRefinement: true, refinementCount: 0, lastRefinedTurn: 0 },
+    })),
+  };
+  for (const turn of [1, 3]) {
+    const id = CommandId.makeUnsafe(`refine-${turn}`);
+    const event = firstEvent(
+      await decide(state, {
+        type: "thread.title.generation.start",
+        commandId: id,
+        threadId: THREAD_ID,
+        expectedTitleRevision: state.threads[0]!.titleRevision ?? 0,
+        trigger: "auto-refine",
+        refinementTurn: turn,
+        createdAt: NOW,
+      }),
+    );
+    expect(event.type).toBe("thread.title-regeneration-started");
+    state = (await apply(state, event)) as typeof state;
+    expect(state.threads[0]!.titleState?.lastRefinedTurn).toBe(turn);
+    const duplicate = firstEvent(
+      await decide(state, {
+        type: "thread.title.generation.start",
+        commandId: CommandId.makeUnsafe(`duplicate-${turn}`),
+        threadId: THREAD_ID,
+        expectedTitleRevision: state.threads[0]!.titleRevision ?? 0,
+        trigger: "auto-refine",
+        refinementTurn: turn,
+        createdAt: NOW,
+      }),
+    );
+    expect(duplicate.type).toBe("thread.title-regeneration-discarded");
+    const completed = await decide(state, {
+      type: "thread.title.regeneration.complete",
+      commandId: CommandId.makeUnsafe(`complete-${turn}`),
+      threadId: THREAD_ID,
+      requestId: id,
+      expectedTitleRevision: state.threads[0]!.titleRevision ?? 0,
+      title: "User intent",
+      needsRefinement: true,
+      refinementTurn: turn,
+      createdAt: NOW,
+    });
+    state = (await apply(state, completed)) as typeof state;
+  }
+  expect(state.threads[0]!.titleState?.refinementCount).toBe(2);
+  const stopped = firstEvent(
+    await decide(state, {
+      type: "thread.title.generation.start",
+      commandId: CommandId.makeUnsafe("third-refine"),
+      threadId: THREAD_ID,
+      expectedTitleRevision: state.threads[0]!.titleRevision ?? 0,
+      trigger: "auto-refine",
+      refinementTurn: 3,
+      createdAt: NOW,
+    }),
+  );
+  expect(stopped.type).toBe("thread.title-regeneration-discarded");
+  state = (await apply(
+    state,
+    await decide(state, {
+      type: "thread.meta.update",
+      commandId: CommandId.makeUnsafe("manual-title"),
+      threadId: THREAD_ID,
+      title: "My title",
+    }),
+  )) as typeof state;
+  expect(state.threads[0]!.titleState).toBeNull();
+  expect(state.threads[0]!.titleSource).toBe("manual");
+});

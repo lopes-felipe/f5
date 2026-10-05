@@ -1,3 +1,4 @@
+import { makeProviderLimits } from "../../usage/providerLimits.ts";
 /**
  * OpenCodeDriver — `ProviderDriver` for the OpenCode runtime.
  *
@@ -93,6 +94,14 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         environment: processEnv,
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
+      const accountUsage = yield* makeProviderLimits({
+        provider: "opencode",
+        instanceId,
+        displayName: displayName || "OpenCode",
+        enabled,
+        environment: processEnv,
+        serverUrl: effectiveConfig.serverUrl,
+      });
       const textGeneration = yield* makeOpenCodeTextGeneration(effectiveConfig, processEnv);
 
       const checkProvider = checkOpenCodeProviderStatus(
@@ -129,6 +138,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         enabled,
         snapshot,
         adapter,
+        accountUsage,
         textGeneration,
       } satisfies ProviderInstance;
     }),

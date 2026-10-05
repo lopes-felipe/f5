@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -176,7 +177,7 @@ function makeWorkerClient(worker: ChildProcess): ContentWorkerClient {
 
 function defaultWorkerFactory(): ContentWorkerClient {
   return makeWorkerClient(
-    spawn(process.execPath, ["--eval", PROJECT_CONTENT_SEARCH_WORKER_SOURCE], {
+    spawn(javascriptRuntimeExecutable(), ["--eval", PROJECT_CONTENT_SEARCH_WORKER_SOURCE], {
       cwd: import.meta.dirname,
       stdio: ["ignore", "ignore", "inherit", "ipc"],
       serialization: "json",
