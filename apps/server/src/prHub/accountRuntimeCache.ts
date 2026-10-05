@@ -1,4 +1,4 @@
-import { Deferred, Effect, Exit, Scope, Semaphore } from "effect";
+import { Deferred, Effect, Exit, Fiber, Scope, Semaphore } from "effect";
 
 /** Replacement and eviction close subscriptions, workers and account caches together. */
 export const makeAccountRuntimeCache = <A, E>(
@@ -37,8 +37,8 @@ export const makeAccountRuntimeCache = <A, E>(
           const scope = yield* Scope.fork(parentScope);
           const value = yield* Deferred.make<A, E>();
           // Publish the reservation before building, so other accounts can open concurrently.
-          yield* create(account, scope).pipe(
-            Effect.exit,
+          const build = yield* create(account, scope).pipe(Effect.forkIn(scope));
+          yield* Fiber.await(build).pipe(
             Effect.flatMap((exit) =>
               Effect.gen(function* () {
                 if (exit._tag === "Failure") {
