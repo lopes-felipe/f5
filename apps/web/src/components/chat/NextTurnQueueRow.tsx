@@ -40,6 +40,7 @@ export function NextTurnQueueRow({
   onDuplicate,
   onMoveToTop,
   onRunNow,
+  canRunNow,
   onSteer,
   canSteer,
 }: {
@@ -63,6 +64,7 @@ export function NextTurnQueueRow({
   readonly onMoveToTop: (item: NextTurnQueueItem) => Promise<void>;
   readonly onSteer?: ((item: NextTurnQueueItem) => Promise<void>) | undefined;
   readonly canSteer?: boolean | undefined;
+  readonly canRunNow: boolean;
   readonly onRunNow: (item: NextTurnQueueItem) => Promise<void>;
 }) {
   const disabled = busy || item.status === "dispatching";
@@ -302,20 +304,22 @@ export function NextTurnQueueRow({
             >
               <ArrowUpIcon />
             </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              disabled={
-                disabled ||
-                snapshot.reasonCode === "delivery_rejected" ||
-                snapshot.reasonCode === "delivery_ambiguous"
-              }
-              aria-label="Run queued turn now"
-              onClick={() => void onRunNow(item)}
-            >
-              <PlayIcon />
-            </Button>
+            {canRunNow ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                disabled={
+                  disabled ||
+                  snapshot.reasonCode === "delivery_rejected" ||
+                  snapshot.reasonCode === "delivery_ambiguous"
+                }
+                aria-label="Run queued turn now"
+                onClick={() => void onRunNow(item)}
+              >
+                <PlayIcon />
+              </Button>
+            ) : null}
             {onSteer ? (
               <Button
                 type="button"
