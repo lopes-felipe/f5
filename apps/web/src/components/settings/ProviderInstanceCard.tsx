@@ -845,7 +845,9 @@ export function ProviderInstanceCard({
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input
                     key={String(
-                      typeof instance.config === "object" && instance.config !== null && "autoCompactWindow" in instance.config
+                      typeof instance.config === "object" &&
+                        instance.config !== null &&
+                        "autoCompactWindow" in instance.config
                         ? instance.config.autoCompactWindow
                         : 0,
                     )}
@@ -856,7 +858,9 @@ export function ProviderInstanceCard({
                     defaultValue={
                       typeof instance.config === "object" &&
                       instance.config !== null &&
-                      typeof instance.config === "object" && instance.config !== null && "autoCompactWindow" in instance.config
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      "autoCompactWindow" in instance.config
                         ? Number(instance.config.autoCompactWindow)
                         : 0
                     }
