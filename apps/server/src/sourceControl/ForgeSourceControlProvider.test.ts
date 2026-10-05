@@ -194,6 +194,10 @@ describe("forge adapters", () => {
     });
     it(`${kind} performs a typed merge against the scoped account`, async () => {
       const { provider, ref, calls } = fixture(kind);
+      if (kind === "bitbucket") {
+        expect((await Effect.runPromiseExit(provider.performAction({ref, action: "merge", method: "squash", expectedHeadOid: "head-sha"})))._tag).toBe("Failure");
+        expect(calls).toHaveLength(0); return;
+      }
       await Effect.runPromise(
         provider.performAction({
           ref,
@@ -206,7 +210,6 @@ describe("forge adapters", () => {
       expect(calls[0]?.init.redirect).toBe("error");
       const body = JSON.parse(String(calls[0]?.init.body));
       if (kind === "gitlab") expect(body).toMatchObject({ sha: "head-sha", squash: true });
-      if (kind === "bitbucket") expect(body).toMatchObject({ merge_strategy: "squash" });
       if (kind === "forgejo")
         expect(body).toMatchObject({ Do: "squash", head_commit_id: "head-sha" });
       if (kind === "azure-devops")
