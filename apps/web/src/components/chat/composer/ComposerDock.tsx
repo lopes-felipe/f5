@@ -7,8 +7,35 @@ export const COMPOSER_DOCK_HEIGHT_VAR = "--composer-dock-height";
 const DOCK_HOST_SELECTOR = "[data-composer-dock-host]";
 const DOCK_SELECTOR = '[data-slot="composer-dock"]';
 
+const TIMELINE_SCROLLER_SELECTOR = '[data-slot="messages-scroll-container"]';
+/** How close to the end (in px) still counts as "reading the latest". */
+const END_PIN_THRESHOLD_PX = 2;
+
 function publishDockHeight(host: HTMLElement, dock: HTMLElement): void {
   host.style.setProperty(COMPOSER_DOCK_HEIGHT_VAR, `${Math.ceil(dock.offsetHeight)}px`);
+}
+
+/**
+ * Publishes a resized dock and keeps the timeline pinned to its end when it
+ * was there. The timeline's end spacer grows with the dock, which the list
+ * does not treat as new content, so a reader at the end would otherwise see
+ * the last message slide under a growing composer.
+ */
+function publishDockResize(host: HTMLElement, dock: HTMLElement): void {
+  const previous = host.style.getPropertyValue(COMPOSER_DOCK_HEIGHT_VAR);
+  const scroller = host.querySelector<HTMLElement>(TIMELINE_SCROLLER_SELECTOR);
+  const wasAtEnd =
+    scroller !== null &&
+    scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= END_PIN_THRESHOLD_PX;
+  publishDockHeight(host, dock);
+  if (!scroller || !wasAtEnd) return;
+  if (host.style.getPropertyValue(COMPOSER_DOCK_HEIGHT_VAR) === previous) return;
+  const pin = () => {
+    scroller.scrollTop = scroller.scrollHeight;
+  };
+  pin();
+  // The list may re-measure its footer on the next frame; pin once more.
+  requestAnimationFrame(pin);
 }
 
 /**
@@ -23,18 +50,26 @@ function publishDockHeight(host: HTMLElement, dock: HTMLElement): void {
  * with a short window, an open terminal or several pending questions. Only
  * the centred column takes pointer events; wheel and clicks over the side
  * gutters reach the timeline underneath.
+ *
+ * `redesign` (the server's opt-in `composer-redesign` capability) switches to
+ * that design's bounded input bar instead: nothing shrinks, the dock is
+ * capped at 55% of the chat column (`[data-composer-input-bar]` in
+ * index.css) and the whole stack scrolls.
  */
-export function ComposerDock(props: { children: ReactNode; className?: string }) {
+export function ComposerDock(props: {
+  children: ReactNode;
+  className?: string;
+  redesign?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     const element = ref.current;
     const host = element?.closest<HTMLElement>(DOCK_HOST_SELECTOR) ?? element?.parentElement;
     if (!element || !host) return;
-    const publish = () => publishDockHeight(host, element);
-    publish();
+    publishDockHeight(host, element);
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(publish);
+    const observer = new ResizeObserver(() => publishDockResize(host, element));
     observer.observe(element);
     return () => {
       observer.disconnect();
@@ -46,6 +81,7 @@ export function ComposerDock(props: { children: ReactNode; className?: string })
     <div
       ref={ref}
       data-slot="composer-dock"
+      data-composer-input-bar={props.redesign || undefined}
       className={cn(
         "pointer-events-none absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col pb-safe-add",
         // The fade starts above the dock so scrolled text dissolves before it
@@ -54,7 +90,9 @@ export function ComposerDock(props: { children: ReactNode; className?: string })
         props.className,
       )}
     >
-      <div className="relative flex min-h-0 flex-col">{props.children}</div>
+      <div className={cn("relative flex flex-col", !props.redesign && "min-h-0")}>
+        {props.children}
+      </div>
     </div>
   );
 }
@@ -63,12 +101,18 @@ export function ComposerDock(props: { children: ReactNode; className?: string })
  * The dock's centred column (tray, composer, branch line). It is the only
  * part of the dock that receives pointer events.
  */
-export function ComposerDockColumn(props: { children: ReactNode; className?: string }) {
+export function ComposerDockColumn(props: {
+  children: ReactNode;
+  className?: string;
+  redesign?: boolean;
+}) {
   return (
     <div
       data-slot="composer-dock-column"
+      data-composer-redesign={props.redesign || undefined}
       className={cn(
-        "pointer-events-auto mx-auto flex min-h-0 w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] flex-col px-3 sm:px-5",
+        "pointer-events-auto mx-auto flex w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] flex-col px-3 sm:px-5",
+        !props.redesign && "min-h-0",
         props.className,
       )}
     >

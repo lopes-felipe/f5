@@ -1,3 +1,4 @@
+import { useComposerScrollCollapse } from "./useComposerScrollCollapse";
 import { composerAttachmentStatus } from "~/lib/attachmentValidation";
 import { AttachmentUploadProgress } from "./AttachmentUploadProgress";
 import { PopupFocusContext } from "~/components/ui/popupFocus";
@@ -5,13 +6,13 @@ import { type ComposerMention, insertComposerMentionTrigger } from "~/composer-e
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { useAppSettings } from "~/appSettings";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useId } from "react";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { stepPromptHistory, type PromptHistoryPosition } from "./promptHistory";
 import type * as React from "react";
 import { proposedPlanTitle } from "~/proposedPlan";
 import { basenameOfPath } from "~/vscode-icons";
-import { CircleAlertIcon, XIcon } from "lucide-react";
+import { CircleAlertIcon, PaperclipIcon, XIcon } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
@@ -39,6 +40,8 @@ import { composerSendShortcutLabel } from "./sendShortcut";
 import { isMacPlatform } from "~/lib/utils";
 
 export interface ChatComposerProps {
+  redesignEnabled: boolean;
+  getTimeline: () => HTMLElement | null;
   composerFormRef: React.RefObject<HTMLFormElement | null>;
   composerEditorRef: React.RefObject<
     import("~/components/ComposerPromptEditor").ComposerPromptEditorHandle | null
@@ -88,6 +91,8 @@ export interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  redesignEnabled,
+  getTimeline,
   composerFormRef,
   composerEditorRef,
   threadId,
@@ -116,6 +121,7 @@ export function ChatComposer({
   attachments,
 }: ChatComposerProps) {
   const { settings } = useAppSettings();
+  const attachmentTrayId = useId();
   const historyPosition = useRef<PromptHistoryPosition | null>(null);
   const sendShortcutLabel = composerSendShortcutLabel(
     settings.sendShortcut,
@@ -141,11 +147,33 @@ export function ChatComposer({
     removeComposerImage,
     removeComposerFilePath,
   } = attachments;
+  const attachmentCount = composerImages.length + composerFilePaths.length;
+  const attachmentStatus = composerAttachmentStatus(composerImages, modelControls.selectedProvider);
+  // Opt-in redesign: a resting composer collapses on timeline scroll. Never
+  // while something needs the editor (errors, menus, drafts being prepared,
+  // approvals, questions, the plan follow-up).
+  const { collapsed, expand } = useComposerScrollCollapse({
+    enabled: redesignEnabled && settings.composerCollapseOnScroll && sendControls.isServerThread,
+    threadId,
+    blocked:
+      !!attachmentStatus.error ||
+      composerMenuOpen ||
+      isDragOverComposer ||
+      sendControls.isPreparingWorktree ||
+      !!activePendingApproval ||
+      pendingUserInputs.length > 0 ||
+      showPlanFollowUpPrompt ||
+      sendControls.pendingComposerImageImportCount > 0 ||
+      attachments.nonPersistedComposerImageIdSet.size > 0,
+    formRef: composerFormRef,
+    getTimeline,
+  });
 
   useEffect(() => {
     const focus = () => {
       const active = document.activeElement;
       if (
+        collapsed ||
         isConnecting ||
         isComposerApprovalState ||
         isPendingTurnDispatchBlocked ||
@@ -158,6 +186,7 @@ export function ChatComposer({
     window.addEventListener("focus", focus);
     return () => window.removeEventListener("focus", focus);
   }, [
+    collapsed,
     composerEditorRef,
     composerFormRef,
     isConnecting,
@@ -255,7 +284,9 @@ export function ChatComposer({
         ref={composerFormRef}
         onSubmit={sendControls.onSend}
         className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0"
+        aria-label={collapsed ? "Message composer (collapsed)" : "Message composer"}
         data-chat-composer-form="true"
+        data-composer-collapsed={collapsed ? "true" : "false"}
       >
         <div
           data-chat-composer-shell="true"
@@ -301,15 +332,22 @@ export function ChatComposer({
             </div>
           ) : null}
 
-          {/* Textarea area */}
+          {/* Textarea area: never remount the editor when its layout changes. */}
           <div
+            data-composer-editor-area="true"
             className={cn(
               "relative px-3 pb-2 sm:px-4",
               hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
             )}
           >
             {composerMenuOpen && !isComposerApprovalState && (
-              <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
+              <div
+                data-composer-command-drawer={redesignEnabled || undefined}
+                className={cn(
+                  "z-20 px-1",
+                  redesignEnabled ? "relative" : "absolute inset-x-0 bottom-full mb-2",
+                )}
+              >
                 <ComposerCommandMenu
                   items={composerMenuItems}
                   resolvedTheme={resolvedTheme}
@@ -323,14 +361,11 @@ export function ChatComposer({
             )}
 
             {!isComposerApprovalState && pendingUserInputs.length === 0 && (
-              <>
+              <div id={attachmentTrayId} data-composer-attachment-tray="true">
                 {composerImages.length > 0 && (
                   <div className="mb-3 flex flex-wrap gap-2">
                     {(() => {
-                      const status = composerAttachmentStatus(
-                        composerImages,
-                        modelControls.selectedProvider,
-                      );
+                      const status = attachmentStatus;
                       return status.error || status.notice ? (
                         <p
                           role={status.error ? "alert" : "status"}
@@ -443,8 +478,20 @@ export function ChatComposer({
                     })}
                   </div>
                 )}
-              </>
+              </div>
             )}
+            {collapsed && attachmentCount > 0 ? (
+              <button
+                type="button"
+                className="mb-1 flex items-center gap-1 text-xs text-muted-foreground"
+                onClick={expand}
+                aria-expanded={false}
+                aria-controls={attachmentTrayId}
+              >
+                <PaperclipIcon className="size-3" />
+                {attachmentCount} {attachmentCount === 1 ? "attachment" : "attachments"}
+              </button>
+            ) : null}
             <ComposerPromptEditor
               richTextEnabled={settings.composerRichTextEnabled}
               ref={composerEditorRef}
@@ -519,7 +566,11 @@ export function ChatComposer({
                 model={modelControls}
                 mode={modeControls}
                 send={sendControls}
-                onAttachFiles={attachments.onAttachFiles}
+                onAttachFiles={(files) => {
+                  // Attaching expands a scroll-collapsed composer (redesign).
+                  expand();
+                  attachments.onAttachFiles(files);
+                }}
                 onMentionFile={handleMentionFile}
                 contextSummary={contextSummary}
               />

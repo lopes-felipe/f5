@@ -1,3 +1,4 @@
+import { useServerCapability } from "../../protocolState";
 import { ProfilesSettings } from "./categories/ProfilesSettings";
 import { SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -99,7 +100,14 @@ export function SettingsLayout({
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
-  const searchResults = useMemo(() => filterSettingsItems(searchQuery), [searchQuery]);
+  const composerRedesign = useServerCapability("composer-redesign");
+  const searchResults = useMemo(
+    () =>
+      filterSettingsItems(searchQuery).filter(
+        (item) => composerRedesign || item.id !== "general.composer-collapse",
+      ),
+    [searchQuery, composerRedesign],
+  );
   const isSearching = searchQuery.trim().length > 0;
 
   const clearSearch = useCallback(() => {

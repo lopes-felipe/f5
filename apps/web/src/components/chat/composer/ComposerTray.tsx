@@ -14,13 +14,23 @@ export const COMPOSER_TRAY_PANEL_CLASS_NAME = "w-full px-3 py-2.5";
  * Collapses to nothing when every row renders null. The notice stack and
  * queue cap their own height; the tray itself is the one part of the dock
  * that shrinks and scrolls when the dock runs out of room.
+ *
+ * With `redesign` (the opt-in composer redesign) the tray is that design's
+ * state-drawer stack: it keeps its natural height up to its own cap
+ * (`[data-composer-state-drawers]` in index.css) and the dock scrolls.
  */
-export function ComposerTray(props: { children: ReactNode; className?: string }) {
+export function ComposerTray(props: {
+  children: ReactNode;
+  className?: string;
+  redesign?: boolean;
+}) {
   return (
     <div
       data-slot="composer-tray"
+      data-composer-state-drawers={props.redesign || undefined}
       className={cn(
-        "mx-3 min-h-0 overflow-y-auto overscroll-contain rounded-t-xl border border-b-0 border-border bg-card text-card-foreground empty:hidden",
+        "mx-3 overflow-y-auto overscroll-contain rounded-t-xl border border-b-0 border-border bg-card text-card-foreground empty:hidden",
+        props.redesign ? "shrink-0" : "min-h-0",
         "divide-y divide-border",
         props.className,
       )}

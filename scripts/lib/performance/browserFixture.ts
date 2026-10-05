@@ -187,7 +187,7 @@ export function createBrowserFixture(protocolVersion = 1) {
       bootstrapThreadId: SMALL_THREAD,
       bootstrap: {
         protocolVersion,
-        capabilities: ["image-attachments"],
+        capabilities: ["image-attachments", "composer-redesign"],
         uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
         sendLimits: {
           maxInputChars: 120000,
@@ -202,6 +202,10 @@ export function createBrowserFixture(protocolVersion = 1) {
       switch (body._tag) {
         case "server.probe":
           return { ok: true };
+        case "orchestration.getRewindDrafts":
+          return { threadId: id, drafts: [] };
+        case "worktreeSetup.subscribe":
+          return null;
         case "projects.cloneList":
           return [];
         case "server.getProjectSettings":
