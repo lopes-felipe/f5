@@ -4753,7 +4753,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
         const providerOptions = {
-          ...options?.oneOffProviderOptions,
+          autoCompactWindow: options?.oneOffProviderOptions?.autoCompactWindow,
+          resumeCompactionPrompt: options?.oneOffProviderOptions?.resumeCompactionPrompt,
           ...input.providerOptions?.claudeAgent,
         };
 
@@ -4910,7 +4911,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const context = yield* Ref.get(contextRef);
               if (!context || !providerOptions?.resumeCompactionPrompt)
                 return { behavior: "cancelled" as const };
-              context.resumeCompactionDialogShown = true;
               const question = "Compact this resumed session before continuing?";
               const answer = yield* handleAskUserQuestion(
                 context,
@@ -4937,6 +4937,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
               if (answer.behavior !== "allow") return { behavior: "cancelled" as const };
               const answers = answer.updatedInput.answers as Record<string, string>;
+              context.resumeCompactionDialogShown = answers[question] === "Compact and continue";
               return {
                 behavior: "completed" as const,
                 result: answers[question] === "Compact and continue" ? "compact" : "continue",

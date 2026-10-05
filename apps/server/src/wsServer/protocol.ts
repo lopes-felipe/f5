@@ -36,6 +36,9 @@ export const SERVER_BOOTSTRAP: ServerBootstrap = {
     "custom-model-metadata",
     "assistant-quotes",
     "repository-issue-links",
+    // Opt-in while the port program's existing transport/retained-heap gates
+    // remain open. Omitting the capability keeps the legacy renderer layout.
+    ...(process.env.F5_COMPOSER_REDESIGN === "1" ? ["composer-redesign"] : []),
   ],
   uploadLimits: { attachments: { enabled: true, maxFileBytes: ATTACHMENT_MAX_FILE_BYTES } },
   providerSendLimits: Object.fromEntries(

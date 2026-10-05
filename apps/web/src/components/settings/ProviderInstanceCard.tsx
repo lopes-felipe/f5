@@ -844,6 +844,11 @@ export function ProviderInstanceCard({
                 <label className="block text-xs">
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input
+                    key={String(
+                      "autoCompactWindow" in instance.config
+                        ? instance.config.autoCompactWindow
+                        : 0,
+                    )}
                     className="mt-1 block w-full rounded border p-2"
                     type="number"
                     min="0"

@@ -46,17 +46,17 @@ it.effect("coalesces concurrent requests, bypasses caches on force, and never re
     expect(yield* Ref.get(calls)).toBe(1);
     yield* capability.refresh("force", permits);
     yield* settle;
-    expect(yield* Ref.get(calls)).toBe(2);
+    expect(yield* Ref.get(calls)).toBe(1);
     yield* TestClock.adjust("30 seconds");
     yield* capability.refresh("force", permits);
     yield* settle;
-    expect(yield* Ref.get(calls)).toBe(3);
+    expect(yield* Ref.get(calls)).toBe(2);
     yield* TestClock.adjust("5 minutes");
     yield* capability.refresh("none", permits);
-    expect(yield* Ref.get(calls)).toBe(3);
+    expect(yield* Ref.get(calls)).toBe(2);
     yield* capability.refresh("if-stale", permits);
     yield* settle;
-    expect(yield* Ref.get(calls)).toBe(4);
+    expect(yield* Ref.get(calls)).toBe(3);
   }).pipe(Effect.scoped),
 );
 

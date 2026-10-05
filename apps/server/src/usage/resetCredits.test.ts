@@ -50,14 +50,23 @@ it.layer(SqliteClient.layerMemory())("reset credits", (it) => {
           "Failure",
         );
         const secondRestart = yield* makeResetCreditCoordinator;
-        assert.equal(
-          (yield* Effect.exit(
-            secondRestart({ ...input, idempotencyKey: "new" }, () =>
-              Effect.succeed({ outcome: "reset" }),
-            ),
-          ))._tag,
-          "Failure",
+        let recoveredKey = "";
+        assert.deepEqual(
+          yield* secondRestart(
+            {
+              ...input,
+              providerInstanceId: ProviderInstanceId.make("another"),
+              idempotencyKey: "new",
+            },
+            (key) => {
+              recoveredKey = key;
+              return Effect.succeed({ outcome: "alreadyRedeemed" });
+            },
+            input.providerInstanceId,
+          ),
+          { outcome: "alreadyRedeemed" },
         );
+        assert.equal(recoveredKey, "ambiguous");
         assert.deepEqual(
           yield* secondRestart(ambiguousInput, () =>
             Effect.succeed({ outcome: "alreadyRedeemed" }),
