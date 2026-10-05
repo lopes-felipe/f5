@@ -300,7 +300,7 @@ export const PrHubFederationLive = Layer.effect(
     const contextGeneration = (accountId: string, managerGeneration?: string) => {
       const value = cached.get(accountId);
       return value && (managerGeneration === undefined || value.generation === managerGeneration)
-        ? value.value.contextGeneration
+        ? value.value?.contextGeneration
         : undefined;
     };
     const resolve = makePrHubAccountRouter({
