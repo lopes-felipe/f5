@@ -11,7 +11,7 @@ import { Kbd } from "../ui/kbd";
 
 /** Shared look for sidebar navigation rows: 32px, `text-ui`, 16px icon. */
 export const SIDEBAR_NAV_ROW_CLASS_NAME =
-  "h-8 gap-2 px-2 text-ui text-muted-foreground hover:bg-accent/60 hover:text-foreground data-[active=true]:bg-accent data-[active=true]:text-foreground";
+  "h-8 gap-2 px-2 text-ui text-muted-foreground hover:bg-accent/60 hover:text-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-foreground";
 
 /** PR Hub "needs you" count, kept live through the native API. */
 function usePrHubNeedsYouCount(): number {

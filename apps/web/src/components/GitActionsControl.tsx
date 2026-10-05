@@ -9,7 +9,13 @@ import type {
 } from "@t3tools/contracts";
 import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDownIcon, CloudUploadIcon, GitCommitIcon, InfoIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  CloudUploadIcon,
+  GitBranchPlusIcon,
+  GitCommitIcon,
+  InfoIcon,
+} from "lucide-react";
 import { GitHubIcon } from "./Icons";
 import {
   buildGitActionProgressStages,
@@ -833,9 +839,13 @@ export default function GitActionsControl({
           variant="outline"
           size="sm"
           disabled={initMutation.isPending}
+          title="Initialize Git"
           onClick={() => initMutation.mutate()}
         >
-          {initMutation.isPending ? "Initializing..." : "Initialize Git"}
+          <GitBranchPlusIcon aria-hidden="true" className="size-4 @xl/header-actions:hidden" />
+          <span className="sr-only @xl/header-actions:not-sr-only">
+            {initMutation.isPending ? "Initializing..." : "Initialize Git"}
+          </span>
         </Button>
       ) : (
         <Group aria-label="Git actions">

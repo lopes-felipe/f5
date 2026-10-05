@@ -1316,32 +1316,34 @@ export default function ThreadTerminalDrawer({
           </div>
         </div>
       ) : (
-        <>
+        // One terminal: the same strip without tabs, so the profile badge and
+        // actions never sit on top of the terminal's first lines.
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border ps-1.5 pe-0.5">
           {profileName ? (
-            <Badge
-              variant="outline"
-              size="sm"
-              className="pointer-events-none absolute top-2 left-2 z-20 bg-background/85"
-            >
+            <Badge variant="outline" size="sm" className="shrink-0">
               {profileName}
             </Badge>
           ) : null}
-          <div className="pointer-events-none absolute top-2 right-2 z-20">
-            <div className="pointer-events-auto inline-flex items-center gap-0.5 rounded-lg border border-border bg-background/85 p-0.5 shadow-xs backdrop-blur-sm">
-              <TerminalDrawerActions
-                splitLabel={splitTerminalActionLabel}
-                splitDisabled={hasReachedSplitLimit}
-                onSplit={onSplitTerminalAction}
-                newLabel={newTerminalActionLabel}
-                onNew={onNewTerminalAction}
-                closeLabel={closeTerminalActionLabel}
-                onClose={() => onCloseTerminal(resolvedActiveTerminalId)}
-                hideLabel={hideTerminalActionLabel}
-                onHide={onHideTerminal}
-              />
-            </div>
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 text-ui text-muted-foreground">
+            <TerminalSquare aria-hidden="true" className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {terminalLabelById.get(resolvedActiveTerminalId) ?? "Terminal"}
+            </span>
+          </span>
+          <div className="flex shrink-0 items-center">
+            <TerminalDrawerActions
+              splitLabel={splitTerminalActionLabel}
+              splitDisabled={hasReachedSplitLimit}
+              onSplit={onSplitTerminalAction}
+              newLabel={newTerminalActionLabel}
+              onNew={onNewTerminalAction}
+              closeLabel={closeTerminalActionLabel}
+              onClose={() => onCloseTerminal(resolvedActiveTerminalId)}
+              hideLabel={hideTerminalActionLabel}
+              onHide={onHideTerminal}
+            />
           </div>
-        </>
+        </div>
       )}
 
       <div

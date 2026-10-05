@@ -72,8 +72,15 @@ function ShortcutsDialogContent() {
                       className="flex min-h-7 items-center justify-between gap-3 text-sm"
                       data-shortcut-command={entry.command}
                     >
-                      <dt className="min-w-0 truncate text-foreground">{entry.label}</dt>
-                      <dd className="shrink-0">
+                      <dt className="min-w-0 truncate text-foreground">
+                        {entry.label}
+                        {entry.context ? (
+                          <span className="ml-1.5 text-muted-foreground text-xs">
+                            {entry.context}
+                          </span>
+                        ) : null}
+                      </dt>
+                      <dd className="flex shrink-0 items-center">
                         <Kbd>{entry.shortcut}</Kbd>
                       </dd>
                     </div>

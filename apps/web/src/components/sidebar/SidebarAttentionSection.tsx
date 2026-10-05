@@ -80,7 +80,10 @@ export function SidebarAttentionSection(props: {
               isActive={props.routeThreadId === thread.id}
               orderedIds={EMPTY_THREAD_IDS}
               trailingMeta={
-                <span className="max-w-20 shrink-0 truncate text-2xs font-normal text-muted-foreground">
+                <span
+                  title={props.projectsById.get(thread.projectId)?.name}
+                  className="min-w-0 max-w-14 shrink truncate text-2xs font-normal text-muted-foreground"
+                >
                   {props.projectsById.get(thread.projectId)?.name}
                 </span>
               }

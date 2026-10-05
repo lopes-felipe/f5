@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestComposerFocus } from "../../composerFocusRequestStore";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
 import { groupThreadsByActivity } from "../../lib/activityGrouping";
-import { resolveAttentionReasonTag } from "../../lib/attentionReason";
+import { QUEUE_PAUSED_REASON_TAG, resolveAttentionReasonTag } from "../../lib/attentionReason";
 import {
   evaluateSmartResume,
   formatAwayDuration,
@@ -299,7 +299,8 @@ export function HomeMissionControl() {
     for (const thread of sorted) {
       const status = statusById.get(thread.id) ?? "none";
       const tag = resolveAttentionReasonTag(status, thread.lastInteractionAt);
-      if (pausedQueueThreadIds.has(thread.id)) reasonByThreadId.set(thread.id, "queue paused");
+      if (pausedQueueThreadIds.has(thread.id))
+        reasonByThreadId.set(thread.id, QUEUE_PAUSED_REASON_TAG);
       else if (tag) reasonByThreadId.set(thread.id, tag);
     }
 

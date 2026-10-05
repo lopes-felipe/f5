@@ -64,8 +64,13 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
   };
 }
 
+/** Wide enough for the inline panel toggles (they collapse into a menu below 36rem). */
 function renderHeader(overrides: Partial<ChatHeaderProps> = {}) {
-  return render(<ChatHeader {...makeProps(overrides)} />);
+  return render(
+    <div style={{ width: 900 }}>
+      <ChatHeader {...makeProps(overrides)} />
+    </div>,
+  );
 }
 
 describe("ChatHeader", () => {

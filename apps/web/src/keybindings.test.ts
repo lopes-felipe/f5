@@ -688,6 +688,11 @@ describe("formatShortcutLabel", () => {
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "MacIntel"), "⌘+");
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "Linux"), "Ctrl++");
   });
+
+  it("abbreviates page keys", () => {
+    assert.strictEqual(formatShortcutLabel(modShortcut("pageup"), "MacIntel"), "⌘PgUp");
+    assert.strictEqual(formatShortcutLabel(modShortcut("pagedown"), "Linux"), "Ctrl+PgDn");
+  });
 });
 
 describe("isTerminalClearShortcut", () => {

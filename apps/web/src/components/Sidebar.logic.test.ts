@@ -551,9 +551,9 @@ describe("resolveThreadRowClassName", () => {
     expect(className).not.toContain("before:bg-primary");
   });
 
-  it("marks the active row with the accent fill and primary bar", () => {
+  it("marks the active row with the sidebar accent fill and primary bar", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
-    expect(className.split(" ")).toContain("bg-accent");
+    expect(className.split(" ")).toContain("bg-sidebar-accent");
     expect(className).toContain("before:bg-primary");
     expect(className).toContain("font-medium");
   });

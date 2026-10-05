@@ -1,12 +1,14 @@
 import type { ThreadId } from "@t3tools/contracts";
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, PauseIcon } from "lucide-react";
 
+import { QUEUE_PAUSED_REASON_TAG } from "../../lib/attentionReason";
 import { formatAbsoluteTimeLabel, formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import { resolveThreadStatusPillForThread, type ThreadStatus } from "../../threadStatus";
 import type { Project, Thread } from "../../types";
 import { ProjectIcon } from "../ProjectIcon";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 
 /** The one action a "Needs you" card offers; navigation only, no approval logic. */
@@ -80,7 +82,13 @@ export function HomeAttentionCard(props: {
       </p>
       <div className="mt-auto flex items-center gap-2">
         {pill ? <ThreadStatusPillBadge pill={pill} variant="chip" live={false} /> : null}
-        {props.reasonTag ? (
+        {props.reasonTag === QUEUE_PAUSED_REASON_TAG && !pill ? (
+          // A paused queue is the card's only status, so it reads as one.
+          <Badge variant="warning" size="sm" className="gap-1">
+            <PauseIcon aria-hidden="true" className="size-3" />
+            Queue paused
+          </Badge>
+        ) : props.reasonTag ? (
           <span className="truncate font-mono text-2xs text-muted-foreground">
             {props.reasonTag}
           </span>

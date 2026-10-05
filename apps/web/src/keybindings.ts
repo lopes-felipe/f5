@@ -167,19 +167,28 @@ function platformWhenValue(node: KeybindingWhenNode | undefined): boolean | unde
   }
 }
 
-export function shortcutLabelForCommand(
+/** The binding whose shortcut is shown for `command` on this platform. */
+export function shortcutBindingForCommand(
   keybindings: ResolvedKeybindingsConfig,
   command: KeybindingCommand | null,
-  platform = navigator.platform,
-): string | null {
+): ResolvedKeybindingRule | null {
   if (command === null) return null;
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding || binding.command !== command) continue;
     if (platformWhenValue(binding.whenAst) === false) continue;
-    return formatShortcutLabel(binding.shortcut, platform);
+    return binding;
   }
   return null;
+}
+
+export function shortcutLabelForCommand(
+  keybindings: ResolvedKeybindingsConfig,
+  command: KeybindingCommand | null,
+  platform = navigator.platform,
+): string | null {
+  const binding = shortcutBindingForCommand(keybindings, command);
+  return binding ? formatShortcutLabel(binding.shortcut, platform) : null;
 }
 
 export function isTerminalToggleShortcut(

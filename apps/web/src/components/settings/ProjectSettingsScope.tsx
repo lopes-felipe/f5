@@ -14,8 +14,13 @@ import {
   ComboboxTrigger,
   ComboboxEmpty,
 } from "../ui/combobox";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChevronRightIcon, ChevronsUpDownIcon } from "lucide-react";
+import { cn } from "../../lib/utils";
+import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
+import { SettingsCard } from "./SettingsCard";
 import {
   ProjectId,
   type ProjectSettingsOverrides,
@@ -37,9 +42,15 @@ export function SettingsScopePicker({
   const items = [{ id: "global", name: "Global settings" }, ...projects];
   const filtered = items.filter((item) => item.name.toLowerCase().includes(search.toLowerCase()));
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b p-4">
-      <button onClick={() => onChange(undefined)}>Global</button>
-      <span aria-hidden>›</span>
+    <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-4">
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        className="rounded-md px-1 py-0.5 text-ui text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        Global
+      </button>
+      <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
       <Combobox
         items={items.map((item) => item.id)}
         filteredItems={filtered.map((item) => item.id)}
@@ -54,9 +65,12 @@ export function SettingsScopePicker({
       >
         <ComboboxTrigger
           aria-label="Settings scope"
-          className="rounded-md border px-3 py-2 text-sm"
+          className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-sm font-medium text-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
-          {projects.find((p) => p.id === projectId)?.name ?? "Global settings"}
+          <span className="truncate">
+            {projects.find((p) => p.id === projectId)?.name ?? "Global settings"}
+          </span>
+          <ChevronsUpDownIcon aria-hidden="true" className="size-3.5 shrink-0 opacity-60" />
         </ComboboxTrigger>
         <ComboboxPopup className="w-80">
           <div className="border-b p-2">
@@ -89,11 +103,15 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
   const [saving, setSaving] = useState(false);
   const providerQuery = useQuery(serverConfigQueryOptions());
   const providers = (providerQuery.data?.providers ?? []).filter((provider) => provider.enabled);
-  if (query.isPending) return <p className="p-6">Loading project settings…</p>;
+  if (query.isPending)
+    return <p className="p-6 text-ui text-muted-foreground">Loading project settings…</p>;
   if (!query.data)
     return (
-      <div className="p-6" role="alert">
-        Could not load project settings. <button onClick={() => void query.refetch()}>Retry</button>
+      <div className="flex items-center gap-3 p-6 text-sm" role="alert">
+        Could not load project settings.
+        <Button size="xs" variant="outline" onClick={() => void query.refetch()}>
+          Retry
+        </Button>
       </div>
     );
   const { settings, overrides, sources } = query.data;
@@ -116,12 +134,19 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
     value: ProjectSettingsOverrides[K],
   ) => void save({ ...overrides, [key]: value });
   const badge = (key: ProjectScopedServerSettingKey) => (
-    <span className="text-xs text-muted-foreground">
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-xs font-normal",
+        sources[key] === "project" ? "text-info-foreground" : "text-muted-foreground",
+      )}
+    >
       {sources[key] === "project" ? (
         <>
-          Project override ·{" "}
+          Project override ·
           <button
+            type="button"
             disabled={saving}
+            className="rounded-sm underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             onClick={() => {
               const next = { ...overrides };
               delete next[key];
@@ -139,188 +164,241 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
     </span>
   );
   return (
-    <div className="space-y-5 overflow-auto p-6">
-      <h1 className="text-lg font-semibold">Project settings</h1>
-      <p>
-        Override defaults for this project. Existing threads keep their selected permissions and
-        workspace.
-      </p>
-      {error && <p role="alert">{error}</p>}
-      <fieldset disabled={saving} className="space-y-5">
-        <div className="block">
-          Default permissions {badge("defaultRuntimeMode")}
-          <select
-            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Default permissions"
-            value={settings.defaultRuntimeMode}
-            onChange={(e) =>
-              set("defaultRuntimeMode", e.target.value as typeof settings.defaultRuntimeMode)
+    <div className="mx-auto w-full max-w-3xl space-y-6 p-6">
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Project settings</h1>
+          <p className="text-ui text-muted-foreground">
+            Override defaults for this project. Existing threads keep their selected permissions and
+            workspace.
+          </p>
+        </div>
+        <Button size="xs" variant="outline" disabled={saving} onClick={() => void save(null)}>
+          Reset all project overrides
+        </Button>
+      </header>
+      {error && (
+        <p role="alert" className="text-sm text-destructive-foreground">
+          {error}
+        </p>
+      )}
+      <fieldset disabled={saving} className="min-w-0 space-y-6">
+        <SettingsCard title="New threads">
+          <ProjectSettingRow
+            title="Default permissions"
+            source={badge("defaultRuntimeMode")}
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Default permissions"
+                value={settings.defaultRuntimeMode}
+                onChange={(e) =>
+                  set("defaultRuntimeMode", e.target.value as typeof settings.defaultRuntimeMode)
+                }
+              >
+                <option value="full-access">Full access</option>
+                <option value="approval-required">Ask for approval</option>
+                <option value="auto-accept-edits">Accept edits</option>
+                <option value="auto">Auto</option>
+              </select>
             }
-          >
-            <option value="full-access">Full access</option>
-            <option value="approval-required">Ask for approval</option>
-            <option value="auto-accept-edits">Accept edits</option>
-            <option value="auto">Auto</option>
-          </select>
-        </div>
-        <div className="block">
-          Default workspace {badge("defaultThreadEnvMode")}
-          <select
-            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Default workspace"
-            value={settings.defaultThreadEnvMode}
-            onChange={(e) => set("defaultThreadEnvMode", e.target.value as "local" | "worktree")}
-          >
-            <option value="local">Local</option>
-            <option value="worktree">Worktree</option>
-          </select>
-        </div>
-        <div className="block">
-          Worktree submodules {badge("worktreeSubmodules")}
-          <select
-            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Worktree submodules"
-            value={settings.worktreeSubmodules}
-            onChange={(e) =>
-              set("worktreeSubmodules", e.target.value as typeof settings.worktreeSubmodules)
-            }
-          >
-            <option value="none">None</option>
-            <option value="shallow">Top level</option>
-            <option value="recursive">Recursive</option>
-          </select>
-        </div>
-        <label className="block">
-          <input
-            type="checkbox"
-            checked={settings.enableAssistantStreaming}
-            onChange={(e) => set("enableAssistantStreaming", e.target.checked)}
-          />{" "}
-          Stream assistant replies
-        </label>
-        {badge("enableAssistantStreaming")}
-        <label className="flex items-center justify-between gap-4 py-2">
-          <span>Resume active turns after restart</span>
-          <input
-            type="checkbox"
-            checked={settings.resumeActiveTurnsAfterRestart}
-            onChange={(event) => set("resumeActiveTurnsAfterRestart", event.target.checked)}
           />
-        </label>
-        {badge("resumeActiveTurnsAfterRestart")}
-        <div className="block">
-          Default merge method {badge("prHubDefaultMergeMethod")}
-          <select
-            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Default merge method"
-            value={settings.prHubDefaultMergeMethod ?? ""}
-            onChange={(e) =>
-              set(
-                "prHubDefaultMergeMethod",
-                e.target.value ? (e.target.value as "squash" | "merge" | "rebase") : null,
-              )
+          <ProjectSettingRow
+            title="Default workspace"
+            source={badge("defaultThreadEnvMode")}
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Default workspace"
+                value={settings.defaultThreadEnvMode}
+                onChange={(e) =>
+                  set("defaultThreadEnvMode", e.target.value as "local" | "worktree")
+                }
+              >
+                <option value="local">Local</option>
+                <option value="worktree">Worktree</option>
+              </select>
+            }
+          />
+          <ProjectSettingRow
+            title="Worktree submodules"
+            source={badge("worktreeSubmodules")}
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Worktree submodules"
+                value={settings.worktreeSubmodules}
+                onChange={(e) =>
+                  set("worktreeSubmodules", e.target.value as typeof settings.worktreeSubmodules)
+                }
+              >
+                <option value="none">None</option>
+                <option value="shallow">Top level</option>
+                <option value="recursive">Recursive</option>
+              </select>
+            }
+          />
+        </SettingsCard>
+        <SettingsCard title="Conversation">
+          <ProjectSettingRow
+            title="Stream assistant replies"
+            source={badge("enableAssistantStreaming")}
+            control={
+              <Switch
+                aria-label="Stream assistant replies"
+                disabled={saving}
+                checked={settings.enableAssistantStreaming}
+                onCheckedChange={(checked) => set("enableAssistantStreaming", checked)}
+              />
+            }
+          />
+          <ProjectSettingRow
+            title="Resume active turns after restart"
+            source={badge("resumeActiveTurnsAfterRestart")}
+            control={
+              <Switch
+                aria-label="Resume active turns after restart"
+                disabled={saving}
+                checked={settings.resumeActiveTurnsAfterRestart}
+                onCheckedChange={(checked) => set("resumeActiveTurnsAfterRestart", checked)}
+              />
+            }
+          />
+        </SettingsCard>
+        <SettingsCard title="Git and worktrees">
+          <ProjectSettingRow
+            title="Default merge method"
+            source={badge("prHubDefaultMergeMethod")}
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Default merge method"
+                value={settings.prHubDefaultMergeMethod ?? ""}
+                onChange={(e) =>
+                  set(
+                    "prHubDefaultMergeMethod",
+                    e.target.value ? (e.target.value as "squash" | "merge" | "rebase") : null,
+                  )
+                }
+              >
+                <option value="">Last used</option>
+                <option value="squash">Squash</option>
+                <option value="merge">Merge</option>
+                <option value="rebase">Rebase</option>
+              </select>
+            }
+          />
+          <ProjectSettingRow
+            title="Automatic worktree cleanup"
+            source={badge("worktreeCleanup")}
+            description={
+              settings.storageCleanup.enabled
+                ? undefined
+                : "Automatic storage cleanup is off in Storage settings, so no rule runs."
+            }
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Automatic worktree cleanup"
+                value={settings.worktreeCleanup?.mode ?? "global"}
+                onChange={(event) =>
+                  set(
+                    "worktreeCleanup",
+                    event.target.value === "off"
+                      ? { mode: "off" }
+                      : event.target.value === "custom"
+                        ? { mode: "custom", rules: settings.storageCleanup.worktree }
+                        : null,
+                  )
+                }
+              >
+                <option value="global">Use the global rules</option>
+                <option value="off">Off for this project</option>
+                <option value="custom">Custom rules</option>
+              </select>
             }
           >
-            <option value="">Last used</option>
-            <option value="squash">Squash</option>
-            <option value="merge">Merge</option>
-            <option value="rebase">Rebase</option>
-          </select>
-        </div>
-        <div className="block">
-          Automatic worktree cleanup {badge("worktreeCleanup")}
-          <select
-            className="mt-2 block rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Automatic worktree cleanup"
-            value={settings.worktreeCleanup?.mode ?? "global"}
-            onChange={(event) =>
-              set(
-                "worktreeCleanup",
-                event.target.value === "off"
-                  ? { mode: "off" }
-                  : event.target.value === "custom"
-                    ? { mode: "custom", rules: settings.storageCleanup.worktree }
-                    : null,
-              )
-            }
-          >
-            <option value="global">Use the global rules</option>
-            <option value="off">Off for this project</option>
-            <option value="custom">Custom rules</option>
-          </select>
-          {!settings.storageCleanup.enabled ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Automatic storage cleanup is off in Storage settings, so no rule runs.
-            </p>
-          ) : null}
-          {settings.worktreeCleanup?.mode === "custom" ? (
-            <div className="mt-2">
+            {settings.worktreeCleanup?.mode === "custom" ? (
               <WorktreeCleanupRulesEditor
                 rules={settings.worktreeCleanup.rules}
                 onChange={(rules) => set("worktreeCleanup", { mode: "custom", rules })}
               />
-            </div>
-          ) : null}
-        </div>
-        <label className="flex items-center justify-between gap-4 py-2">
-          <span>Auto-pull the default branch</span>
-          <input
-            type="checkbox"
-            aria-label="Auto-pull the default branch"
-            checked={settings.autoPullDefaultBranch}
-            onChange={(event) => set("autoPullDefaultBranch", event.target.checked)}
+            ) : null}
+          </ProjectSettingRow>
+          <ProjectSettingRow
+            title="Auto-pull the default branch"
+            source={badge("autoPullDefaultBranch")}
+            control={
+              <Switch
+                aria-label="Auto-pull the default branch"
+                disabled={saving}
+                checked={settings.autoPullDefaultBranch}
+                onCheckedChange={(checked) => set("autoPullDefaultBranch", checked)}
+              />
+            }
           />
-        </label>
-        {badge("autoPullDefaultBranch")}
-        <div>
-          Text generation model {badge("textGenerationModelSelection")}
-          <select
-            className="mt-2 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Text generation provider"
-            value={settings.textGenerationModelSelection.instanceId}
-            onChange={(e) => {
-              const provider = providers.find((entry) => entry.instanceId === e.target.value);
-              if (!provider) return;
-              const model =
-                provider.models[0]?.slug ??
-                (isKnownProviderKind(provider.driver)
-                  ? DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[provider.driver as ProviderKind]
-                  : undefined);
-              if (model)
-                set("textGenerationModelSelection", { instanceId: provider.instanceId, model });
-            }}
-          >
-            {providers.map((provider) => (
-              <option key={provider.instanceId} value={provider.instanceId}>
-                {provider.displayName ?? provider.instanceId}
-              </option>
-            ))}
-            {!providers.some(
-              (provider) =>
-                provider.instanceId === settings.textGenerationModelSelection.instanceId,
-            ) && (
-              <option value={settings.textGenerationModelSelection.instanceId}>
-                {settings.textGenerationModelSelection.instanceId}
-              </option>
-            )}
-          </select>
-          <input
-            className="ml-2 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Text generation model"
-            key={settings.textGenerationModelSelection.model}
-            defaultValue={settings.textGenerationModelSelection.model}
-            onBlur={(e) => {
-              const model = e.target.value.trim();
-              if (model && model !== settings.textGenerationModelSelection.model)
-                set("textGenerationModelSelection", {
-                  ...settings.textGenerationModelSelection,
-                  model,
-                });
-            }}
+        </SettingsCard>
+        <SettingsCard title="Text generation">
+          <ProjectSettingRow
+            title="Text generation model"
+            source={badge("textGenerationModelSelection")}
+            description="The provider and model that write git text for this project."
+            control={
+              <>
+                <select
+                  className={cn(NATIVE_CONTROL_CLASS, "w-40")}
+                  aria-label="Text generation provider"
+                  value={settings.textGenerationModelSelection.instanceId}
+                  onChange={(e) => {
+                    const provider = providers.find((entry) => entry.instanceId === e.target.value);
+                    if (!provider) return;
+                    const model =
+                      provider.models[0]?.slug ??
+                      (isKnownProviderKind(provider.driver)
+                        ? DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER[
+                            provider.driver as ProviderKind
+                          ]
+                        : undefined);
+                    if (model)
+                      set("textGenerationModelSelection", {
+                        instanceId: provider.instanceId,
+                        model,
+                      });
+                  }}
+                >
+                  {providers.map((provider) => (
+                    <option key={provider.instanceId} value={provider.instanceId}>
+                      {provider.displayName ?? provider.instanceId}
+                    </option>
+                  ))}
+                  {!providers.some(
+                    (provider) =>
+                      provider.instanceId === settings.textGenerationModelSelection.instanceId,
+                  ) && (
+                    <option value={settings.textGenerationModelSelection.instanceId}>
+                      {settings.textGenerationModelSelection.instanceId}
+                    </option>
+                  )}
+                </select>
+                <input
+                  className={cn(NATIVE_CONTROL_CLASS, "w-44")}
+                  aria-label="Text generation model"
+                  key={settings.textGenerationModelSelection.model}
+                  defaultValue={settings.textGenerationModelSelection.model}
+                  onBlur={(e) => {
+                    const model = e.target.value.trim();
+                    if (model && model !== settings.textGenerationModelSelection.model)
+                      set("textGenerationModelSelection", {
+                        ...settings.textGenerationModelSelection,
+                        model,
+                      });
+                  }}
+                />
+              </>
+            }
           />
-        </div>
-        <div className="space-y-3">
-          Source control writing {badge("sourceControlWriting")}
+        </SettingsCard>
+        <SettingsCard title="Source control writing" actions={badge("sourceControlWriting")}>
           {(
             [
               "generateCommitMessages",
@@ -329,54 +407,53 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
               "useRepositoryInstructions",
             ] as const
           ).map((key) => (
-            <label className="block" key={key}>
-              <input
-                type="checkbox"
-                checked={settings.sourceControlWriting[key] ?? false}
+            <ProjectSettingRow
+              key={key}
+              title={SOURCE_CONTROL_TOGGLE_LABELS[key]}
+              control={
+                <Switch
+                  aria-label={SOURCE_CONTROL_TOGGLE_LABELS[key]}
+                  disabled={saving}
+                  checked={settings.sourceControlWriting[key] ?? false}
+                  onCheckedChange={(checked) =>
+                    set("sourceControlWriting", {
+                      ...overrides.sourceControlWriting,
+                      [key]: checked,
+                    })
+                  }
+                />
+              }
+            />
+          ))}
+          <ProjectSettingRow
+            title="Commit style"
+            control={
+              <select
+                className={cn(NATIVE_CONTROL_CLASS, "w-48")}
+                aria-label="Commit style"
+                value={settings.sourceControlWriting.commitMessageStyle}
                 onChange={(e) =>
                   set("sourceControlWriting", {
                     ...overrides.sourceControlWriting,
-                    [key]: e.target.checked,
+                    commitMessageStyle: e.target.value as "plain" | "conventional",
                   })
                 }
-              />
-              {
-                {
-                  generateCommitMessages: "Generate commit messages",
-                  generatePrContent: "Generate PR descriptions",
-                  commitMessageIncludeBody: "Include commit body",
-                  useRepositoryInstructions: "Use repository instructions",
-                }[key]
-              }
-            </label>
-          ))}
-          <label className="block">
-            Commit style
-            <select
-              aria-label="Commit style"
-              value={settings.sourceControlWriting.commitMessageStyle}
-              onChange={(e) =>
-                set("sourceControlWriting", {
-                  ...overrides.sourceControlWriting,
-                  commitMessageStyle: e.target.value as "plain" | "conventional",
-                })
-              }
-            >
-              <option value="plain">Plain</option>
-              <option value="conventional">Conventional</option>
-            </select>
-          </label>
+              >
+                <option value="plain">Plain</option>
+                <option value="conventional">Conventional</option>
+              </select>
+            }
+          />
           {(["branchNamePrefix", "customInstructions", "prBodyTemplate"] as const).map((key) => (
-            <label className="block" key={key}>
-              {
-                {
-                  branchNamePrefix: "Branch prefix",
-                  customInstructions: "Writing instructions",
-                  prBodyTemplate: "PR body template",
-                }[key]
-              }
+            <ProjectSettingRow key={key} title={SOURCE_CONTROL_TEXT_LABELS[key]}>
               <textarea
-                className="block w-full border p-2"
+                aria-label={SOURCE_CONTROL_TEXT_LABELS[key]}
+                className={cn(
+                  NATIVE_CONTROL_CLASS,
+                  "block h-auto w-full py-2",
+                  key === "branchNamePrefix" ? "min-h-8" : "min-h-20",
+                )}
+                rows={key === "branchNamePrefix" ? 1 : 3}
                 key={settings.sourceControlWriting[key]}
                 defaultValue={settings.sourceControlWriting[key]}
                 onBlur={(e) => {
@@ -387,11 +464,57 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
                     });
                 }}
               />
-            </label>
+            </ProjectSettingRow>
           ))}
-        </div>
-        <button onClick={() => void save(null)}>Reset all project overrides</button>
+        </SettingsCard>
       </fieldset>
+    </div>
+  );
+}
+
+const SOURCE_CONTROL_TOGGLE_LABELS = {
+  generateCommitMessages: "Generate commit messages",
+  generatePrContent: "Generate PR descriptions",
+  commitMessageIncludeBody: "Include commit body",
+  useRepositoryInstructions: "Use repository instructions",
+} as const;
+
+const SOURCE_CONTROL_TEXT_LABELS = {
+  branchNamePrefix: "Branch prefix",
+  customInstructions: "Writing instructions",
+  prBodyTemplate: "PR body template",
+} as const;
+
+const NATIVE_CONTROL_CLASS =
+  "h-8 rounded-md border border-input bg-background px-2.5 text-sm font-normal text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60";
+
+/** A settings row with the setting's source (global or project override) beside its title. */
+function ProjectSettingRow({
+  title,
+  source,
+  description,
+  control,
+  children,
+}: {
+  readonly title: ReactNode;
+  readonly source?: ReactNode;
+  readonly description?: ReactNode;
+  readonly control?: ReactNode;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <div className="border-b border-border py-3 first:pt-0 last:border-b-0 last:pb-0">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <p className="flex flex-wrap items-baseline gap-x-2 text-sm font-medium text-foreground">
+            {title}
+            {source}
+          </p>
+          {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
+        </div>
+        {control ? <div className="flex shrink-0 items-center gap-2">{control}</div> : null}
+      </div>
+      {children ? <div className="mt-2">{children}</div> : null}
     </div>
   );
 }

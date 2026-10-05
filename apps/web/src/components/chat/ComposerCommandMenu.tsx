@@ -103,13 +103,18 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         />
       ) : null}
       {props.item.type === "slash-command" ? (
-        <BotIcon className="size-4 text-muted-foreground" />
+        <BotIcon className="size-4 shrink-0 text-muted-foreground" />
       ) : null}
-      {props.item.type === "skill" ? <BotIcon className="size-4 text-muted-foreground" /> : null}
-      <span className="flex min-w-0 items-center gap-1.5 truncate">
+      {props.item.type === "skill" ? (
+        <BotIcon className="size-4 shrink-0 text-muted-foreground" />
+      ) : null}
+      {/* The name wins the space; the description takes what is left. */}
+      <span className="flex min-w-0 max-w-[60%] shrink-0 items-center gap-1.5">
         <span className="truncate">{props.item.label}</span>
       </span>
-      <span className="truncate text-muted-foreground text-xs">{props.item.description}</span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground text-xs">
+        {props.item.description}
+      </span>
       {props.item.type === "skill" && props.item.argumentHint ? (
         <span className="truncate text-2xs text-muted-foreground">{props.item.argumentHint}</span>
       ) : null}

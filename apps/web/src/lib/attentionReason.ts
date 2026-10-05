@@ -1,5 +1,8 @@
 import type { ThreadStatus } from "../threadStatus";
 
+/** Reason for a thread whose next-turn queue is paused (it has no status of its own). */
+export const QUEUE_PAUSED_REASON_TAG = "queue paused";
+
 /**
  * Derive a short, secondary label that explains *why* an "attention" row
  * needs the user — beyond the status chip itself. The primary signal is age:

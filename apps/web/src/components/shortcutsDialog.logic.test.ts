@@ -16,12 +16,34 @@ describe("buildShortcutSections", () => {
       command: "commandPalette.toggle",
       label: "Toggle command palette",
       shortcut: "⌘K",
+      context: null,
     });
     expect(general?.entries).toContainEqual({
       command: "help.shortcuts",
       label: "Show keyboard shortcuts",
       shortcut: "⌘/",
+      context: null,
     });
+  });
+
+  it("names the context of shortcuts that share a key", () => {
+    const entries = buildShortcutSections(DEFAULT_RESOLVED_KEYBINDINGS, {
+      platform: "MacIntel",
+    }).flatMap((section) => section.entries);
+    const byCommand = new Map(entries.map((entry) => [entry.command, entry]));
+    expect(byCommand.get("chat.new")).toMatchObject({ shortcut: "⌘N", context: null });
+    expect(byCommand.get("terminal.new")).toMatchObject({
+      shortcut: "⌘N",
+      context: "In terminal",
+    });
+    expect(byCommand.get("dialog.primaryAction")?.context).toBe("In dialogs");
+    expect(byCommand.get("chat.pageUp")?.shortcut).toBe("PgUp");
+    expect(
+      buildShortcutSections(DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "MacIntel",
+        query: "in terminal",
+      }).flatMap((section) => section.entries.map((entry) => entry.command)),
+    ).toContain("terminal.close");
   });
 
   it("lists each command at most once and leaves out the numbered model jumps", () => {
@@ -44,7 +66,14 @@ describe("buildShortcutSections", () => {
       {
         id: "panels",
         title: "Panels",
-        entries: [{ command: "terminal.toggle", label: "Toggle terminal", shortcut: "Ctrl+J" }],
+        entries: [
+          {
+            command: "terminal.toggle",
+            label: "Toggle terminal",
+            shortcut: "Ctrl+J",
+            context: null,
+          },
+        ],
       },
     ]);
   });
@@ -61,6 +90,7 @@ describe("buildShortcutSections", () => {
         command: "commandPalette.toggle",
         label: "Toggle command palette",
         shortcut: "Ctrl+Shift+K",
+        context: null,
       },
     ]);
     const byCommand = buildShortcutSections(keybindings, {

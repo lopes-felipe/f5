@@ -27,7 +27,8 @@
   /* ui/sidebar.tsx tokens map onto the app palette; the sidebar sits on chrome (Canvas shell). */
   --color-sidebar: var(--chrome);
   --color-sidebar-foreground: var(--foreground);
-  --color-sidebar-accent: var(--accent);
+  /* A step stronger than --accent (any palette): plain accent all but disappears on the chrome tint in light mode. */
+  --color-sidebar-accent: color-mix(in oklab, var(--accent), var(--foreground) 4%);
   --color-sidebar-accent-foreground: var(--accent-foreground);
   --color-sidebar-border: var(--border);
   --color-warning-foreground: var(--warning-foreground);

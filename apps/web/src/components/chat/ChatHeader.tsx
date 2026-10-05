@@ -308,7 +308,16 @@ export const ChatHeader = memo(function ChatHeader({
             className="shrink-0"
           />
         ) : null}
-        <ThreadQueueCountBadge threadId={activeThreadId} />
+        {/* Full wording when there is room; icon and count when the header is narrow. */}
+        <ThreadQueueCountBadge
+          threadId={activeThreadId}
+          className="hidden @xl/header-actions:inline-flex"
+        />
+        <ThreadQueueCountBadge
+          compact
+          threadId={activeThreadId}
+          className="@xl/header-actions:hidden"
+        />
       </nav>
       <div className="flex shrink-0 items-center justify-end gap-2">
         {activeProjectScripts && (
@@ -342,7 +351,7 @@ export const ChatHeader = memo(function ChatHeader({
         <div
           role="group"
           aria-label="Panels"
-          className="hidden items-center gap-0.5 @sm/header-actions:flex"
+          className="hidden items-center gap-0.5 @xl/header-actions:flex"
         >
           {panels.map((panel) => (
             <ToolbarToggle
@@ -367,7 +376,7 @@ export const ChatHeader = memo(function ChatHeader({
                 size="icon-sm"
                 variant="ghost"
                 aria-label="Panels"
-                className="relative text-muted-foreground @sm/header-actions:hidden"
+                className="relative text-muted-foreground @xl/header-actions:hidden"
               />
             }
           >

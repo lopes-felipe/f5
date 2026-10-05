@@ -211,7 +211,7 @@ export function resolveThreadRowClassName(input: {
     return cn(
       baseClassName,
       SIDEBAR_ACTIVE_ROW_BAR_CLASS_NAME,
-      "bg-accent font-medium text-foreground hover:bg-accent hover:text-foreground",
+      "bg-sidebar-accent font-medium text-foreground hover:bg-sidebar-accent hover:text-foreground",
     );
   }
 

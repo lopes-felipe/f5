@@ -212,7 +212,7 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             <TooltipPopup side="top">{prStatus.tooltip}</TooltipPopup>
           </Tooltip>
         ) : null}
-        {section === "active" ? <ThreadQueueCountBadge threadId={thread.id} /> : null}
+        {section === "active" ? <ThreadQueueCountBadge compact threadId={thread.id} /> : null}
         {canRename && !isDraft && isRenaming ? (
           <InlineTitleEditor
             initialValue={thread.title}
