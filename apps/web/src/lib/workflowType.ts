@@ -32,19 +32,18 @@ export const WORKFLOW_TYPE_ICON: Record<WorkflowTypeValue, LucideIcon> = {
 };
 
 /**
- * Type icons are neutral wherever workflows are listed (sidebar, header,
- * workflow page): the status colours there mean "running", "needs you" and so
- * on, so a coloured type icon would read as a status. The icon shape carries
- * the type.
+ * Type icon colour wherever workflows are listed (sidebar, header, workflow
+ * page). Matches the selected card in the New Workflow dialog
+ * (`WORKFLOW_TYPE_TOGGLE_CLASS`) so a type keeps one colour everywhere.
  */
 export const WORKFLOW_TYPE_ICON_CLASS: Record<WorkflowTypeValue, string> = {
-  planning: "text-muted-foreground",
-  codeReview: "text-muted-foreground",
-  investigation: "text-muted-foreground",
-  document: "text-muted-foreground",
+  planning: "text-info-foreground",
+  codeReview: "text-success-foreground",
+  investigation: "text-warning-foreground",
+  document: "text-attention-foreground",
 };
 
-/** Tint for the selected type card in the New Workflow dialog only. */
+/** Tint for the selected type card in the New Workflow dialog; same hues as the icons. */
 export const WORKFLOW_TYPE_TOGGLE_CLASS: Record<WorkflowTypeValue, string> = {
   document: "data-pressed:bg-attention/10 data-pressed:text-attention-foreground",
   planning: "data-pressed:bg-info/10 data-pressed:text-info-foreground",

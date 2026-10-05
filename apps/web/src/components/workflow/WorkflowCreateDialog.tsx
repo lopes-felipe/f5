@@ -882,7 +882,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          <div className="grid gap-x-6 gap-y-5 md:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+          <div className="grid gap-x-6 gap-y-5 md:grid-cols-[minmax(0,1fr)_minmax(0,24rem)]">
             <div className="flex min-w-0 flex-col gap-4">
               <ToggleGroup
                 className="grid w-full grid-cols-2 gap-2"
@@ -906,7 +906,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       aria-label={WORKFLOW_TYPE_DIALOG_LABEL[type]}
                       aria-describedby={`workflow-type-description-${type}`}
                       className={cn(
-                        "h-auto w-full flex-col items-start justify-start gap-1 whitespace-normal rounded-xl border-border p-3 text-start",
+                        // `sm:` too: the toggle's default size pins `sm:h-8`.
+                        "h-auto w-full flex-col items-start justify-start gap-1 whitespace-normal rounded-xl border-border p-3 text-start sm:h-auto",
                         WORKFLOW_TYPE_TOGGLE_CLASS[type],
                         WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS[type],
                       )}

@@ -40,8 +40,9 @@ const CLAUDE_REASONING_LABELS: Record<Exclude<ClaudeCodeEffort, "ultrathink">, s
   max: "Max",
 };
 
+// Fixed width so the effort column lines up across slot rows ("High" vs "Extra High").
 const REASONING_TRIGGER_CLASS_NAME =
-  "h-7 shrink-0 gap-1 px-2 text-ui text-muted-foreground hover:text-foreground";
+  "h-7 w-24 shrink-0 justify-between gap-1 px-2 text-ui text-muted-foreground hover:text-foreground";
 
 function MenuGroupLabel(props: { children: ReactNode }) {
   return (
@@ -76,7 +77,7 @@ export function WorkflowReasoningPicker(props: {
             />
           }
         >
-          <span>{CODEX_REASONING_LABELS[selectedEffort]}</span>
+          <span className="truncate">{CODEX_REASONING_LABELS[selectedEffort]}</span>
           <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
         </MenuTrigger>
         <MenuPopup align="start">
@@ -159,7 +160,7 @@ export function WorkflowReasoningPicker(props: {
           />
         }
       >
-        <span>{triggerLabel}</span>
+        <span className="truncate">{triggerLabel}</span>
         <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">
@@ -256,7 +257,9 @@ export function SlotRow(props: {
       data-slot="workflow-slot-row"
       className={cn("flex min-w-0 items-center gap-3", props.className)}
     >
-      <label className="w-28 shrink-0 truncate text-ui text-muted-foreground">{props.label}</label>
+      <label className="w-24 shrink-0 truncate text-ui text-muted-foreground" title={props.label}>
+        {props.label}
+      </label>
       <div className="flex h-9 min-w-0 flex-1 items-center gap-0.5 rounded-lg border border-input bg-background px-1 transition-colors focus-within:border-ring/60">
         <ProviderModelPicker
           provider={props.provider}
@@ -264,6 +267,8 @@ export function SlotRow(props: {
           lockedProvider={null}
           modelOptionsByProvider={props.modelOptionsByProvider}
           onProviderModelChange={props.onProviderModelChange}
+          // Fill the field so every row's chevron and effort picker line up.
+          triggerClassName="flex-1 max-w-none sm:max-w-none"
         />
         <WorkflowReasoningPicker
           provider={props.provider}

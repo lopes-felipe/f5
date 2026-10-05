@@ -127,7 +127,8 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               render={
                 <span
                   className={cn(
-                    "min-w-0 flex-1 overflow-hidden",
+                    // `text-start`: buttons centre text, which shows once the trigger is wider than its label.
+                    "min-w-0 flex-1 overflow-hidden text-start",
                     triggerSubtitle
                       ? "grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1"
                       : "truncate",
