@@ -57,7 +57,8 @@ export const makeAccountUsageCapability = <E>(
           const scheduled = yield* Ref.modify(state, (current) => {
             if (
               current.refreshState !== "idle" ||
-              (mode !== "force" && previous !== null && now - previous < ACCOUNT_ATTEMPT_TTL_MS)
+              (previous !== null &&
+                now - previous < (mode === "force" ? 5_000 : ACCOUNT_ATTEMPT_TTL_MS))
             )
               return [false, current] as const;
             return [true, { ...current, refreshState: "queued" as const }] as const;
@@ -76,47 +77,6 @@ export const makeAccountUsageCapability = <E>(
                 sections: sections.map((section) => {
                   const prior = current.sections.find((entry) => entry.kind === section.kind);
                   // A successful empty snapshot replaces old data; only failed reads retain it.
-                  if (
-                    section.kind === "codex-limits" &&
-                    section.snapshot &&
-                    prior?.kind === "codex-limits" &&
-                    prior.snapshot &&
-                    section.snapshot.data.resetCredits === undefined
-                  ) {
-                    section = {
-                      ...section,
-                      snapshot: {
-                        ...section.snapshot,
-                        data: {
-                          ...section.snapshot.data,
-                          ...(prior.snapshot.data.resetCredits !== undefined
-                            ? { resetCredits: prior.snapshot.data.resetCredits }
-                            : {}),
-                        },
-                      },
-                    };
-                  }
-                  if (
-                    section.kind === "codex-limits" &&
-                    section.snapshot &&
-                    prior?.kind === "codex-limits" &&
-                    prior.snapshot &&
-                    !section.snapshot.data.rateLimits.some((limit) => limit.id === "codex")
-                  ) {
-                    const main = prior.snapshot.data.rateLimits.filter(
-                      (limit) => limit.id === "codex",
-                    );
-                    section = {
-                      ...section,
-                      snapshot: {
-                        ...section.snapshot,
-                        data: {
-                          ...section.snapshot.data,
-                          rateLimits: [...main, ...section.snapshot.data.rateLimits],
-                        },
-                      },
-                    };
-                  }
                   return section.outcome === "available"
                     ? section
                     : ({ ...section, snapshot: prior?.snapshot ?? null } as AccountUsageSection);

@@ -1,9 +1,11 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ProviderKind, UsagePriceOverride } from "@t3tools/contracts";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { Button } from "../ui/button";
 
 export function UsagePriceEditor() {
+  const client = useQueryClient();
   const prices = useSettings((settings) => settings.usagePriceOverrides);
   const { updateSettings } = useUpdateSettings();
   const [provider, setProvider] = useState<ProviderKind>("codex");
@@ -16,6 +18,7 @@ export function UsagePriceEditor() {
     setError(null);
     try {
       await updateSettings({ usagePriceOverrides: [...next] });
+      await client.invalidateQueries({ queryKey: ["usage", "summary"] });
     } catch {
       setError("Could not save usage prices.");
     } finally {

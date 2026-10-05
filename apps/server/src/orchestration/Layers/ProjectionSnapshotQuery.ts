@@ -430,13 +430,13 @@ function buildThreadSnapshot(params: {
     pinOrderKey: row.pinOrderKey,
     snoozedUntil: row.snoozedUntil,
     snoozedAt: row.snoozedAt,
-    ...(row.titleStateJson
-      ? {
-          titleState: Schema.decodeUnknownSync(Schema.fromJsonString(ThreadTitleState))(
-            row.titleStateJson,
-          ),
-        }
-      : {}),
+    ...(() => {
+      if (!row.titleStateJson) return {};
+      const decoded = Schema.decodeUnknownOption(Schema.fromJsonString(ThreadTitleState))(
+        row.titleStateJson,
+      );
+      return Option.isSome(decoded) ? { titleState: decoded.value } : {};
+    })(),
     titleSource: row.titleSource,
     titleRevision: row.titleRevision,
     titleUpdatedAt: row.titleUpdatedAt,

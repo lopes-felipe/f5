@@ -44,16 +44,21 @@ export function ResetCreditButton(props: {
         );
       else setOpen(false);
       await client.invalidateQueries({ queryKey: usageQueryKeys.accounts });
-    } catch {
-      setError("The outcome could not be confirmed. Retry to check the same redemption.");
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "The outcome could not be confirmed. Retry to check the same redemption.",
+      );
     } finally {
       setPending(false);
     }
   };
   return (
     <>
-      <Button size="sm" variant="outline" disabled={props.count <= 0} onClick={() => setOpen(true)}>
-        Use reset credit ({props.count})
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        {props.count <= 0 || key.current ? "Check reset credit" : "Use reset credit"} ({props.count}
+        )
       </Button>
       <AlertDialog
         open={open}

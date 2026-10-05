@@ -4416,7 +4416,13 @@ export default function ChatView({
   ) => {
     e?.preventDefault();
     const api = readNativeApi();
-    if (api && promptRef.current.trim() === "/usage-limits") {
+    if (
+      api &&
+      !activePendingProgress &&
+      !sendInFlightRef.current &&
+      !hasPendingTurnDispatch &&
+      promptRef.current.trim() === "/usage-limits"
+    ) {
       try {
         const accounts = await api.usage.getAccounts({ refresh: "none" });
         toastManager.add({
