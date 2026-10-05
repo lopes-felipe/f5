@@ -56,7 +56,7 @@ export const makeResetCreditCoordinator = Effect.gen(function* () {
       }).pipe(Effect.ensuring(Effect.sync(() => active.delete(identity))));
     }).pipe(
       Effect.mapError((error) =>
-        error instanceof UsageQueryError
+        Schema.is(UsageQueryError)(error)
           ? error
           : new UsageQueryError({
               message: "Reset-credit redemption could not be confirmed. Retry with the same key.",
