@@ -386,7 +386,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         resetCreditIdentity: `codex-home:${createHash("sha256")
           .update(
             (() => {
-              const home = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+              const home = effectiveConfig.homePath.trim() || processEnvironment.CODEX_HOME || homeLayout.sharedHomePath;
               try {
                 return realpathSync(home);
               } catch {
