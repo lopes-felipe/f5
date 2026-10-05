@@ -259,7 +259,7 @@ function browserStore(ownerId: number) {
         await session.cookies.flushStore();
       },
       profilePreviewPartition(runtime.profile),
-      (partition) => [...previewTabs.values()].some((tab) => tab.partition === partition),
+      (partition) => [...previewTabs.values()].some((tab) => tab.partition === partition) || electronWebContents.getAllWebContents().some((contents) => !contents.isDestroyed() && contents.session === electronSession.fromPartition(partition) && ["webview", "window"].includes(contents.getType())),
     );
     store = {
       profiles,
@@ -2752,7 +2752,8 @@ function registerIpcHandlers(): void {
     const partition = (await browserStore(id).profiles.config(profileId)).partition;
     if ([...previewTabs.values()].some((tab) => tab.partition === partition))
       throw new Error("Close this profile's tabs before deleting it.");
-    return browserStore(id).profiles.delete(profileId);
+    await browserStore(id).profiles.delete(profileId);
+    for (const [owner, selected] of browserSelection) if (selected === profileId) browserSelection.set(owner, "default");
   });
   previewHandle("browser-import:permissions", () =>
     process.platform === "darwin"

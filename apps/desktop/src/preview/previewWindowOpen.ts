@@ -52,7 +52,7 @@ export function registerPreviewWindowOpen(
       event.preventDefault();
     });
     const close = () => {
-      if (!child.isDestroyed()) child.close();
+      if (!child.isDestroyed()) child.destroy();
     };
     owner.once("closed", close);
     guest.once("destroyed", close);
