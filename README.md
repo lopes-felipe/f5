@@ -81,7 +81,7 @@ Why it matters: reviewers disagree in useful ways; the consolidation pass dedupe
 ### Desktop app from source (recommended)
 
 ```bash
-bun install
+bun install --frozen-lockfile
 bun run build:desktop
 bun run start:desktop
 ```
@@ -89,6 +89,17 @@ bun run start:desktop
 Desktop builds target macOS (arm64/x64), Linux (x64), and Windows 11 (x64).
 
 Full source-build recipes: [`docs/quick-start.md`](./docs/quick-start.md).
+
+When updating an existing source checkout, refresh dependencies before starting:
+
+```bash
+git pull --ff-only
+bun install --frozen-lockfile
+bun run start:desktop
+```
+
+`start:desktop` rebuilds the app. Desktop builds check for missing dependencies
+before starting and print the install command if the local installation is incomplete.
 
 ### From npm (web UI)
 
