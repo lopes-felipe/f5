@@ -195,8 +195,20 @@ describe("forge adapters", () => {
     it(`${kind} performs a typed merge against the scoped account`, async () => {
       const { provider, ref, calls } = fixture(kind);
       if (kind === "bitbucket") {
-        expect((await Effect.runPromiseExit(provider.performAction({ref, action: "merge", method: "squash", expectedHeadOid: "head-sha"})))._tag).toBe("Failure");
-        expect(calls).toHaveLength(0); return;
+        expect(
+          (
+            await Effect.runPromiseExit(
+              provider.performAction({
+                ref,
+                action: "merge",
+                method: "squash",
+                expectedHeadOid: "head-sha",
+              }),
+            )
+          )._tag,
+        ).toBe("Failure");
+        expect(calls).toHaveLength(0);
+        return;
       }
       await Effect.runPromise(
         provider.performAction({

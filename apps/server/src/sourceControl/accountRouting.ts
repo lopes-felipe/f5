@@ -22,6 +22,9 @@ export interface ForgeAccountsShape {
     ref: SourceControlPullRequestRef,
     cwd?: string,
   ) => Effect.Effect<ForgeAccount, SourceControlProviderError>;
+  readonly removeRouting: (
+    input: ForgeAccountRouting,
+  ) => Effect.Effect<void, SourceControlProviderError>;
   readonly setRouting: (
     input: ForgeAccountRouting,
   ) => Effect.Effect<void, SourceControlProviderError>;
@@ -301,6 +304,13 @@ export const makeForgeAccounts = (
             .pipe(Effect.mapError(dbError));
         }),
       );
+    const removeRouting = (input: ForgeAccountRouting) =>
+      gate.withPermits(1)(
+        sql`DELETE FROM forge_account_routing WHERE account_id=${input.accountId} AND provider=${input.provider} AND host=${input.host.toLowerCase()} AND repository=${input.repository}`.pipe(
+          Effect.asVoid,
+          Effect.mapError(dbError),
+        ),
+      );
     const listRouting = () =>
       sql<{
         provider: SourceControlProviderKind;
@@ -400,6 +410,7 @@ export const makeForgeAccounts = (
       getToken,
       route,
       setRouting,
+      removeRouting,
       listRouting,
       resolveAccount,
     } satisfies ForgeAccountsShape;

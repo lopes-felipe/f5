@@ -513,6 +513,7 @@ function forgeAccountFixture(): ForgeAccountsShape {
     saveAccount: () => Effect.succeed(a),
     getToken: () => Effect.succeed("token"),
     route: () => Effect.succeed(a),
+    removeRouting: () => Effect.void,
     setRouting: () => Effect.void,
     listRouting: () => Effect.succeed([]),
     resolveAccount: ({ ref }) =>

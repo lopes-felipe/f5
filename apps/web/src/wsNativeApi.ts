@@ -709,6 +709,8 @@ export function createWsNativeApi(): NativeApi {
       removeAccount: (input) => transport.request(PR_HUB_WS_METHODS.removeAccount, input),
       listAccountRouting: () => transport.request(PR_HUB_WS_METHODS.listAccountRouting, {}),
       setAccountRouting: (input) => transport.request(PR_HUB_WS_METHODS.setAccountRouting, input),
+      removeAccountRouting: (input) =>
+        transport.request(PR_HUB_WS_METHODS.removeAccountRouting, input),
       peek: (input) => transport.request(PR_HUB_WS_METHODS.peek, input),
       getStack: (input) => transport.request(PR_HUB_WS_METHODS.getStack, input),
       getViewedFiles: (input) => transport.request(PR_HUB_WS_METHODS.getViewedFiles, input),
