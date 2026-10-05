@@ -143,6 +143,33 @@ export function PrAccounts({
       <details className="rounded-md border p-2 text-xs">
         <summary className="cursor-pointer font-medium">Manage accounts</summary>
         <div className="mt-3 space-y-4">
+          {accounts.map((account) => (
+            <div key={account.id} className="flex items-center justify-between gap-2">
+              <span>{accountLabel(account)}</span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  try {
+                    const api = ensureNativeApi().prHub;
+                    await api.removeAccount({ accountId: account.id });
+                    setAccounts(await api.listAccounts());
+                    setRouting(await api.listAccountRouting());
+                    if (selectedAccountId === account.id) onSelect(undefined);
+                  } catch (error) {
+                    setError(error instanceof Error ? error.message : "Could not remove account.");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Remove account and routing
+              </Button>
+            </div>
+          ))}
           <p className="text-muted-foreground">
             Accounts are verified on their forge and used independently. Repository routing selects
             an exact account when several share a host.

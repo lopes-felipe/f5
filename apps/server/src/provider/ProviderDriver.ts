@@ -75,6 +75,7 @@ export interface ProviderInstance {
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGenerationShape;
   /** Fourth, optional capability, consumed only by account usage; owned by this instance scope. */
+  readonly resetCreditIdentity?: string;
   readonly consumeResetCredit?: (
     idempotencyKey: string,
   ) => Effect.Effect<

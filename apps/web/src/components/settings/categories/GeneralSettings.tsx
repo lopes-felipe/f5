@@ -1,3 +1,4 @@
+import { useServerCapability } from "../../../protocolState";
 import { useSettings, useUpdateSettings } from "../../../hooks/useSettings";
 import { toastManager } from "../../ui/toast";
 import { buildAppSettingsPatch } from "../../../appSettings";
@@ -36,6 +37,7 @@ const SEND_SHORTCUT_LABELS = {
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
+  const composerRedesign = useServerCapability("composer-redesign");
   const { settings, defaults, updateSettings } = useSettingsRouteContext();
   const resumeActiveTurnsAfterRestart = useSettings(
     (settings) => settings.resumeActiveTurnsAfterRestart,
@@ -164,6 +166,21 @@ export function GeneralSettings() {
 
       <SettingsCard title="Composer" description="How the message composer behaves.">
         <div className="space-y-3">
+          {composerRedesign && (
+            <SettingsRow
+              title="Collapse composer while scrolling"
+              description="Make room for the conversation when you scroll. Typing or clicking the editor expands it; leaving the editor never collapses it."
+              control={
+                <Switch
+                  aria-label="Collapse composer while scrolling"
+                  checked={settings.composerCollapseOnScroll}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ composerCollapseOnScroll: checked })
+                  }
+                />
+              }
+            />
+          )}
           <SettingsRow
             title="Rich text editor"
             description="Style Markdown while keeping its source editable. Turn off for plain text."

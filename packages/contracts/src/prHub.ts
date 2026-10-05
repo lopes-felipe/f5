@@ -1064,6 +1064,7 @@ export type PrHubDetailMutationResult = typeof PrHubDetailMutationResult.Type;
 export const PR_HUB_WS_METHODS = {
   listAccounts: "prHub.listAccounts",
   saveAccount: "prHub.saveAccount",
+  removeAccount: "prHub.removeAccount",
   listAccountRouting: "prHub.listAccountRouting",
   setAccountRouting: "prHub.setAccountRouting",
   peek: "prHub.peek",

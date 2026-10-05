@@ -679,3 +679,62 @@ label:has(> select#reasoning-effort) select {
   --diffs-addition-color-override: var(--diff-addition);
   --diffs-deletion-color-override: var(--diff-deletion);
 }
+
+/* Attached state drawers stay in normal flow, so messages never sit underneath
+   them. A single bounded dock keeps long task/queue/question stacks usable. */
+[data-composer-redesign] [data-composer-state-drawers] {
+  max-height: min(45dvh, 28rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border-radius: 16px 16px 0 0;
+  background: var(--card);
+}
+[data-composer-redesign] [data-composer-state-drawers] > section,
+[data-composer-redesign] [data-composer-state-drawers] > div {
+  margin-bottom: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--card);
+  backdrop-filter: none;
+}
+[data-composer-redesign]:has([data-composer-state-drawers] > *) [data-chat-composer-shell] {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+[data-composer-redesign] [data-composer-command-drawer] {
+  padding-inline: 0;
+  max-height: min(40dvh, 22rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-radius: 16px 16px 0 0;
+  background: var(--card);
+  box-shadow: 0 -4px 16px rgb(0 0 0 / 0.08);
+}
+/* No height animation or content-dependent control measurement: controls keep
+   their DOM identity and width while the editor contracts to one line. */
+[data-composer-redesign] [data-composer-collapsed="true"] [data-testid="composer-editor"] {
+  min-height: 1.625rem;
+  max-height: 1.625rem;
+  overflow: hidden;
+}
+[data-composer-redesign] [data-composer-collapsed="true"] .composer-editor-surface {
+  max-height: 1.625rem;
+  overflow: hidden;
+}
+[data-composer-redesign] [data-composer-collapsed="true"] [data-composer-attachment-tray] {
+  display: none;
+}
+[data-composer-redesign] [data-composer-collapsed="true"] [data-composer-editor-area] {
+  padding-top: 0.625rem;
+  padding-bottom: 0.375rem;
+}
+
+/* Reserve history space relative to the chat column remaining above the terminal.
+   The complete input stack scrolls when drawers plus a tall draft exceed it. */
+[data-composer-input-bar] {
+  max-height: 55cqh;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

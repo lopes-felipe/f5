@@ -1,4 +1,6 @@
 import { browserAccessAllowed } from "../../mcp/browserAccess";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
 import { CodexControlClient } from "../../codex/CodexControlClient.ts";
 import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
@@ -382,6 +384,18 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
+        resetCreditIdentity: `codex-home:${createHash("sha256")
+          .update(
+            (() => {
+              const home = homeLayout.effectiveHomePath ?? homeLayout.sharedHomePath;
+              try {
+                return realpathSync(home);
+              } catch {
+                return home;
+              }
+            })(),
+          )
+          .digest("hex")}`,
         consumeResetCredit,
         accountUsage,
       } satisfies ProviderInstance;

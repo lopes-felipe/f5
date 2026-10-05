@@ -39,7 +39,7 @@ function TimelineComment({
   const reactionCapability = prDetailCapability(pr, "react");
   const canEdit =
     comment.viewerCanUpdate &&
-    comment.databaseId !== null &&
+    (pr.provider !== "github" || comment.databaseId !== null) &&
     comment.kind !== "review" &&
     editCapability.supported;
 

@@ -844,11 +844,20 @@ export function ProviderInstanceCard({
                 <label className="block text-xs">
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input
+                    key={String(
+                      typeof instance.config === "object" &&
+                        instance.config !== null &&
+                        "autoCompactWindow" in instance.config
+                        ? instance.config.autoCompactWindow
+                        : 0,
+                    )}
                     className="mt-1 block w-full rounded border p-2"
                     type="number"
                     min="0"
                     step="1"
                     defaultValue={
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
                       typeof instance.config === "object" &&
                       instance.config !== null &&
                       "autoCompactWindow" in instance.config

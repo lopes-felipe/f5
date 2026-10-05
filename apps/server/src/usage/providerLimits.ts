@@ -121,6 +121,15 @@ async function jsonFile(file: string) {
   }
 }
 async function fetchJson(url: string, token: string, signal: AbortSignal, body?: unknown) {
+  const endpoint = new URL(url);
+  if (
+    endpoint.protocol !== "https:" &&
+    !(
+      endpoint.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname)
+    )
+  )
+    throw new Error("Invalid credential endpoint URL.");
   const response = await fetch(url, {
     signal,
     redirect: "error",

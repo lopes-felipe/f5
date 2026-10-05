@@ -30,7 +30,7 @@ export function ForgeOperationPanel({
   const [error, setError] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ["prHub", "forgeOperation", generation, pr.key, label, operationId],
-    enabled: !!operationId && !!generation,
+    enabled: !!generation,
     queryFn: () =>
       ensureNativeApi().prHub.getOperation({
         key: pr.key,
@@ -40,8 +40,11 @@ export function ForgeOperationPanel({
     retry: false,
   });
   useEffect(() => {
-    if (query.data) setOperation(query.data);
-  }, [query.data]);
+    if (query.data) {
+      setOperation(query.data);
+      setOperationId(query.data.operationId);
+    }
+  }, [query.data, setOperationId]);
   const active = operation && ["prepared", "running", "outcome_unknown"].includes(operation.status);
   async function run(action: () => Promise<ForgeOperation>, id = operationId) {
     setBusy(true);
@@ -77,6 +80,28 @@ export function ForgeOperationPanel({
             Account {pr.host} · revision {operation.expectedHeadOid.slice(0, 12)}
           </p>
           {operation.error ? <p role="status">{operation.error}</p> : null}
+          {operation.status === "outcome_unknown" ? (
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Verify the outcome on the forge first. Acknowledge this uncertain operation? It will remain recorded and will never be resent.",
+                  )
+                )
+                  void run(() =>
+                    ensureNativeApi().prHub.cancelOperation({
+                      key: pr.key,
+                      accountGeneration: generation!,
+                      operationId,
+                    }),
+                  );
+              }}
+            >
+              Acknowledge verified outcome
+            </Button>
+          ) : null}
           {operation.status === "prepared" ? (
             <div className="flex gap-2">
               <Button

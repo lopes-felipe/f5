@@ -308,7 +308,7 @@ export function buildUsageSummary(input: {
               originalRow.outputTokens * override.outputUsdPerMillion +
               originalRow.cacheReadTokens *
                 (override.cacheReadUsdPerMillion ?? override.inputUsdPerMillion) +
-              originalRow.cacheWriteTokens *
+              (originalRow.provider === "claudeAgent" ? originalRow.cacheWriteTokens : 0) *
                 (override.cacheWriteUsdPerMillion ?? override.inputUsdPerMillion)) /
             1_000_000,
           pricedTurnCount: originalRow.turnCount,
@@ -407,7 +407,11 @@ const make = Effect.gen(function* () {
         return yield* Effect.fail(
           new UsageQueryError({ message: "This account does not support reset credits." }),
         );
-      const result = yield* redeem(input, () => instance.consumeResetCredit!(input.idempotencyKey));
+      const result = yield* redeem(
+        input,
+        (key) => instance.consumeResetCredit!(key),
+        instance.resetCreditIdentity,
+      );
       if (instance.accountUsage) yield* instance.accountUsage.refresh("force", permits);
       return result;
     });
@@ -429,10 +433,22 @@ const make = Effect.gen(function* () {
           ),
         )
         .map((entry) => ({
-          key: `${entry.driver === "codex" ? "codex" : "claude"}:${entry.instanceId}`,
+          key: `${entry.driver === "claudeAgent" ? "claude" : entry.driver}:${entry.instanceId}`,
           provider: entry.driver as ProviderKind,
           providerInstanceId: entry.instanceId,
-          displayName: entry.displayName ?? (entry.driver === "codex" ? "Codex" : "Claude"),
+          displayName:
+            entry.displayName ??
+            (
+              {
+                codex: "Codex",
+                claudeAgent: "Claude",
+                cursor: "Cursor",
+                grok: "Grok",
+                opencode: "OpenCode",
+                antigravity: "Antigravity",
+              } as Record<string, string>
+            )[entry.driver] ??
+            entry.driver,
           enabled: entry.enabled,
           refreshState: "idle",
           sections: (entry.driver === "codex"
@@ -480,13 +496,6 @@ const make = Effect.gen(function* () {
         rows,
       });
     });
-
-  yield* Effect.forever(
-    Effect.sleep("5 minutes").pipe(
-      Effect.andThen(getAccounts({ refresh: "if-stale" })),
-      Effect.ignore,
-    ),
-  ).pipe(Effect.forkScoped);
 
   return { getSummary, getAccounts, consumeResetCredit } satisfies UsageServiceShape;
 });

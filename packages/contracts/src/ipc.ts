@@ -797,6 +797,7 @@ export interface NativeApi {
   prHub: {
     listAccounts: () => Promise<ReadonlyArray<ForgeAccount>>;
     saveAccount: (input: ForgeAccountInput) => Promise<ForgeAccount>;
+    removeAccount: (input: { accountId: string }) => Promise<void>;
     listAccountRouting: () => Promise<ReadonlyArray<ForgeAccountRouting>>;
     setAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
     peek: (input: PrHubPeekInput) => Promise<PrHubPeek | null>;

@@ -1,3 +1,4 @@
+import { useComposerScrollCollapse } from "./useComposerScrollCollapse";
 import { composerAttachmentStatus } from "~/lib/attachmentValidation";
 import { AttachmentUploadProgress } from "./AttachmentUploadProgress";
 import { PopupFocusContext } from "~/components/ui/popupFocus";
@@ -5,7 +6,7 @@ import type { ComposerMention } from "~/composer-editor-mentions";
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { useAppSettings } from "~/appSettings";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useId } from "react";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { stepPromptHistory, type PromptHistoryPosition } from "./promptHistory";
 import type * as React from "react";
@@ -42,6 +43,8 @@ import { ComposerPlanFollowUpBanner } from "~/components/chat/ComposerPlanFollow
 import { VscodeEntryIcon } from "~/components/chat/VscodeEntryIcon";
 
 export interface ChatComposerProps {
+  redesignEnabled: boolean;
+  getTimeline: () => HTMLElement | null;
   composerFormRef: React.RefObject<HTMLFormElement | null>;
   onSend: (
     event?: { preventDefault: () => void },
@@ -198,6 +201,8 @@ export interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  redesignEnabled,
+  getTimeline,
   composerFormRef,
   onSend,
   isDragOverComposer,
@@ -305,11 +310,31 @@ export function ChatComposer({
   onImplementPlanInNewThread,
 }: ChatComposerProps) {
   const { settings } = useAppSettings();
+  const attachmentTrayId = useId();
+  const attachmentCount = composerImages.length + composerFilePaths.length;
+  const attachmentStatus = composerAttachmentStatus(composerImages, selectedProvider);
+  const { collapsed, expand } = useComposerScrollCollapse({
+    enabled: redesignEnabled && settings.composerCollapseOnScroll && isServerThread,
+    threadId,
+    blocked:
+      !!attachmentStatus.error ||
+      composerMenuOpen ||
+      isDragOverComposer ||
+      isPreparingWorktree ||
+      !!activePendingApproval ||
+      pendingUserInputs.length > 0 ||
+      showPlanFollowUpPrompt ||
+      pendingComposerImageImportCount > 0 ||
+      nonPersistedComposerImageIdSet.size > 0,
+    formRef: composerFormRef,
+    getTimeline,
+  });
   const historyPosition = useRef<PromptHistoryPosition | null>(null);
   useEffect(() => {
     const focus = () => {
       const active = document.activeElement;
       if (
+        collapsed ||
         isConnecting ||
         isComposerApprovalState ||
         isPendingTurnDispatchBlocked ||
@@ -322,6 +347,7 @@ export function ChatComposer({
     window.addEventListener("focus", focus);
     return () => window.removeEventListener("focus", focus);
   }, [
+    collapsed,
     composerEditorRef,
     composerFormRef,
     isConnecting,
@@ -394,7 +420,9 @@ export function ChatComposer({
         ref={composerFormRef}
         onSubmit={onSend}
         className="mx-auto w-full min-w-0 max-w-3xl"
+        aria-label={collapsed ? "Message composer (collapsed)" : "Message composer"}
         data-chat-composer-form="true"
+        data-composer-collapsed={collapsed ? "true" : "false"}
       >
         <div
           data-chat-composer-shell="true"
@@ -439,15 +467,22 @@ export function ChatComposer({
             </div>
           ) : null}
 
-          {/* Textarea area */}
+          {/* Textarea area: never remount the editor when its layout changes. */}
           <div
+            data-composer-editor-area="true"
             className={cn(
               "relative px-3 pb-2 sm:px-4",
               hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
             )}
           >
             {composerMenuOpen && !isComposerApprovalState && (
-              <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
+              <div
+                data-composer-command-drawer={redesignEnabled || undefined}
+                className={cn(
+                  "z-20 px-1",
+                  redesignEnabled ? "relative" : "absolute inset-x-0 bottom-full mb-2",
+                )}
+              >
                 <ComposerCommandMenu
                   items={composerMenuItems}
                   resolvedTheme={resolvedTheme}
@@ -461,11 +496,11 @@ export function ChatComposer({
             )}
 
             {!isComposerApprovalState && pendingUserInputs.length === 0 && (
-              <>
+              <div id={attachmentTrayId} data-composer-attachment-tray="true">
                 {composerImages.length > 0 && (
                   <div className="mb-3 flex flex-wrap gap-2">
                     {(() => {
-                      const status = composerAttachmentStatus(composerImages, selectedProvider);
+                      const status = attachmentStatus;
                       return status.error || status.notice ? (
                         <p
                           role={status.error ? "alert" : "status"}
@@ -590,8 +625,20 @@ export function ChatComposer({
                     })}
                   </div>
                 )}
-              </>
+              </div>
             )}
+            {collapsed && attachmentCount > 0 ? (
+              <button
+                type="button"
+                className="mb-1 flex items-center gap-1 text-xs text-muted-foreground"
+                onClick={expand}
+                aria-expanded={false}
+                aria-controls={attachmentTrayId}
+              >
+                <PaperclipIcon className="size-3" />
+                {attachmentCount} {attachmentCount === 1 ? "attachment" : "attachments"}
+              </button>
+            ) : null}
             <ComposerPromptEditor
               richTextEnabled={settings.composerRichTextEnabled}
               ref={composerEditorRef}
@@ -679,6 +726,7 @@ export function ChatComposer({
                       isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked
                     }
                     onChange={(event) => {
+                      expand();
                       onAttachFiles(Array.from(event.currentTarget.files ?? []));
                       event.currentTarget.value = "";
                     }}

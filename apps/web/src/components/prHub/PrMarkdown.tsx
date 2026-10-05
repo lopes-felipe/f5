@@ -6,6 +6,18 @@ import { getPrHubSelectedAccountId } from "../../lib/prHubAccount";
 import { PrLinkPreview } from "./PrLinkPreview";
 
 export function prMediaUrl(src: string, host: string): string {
+  try {
+    const url = new URL(src);
+    if (url.protocol !== "https:") return "";
+    if (
+      !["github.com", "githubusercontent.com"].some(
+        (domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`),
+      )
+    )
+      return url.href;
+  } catch {
+    return "";
+  }
   const params = new URLSearchParams({ url: src, host });
   const accountId = getPrHubSelectedAccountId();
   if (accountId) params.set("accountId", accountId);
@@ -28,7 +40,12 @@ export function PrMarkdown({ body, host }: { body: string; host: string }) {
         components={{
           img: ({ src, alt }) =>
             typeof src === "string" ? (
-              <img loading="lazy" src={prMediaUrl(src, host)} alt={alt ?? ""} />
+              <img
+                referrerPolicy="no-referrer"
+                loading="lazy"
+                src={prMediaUrl(src, host)}
+                alt={alt ?? ""}
+              />
             ) : null,
           a: ({ href, children }) => {
             if (!href) return <span>{children}</span>;
