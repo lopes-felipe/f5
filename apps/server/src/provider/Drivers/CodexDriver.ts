@@ -1,3 +1,4 @@
+import { browserAccessAllowed } from "../../mcp/browserAccess";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
@@ -164,6 +165,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
       const previewMcpHttpServer = yield* PreviewMcpHttpServer;
+      const browserPolicyServices = yield* Effect.services<never>();
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -253,6 +255,8 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewMcpHttpServer,
+        canAccessBrowser: (thread) =>
+          browserAccessAllowed(thread).pipe(Effect.provide(browserPolicyServices)),
         defaultProviderOptions,
         processEnvironment,
       });

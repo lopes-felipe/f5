@@ -294,6 +294,32 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
 }
 
 export const AppSettingsSchema = Schema.Struct({
+  linkOpenTarget: Schema.Literals(["system", "preview"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("system" as const)),
+    Schema.withDecodingDefault(() => "system" as const),
+  ),
+  previewDefaults: Schema.Struct({
+    zoomFactor: Schema.Number.check(Schema.isBetween({ minimum: 0.25, maximum: 3 })),
+    muted: Schema.Boolean,
+    colorScheme: Schema.Literals(["system", "light", "dark"]),
+  }).pipe(
+    Schema.withConstructorDefault(() =>
+      Option.some({ zoomFactor: 1, muted: false, colorScheme: "system" as const }),
+    ),
+    Schema.withDecodingDefault(() => ({
+      zoomFactor: 1,
+      muted: false,
+      colorScheme: "system" as const,
+    })),
+  ),
+  snapShotEnabled: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  snapShotShortcut: Schema.String.check(Schema.isMaxLength(100)).pipe(
+    Schema.withConstructorDefault(() => Option.some("Alt+Shift+Command+S")),
+    Schema.withDecodingDefault(() => "Alt+Shift+Command+S"),
+  ),
   prHubAccountId: Schema.NullOr(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some(null)),
     Schema.withDecodingDefault(() => null),

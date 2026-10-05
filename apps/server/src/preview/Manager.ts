@@ -162,15 +162,18 @@ export function makePreviewManager(): PreviewManager {
               updatedAt,
             })
           : buildIdleSnapshot({ threadId: input.threadId, tabId, updatedAt });
-        setSession({ threadId: input.threadId, tabId, snapshot });
+        const configured = input.colorScheme
+          ? { ...snapshot, colorScheme: input.colorScheme }
+          : snapshot;
+        setSession({ threadId: input.threadId, tabId, snapshot: configured });
         emit({
           type: "opened",
           threadId: input.threadId,
           tabId,
-          createdAt: snapshot.updatedAt,
-          snapshot,
+          createdAt: configured.updatedAt,
+          snapshot: configured,
         });
-        return snapshot;
+        return configured;
       }),
 
     navigate: (input) =>

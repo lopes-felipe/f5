@@ -1,3 +1,4 @@
+import { OpenLinkAnchor } from "../OpenLinkAnchor";
 import {
   isPrReviewAnchorInPatch,
   substantivePrPatch,
@@ -51,9 +52,9 @@ export function PrFileDiff({
         {file.patchStatus === "truncated"
           ? "GitHub returned an incomplete patch."
           : "A renderable text patch is unavailable for this file."}{" "}
-        <a href={url} target="_blank" rel="noreferrer" className="underline">
+        <OpenLinkAnchor href={url} target="_blank" rel="noreferrer" className="underline">
           Open on GitHub
-        </a>
+        </OpenLinkAnchor>
       </p>
     );
   }

@@ -1,3 +1,4 @@
+import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
 import { ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
@@ -7090,5 +7091,9 @@ export default function ChatView({
       </div>
     </FileNavigationProvider>
   );
-  return <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>;
+  return (
+    <OpenLinkThread.Provider value={threadId}>
+      <RepositoryLinks.Provider value={repositoryLinks}>{workspace}</RepositoryLinks.Provider>
+    </OpenLinkThread.Provider>
+  );
 }
