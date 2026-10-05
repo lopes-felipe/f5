@@ -21,7 +21,13 @@ export class BrowserProfiles {
   #ready: Promise<void> | undefined;
   #selected = "default";
   #staging: string[] = [];
-  constructor(directory: string, scope: string, clear: (partition: string) => Promise<void>) {
+  constructor(
+    directory: string,
+    scope: string,
+    clear: (partition: string) => Promise<void>,
+    readonly legacyPartition?: string,
+    readonly inUse: (partition: string) => boolean = () => false,
+  ) {
     this.#file = path.join(directory, "preview-browser-profiles.json");
     this.#scope = scope;
     this.#clear = clear;
@@ -68,22 +74,47 @@ export class BrowserProfiles {
           await this.#clear(browserPartition(this.#scope, { id, persistent: true }));
       }
       await this.#saveStages([]);
-    })());
+      try {
+        const selected = await readFile(this.#file + ".selected", "utf8");
+        if (this.#profiles.some((p) => p.id === selected)) this.#selected = selected;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    })().catch((error) => {
+      this.#ready = undefined;
+      throw error;
+    }));
   }
   async list(): Promise<DesktopBrowserProfile[]> {
     await this.initialize();
     await this.#queue;
     return this.#profiles.map((v) => ({ ...v }));
   }
-  async config(id = this.#selected): Promise<DesktopBrowserProfile & { partition: string }> {
+  async config(id?: string): Promise<DesktopBrowserProfile & { partition: string }> {
     await this.initialize();
-    const profile = this.#profiles.find((v) => v.id === id);
+    const profile = this.#profiles.find((v) => v.id === (id ?? this.#selected));
     if (!profile) throw new Error("Unknown browser profile.");
-    return { ...profile, partition: browserPartition(this.#scope, profile) };
+    return { ...profile, partition: this.#partition(profile) };
   }
-  async select(id: string): Promise<void> {
-    await this.config(id);
-    this.#selected = id;
+  select(id: string): Promise<void> {
+    return this.#serial(async () => {
+      const value = await this.config(id);
+      const temp = this.#file + ".selected." + randomUUID();
+      await writeFile(temp, value.persistent ? id : "default", { mode: 0o600 });
+      await rename(temp, this.#file + ".selected");
+      this.#selected = id;
+    });
+  }
+  #partition(profile: DesktopBrowserProfile): string {
+    return profile.id === "default" && this.legacyPartition
+      ? this.legacyPartition
+      : browserPartition(this.#scope, profile);
+  }
+  withConfig<A>(
+    id: string | undefined,
+    run: (profile: DesktopBrowserProfile & { partition: string }) => A,
+  ): Promise<A> {
+    return this.#serial(async () => run(await this.config(id)));
   }
   #serial<A>(run: () => Promise<A>): Promise<A> {
     const next = this.#queue.then(run);
@@ -99,7 +130,7 @@ export class BrowserProfiles {
   create(name: string, persistent = true): Promise<DesktopBrowserProfile> {
     return this.#serial(async () => {
       await this.initialize();
-      if (!name.trim() || name.length > 100 || this.#profiles.length >= 32)
+      if (!name.trim() || name.length > 100 || this.#profiles.length + this.#staging.length >= 32)
         throw new Error("Invalid name or browser profile limit reached.");
       const value = { id: randomUUID(), name: name.trim(), persistent };
       const next = [...this.#profiles, value];
@@ -119,6 +150,12 @@ export class BrowserProfiles {
     const partition = browserPartition(this.#scope, profile);
     await this.#serial(async () => {
       await this.initialize();
+      if (
+        !profile.name ||
+        profile.name.length > 100 ||
+        this.#profiles.length + this.#staging.length >= 32
+      )
+        throw new Error("Browser profile limit reached.");
       await this.#saveStages([...this.#staging, profile.id]);
     });
     let finished = false;
@@ -160,6 +197,8 @@ export class BrowserProfiles {
     return this.#serial(async () => {
       const value = await this.config(id);
       if (id === "default") throw new Error("The default browser profile cannot be deleted.");
+      if (this.inUse(value.partition))
+        throw new Error("Close this profile’s tabs and popups before deleting it.");
       await this.#clear(value.partition);
       const next = this.#profiles.filter((v) => v.id !== id);
       await this.#persist(next);
@@ -168,6 +207,6 @@ export class BrowserProfiles {
     });
   }
   ownsPartition(partition: string): boolean {
-    return this.#profiles.some((v) => browserPartition(this.#scope, v) === partition);
+    return this.#profiles.some((v) => this.#partition(v) === partition);
   }
 }

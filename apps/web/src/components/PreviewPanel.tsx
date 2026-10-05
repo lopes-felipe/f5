@@ -452,7 +452,7 @@ function PreviewBrowserWebview(props: {
       webview.removeEventListener("page-title-updated", onSuccess);
       webview.removeEventListener("did-fail-load", onFail);
     };
-  }, [props.desktopPreview, props.onStatus, props.session.tabId]);
+  }, [props.desktopPreview, props.onStatus, props.session.tabId, tabConfig]);
 
   const dimensions = props.dimensions ?? props.hiddenDimensions;
   return (
@@ -554,6 +554,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   sessionsRef.current = sessions;
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const { settings: previewSettings } = useAppSettings();
+  const [zoomTabs, setZoomTabs] = useState<Record<string, number>>({});
   const [mutedTabs, setMutedTabs] = useState<Record<string, boolean>>({});
   const [webviewConfig, setWebviewConfig] = useState<{
     partition: string;
@@ -842,6 +843,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   useEffect(() => {
     if (!desktopPreview) return;
     return desktopPreview.onStateChange((tabId, state) => {
+      setZoomTabs((current) => ({ ...current, [tabId]: state.zoomFactor }));
+      if (state.muted !== undefined)
+        setMutedTabs((current) => ({ ...current, [tabId]: state.muted! }));
       setDesktopStateByTabId((current) => {
         const previous = current[tabId];
         return {
@@ -1669,11 +1673,15 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         {desktopPreview?.setZoom && activeSession ? (
           <select
             aria-label="Tab zoom"
-            defaultValue="1"
+            value={String(
+              zoomTabs[activeSession.tabId] ?? previewSettings.previewDefaults.zoomFactor,
+            )}
             key={activeSession.tabId}
-            onChange={(event) =>
-              void desktopPreview.setZoom!(activeSession.tabId, Number(event.target.value))
-            }
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              setZoomTabs((current) => ({ ...current, [activeSession.tabId]: value }));
+              void desktopPreview.setZoom!(activeSession.tabId, value);
+            }}
           >
             {[0.5, 0.75, 1, 1.25, 1.5, 2, 3].map((value) => (
               <option key={value} value={value}>

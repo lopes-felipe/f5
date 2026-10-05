@@ -6,7 +6,7 @@ import { ServerSettingsService } from "../serverSettings";
 export function browserAccessAllowed(threadId: ThreadId): Effect.Effect<boolean> {
   return Effect.gen(function* () {
     const settingsService = yield* Effect.serviceOption(ServerSettingsService);
-    if (Option.isNone(settingsService)) return true;
+    if (Option.isNone(settingsService)) return false;
     const settings = yield* settingsService.value.getSettings;
     const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
     if (Option.isNone(sql)) return settings.enableAgentBrowserAccess;

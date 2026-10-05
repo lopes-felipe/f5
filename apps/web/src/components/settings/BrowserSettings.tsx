@@ -10,6 +10,8 @@ export function BrowserSettings() {
   const { updateSettings } = useUpdateSettings();
   const preview = window.desktopBridge?.preview,
     snapShot = window.desktopBridge?.snapShot;
+  const [shortcut, setShortcut] = useState(settings.snapShotShortcut);
+  useEffect(() => setShortcut(settings.snapShotShortcut), [settings.snapShotShortcut]);
   const [profiles, setProfiles] = useState<DesktopBrowserProfile[]>([]),
     [sources, setSources] = useState<DesktopBrowserImportSource[]>([]),
     [source, setSource] = useState(""),
@@ -97,8 +99,16 @@ export function BrowserSettings() {
           {profiles.map((profile) => (
             <div key={profile.id}>
               {profile.name}
+              {profile.selected ? " (selected)" : ""}
               {!profile.persistent ? " (incognito)" : ""}{" "}
-              <button onClick={() => run(() => preview.profiles!.select(profile.id))}>
+              <button
+                onClick={() =>
+                  run(async () => {
+                    await preview.profiles!.select(profile.id);
+                    await refresh();
+                  })
+                }
+              >
                 Use for new tabs
               </button>
               {profile.id !== "default" ? (
@@ -264,7 +274,7 @@ export function BrowserSettings() {
           </p>
           <p>
             Screen Recording: {permissions.screen ? "granted" : "required"}. Accessibility:{" "}
-            {permissions.accessibility ? "granted" : "required"}.
+            {permissions.accessibility ? "granted" : "optional for text"}.
           </p>
           <button onClick={() => run(() => snapShot.openPermissions())}>
             Open capture permissions
@@ -272,8 +282,14 @@ export function BrowserSettings() {
           <label>
             Capture shortcut{" "}
             <input
-              value={settings.snapShotShortcut}
-              onChange={(event) => updateSettings({ snapShotShortcut: event.target.value })}
+              value={shortcut}
+              onChange={(event) => setShortcut(event.target.value)}
+              onBlur={() =>
+                run(async () => {
+                  await snapShot.configure(shortcut, settings.snapShotEnabled);
+                  updateSettings({ snapShotShortcut: shortcut });
+                })
+              }
             />
           </label>
           <label>

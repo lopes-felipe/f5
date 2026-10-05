@@ -3,10 +3,7 @@ import { ThreadId } from "@t3tools/contracts";
 import { useAppSettings } from "../appSettings";
 import * as nativeApi from "../nativeApi";
 import { useRightPanelStore } from "../rightPanelStore";
-let mostRecentThread: ThreadId | undefined;
-export function setMostRecentOpenLinkThread(thread: ThreadId): void {
-  mostRecentThread = thread;
-}
+export function setMostRecentOpenLinkThread(_thread: ThreadId): void {}
 export const OpenLinkThread = createContext<ThreadId | undefined>(undefined);
 /** Web builds always use the system browser. Preview URLs require a current thread. */
 export function useOpenLink(threadId?: ThreadId) {
@@ -17,7 +14,7 @@ export function useOpenLink(threadId?: ThreadId) {
     async (url: string) => {
       const target = new URL(url, window.location.href);
       if (!["http:", "https:", "mailto:"].includes(target.protocol)) return;
-      const owner = threadId ?? mostRecentThread;
+      const owner = threadId;
       if (
         window.desktopBridge?.preview &&
         settings.linkOpenTarget === "preview" &&

@@ -382,6 +382,7 @@ export interface DesktopPreviewTabState {
   canGoBack: boolean;
   canGoForward: boolean;
   zoomFactor: number;
+  muted?: boolean;
   colorScheme: DesktopPreviewColorScheme;
   faviconDataUrl?: string | null;
   viewport?: PreviewViewportSize;
@@ -389,6 +390,7 @@ export interface DesktopPreviewTabState {
 }
 
 export interface DesktopBrowserProfile {
+  selected?: boolean;
   id: string;
   name: string;
   persistent: boolean;

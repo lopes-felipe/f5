@@ -1,21 +1,17 @@
-import { copyFile, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromiumKey, cookieScope, decryptChromium, type ImportedCookie } from "./cookies";
 import { parseBinaryCookies } from "./safari";
 import type { SourceProfile } from "./sources";
 
-async function command(file: string, args: string[]): Promise<string> {
+async function command(file: string, args: string[], maxBuffer = 128 * 1024): Promise<string> {
   const { execFile } = await import("node:child_process");
   return new Promise((resolve, reject) =>
-    execFile(
-      file,
-      args,
-      { timeout: 15_000, maxBuffer: 128 * 1024, windowsHide: true },
-      (error, stdout) =>
-        error
-          ? reject(new Error("The OS credential store is unavailable or permission was denied."))
-          : resolve(stdout.trim()),
+    execFile(file, args, { timeout: 15_000, maxBuffer, windowsHide: true }, (error, stdout) =>
+      error
+        ? reject(new Error("The OS credential store is unavailable or permission was denied."))
+        : resolve(stdout.trim()),
     ),
   );
 }
@@ -57,7 +53,10 @@ async function keys(
     };
   }
   if (platform === "win32") {
-    const state = JSON.parse(await readFile(path.join(profile.root, "Local State"), "utf8")) as {
+    const stateFile = path.join(profile.root, "Local State");
+    if ((await stat(stateFile)).size > 16 * 1024 * 1024)
+      throw new Error("Browser key metadata exceeds the import limit.");
+    const state = JSON.parse(await readFile(stateFile, "utf8")) as {
       os_crypt?: { encrypted_key?: string };
     };
     const encrypted = Buffer.from(state.os_crypt?.encrypted_key ?? "", "base64");
@@ -85,7 +84,7 @@ export async function readCookies(
       return { cookies: [...parseBinaryCookies(await readFile(target))], skipped: 0 };
     // Copy the WAL as well; the source is never opened or modified. A corrupt or
     // inconsistent snapshot fails as a whole and the unpublished stage is cleared.
-    for (const suffix of ["-wal", "-shm"]) {
+    for (const suffix of ["-wal"]) {
       const size = await stat(profile.database + suffix).then(
         (value) => value.size,
         (error) => {
@@ -106,9 +105,14 @@ export async function readCookies(
     try {
       db.exec("PRAGMA busy_timeout=1000");
       if (profile.engine === "firefox") {
+        const columns = db
+          .prepare("PRAGMA table_info(moz_cookies)")
+          .all()
+          .map((row) => String(row.name));
+        const rawSameSite = columns.includes("rawSameSite") ? "rawSameSite" : "-1 AS rawSameSite";
         const rows = db
           .prepare(
-            "SELECT host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,originAttributes FROM moz_cookies LIMIT 100001",
+            `SELECT host,name,value,path,expiry,isSecure,isHttpOnly,sameSite,${rawSameSite},originAttributes FROM moz_cookies LIMIT 100001`,
           )
           .all();
         if (rows.length > 100000) throw new Error("Cookie import limit exceeded.");
@@ -128,7 +132,14 @@ export async function readCookies(
             path: cookiePath,
             secure,
             httpOnly: Boolean(row.isHttpOnly),
-            sameSite: row.sameSite === 2 ? "strict" : row.sameSite === 1 ? "lax" : "no_restriction",
+            sameSite:
+              row.sameSite === 2
+                ? "strict"
+                : row.sameSite === 1
+                  ? "lax"
+                  : row.rawSameSite === 0
+                    ? "no_restriction"
+                    : "unspecified",
             ...(Number(row.expiry) > 0 ? { expirationDate: Number(row.expiry) } : {}),
           });
         }
@@ -149,6 +160,42 @@ export async function readCookies(
           )
           .all();
         if (rows.length > 100000) throw new Error("Cookie import limit exceeded.");
+        const legacy =
+          platform === "win32"
+            ? rows.filter(
+                (row) =>
+                  !row.value &&
+                  (row.encrypted_value as Uint8Array)?.length &&
+                  !["v10", "v11", "v20"].includes(
+                    Buffer.from(row.encrypted_value as Uint8Array).toString("ascii", 0, 3),
+                  ),
+              )
+            : [];
+        const legacyValues = new Map<unknown, string>();
+        if (legacy.length) {
+          const file = path.join(directory, "dpapi.json");
+          const payload = JSON.stringify(
+            legacy.map((row) => Buffer.from(row.encrypted_value as Uint8Array).toString("base64")),
+          );
+          if (Buffer.byteLength(payload) > 16 * 1024 * 1024)
+            throw new Error("Legacy cookie batch exceeds the import limit.");
+          await writeFile(file, payload, { mode: 0o600 });
+          const encodedPath = Buffer.from(file).toString("base64");
+          const script = `Add-Type -AssemblyName System.Security; $p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $values=Get-Content -Raw -LiteralPath $p|ConvertFrom-Json; $result=@(foreach($value in $values){try{[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($value),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser))}catch{$null}}); ConvertTo-Json -Compress -InputObject $result`;
+          const result: unknown = JSON.parse(
+            await command(
+              "powershell.exe",
+              ["-NoProfile", "-NonInteractive", "-Command", script],
+              16 * 1024 * 1024,
+            ),
+          );
+          if (!Array.isArray(result) || result.length !== legacy.length)
+            throw new Error("Legacy cookie batch could not be decrypted.");
+          legacy.forEach((row, index) => {
+            if (typeof result[index] === "string")
+              legacyValues.set(row, Buffer.from(result[index], "base64").toString("utf8"));
+          });
+        }
         const keyMaterial = rows.some(
           (row) => !row.value && (row.encrypted_value as Uint8Array)?.length,
         )
@@ -170,7 +217,11 @@ export async function readCookies(
               ? String(row.value)
               : platform === "win32" &&
                   !["v10", "v11", "v20"].includes(encrypted.toString("ascii", 0, 3))
-                ? (await windowsUnprotect(encrypted)).toString("utf8")
+                ? (() => {
+                    const value = legacyValues.get(row);
+                    if (value === undefined) throw new Error("Cookie decryption failed.");
+                    return value;
+                  })()
                 : decryptChromium(encrypted, host, version, keyMaterial, platform);
             cookies.push({
               ...cookieScope(host, cookiePath, secure),

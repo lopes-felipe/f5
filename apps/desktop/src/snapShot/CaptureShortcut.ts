@@ -1,31 +1,42 @@
-/** Keep the previous shortcut live if a replacement cannot be registered. */
+/** Shortcut registrations are shared by all enabled windows; activation selects the active owner. */
 export class CaptureShortcut {
-  #key: string | null = null;
-  #owner: number | null = null;
-  #invoke: (() => void) | null = null;
+  readonly #owners = new Map<number, { key: string; invoke: () => void }>();
+  readonly #registered = new Set<string>();
   constructor(
     readonly register: (key: string, invoke: () => void) => boolean,
     readonly unregister: (key: string) => void,
+    readonly activeOwner: () => number | undefined = () => undefined,
   ) {}
   configure(owner: number, key: string, enabled: boolean, invoke: () => void): void {
     if (!enabled) {
       this.release(owner);
       return;
     }
-    if (key !== this.#key) {
-      if (!this.register(key, () => this.#invoke?.()))
+    if (!this.#registered.has(key)) {
+      if (
+        !this.register(key, () => {
+          const candidates = [...this.#owners].filter(([, value]) => value.key === key);
+          const active = this.activeOwner();
+          const target = candidates.find(([id]) => id === active) ?? candidates.at(-1);
+          target?.[1].invoke();
+        })
+      )
         throw new Error("The capture shortcut is unavailable.");
-      if (this.#key) this.unregister(this.#key);
-      this.#key = key;
+      this.#registered.add(key);
     }
-    this.#owner = owner;
-    this.#invoke = invoke;
+    this.#owners.delete(owner);
+    this.#owners.set(owner, { key, invoke });
+    this.#prune();
+  }
+  #prune(): void {
+    for (const key of this.#registered)
+      if (![...this.#owners.values()].some((value) => value.key === key)) {
+        this.unregister(key);
+        this.#registered.delete(key);
+      }
   }
   release(owner: number): void {
-    if (this.#owner !== owner) return;
-    if (this.#key) this.unregister(this.#key);
-    this.#key = null;
-    this.#owner = null;
-    this.#invoke = null;
+    this.#owners.delete(owner);
+    this.#prune();
   }
 }

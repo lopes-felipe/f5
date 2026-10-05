@@ -63,6 +63,13 @@ export function useSnapShotRouting() {
           ? bridge.configure(settings.snapShotShortcut, settings.snapShotEnabled)
           : undefined,
       )
-      .catch(() => undefined);
+      .catch((error) =>
+        toastManager.add({
+          type: "error",
+          title: "Capture shortcut unavailable",
+          description:
+            error instanceof Error ? error.message : "Choose another shortcut in settings.",
+        }),
+      );
   }, [settings.snapShotShortcut, settings.snapShotEnabled]);
 }

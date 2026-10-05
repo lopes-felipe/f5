@@ -23,3 +23,30 @@ it("preserves a live shortcut on failed replacement and fences other renderer cl
   controls.release(2);
   expect(unregister).toHaveBeenCalledWith("first");
 });
+
+it("routes to the active enabled window and retains the shortcut when another closes", () => {
+  const callbacks = new Map<string, () => void>();
+  let active = 1;
+  const unregister = vi.fn();
+  const shortcut = new CaptureShortcut(
+    (key, callback) => {
+      callbacks.set(key, callback);
+      return true;
+    },
+    unregister,
+    () => active,
+  );
+  const a = vi.fn(),
+    b = vi.fn();
+  shortcut.configure(1, "same", true, a);
+  shortcut.configure(2, "same", true, b);
+  callbacks.get("same")!();
+  expect(a).toHaveBeenCalledOnce();
+  active = 2;
+  callbacks.get("same")!();
+  expect(b).toHaveBeenCalledOnce();
+  shortcut.release(2);
+  callbacks.get("same")!();
+  expect(a).toHaveBeenCalledTimes(2);
+  expect(unregister).not.toHaveBeenCalled();
+});

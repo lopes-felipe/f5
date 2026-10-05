@@ -27,10 +27,14 @@ function execute(
   );
 }
 export function activeWindowScript(pid: number): string {
-  return `ObjC.import('CoreGraphics'); ObjC.import('Foundation'); const windows=ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1,0)); const w=windows.find(w=>w.kCGWindowLayer===0 && w.kCGWindowOwnerPID!==${pid} && w.kCGWindowOwnerPID!==0 && w.kCGWindowBounds.Width>0 && w.kCGWindowBounds.Height>0); JSON.stringify(w?{id:w.kCGWindowNumber,pid:w.kCGWindowOwnerPID,title:w.kCGWindowName||'',app:w.kCGWindowOwnerName||''}:null);`;
+  return `ObjC.import('CoreGraphics'); ObjC.import('Foundation'); const windows=ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1,0)); const w=windows.find(w=>w.kCGWindowLayer===0 && w.kCGWindowOwnerPID!==${pid} && w.kCGWindowOwnerPID!==0 && w.kCGWindowBounds.Width>0 && w.kCGWindowBounds.Height>0); JSON.stringify(w?{id:w.kCGWindowNumber,pid:w.kCGWindowOwnerPID,title:w.kCGWindowName||'',app:w.kCGWindowOwnerName||'',bounds:w.kCGWindowBounds}:null);`;
 }
-export function accessibilityScript(pid: number): string {
-  return `const app=Application('System Events'); const processes=app.processes.whose({unixId:${pid}})(); let text='',visited=0; function walk(node,depth){if(++visited>2000||depth>40||text.length>=20000)return; try{const role=node.role(),name=node.name();if(name)text+=(role+': '+String(name).slice(0,500)+'\\n'); const children=node.uiElements();for(const child of children){if(visited>=2000||text.length>=20000)break;walk(child,depth+1);}}catch{}} if(processes.length){for(const w of processes[0].windows()){if(visited>=2000||text.length>=20000)break;walk(w,0);}}text.slice(0,20000);`;
+export function accessibilityScript(
+  pid: number,
+  bounds?: { X: number; Y: number; Width: number; Height: number },
+): string {
+  const target = JSON.stringify(bounds ?? null);
+  return `const app=Application('System Events'); const processes=app.processes.whose({unixId:${pid}})(); let text='',visited=0; function walk(node,depth){if(++visited>2000||depth>40||text.length>=20000)return; try{const role=node.role(),name=node.name();if(name)text+=(role+': '+String(name).slice(0,500)+'\\n'); const children=node.uiElements();for(const child of children){if(visited>=2000||text.length>=20000)break;walk(child,depth+1);}}catch{}} if(processes.length){const bounds=${target};if(bounds){const matches=processes[0].windows().filter(w=>{try{const p=w.position(),s=w.size();return Math.abs(p[0]-bounds.X)<2&&Math.abs(p[1]-bounds.Y)<2&&Math.abs(s[0]-bounds.Width)<2&&Math.abs(s[1]-bounds.Height)<2;}catch{return false;}});if(matches.length===1)walk(matches[0],0);}}text.slice(0,20000);`;
 }
 export async function captureMacWindow(options: {
   pid: number;
@@ -57,7 +61,13 @@ export async function captureMacWindow(options: {
     !Number.isSafeInteger(window.pid)
   )
     throw new Error("No non-F5 window is available to capture.");
-  const info = window as { id: number; pid: number; title?: string; app?: string };
+  const info = window as {
+    id: number;
+    pid: number;
+    title?: string;
+    app?: string;
+    bounds?: { X: number; Y: number; Width: number; Height: number };
+  };
   const directory = await mkdtemp(path.join(os.tmpdir(), "f5-snapshot-"));
   try {
     const file = path.join(directory, "window.png");
@@ -76,7 +86,7 @@ export async function captureMacWindow(options: {
       image = image.resize(size.width >= size.height ? { width: 2560 } : { height: 2560 });
     const context = await run(
       "/usr/bin/osascript",
-      ["-l", "JavaScript", "-e", accessibilityScript(info.pid)],
+      ["-l", "JavaScript", "-e", accessibilityScript(info.pid, info.bounds)],
       3000,
       96 * 1024,
     ).catch(() => "Accessibility text unavailable. Grant Accessibility permission to F5.");

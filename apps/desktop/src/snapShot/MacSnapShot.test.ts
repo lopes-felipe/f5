@@ -52,3 +52,24 @@ it("recovers from inaccessible accessibility text without dropping the image", a
     "Accessibility text unavailable",
   );
 });
+
+it("only walks the uniquely matching captured window, omitting ambiguous matches", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const window = (name: string, x: number) => ({
+    position: () => [x, 0],
+    size: () => [100, 100],
+    role: () => "window",
+    name: () => name,
+    uiElements: () => [],
+  });
+  const script = accessibilityScript(2, { X: 0, Y: 0, Width: 100, Height: 100 });
+  const run = (windows: unknown[]) =>
+    runInNewContext(script, {
+      Application: () => ({ processes: { whose: () => () => [{ windows: () => windows }] } }),
+    });
+  expect(run([window("captured", 0), window("private background", 100)])).toContain("captured");
+  expect(run([window("captured", 0), window("private background", 100)])).not.toContain(
+    "private background",
+  );
+  expect(run([window("one", 0), window("two", 0)])).toBe("");
+});

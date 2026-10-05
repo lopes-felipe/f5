@@ -54,3 +54,16 @@ describe("browser profiles", () => {
     expect(() => browserPartition("../escape", { id: "default", persistent: true })).toThrow();
   });
 });
+
+it("keeps legacy default storage and remembers the selected persistent profile", async () => {
+  for (const legacy of ["persist:f5-preview", "persist:f5-profile-preview-custom"]) {
+    const dir = await directory();
+    const store = new BrowserProfiles(dir, "f5", async () => {}, legacy);
+    expect((await store.config()).partition).toBe(legacy);
+    const profile = await store.create("Work");
+    await store.select(profile.id);
+    const restarted = new BrowserProfiles(dir, "f5", async () => {}, legacy);
+    expect((await restarted.config()).id).toBe(profile.id);
+    expect(restarted.ownsPartition(legacy)).toBe(true);
+  }
+});

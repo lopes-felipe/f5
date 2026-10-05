@@ -1,3 +1,4 @@
+import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
 import { pathToFileURL } from "node:url";
@@ -241,6 +242,8 @@ const previewRuntime = new PreviewRuntime({
   onTabStateChanged: (tabId) => emitPreviewState(tabId),
 });
 const previewLinkTargets = new Map<number, "system" | "preview">();
+const browserSelection = new Map<number, string>();
+let lastCaptureOwner: number | undefined;
 const browserStores = new Map<string, { profiles: BrowserProfiles; imports: BrowserImport }>();
 function browserStore(ownerId: number) {
   const runtime = runtimeForRenderer(ownerId);
@@ -255,12 +258,22 @@ function browserStore(ownerId: number) {
         await session.clearCache();
         await session.cookies.flushStore();
       },
+      profilePreviewPartition(runtime.profile),
+      (partition) => [...previewTabs.values()].some((tab) => tab.partition === partition),
     );
     store = {
       profiles,
       imports: new BrowserImport(profiles, (partition) => electronSession.fromPartition(partition)),
     };
     browserStores.set(runtime.profile.id, store);
+  }
+  if (!browserSelection.has(ownerId)) {
+    void store.profiles
+      .config()
+      .then((value) => {
+        if (!browserSelection.has(ownerId)) browserSelection.set(ownerId, value.id);
+      })
+      .catch(() => undefined);
   }
   return store;
 }
@@ -404,6 +417,7 @@ function previewStateFromWebContents(
           : { kind: "Success", url, title },
     canGoBack: guest && !guest.isDestroyed() ? guest.canGoBack() : false,
     canGoForward: guest && !guest.isDestroyed() ? guest.canGoForward() : false,
+    muted: entry?.muted ?? false,
     zoomFactor: entry?.zoomFactor ?? PREVIEW_DEFAULT_ZOOM_FACTOR,
     colorScheme: entry?.colorScheme ?? "system",
     faviconDataUrl: entry?.faviconDataUrl ?? null,
@@ -412,6 +426,20 @@ function previewStateFromWebContents(
   };
 }
 
+function setPreviewMuted(tabId: string, muted: boolean): void {
+  const entry = previewTabs.get(tabId);
+  if (!entry) return;
+  entry.muted = muted;
+  getPreviewWebContents(tabId)?.setAudioMuted(muted);
+  emitPreviewState(tabId);
+}
+function setPreviewZoom(tabId: string, factor: number): void {
+  const entry = previewTabs.get(tabId);
+  if (!entry) return;
+  entry.zoomFactor = factor;
+  getPreviewWebContents(tabId)?.setZoomFactor(factor);
+  emitPreviewState(tabId);
+}
 function isPreviewGuestWebContents(guest: Electron.WebContents): boolean {
   if (guest.isDestroyed() || guest.getType() !== "webview") {
     return false;
@@ -530,18 +558,18 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
       { label: "Reload", click: () => guest.reload() },
       {
         label: "Zoom in",
-        click: () => guest.setZoomFactor(Math.min(3, guest.getZoomFactor() + 0.1)),
+        click: () => setPreviewZoom(tabId, Math.min(3, guest.getZoomFactor() + 0.1)),
       },
       {
         label: "Zoom out",
-        click: () => guest.setZoomFactor(Math.max(0.25, guest.getZoomFactor() - 0.1)),
+        click: () => setPreviewZoom(tabId, Math.max(0.25, guest.getZoomFactor() - 0.1)),
       },
-      { label: "Reset zoom", click: () => guest.setZoomFactor(1) },
+      { label: "Reset zoom", click: () => setPreviewZoom(tabId, 1) },
       {
         label: "Mute",
         type: "checkbox",
         checked: guest.isAudioMuted(),
-        click: (item) => guest.setAudioMuted(item.checked),
+        click: (item) => setPreviewMuted(tabId, item.checked),
       },
     ];
     Menu.buildFromTemplate(items).popup(owner ? { window: owner } : {});
@@ -2702,14 +2730,23 @@ function registerIpcHandlers(): void {
       throw new Error("Invalid browser argument.");
     return value;
   };
-  previewHandle("browser-profiles:list", (id) => browserStore(id).profiles.list());
+  previewHandle("browser-profiles:list", async (id) => {
+    const profiles = browserStore(id).profiles;
+    const selected = browserSelection.get(id) ?? (await profiles.config()).id;
+    return (await profiles.list()).map((profile) => ({
+      ...profile,
+      selected: profile.id === selected,
+    }));
+  });
   previewHandle("browser-profiles:create", (id, name, persistent) => {
     if (typeof persistent !== "boolean") throw new Error("Invalid profile mode.");
     return browserStore(id).profiles.create(stringArg(name), persistent);
   });
-  previewHandle("browser-profiles:select", (id, profile) =>
-    browserStore(id).profiles.select(stringArg(profile)),
-  );
+  previewHandle("browser-profiles:select", async (id, profile) => {
+    const value = stringArg(profile);
+    await browserStore(id).profiles.select(value);
+    browserSelection.set(id, value);
+  });
   previewHandle("browser-profiles:delete", async (id, profile) => {
     const profileId = stringArg(profile);
     const partition = (await browserStore(id).profiles.config(profileId)).partition;
@@ -2740,12 +2777,12 @@ function registerIpcHandlers(): void {
   });
   previewHandle("desktop-preview:muted", (id, tab, muted) => {
     if (typeof muted !== "boolean") throw new Error("Invalid mute flag.");
-    getPreviewWebContents(scopedPreviewTabId(id, stringArg(tab)))?.setAudioMuted(muted);
+    setPreviewMuted(scopedPreviewTabId(id, stringArg(tab)), muted);
   });
   previewHandle("desktop-preview:zoom", (id, tab, factor) => {
     if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.25 || factor > 3)
       throw new Error("Invalid zoom.");
-    getPreviewWebContents(scopedPreviewTabId(id, stringArg(tab)))?.setZoomFactor(factor);
+    setPreviewZoom(scopedPreviewTabId(id, stringArg(tab)), factor);
   });
   ipcMain.on("preview:mouse-navigate", (event, direction) => {
     const entry = [...previewTabs.values()].find(
@@ -2760,13 +2797,8 @@ function registerIpcHandlers(): void {
   const capture = async (owner: number) => {
     if (capturePending) throw new Error("A SnapShot is already being captured.");
     if (process.platform !== "darwin") throw new Error("SnapShot is currently available on macOS.");
-    if (
-      systemPreferences.getMediaAccessStatus("screen") !== "granted" ||
-      !systemPreferences.isTrustedAccessibilityClient(false)
-    )
-      throw new Error(
-        "Grant Screen Recording and Accessibility permissions to F5 in System Settings.",
-      );
+    if (systemPreferences.getMediaAccessStatus("screen") !== "granted")
+      throw new Error("Grant Screen Recording permission to F5 in System Settings.");
     capturePending = true;
     try {
       return await captureMacWindow({
@@ -2799,6 +2831,7 @@ function registerIpcHandlers(): void {
   const captureShortcut = new CaptureShortcut(
     (key, run) => globalShortcut.register(key, run),
     (key) => globalShortcut.unregister(key),
+    () => BrowserWindow.getFocusedWindow()?.webContents.id ?? lastCaptureOwner,
   );
   const captureShortcutOwners = new Set<number>();
   previewHandle("snapshot:configure", (id, shortcut, enabled) => {
@@ -2822,6 +2855,11 @@ function registerIpcHandlers(): void {
     });
     if (enabled && !captureShortcutOwners.has(id)) {
       captureShortcutOwners.add(id);
+      const window = BrowserWindow.fromWebContents(electronWebContents.fromId(id)!);
+      if (window?.isFocused()) lastCaptureOwner = id;
+      window?.on("focus", () => {
+        lastCaptureOwner = id;
+      });
       electronWebContents.fromId(id)?.once("destroyed", () => {
         captureShortcutOwners.delete(id);
         captureShortcut.release(id);
@@ -2844,12 +2882,16 @@ function registerIpcHandlers(): void {
       createTab: async (tabId, defaults) => {
         const entry = ensurePreviewTabEntry(scopeTabId(tabId));
         if (!entry) throw new Error("Invalid tab.");
-        const config = await browserStore(ownerWebContentsId).profiles.config(
-          entry.browserProfileId,
+        const config = await browserStore(ownerWebContentsId).profiles.withConfig(
+          entry.browserProfileId ?? browserSelection.get(ownerWebContentsId),
+          (config) => {
+            entry.ownerWebContentsId = ownerWebContentsId;
+            entry.partition = config.partition;
+            entry.browserProfileId = config.id;
+            browserSelection.set(ownerWebContentsId, config.id);
+            return config;
+          },
         );
-        entry.ownerWebContentsId = ownerWebContentsId;
-        entry.partition = config.partition;
-        entry.browserProfileId = config.id;
         if (defaults && !entry.defaultsApplied) {
           entry.defaultsApplied = true;
           entry.zoomFactor = defaults.zoomFactor;

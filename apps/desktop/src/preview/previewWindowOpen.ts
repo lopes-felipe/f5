@@ -55,6 +55,10 @@ export function registerPreviewWindowOpen(
       if (!child.isDestroyed()) child.close();
     };
     owner.once("closed", close);
-    child.once("closed", () => owner.removeListener("closed", close));
+    guest.once("destroyed", close);
+    child.once("closed", () => {
+      owner.removeListener("closed", close);
+      guest.removeListener("destroyed", close);
+    });
   });
 }

@@ -3,6 +3,8 @@ import { registerPreviewWindowOpen } from "./previewWindowOpen";
 it("permits only sandboxed HTTP new-window children with the guest session and blocks nested popups", () => {
   let handler: any, created: any;
   const guest = {
+    once: vi.fn(),
+    removeListener: vi.fn(),
     session: { name: "isolated" },
     setWindowOpenHandler: vi.fn((h) => (handler = h)),
     on: vi.fn((_e, h) => (created = h)),
