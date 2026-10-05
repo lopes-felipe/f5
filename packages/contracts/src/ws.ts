@@ -1,3 +1,15 @@
+import {
+  ForgeAccountInput,
+  ForgeAccountRouting,
+  ForgeOperationInput,
+  ForgePrepareOperationInput,
+  PrHubPeekInput,
+  PrHubSetViewedFileInput,
+  PrHubStackInput,
+  PrHubThreadLinksInput,
+  PrHubThreadsForPrInput,
+  PrHubViewedFilesInput,
+} from "./prHubExtensions";
 import { AttachmentUploadsInput, AttachmentCloneToUploadInput } from "./attachmentUpload";
 import { ServerBootstrap } from "./protocol";
 import {
@@ -690,6 +702,25 @@ const WebSocketRequestBody = Schema.Union([
   tagMcpAccountRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
 
   // PR Hub methods
+  tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),
+  tagRequestBody(PR_HUB_WS_METHODS.saveAccount, ForgeAccountInput),
+  tagRequestBody(PR_HUB_WS_METHODS.removeAccount, Schema.Struct({ accountId: Schema.String })),
+  tagRequestBody(PR_HUB_WS_METHODS.listAccountRouting, Schema.Struct({})),
+  tagRequestBody(PR_HUB_WS_METHODS.setAccountRouting, ForgeAccountRouting),
+  tagRequestBody(PR_HUB_WS_METHODS.removeAccountRouting, ForgeAccountRouting),
+  tagRequestBody(PR_HUB_WS_METHODS.peek, PrHubPeekInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getStack, PrHubStackInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getViewedFiles, PrHubViewedFilesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.setViewedFile, PrHubSetViewedFileInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getThreadLinks, PrHubThreadLinksInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getThreadsForPr, PrHubThreadsForPrInput),
+  tagRequestBody(PR_HUB_WS_METHODS.prepareOperation, ForgePrepareOperationInput),
+  tagRequestBody(PR_HUB_WS_METHODS.submitOperation, ForgeOperationInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getOperation, ForgeOperationInput),
+  tagRequestBody(PR_HUB_WS_METHODS.recoverOperation, ForgeOperationInput),
+  tagRequestBody(PR_HUB_WS_METHODS.cancelOperation, ForgeOperationInput),
+  tagRequestBody(PR_HUB_WS_METHODS.listReviewerCandidates, PrHubStackInput),
+
   tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.claimNotifications, PrHubClaimNotificationsInput),
   tagPrHubRequestBody(

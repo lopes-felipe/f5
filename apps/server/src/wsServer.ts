@@ -1,3 +1,6 @@
+import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
+import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
+import { createGitHubMediaProxy } from "./prHub/githubMediaProxy.ts";
 import { readAssetImageDimensions } from "./imageDimensions";
 import { makePreviewFileServer } from "./previewFileServer";
 import { MessageId } from "@t3tools/contracts";
@@ -845,6 +848,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
+  const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
+  const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
   const prHub = yield* PrHubService;
   const prHubAdvisory = yield* PrHubAdvisoryService;
   const git = yield* GitCore;
@@ -1583,6 +1588,30 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(UPGRADE_REQUIRED),
           );
+          return;
+        }
+        if (url.pathname === "/api/prhub/media") {
+          const accounts = Option.isSome(forgeAccounts)
+            ? yield* forgeAccounts.value.listAccounts()
+            : [];
+          const accountId = url.searchParams.get("accountId");
+          const proxy = createGitHubMediaProxy({
+            configuredHosts: accounts
+              .filter((account) => account.provider === "github")
+              .map((account) => account.host),
+            resolveToken: async (host) => {
+              if (accountId) {
+                const account = accounts.find(
+                  (value) =>
+                    value.id === accountId && value.provider === "github" && value.host === host,
+                );
+                if (!account || Option.isNone(forgeAccounts)) return undefined;
+                return Effect.runPromise(forgeAccounts.value.getToken(account.id));
+              }
+              return (await githubAccount.token(host)) ?? undefined;
+            },
+          });
+          yield* Effect.promise(() => proxy(req, res));
           return;
         }
         if (url.pathname === "/api/bootstrap" && req.method === "GET") {
@@ -3761,7 +3790,65 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHub.claimNotifications(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.acknowledgeNotifications:
         yield* prHub.acknowledgeNotifications(stripRequestTag(request.body));
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
+      case PR_HUB_WS_METHODS.listAccounts:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.listAccounts();
+      case PR_HUB_WS_METHODS.removeAccount:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.removeAccount(request.body.accountId);
+      case PR_HUB_WS_METHODS.saveAccount:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.saveAccount(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listAccountRouting:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.listRouting();
+      case PR_HUB_WS_METHODS.removeAccountRouting:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.removeRouting(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.setAccountRouting:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.setRouting(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.peek:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.peek(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getStack:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getStack(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getViewedFiles:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getViewedFiles(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.setViewedFile:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.setViewedFile(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getThreadLinks:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getThreadLinks(request.body.threadId);
+      case PR_HUB_WS_METHODS.getThreadsForPr:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getThreadsForPr(request.body.key);
+      case PR_HUB_WS_METHODS.prepareOperation:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.prepareOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.submitOperation:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.submitOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getOperation:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.getOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.cancelOperation:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions unavailable.");
+        return yield* prHubExtensions.value.cancelOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.recoverOperation:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.recoverOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listReviewerCandidates:
+        if (Option.isNone(prHubExtensions)) throw new Error("PR Hub extensions are unavailable.");
+        return yield* prHubExtensions.value.listReviewerCandidates(stripRequestTag(request.body));
+
       case PR_HUB_WS_METHODS.getOverview:
         return yield* prHub.getOverview(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.listPullRequests:
@@ -3770,77 +3857,116 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case PR_HUB_WS_METHODS.refresh: {
         const body = stripRequestTag(request.body);
         yield* prHub.refreshNow(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.approve: {
         const body = stripRequestTag(request.body);
         yield* prHub.approve(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.requestChanges: {
         const body = stripRequestTag(request.body);
         yield* prHub.requestChanges(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.comment: {
         const body = stripRequestTag(request.body);
         yield* prHub.comment(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.merge: {
         const body = stripRequestTag(request.body);
         yield* prHub.merge(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.markReady: {
         const body = stripRequestTag(request.body);
         yield* prHub.markReady(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.reRequestReview: {
         const body = stripRequestTag(request.body);
         yield* prHub.reRequestReview(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.snooze: {
         const body = stripRequestTag(request.body);
         yield* prHub.snooze(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.unsnooze: {
         const body = stripRequestTag(request.body);
         yield* prHub.unsnooze(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.ignore: {
         const body = stripRequestTag(request.body);
         yield* prHub.ignore(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.acknowledgeAttention:
         yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
 
       case PR_HUB_WS_METHODS.markSeen: {
         const body = stripRequestTag(request.body);
         yield* prHub.markSeen(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.markNotified: {
         const body = stripRequestTag(request.body);
         yield* prHub.markNotified(body);
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
       }
 
       case PR_HUB_WS_METHODS.analyzeAdvisories: {
@@ -3945,7 +4071,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case PR_HUB_WS_METHODS.clearData:
         yield* prHub.clearData(stripRequestTag(request.body));
-        return yield* prHub.getOverview({});
+        return yield* prHub.getOverview({
+          accountGeneration:
+            "accountGeneration" in request.body ? request.body.accountGeneration : undefined,
+        });
 
       case WS_METHODS.terminalOpen: {
         const body = stripRequestTag(request.body);

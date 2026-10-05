@@ -1,6 +1,7 @@
 import "../../index.css";
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -69,12 +70,20 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
   };
 }
 
+const queryClients: QueryClient[] = [];
 function renderHeader(overrides: Partial<ChatHeaderProps> = {}) {
-  return render(<ChatHeader {...makeProps(overrides)} />);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClients.push(client);
+  return render(<ChatHeader {...makeProps(overrides)} />, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
 }
 
 describe("ChatHeader", () => {
   afterEach(() => {
+    for (const client of queryClients.splice(0)) client.clear();
     document.body.innerHTML = "";
   });
 

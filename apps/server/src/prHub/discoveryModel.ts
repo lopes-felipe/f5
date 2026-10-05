@@ -1,3 +1,4 @@
+import { GITHUB_FORGE_CAPABILITIES } from "../sourceControl/ForgeSourceControlProvider.ts";
 import {
   PR_HUB_BRANCH_REQUIREMENTS_FIELDS,
   unknownMergeRequirements,
@@ -696,6 +697,33 @@ export function buildTrackedPullRequest(
       reviewDecision: pr.reviewDecision,
       mergeStateStatus: pr.mergeStateStatus,
     }),
+    forgeCapabilities: {
+      ...GITHUB_FORGE_CAPABILITIES,
+      actions: GITHUB_FORGE_CAPABILITIES.actions.filter((action) =>
+        ["ready", "draft", "close", "reopen", "update-branch"].includes(action)
+          ? pr.mergePermission === "allowed" ||
+            pr.author?.toLowerCase() === viewerLogin.toLowerCase()
+          : pr.mergePermission === "allowed",
+      ),
+      reviewers: {
+        request: pr.mergePermission === "allowed",
+        listCandidates: pr.mergePermission === "allowed",
+      },
+      edit: {
+        changeRequest:
+          pr.mergePermission === "allowed" ||
+          pr.author?.toLowerCase() === viewerLogin.toLowerCase(),
+        comment: true,
+      },
+      review: {
+        ...GITHUB_FORGE_CAPABILITIES.review,
+        resolve:
+          pr.mergePermission === "allowed" ||
+          pr.author?.toLowerCase() === viewerLogin.toLowerCase(),
+      },
+      labels: pr.mergePermission === "allowed",
+      stackActions: pr.mergePermission === "allowed",
+    },
     nodeId: pr.nodeId,
     number: pr.number,
     title: pr.title,

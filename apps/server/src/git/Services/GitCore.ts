@@ -69,6 +69,10 @@ export interface GitEnsureRemoteInput {
 }
 
 export interface GitFetchRemoteBranchInput {
+  /** Never replace an existing branch, including one created after the caller checked. */
+  preserveExisting?: boolean;
+  /** Native forge request head ref; defaults to refs/heads/<remoteBranch>. */
+  remoteRef?: string;
   cwd: string;
   remoteName: string;
   remoteBranch: string;

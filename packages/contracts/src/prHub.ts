@@ -2,6 +2,7 @@ import { FILESYSTEM_PATH_MAX_LENGTH } from "./filesystem";
 import { Schema, Struct } from "effect";
 import { IsoDateTime, makeEntityId, NonNegativeInt, ProjectId } from "./baseSchemas";
 import {
+  ForgeCapabilities,
   SourceControlCapability,
   SourceControlHostAuthState,
   SourceControlPageInfo,
@@ -101,7 +102,7 @@ export const PrProviderDetails = Schema.Union([
     mergeStateStatus: Schema.String,
   }),
   Schema.Struct({
-    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "unknown"]),
+    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "forgejo", "unknown"]),
     externalId: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 ]);
@@ -133,6 +134,7 @@ export const TrackedPullRequest = Schema.Struct({
   provider: SourceControlProviderKind.pipe(Schema.withDecodingDefault(() => "github" as const)),
   ref: Schema.optional(SourceControlPullRequestRef),
   capabilities: Schema.optional(Schema.Array(SourceControlCapability)),
+  forgeCapabilities: Schema.optional(ForgeCapabilities),
   providerDetails: Schema.optional(PrProviderDetails),
   /** @deprecated Read providerDetails for provider-native identity. */
   nodeId: Schema.NullOr(Schema.String),
@@ -196,7 +198,7 @@ export type PrHubStatus = typeof PrHubStatus.Type;
 
 export const PrHubAccount = Schema.Struct({
   host: Schema.String,
-  viewerId: NonNegativeInt,
+  viewerId: Schema.Union([NonNegativeInt, Schema.String]),
   login: Schema.String,
   generation: Schema.String,
 });
@@ -271,6 +273,7 @@ export const PrHubListFilter = Schema.Literals([
 ]);
 export type PrHubListFilter = typeof PrHubListFilter.Type;
 export const PrHubOverviewInput = Schema.Struct({
+  accountId: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   stalledBefore: Schema.optional(IsoDateTime),
 });
@@ -339,6 +342,7 @@ export const PrHubAcknowledgeNotificationsInput = Schema.Struct({
 export type PrHubAcknowledgeNotificationsInput = typeof PrHubAcknowledgeNotificationsInput.Type;
 
 export const PrHubRefreshInput = Schema.Struct({
+  accountId: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   mode: Schema.Literals(["if_stale", "force"]),
 });
@@ -642,7 +646,7 @@ export const PrHubDetailProviderDetails = Schema.Union([
     viewerDidAuthor: Schema.Boolean,
   }),
   Schema.Struct({
-    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "unknown"]),
+    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "forgejo", "unknown"]),
     externalId: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 ]);
@@ -1058,6 +1062,25 @@ export const PrHubDetailMutationResult = Schema.Struct({
 export type PrHubDetailMutationResult = typeof PrHubDetailMutationResult.Type;
 
 export const PR_HUB_WS_METHODS = {
+  listAccounts: "prHub.listAccounts",
+  saveAccount: "prHub.saveAccount",
+  removeAccount: "prHub.removeAccount",
+  listAccountRouting: "prHub.listAccountRouting",
+  setAccountRouting: "prHub.setAccountRouting",
+  removeAccountRouting: "prHub.removeAccountRouting",
+  peek: "prHub.peek",
+  getStack: "prHub.getStack",
+  getViewedFiles: "prHub.getViewedFiles",
+  setViewedFile: "prHub.setViewedFile",
+  getThreadLinks: "prHub.getThreadLinks",
+  getThreadsForPr: "prHub.getThreadsForPr",
+  prepareOperation: "prHub.prepareOperation",
+  submitOperation: "prHub.submitOperation",
+  getOperation: "prHub.getOperation",
+  recoverOperation: "prHub.recoverOperation",
+  cancelOperation: "prHub.cancelOperation",
+  listReviewerCandidates: "prHub.listReviewerCandidates",
+
   getOverview: "prHub.getOverview",
   listPullRequests: "prHub.listPullRequests",
   claimNotifications: "prHub.claimNotifications",

@@ -786,3 +786,33 @@ it("skips submodule initialization when the checkout has no .gitmodules", async 
   );
   expect(scripted.calls.filter((call) => call.args.includes("submodule"))).toHaveLength(0);
 });
+
+it("preserves existing branches during forge head materialization, including races", async () => {
+  const scripted = makeScriptedGitService((input) =>
+    input.args[0] === "branch"
+      ? { code: 128, stderr: "fatal: a branch named 'existing' already exists" }
+      : {},
+  );
+  const core = await makeCore(scripted.service);
+  const result = await Effect.runPromise(
+    core
+      .fetchRemoteBranch({
+        cwd: process.cwd(),
+        remoteName: "origin",
+        remoteBranch: "feature",
+        localBranch: "existing",
+        preserveExisting: true,
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(scripted.calls.find((call) => call.args[0] === "fetch")?.args.at(-1)).toBe(
+    "refs/heads/feature:refs/remotes/origin/feature",
+  );
+  expect(scripted.calls.find((call) => call.args[0] === "branch")?.args).toEqual([
+    "branch",
+    "existing",
+    "origin/feature",
+  ]);
+  expect(scripted.calls.flatMap((call) => call.args)).not.toContain("--force");
+});

@@ -104,6 +104,7 @@ export function createBrowserFixture(protocolVersion = 1) {
     },
   );
   let sequence = 100;
+  let streamingFrame = 0;
   const snapshot = () => ({
     snapshotSequence: sequence,
     projects: [
@@ -230,6 +231,8 @@ export function createBrowserFixture(protocolVersion = 1) {
             maxItems: 20,
             quarantinedCount: 0,
           };
+        case "prHub.getThreadLinks":
+          return [];
         case "orchestration.getRewindDrafts":
           return { threadId: id, drafts: [] };
         case "worktreeSetup.subscribe":
@@ -293,14 +296,21 @@ export function createBrowserFixture(protocolVersion = 1) {
           return {};
       }
     },
-    /** Replace a fixed-size streaming message, so input data is bounded for the soak. */
+    /** Stream real deltas, periodically replacing the same message to bound the soak input. */
     nextEvents() {
+      streamingFrame++;
+      const replace = streamingFrame % 20 === 1;
       return STREAM_THREADS.map((id) => {
         const t = threads.find((t) => t.id === id)!;
         const current = t.messages[1]!;
         sequence++;
         const text = `Streaming frame ${String(sequence).padStart(9, "0")}\n\n\`\`\`ts\nconst value = ${sequence % 1000};\n\`\`\``;
-        t.messages[1] = { ...current, text, streaming: true };
+        const delta = replace ? text : `\n\n${text}`;
+        t.messages[1] = {
+          ...current,
+          text: replace ? text : current.text + delta,
+          streaming: !replace,
+        };
         return {
           sequence,
           eventId: `perf-event-${sequence}`,
@@ -316,9 +326,9 @@ export function createBrowserFixture(protocolVersion = 1) {
             threadId: id,
             messageId: current.id,
             role: "assistant",
-            text,
+            text: delta,
             turnId: null,
-            streaming: true,
+            streaming: !replace,
             createdAt: current.createdAt,
             updatedAt: time,
           },

@@ -1,3 +1,6 @@
+import { PrSendToAgent } from "./PrSendToAgent";
+import { ForgeComposer } from "./ForgeControls";
+import { ForgeOperationPanel } from "./ForgeOperationPanel";
 import { PrAuthorLink } from "./PrAuthorLink";
 import { PrThreadReply } from "./PrThreadReply";
 import { useState } from "react";
@@ -133,6 +136,12 @@ function Thread({
             @<PrAuthorLink prUrl={pr.url} login={comment.author} />
           </span>
           <p className="whitespace-pre-wrap text-sm">{comment.bodyText}</p>
+          <PrSendToAgent
+            pr={pr}
+            body={comment.bodyText}
+            path={thread.path}
+            line={thread.line ?? thread.originalLine}
+          />
         </div>
       ))}
       {error || query.error ? (
@@ -156,18 +165,34 @@ function Thread({
         </Button>
       ) : null}
       {!pr.repositoryArchived &&
+      pr.provider === "github" &&
       (thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve) ? (
         <Button size="xs" variant="outline" disabled={busy} onClick={() => void setResolved()}>
           {thread.isResolved ? "Reopen conversation" : "Resolve conversation"}
         </Button>
       ) : null}
-      {!pr.repositoryArchived && thread.viewerCanReply ? (
+      {!pr.repositoryArchived && (pr.forgeCapabilities?.review.reply ?? thread.viewerCanReply) ? (
         <Button size="xs" variant="outline" onClick={() => setReplyOpen(!replyOpen)}>
           Reply
         </Button>
       ) : null}
+      {pr.provider !== "github" && pr.forgeCapabilities?.review.resolve ? (
+        <ForgeOperationPanel
+          pr={pr}
+          payload={{ kind: "thread-state", threadId: thread.id, resolved: !thread.isResolved }}
+          label={thread.isResolved ? "Reopen conversation" : "Resolve conversation"}
+        />
+      ) : null}
       {replyOpen ? (
-        <PrThreadReply prKey={pr.key} threadId={thread.id} comparisonVersion={comparisonVersion} />
+        pr.provider === "github" ? (
+          <PrThreadReply
+            prKey={pr.key}
+            threadId={thread.id}
+            comparisonVersion={comparisonVersion}
+          />
+        ) : (
+          <ForgeComposer pr={pr} replyTo={thread.id} />
+        )
       ) : null}
     </section>
   );

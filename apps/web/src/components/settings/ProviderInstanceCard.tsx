@@ -858,8 +858,6 @@ export function ProviderInstanceCard({
                     defaultValue={
                       typeof instance.config === "object" &&
                       instance.config !== null &&
-                      typeof instance.config === "object" &&
-                      instance.config !== null &&
                       "autoCompactWindow" in instance.config
                         ? Number(instance.config.autoCompactWindow)
                         : 0

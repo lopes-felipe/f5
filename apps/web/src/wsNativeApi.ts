@@ -42,6 +42,7 @@ import {
   getPrHubAccountGeneration,
   setPrHubAccountGeneration,
   setPrHubAccount,
+  getPrHubSelectedAccountId,
 } from "./lib/prHubAccount";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
@@ -209,7 +210,13 @@ export function createWsNativeApi(): NativeApi {
   };
   const requestPrHubOverview = async (method: string, input?: unknown): Promise<PrHubOverview> => {
     const startedGeneration = getPrHubAccountGeneration();
-    const snapshot = await transport.request<PrHubOverview>(method, input);
+    const startedAccountId = getPrHubSelectedAccountId();
+    const snapshot = await transport.request<PrHubOverview>(method, {
+      ...(input as Record<string, unknown> | undefined),
+      accountId: startedAccountId,
+    });
+    if (startedAccountId !== getPrHubSelectedAccountId())
+      throw new Error("Discarded a PR Hub response from a previous account.");
     if (
       startedGeneration !== getPrHubAccountGeneration() &&
       snapshot.account?.generation !== getPrHubAccountGeneration()
@@ -697,6 +704,27 @@ export function createWsNativeApi(): NativeApi {
       inspectRun: (input) => transport.request(WS_METHODS.workflowPlatformInspectRun, input),
     },
     prHub: {
+      listAccounts: () => transport.request(PR_HUB_WS_METHODS.listAccounts, {}),
+      saveAccount: (input) => transport.request(PR_HUB_WS_METHODS.saveAccount, input),
+      removeAccount: (input) => transport.request(PR_HUB_WS_METHODS.removeAccount, input),
+      listAccountRouting: () => transport.request(PR_HUB_WS_METHODS.listAccountRouting, {}),
+      setAccountRouting: (input) => transport.request(PR_HUB_WS_METHODS.setAccountRouting, input),
+      removeAccountRouting: (input) =>
+        transport.request(PR_HUB_WS_METHODS.removeAccountRouting, input),
+      peek: (input) => transport.request(PR_HUB_WS_METHODS.peek, input),
+      getStack: (input) => transport.request(PR_HUB_WS_METHODS.getStack, input),
+      getViewedFiles: (input) => transport.request(PR_HUB_WS_METHODS.getViewedFiles, input),
+      setViewedFile: (input) => transport.request(PR_HUB_WS_METHODS.setViewedFile, input),
+      getThreadLinks: (input) => transport.request(PR_HUB_WS_METHODS.getThreadLinks, input),
+      getThreadsForPr: (input) => transport.request(PR_HUB_WS_METHODS.getThreadsForPr, input),
+      prepareOperation: (input) => transport.request(PR_HUB_WS_METHODS.prepareOperation, input),
+      submitOperation: (input) => transport.request(PR_HUB_WS_METHODS.submitOperation, input),
+      getOperation: (input) => transport.request(PR_HUB_WS_METHODS.getOperation, input),
+      recoverOperation: (input) => transport.request(PR_HUB_WS_METHODS.recoverOperation, input),
+      cancelOperation: (input) => transport.request(PR_HUB_WS_METHODS.cancelOperation, input),
+      listReviewerCandidates: (input) =>
+        transport.request(PR_HUB_WS_METHODS.listReviewerCandidates, input),
+
       claimNotifications: (input) => requestPrHub(PR_HUB_WS_METHODS.claimNotifications, input),
       acknowledgeNotifications: (input) =>
         requestPrHub(PR_HUB_WS_METHODS.acknowledgeNotifications, input),

@@ -38,3 +38,24 @@ it("answers rewind draft reads without adding draft work", () => {
 
   expect([...fixture.unknownMethods]).toEqual([]);
 });
+
+it("keeps the offered streaming workload bounded under real client delta semantics", () => {
+  const fixture = createBrowserFixture();
+  const client = new Map<string, string>();
+  let deltas = 0,
+    replacements = 0;
+  for (let frame = 0; frame < 200; frame++) {
+    for (const event of fixture.nextEvents()) {
+      const p = event.payload;
+      const text = p.streaming ? (client.get(p.threadId) ?? "") + p.text : p.text;
+      client.set(p.threadId, text);
+      if (p.streaming) deltas++;
+      else replacements++;
+      expect(text.length).toBeLessThan(4000);
+      expect(fixture.threads.find((t) => t.id === p.threadId)?.messages[1]?.text).toBe(text);
+    }
+  }
+  expect(client.size).toBe(10);
+  expect(deltas).toBe(1900);
+  expect(replacements).toBe(100);
+});
