@@ -82,6 +82,8 @@ const claudeSettings = {
   homePath: "",
   customModels: [],
   launchArgs: "",
+  autoCompactWindow: 0,
+  resumeCompactionPrompt: false,
 } satisfies ClaudeSettings;
 
 const capabilitiesProbe = () =>

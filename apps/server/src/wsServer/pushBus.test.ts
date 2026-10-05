@@ -256,6 +256,25 @@ describe("makeServerPushBus", () => {
     ),
   );
 
+  it.effect("bounds small frames even below the byte budget", () =>
+    Effect.gen(function* () {
+      const client = new MockWebSocket();
+      client.autoCompleteSends = false;
+      const clients = yield* Ref.make(new Set([client as unknown as WebSocket]));
+      const controller = makeWebSocketSendController({
+        clients,
+        maxClientBufferedBytes: 100,
+        maxClientOutstandingFrames: 2,
+      });
+      expect(yield* controller.send(client as unknown as WebSocket, "1")).toBe(true);
+      expect(yield* controller.send(client as unknown as WebSocket, "2")).toBe(true);
+      expect(yield* controller.send(client as unknown as WebSocket, "3")).toBe(false);
+      expect(client.closes[0]?.code).toBe(1013);
+      expect((yield* Ref.get(clients)).size).toBe(0);
+      expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(0);
+    }),
+  );
+
   it.effect("counts uncompressed logical bytes until the send callback completes", () =>
     Effect.gen(function* () {
       const client = new MockWebSocket();

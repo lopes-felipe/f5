@@ -1,3 +1,4 @@
+import { UsagePriceOverride } from "./usage";
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -124,7 +125,13 @@ export const CodexSettings = Schema.Struct({
 });
 export type CodexSettings = typeof CodexSettings.Type;
 
+const ClaudeAutoCompactWindow = Schema.Int.check(
+  Schema.makeFilter((value) => value === 0 || (value >= 100_000 && value <= 1_000_000)),
+);
+
 export const ClaudeSettings = Schema.Struct({
+  autoCompactWindow: ClaudeAutoCompactWindow.pipe(Schema.withDecodingDefault(() => 0)),
+  resumeCompactionPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
@@ -281,6 +288,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 export const ServerSettings = Schema.Struct({
+  usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
   resumeActiveTurnsAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
   worktreeSubmodules: WorktreeSubmodules.pipe(
@@ -391,6 +399,8 @@ const CodexSettingsPatch = Schema.Struct({
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
+  autoCompactWindow: Schema.optionalKey(ClaudeAutoCompactWindow),
+  resumeCompactionPrompt: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
@@ -425,6 +435,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),

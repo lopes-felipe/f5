@@ -435,10 +435,17 @@
     {
       "upstreamSha": "05d404210058d714cfef902517fc20ad66b82339",
       "subject": "feat(web): open Usage on the Limits tab by default (#11261)",
-      "reason": "Phase 11a (usage and limits): feat(web): open Usage on the Limits tab by default. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): open Usage on the Limits tab by default (#11261).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "05e3bcbc65d43adc70c900f176bec6c095b3b833",
@@ -919,10 +926,17 @@
     {
       "upstreamSha": "0a89364f153f7ba890ae4dedd33d16675d73744f",
       "subject": "fix(usage): read and redeem hub reset credits through CLIProxyAPI (#10395)",
-      "reason": "Phase 11a (usage and limits): fix(usage): read and redeem hub reset credits through CLIProxyAPI. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(usage): read and redeem hub reset credits through CLIProxyAPI (#10395).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "0a91b9a116117dd5df619fb7c1248cba9cf6f43c",
@@ -1864,10 +1878,17 @@
     {
       "upstreamSha": "1641b4aba58ab495cad7a9800b173af3416e16dd",
       "subject": "feat(usage): redeem Codex reset credits from the Limits tab (#9534)",
-      "reason": "Phase 11a (usage and limits): feat(usage): redeem Codex reset credits from the Limits tab. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(usage): redeem Codex reset credits from the Limits tab (#9534). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "16491a84b9bb2842ad6db41635d087647fc2df5b",
@@ -1934,10 +1955,17 @@
     {
       "upstreamSha": "17dbe8dda3ba87eb83804bc93fc0cb945186d204",
       "subject": "fix(web): show only providers with usage in usage views (#7563)",
-      "reason": "Phase 11a (usage and limits): fix(web): show only providers with usage in usage views. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): show only providers with usage in usage views (#7563).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "17e34773b148fd7351a44ab39e9616b4073a1fa8",
@@ -1988,10 +2016,17 @@
     {
       "upstreamSha": "183c3433091c30a19117ee733832b1c44a6af074",
       "subject": "feat: show provider usage limits with /usage-limits (#9875)",
-      "reason": "Phase 11a (usage and limits): feat: show provider usage limits with /usage-limits. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat: show provider usage limits with /usage-limits (#9875). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "184d8ef33b8f42869fb84f66a33984185b81dc47",
@@ -2163,10 +2198,17 @@
     {
       "upstreamSha": "19d8ab2ae9fc562ee7b216a0d72903fbfafa9572",
       "subject": "feat(usage): show Codex and Claude subscription limits on a Limits tab (#9507)",
-      "reason": "Phase 11a (usage and limits): feat(usage): show Codex and Claude subscription limits on a Limits tab. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(usage): show Codex and Claude subscription limits on a Limits tab (#9507). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "19ea3c5beb4cd93dd19f51f3e7c6d760357b41df",
@@ -2344,10 +2386,17 @@
     {
       "upstreamSha": "1c1d38fcd40252f91a3ea9056a7323135d3452dd",
       "subject": "fix(codex): keep Spark limits from replacing the main allowance (#10458)",
-      "reason": "Phase 11a (usage and limits): fix(codex): keep Spark limits from replacing the main allowance. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(codex): keep Spark limits from replacing the main allowance (#10458). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "1c2f933892cce833823fcfbf3099a51813ba67fb",
@@ -2513,10 +2562,17 @@
     {
       "upstreamSha": "1f14d6d10afbcc99ec255b23544ee25c08dea321",
       "subject": "fix(usage): keep account columns aligned across limit rows (#10690)",
-      "reason": "Phase 11a (usage and limits): fix(usage): keep account columns aligned across limit rows. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(usage): keep account columns aligned across limit rows (#10690).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "1f2797325ba52b93fddfb5aaaee3b18c86800589",
@@ -3432,10 +3488,17 @@
     {
       "upstreamSha": "2b745efe57cddc1753d3007d081c64bd20e3ab79",
       "subject": "fix(usage): price new models without waiting a day for the rate table (#9202)",
-      "reason": "Phase 11a (usage and limits): fix(usage): price new models without waiting a day for the rate table. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(usage): price new models without waiting a day for the rate table (#9202).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "2b7d3a45e6ee9454e4dd46aaf0276ca05d8555d3",
@@ -3685,10 +3748,17 @@
     {
       "upstreamSha": "2db675aeffd9cb1e8b5ad76ddd018433b45b02e9",
       "subject": "fix(usage): respect provider account homes (#11485)",
-      "reason": "Phase 11a (usage and limits): fix(usage): respect provider account homes. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(usage): respect provider account homes (#11485). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "2dca7a1eddd27c823e4d9d0a316864c4ad9f95c5",
@@ -4543,10 +4613,17 @@
     {
       "upstreamSha": "394e8470c89927a06575e08c434006b2320f1781",
       "subject": "feat(usage): support custom model prices (#9774)",
-      "reason": "Phase 11a (usage and limits): feat(usage): support custom model prices. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(usage): support custom model prices (#9774). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "3957a958184650656dbbab6d73d9882de9855bd5",
@@ -5582,10 +5659,17 @@
     {
       "upstreamSha": "48654c1182c41dbd5e99ef0d6620a13ba2400f26",
       "subject": "fix(usage): flag unpriced model activity instead of showing $0.00 (#11021)",
-      "reason": "Phase 11a (usage and limits): fix(usage): flag unpriced model activity instead of showing $0.00. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(usage): flag unpriced model activity instead of showing $0.00 (#11021). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "487d1766caba52579f07a3e5ebc6f276227e4382",
@@ -7914,10 +7998,17 @@
     {
       "upstreamSha": "675869d2b0f9e059d5950b80390c0cad1cb1590e",
       "subject": "fix(usage): preserve saved totals after transcript cleanup (#12304)",
-      "reason": "Phase 11a (usage and limits): fix(usage): preserve saved totals after transcript cleanup. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(usage): preserve saved totals after transcript cleanup (#12304). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "6766e682ac1a0aa33020358ba98707f4f8fee467",
@@ -7990,10 +8081,17 @@
     {
       "upstreamSha": "684d703b0a8a0632a18c8453277f7e5e6312b200",
       "subject": "fix(shared): degrade an unknown system time zone to UTC in usage windows (#6670)",
-      "reason": "Phase 11a (usage and limits): fix(shared): degrade an unknown system time zone to UTC in usage windows. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(shared): degrade an unknown system time zone to UTC in usage windows (#6670).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "68607c5a99147710b92228e0642f6c0a642e32a6",
@@ -8174,10 +8272,17 @@
     {
       "upstreamSha": "6abdf37a50ce6c1c9fabc499f4d0e159a6182d90",
       "subject": "fix(shared): redeem reset credits through the hub when it holds the account (#10462)",
-      "reason": "Phase 11a (usage and limits): fix(shared): redeem reset credits through the hub when it holds the account. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(shared): redeem reset credits through the hub when it holds the account (#10462).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "6ae44b418a24dc021cf042cbb1e60ebeb47e160f",
@@ -8238,10 +8343,17 @@
     {
       "upstreamSha": "6ba15c027a6d411c7f75cc0ca59b601a295c3633",
       "subject": "fix: hide email-bearing account labels in usage limits (#10668)",
-      "reason": "Phase 11a (usage and limits): fix: hide email-bearing account labels in usage limits. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix: hide email-bearing account labels in usage limits (#10668).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "6bc6cb6be4ebecd5bd7a3b7b88f07cb61815ded5",
@@ -8312,10 +8424,17 @@
     {
       "upstreamSha": "6d15c5bbc3f3c331a7466bb94c17413a35f7b659",
       "subject": "fix(server): preserve usage cache outside walked roots (#8540)",
-      "reason": "Phase 11a (usage and limits): fix(server): preserve usage cache outside walked roots. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): preserve usage cache outside walked roots (#8540).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "6d1d549441be84f19696ab59ed7e2fbf305280d4",
@@ -9308,10 +9427,17 @@
     {
       "upstreamSha": "7931227977ca3e6f3354a63467caa634ab79796f",
       "subject": "fix(server): stop refreshing providers on every config subscription (#11811)",
-      "reason": "Phase 11a (usage and limits): fix(server): stop refreshing providers on every config subscription. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): stop refreshing providers on every config subscription (#11811).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "79394154dfe1e6373534995022f53ffdcf293e55",
@@ -9511,10 +9637,16 @@
     {
       "upstreamSha": "7cafe52bb8f1a4f26e9a8504c53ceae5cb32548a",
       "subject": "fix(server): keep thread titles tied to user intent (#10720)",
-      "reason": "Phase 11c (self-refining titles): fix(server): keep thread titles tied to user intent. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(server): keep thread titles tied to user intent (#10720). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11c"
+      "disposition": "ported",
+      "plannedWorkstream": "11c",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/orchestration/decider.ts:1",
+        "apps/server/src/orchestration/decider.titleRegeneration.test.ts:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "7cdeb696e699309b827c1d1b613397f9bcd73b3d",
@@ -9925,10 +10057,17 @@
     {
       "upstreamSha": "8287f2c3a771f4a88f781e9c98830692b186c5c3",
       "subject": "fix(web): align usage page skeleton layout (#8111)",
-      "reason": "Phase 11a (usage and limits): fix(web): align usage page skeleton layout. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): align usage page skeleton layout (#8111).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "829af7b73a960d390a0b32becd37ad6483627aa4",
@@ -10111,10 +10250,17 @@
     {
       "upstreamSha": "84b99f3fb7bbc759fcbb589d031920e76edf4746",
       "subject": "feat(web): edit usage prices across selected environments (#9861)",
-      "reason": "Phase 11a (usage and limits): feat(web): edit usage prices across selected environments. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(web): edit usage prices across selected environments (#9861).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "84b9d9bc2d8a13a8b13d59b81f1012f5cb57ebd2",
@@ -10309,10 +10455,17 @@
     {
       "upstreamSha": "87a12b53fdff7e2e0318af3edea54005557cea56",
       "subject": "fix(usage): refresh limits when the tab opens (#11928)",
-      "reason": "Phase 11a (usage and limits): fix(usage): refresh limits when the tab opens. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(usage): refresh limits when the tab opens (#11928).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "8824f8f24f8b81fd6aed6f228a57a1d4013d01d9",
@@ -10909,10 +11062,17 @@
     {
       "upstreamSha": "8f1ef8b9eb72ac6cd8510364608e01dc7febf9c1",
       "subject": "perf(server): scan only appended transcript bytes for usage summaries (#9024)",
-      "reason": "Phase 11a (usage and limits): perf(server): scan only appended transcript bytes for usage summaries. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: perf(server): scan only appended transcript bytes for usage summaries (#9024).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "8f341f20c91e708de1dab949dbd723e86f2ff328",
@@ -11032,10 +11192,17 @@
     {
       "upstreamSha": "9072aa1fd711170af425bf6a1a2828d0d54bbfa6",
       "subject": "fix(server): stop overpricing cached Claude tokens (#8806)",
-      "reason": "Phase 11a: fix(server): stop overpricing cached Claude tokens. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): stop overpricing cached Claude tokens (#8806).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "9086a1f7174c9a66c29c96bf0e3a2ddc33c5a507",
@@ -11662,10 +11829,17 @@
     {
       "upstreamSha": "98a29cbaa1ccf8d8afb6d35e3e1d925ff9b5fa90",
       "subject": "fix: address usage limits and merge settlement regressions (#9784)",
-      "reason": "Phase 11a: fix: address usage limits and merge settlement regressions. Reimplement the applicable behavior in f5; not yet delivered. Retain usage-limit refresh and optional Claude usage probe isolation. Omit ThreadSettlement and mobile-specific edits.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix: address usage limits and merge settlement regressions (#9784).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "990bb0b689b23a33f8e53f12962fe2542b3f4005",
@@ -12199,10 +12373,17 @@
     {
       "upstreamSha": "9f9359bd8132c425493720080149dcc0d3da9436",
       "subject": "fix(web): stop usage summary requests reporting slow RPCs (#9358)",
-      "reason": "Phase 11a (usage and limits): fix(web): stop usage summary requests reporting slow RPCs. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): stop usage summary requests reporting slow RPCs (#9358).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "9fa54eeb4c481b444c68e38d00066d707af5f677",
@@ -13059,10 +13240,17 @@
     {
       "upstreamSha": "add8c3a55ac8a7d520dc2ea11a8fa05bc3cee361",
       "subject": "fix(web): remember usage page selection (#10189)",
-      "reason": "Phase 11a (usage and limits): fix(web): remember usage page selection. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(web): remember usage page selection (#10189). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "addfb1390eea5e850fb5e235525f9eb6c4ade100",
@@ -13361,10 +13549,17 @@
     {
       "upstreamSha": "b273d1cfe9515f905d37a9146bb275b905d14399",
       "subject": "feat(usage): pool subscription limits per provider across accounts and environments (#10300)",
-      "reason": "Phase 11a (usage and limits): feat(usage): pool subscription limits per provider across accounts and environments. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: feat(usage): pool subscription limits per provider across accounts and environments (#10300).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "b277cc65e045899e7aa941e92d04f2b4996f27bb",
@@ -13428,10 +13623,17 @@
     {
       "upstreamSha": "b34ff8f56469afa8f3f85d89894e1b4cf49b5213",
       "subject": "fix(usage): deduplicate CLI proxy subscription accounts (#9584)",
-      "reason": "Phase 11a (usage and limits): fix(usage): deduplicate CLI proxy subscription accounts. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(usage): deduplicate CLI proxy subscription accounts (#9584).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "b379b5b1407b4c718095cd13395173b6cc005218",
@@ -14133,10 +14335,16 @@
     {
       "upstreamSha": "bc4b00666272188027d086361fa5ae01cda53bd2",
       "subject": "fix: generate thread titles with the selected model across connections (#10526)",
-      "reason": "Phase 11c: fix: generate thread titles with the selected model across connections. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix: generate thread titles with the selected model across connections (#10526).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11c"
+      "plannedWorkstream": "11c",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/orchestration/decider.ts:1",
+        "apps/server/src/orchestration/decider.titleRegeneration.test.ts:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "bc8584bf8e967ecc1cd215d42bd7a47faf51a862",
@@ -14364,10 +14572,17 @@
     {
       "upstreamSha": "be53bbd85044e937c359a89b6004c3d3c38ffcf1",
       "subject": "feat(usage): show remaining quota instead of used (#9889)",
-      "reason": "Phase 11a (usage and limits): feat(usage): show remaining quota instead of used. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(usage): show remaining quota instead of used (#9889). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "be7796d867a1e66524f19e6cfee0109c3ab447f0",
@@ -14641,10 +14856,17 @@
     {
       "upstreamSha": "c131f289268d407bb0d8540dc33ba6ddb88f46ed",
       "subject": "fix(server): stop querying Claude context usage after turns (#8610)",
-      "reason": "Phase 11a (usage and limits): fix(server): stop querying Claude context usage after turns. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): stop querying Claude context usage after turns (#8610).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "c13a021e432e94728fe88ff983fb9601c6d6b943",
@@ -15008,10 +15230,16 @@
     {
       "upstreamSha": "c7222ca4dfdea50df1d02ca33710aac5daddbeb7",
       "subject": "feat(claude): compact old threads before they burn through usage (#8144)",
-      "reason": "Phase 11b (Claude resume compaction): feat(claude): compact old threads before they burn through usage. Reimplement in f5; not yet delivered. Requires the pinned Claude SDK dialog/autoCompactWindow gate; keep f5 CompactionService.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(claude): compact old threads before they burn through usage (#8144). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11b"
+      "disposition": "ported",
+      "plannedWorkstream": "11b",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:1",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "c726c30a148c2add6a3ec7f31f54ae48dc5d2f0c",
@@ -16047,10 +16275,17 @@
     {
       "upstreamSha": "d4d5d12e8ba086cfbf79ca3adeb4156b46ead665",
       "subject": "fix(shared): keep the newest shared usage scan (#10315)",
-      "reason": "Phase 11a (usage and limits): fix(shared): keep the newest shared usage scan. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(shared): keep the newest shared usage scan (#10315).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "d524eb96936090bd2b8a96449784155ad4af9591",
@@ -16748,10 +16983,16 @@
     {
       "upstreamSha": "ddee418a8d6d3e242ca26a8053a886ecc3b56b53",
       "subject": "fix(server): stop the provider title mirror from overwriting real thread titles (#5941)",
-      "reason": "Phase 11c (self-refining titles): fix(server): stop the provider title mirror from overwriting real thread titles. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): stop the provider title mirror from overwriting real thread titles (#5941).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11c"
+      "plannedWorkstream": "11c",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/orchestration/decider.ts:1",
+        "apps/server/src/orchestration/decider.titleRegeneration.test.ts:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "ddfe45c66eccd93c0adf61db92a16cbbbcde23e1",
@@ -17077,10 +17318,17 @@
     {
       "upstreamSha": "e1c94f703f05b43f2935d09ed1ef882d0ee13ff8",
       "subject": "fix(web): refresh usage limit countdowns without switching tabs (#11187)",
-      "reason": "Phase 11a (usage and limits): fix(web): refresh usage limit countdowns without switching tabs. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(web): refresh usage limit countdowns without switching tabs (#11187). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "e1cbb705273a261d26b489f35a7ddca6567d9663",
@@ -17717,14 +17965,14 @@
     {
       "upstreamSha": "ead4ce52a1624d9c55461f61524580978fc8b719",
       "subject": "fix(grok): improve skills, plans, usage, and turn reliability (#8358)",
-      "reason": "Phase 4 delivers Grok skill discovery, native commands and reasoning, retaining Phase 1c lifecycle fixes. This multi-area commit remains open for the Usage readers/dashboard work explicitly assigned to Phase 11.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(grok): improve skills, plans, usage, and turn reliability (#8358).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "evidence": [
-        "apps/server/src/provider/Drivers/GrokSkills.test.ts:6",
-        "apps/server/src/provider/Layers/GrokAdapter.test.ts:54"
+      "evidence": ["docs/user/usage-limits.md:1", "apps/server/src/usage/providerLimits.ts:1"],
+      "f5Shas": [
+        "c21d537fafb5bfef6280239040cbd0a92c9a38e3",
+        "d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"
       ],
-      "f5Shas": ["c21d537fafb5bfef6280239040cbd0a92c9a38e3"],
       "plannedWorkstream": "11"
     },
     {
@@ -18113,10 +18361,17 @@
     {
       "upstreamSha": "eff44be433dc9683da7764a20334598e47b127b2",
       "subject": "feat(usage): show OpenCode Go, Cursor, and Grok subscription limits (#12115)",
-      "reason": "Phase 11a (usage and limits): feat(usage): show OpenCode Go, Cursor, and Grok subscription limits. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: feat(usage): show OpenCode Go, Cursor, and Grok subscription limits (#12115). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "f0121f31d0e7c069f4007480fc13907c28efd4d5",
@@ -18222,10 +18477,17 @@
     {
       "upstreamSha": "f0ebc628c6dd83fd0c7963078ad7778ce6028d0c",
       "subject": "fix(web): improve Codex usage graph contrast (#6669)",
-      "reason": "Phase 11a (usage and limits): fix(web): improve Codex usage graph contrast. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(web): improve Codex usage graph contrast (#6669).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "f0f16e4f6e8e923dcb17fc1c25d4fb1e442f80a5",
@@ -18307,10 +18569,17 @@
     {
       "upstreamSha": "f1a08116f9c6f98d933d53fa897be3d8e3ac1e03",
       "subject": "fix(server): preserve Codex reset credits during usage updates (#10308)",
-      "reason": "Phase 11a (usage and limits): fix(server): preserve Codex reset credits during usage updates. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(server): preserve Codex reset credits during usage updates (#10308). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "f1a68ac9b05c93292e677f700ae3ce7f7ac7f064",
@@ -19054,10 +19323,16 @@
     {
       "upstreamSha": "fc262f1a28d8305951c751f2486da6ca72e6c1d1",
       "subject": "fix(server): retry automatic thread title generation (#8087)",
-      "reason": "Phase 11c (self-refining titles): fix(server): retry automatic thread title generation. Reimplement in f5; not yet delivered.",
+      "reason": "The linked commit implements the f5-native phase 11 plan. Full equivalence for this additional upstream-specific change has not been established; retain its deferred disposition pending a targeted comparison: fix(server): retry automatic thread title generation (#8087).",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "11c"
+      "plannedWorkstream": "11c",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/orchestration/decider.ts:1",
+        "apps/server/src/orchestration/decider.titleRegeneration.test.ts:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "fc28abf24b034502402cba1fedf5fa38658ee2e8",
@@ -19091,10 +19366,17 @@
     {
       "upstreamSha": "fcbe45796aea99e9e2a9ce19dd9409fbd7e720e4",
       "subject": "fix(usage): make unavailable account limits more visible (#10601)",
-      "reason": "Phase 11a (usage and limits): fix(usage): make unavailable account limits more visible. Reimplement in f5; not yet delivered.",
+      "reason": "Implemented through f5-native phase 11 contracts, services, and UI: fix(usage): make unavailable account limits more visible (#10601). See the linked implementation commit and evidence.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "11a"
+      "disposition": "ported",
+      "plannedWorkstream": "11a",
+      "evidence": [
+        "docs/user/usage-limits.md:1",
+        "apps/server/src/usage/Layers/UsageService.ts:1",
+        "apps/server/src/usage/providerLimits.ts:1",
+        "apps/web/src/components/usage/UsageDashboard.tsx:1"
+      ],
+      "f5Shas": ["d9b6640c9d6200dc5bbd9a9bc7f994d84c981e22"]
     },
     {
       "upstreamSha": "fccec9f097ab6b89714161ccab2efc7e19d59c00",

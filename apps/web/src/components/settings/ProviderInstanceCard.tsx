@@ -818,6 +818,71 @@ export function ProviderInstanceCard({
                 />
               </label>
             ) : null}
+            {driverKind === "claudeAgent" && (
+              <div className="space-y-3 border-t px-4 py-3">
+                <label className="flex items-center justify-between gap-2 text-xs">
+                  Prompt before compacting resumed sessions
+                  <Switch
+                    checked={
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      "resumeCompactionPrompt" in instance.config &&
+                      instance.config.resumeCompactionPrompt === true
+                    }
+                    onCheckedChange={(value) =>
+                      onUpdate({
+                        ...instance,
+                        config: nextConfigBlobWithValue(
+                          instance.config,
+                          "resumeCompactionPrompt",
+                          value,
+                        ),
+                      })
+                    }
+                  />
+                </label>
+                <label className="block text-xs">
+                  Auto-compact window (tokens; 0 uses the CLI default)
+                  <input
+                    key={String(
+                      typeof instance.config === "object" &&
+                        instance.config !== null &&
+                        "autoCompactWindow" in instance.config
+                        ? instance.config.autoCompactWindow
+                        : 0,
+                    )}
+                    className="mt-1 block w-full rounded border p-2"
+                    type="number"
+                    min="0"
+                    step="1"
+                    defaultValue={
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      typeof instance.config === "object" &&
+                      instance.config !== null &&
+                      "autoCompactWindow" in instance.config
+                        ? Number(instance.config.autoCompactWindow)
+                        : 0
+                    }
+                    onBlur={(event) => {
+                      const value = Number(event.target.value);
+                      if (
+                        Number.isSafeInteger(value) &&
+                        (value === 0 || (value >= 100000 && value <= 1000000))
+                      )
+                        onUpdate({
+                          ...instance,
+                          config: nextConfigBlobWithValue(
+                            instance.config,
+                            "autoCompactWindow",
+                            value,
+                          ),
+                        });
+                    }}
+                  />
+                </label>
+              </div>
+            )}
             {driverOption?.fields.map((field) => (
               <div key={field.key} className="border-t border-border/60 px-4 py-3 sm:px-5">
                 <label htmlFor={`provider-instance-${instanceId}-${field.key}`} className="block">

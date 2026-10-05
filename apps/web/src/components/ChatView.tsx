@@ -1,3 +1,4 @@
+import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
 import { ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
@@ -4415,6 +4416,33 @@ export default function ChatView({
   ) => {
     e?.preventDefault();
     const api = readNativeApi();
+    if (
+      api &&
+      !activePendingProgress &&
+      !sendInFlightRef.current &&
+      !hasPendingTurnDispatch &&
+      promptRef.current.trim() === "/usage-limits"
+    ) {
+      try {
+        const accounts = await api.usage.getAccounts({ refresh: "none" });
+        toastManager.add({
+          type: "info",
+          title: "Usage limits",
+          description: formatUsageLimits(accounts),
+        });
+        setPrompt("");
+        promptRef.current = "";
+        onAdmitted?.();
+      } catch {
+        toastManager.add({
+          type: "error",
+          title: "Usage limits are unavailable",
+          description: "Retry when the server connection is ready.",
+        });
+      }
+      return;
+    }
+
     if (
       !api ||
       !activeThread ||

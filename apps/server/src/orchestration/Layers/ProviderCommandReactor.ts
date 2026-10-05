@@ -84,7 +84,7 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   formatThreadTitleRegenerationContext,
-  resolveBestEffortGeneratedTitle,
+  resolveBestEffortGeneratedTitleResult,
 } from "../../threadTitle.ts";
 
 type ProviderIntentEvent = Extract<
@@ -94,6 +94,8 @@ type ProviderIntentEvent = Extract<
       | "thread.runtime-mode-set"
       | "thread.meta-updated"
       | "thread.title-regeneration-started"
+      | "thread.turn-processing-quiesced"
+      | "thread.title-regenerated"
       | "thread.deleted"
       | "thread.turn-start-requested"
       | "thread.turn-steer-requested"
@@ -1245,11 +1247,11 @@ const make = Effect.gen(function* () {
     const explicitContext = formatThreadTitleRegenerationContext(thread.messages);
     const firstUserMessage = thread.messages.find((message) => message.role === "user");
     const titleSourceText =
-      event.payload.origin === "explicit"
+      event.payload.origin !== "first-turn"
         ? explicitContext.text
         : (event.payload.titleSourceText ?? firstUserMessage?.text ?? "").trim();
     const attachments =
-      event.payload.origin === "explicit"
+      event.payload.origin !== "first-turn"
         ? explicitContext.attachments
         : (firstUserMessage?.attachments ?? []);
     if (titleSourceText.length === 0) {
@@ -1271,7 +1273,7 @@ const make = Effect.gen(function* () {
             model: event.payload.titleGenerationModel,
           }
         : settings.textGenerationModelSelection);
-    const title = yield* resolveBestEffortGeneratedTitle({
+    const generated = yield* resolveBestEffortGeneratedTitleResult({
       cwd,
       titleSourceText,
       attachments,
@@ -1284,7 +1286,11 @@ const make = Effect.gen(function* () {
       logContext: { threadId: thread.id, requestId, origin: event.payload.origin },
     });
 
-    if (title === thread.title || title === DEFAULT_NEW_THREAD_TITLE) {
+    const title = generated.title;
+    if (
+      (title === thread.title && event.payload.origin !== "auto-refine") ||
+      title === DEFAULT_NEW_THREAD_TITLE
+    ) {
       yield* dispatchTitleRegenerationFailure({
         threadId: thread.id,
         requestId,
@@ -1324,6 +1330,10 @@ const make = Effect.gen(function* () {
       requestId,
       expectedTitleRevision: event.payload.expectedTitleRevision,
       title,
+      needsRefinement: event.payload.origin === "explicit" ? false : generated.needsRefinement,
+      ...(event.payload.origin === "auto-refine"
+        ? { refinementTurn: event.payload.refinementTurn ?? 0 }
+        : {}),
       createdAt,
     });
   });
@@ -1979,6 +1989,43 @@ const make = Effect.gen(function* () {
         "orchestration.event_type": event.type,
       });
       switch (event.type) {
+        case "thread.title-regenerated":
+        case "thread.turn-processing-quiesced": {
+          const thread = yield* resolveThread(event.payload.threadId);
+          const completedAt =
+            event.type === "thread.turn-processing-quiesced"
+              ? event.payload.processingQuiescedAt
+              : thread?.latestTurn?.processingQuiescedAt;
+          const turn = completedAt
+            ? (thread?.messages.filter(
+                (message) =>
+                  message.role === "user" &&
+                  message.turnId === null &&
+                  message.createdAt <= completedAt,
+              ).length ?? 0)
+            : 0;
+          if (
+            (event.type !== "thread.title-regenerated" ||
+              thread?.latestTurn?.processingQuiescedAt) &&
+            thread?.titleSource === "generated" &&
+            thread.titleState?.needsRefinement &&
+            thread.titleState.refinementCount < 2 &&
+            [1, 3].includes(turn) &&
+            thread.titleState.lastRefinedTurn < turn &&
+            !thread.titleRegeneration
+          ) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.title.generation.start",
+              commandId: serverCommandId("thread-title-refine"),
+              threadId: thread.id,
+              expectedTitleRevision: thread.titleRevision ?? 0,
+              trigger: "auto-refine",
+              refinementTurn: turn,
+              createdAt: event.occurredAt,
+            });
+          }
+          break;
+        }
         case "thread.title-regeneration-started":
           yield* titleRegenerationWorker.enqueue(event);
           break;
@@ -2068,6 +2115,8 @@ const make = Effect.gen(function* () {
           event.type !== "thread.runtime-mode-set" &&
           event.type !== "thread.meta-updated" &&
           event.type !== "thread.title-regeneration-started" &&
+          event.type !== "thread.turn-processing-quiesced" &&
+          event.type !== "thread.title-regenerated" &&
           event.type !== "thread.deleted" &&
           event.type !== "thread.turn-interrupt-requested" &&
           event.type !== "thread.approval-response-requested" &&

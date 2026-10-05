@@ -757,6 +757,13 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 export const ThreadTitleSource = Schema.Literals(["default", "generated", "manual", "legacy"]);
 export type ThreadTitleSource = typeof ThreadTitleSource.Type;
 
+export const ThreadTitleState = Schema.Struct({
+  needsRefinement: Schema.Boolean,
+  refinementCount: NonNegativeInt.check(Schema.isLessThanOrEqualTo(2)),
+  lastRefinedTurn: NonNegativeInt,
+});
+export type ThreadTitleState = typeof ThreadTitleState.Type;
+
 export const ThreadTitleRegeneration = Schema.Struct({
   requestId: CommandId,
   startedAt: IsoDateTime,
@@ -816,6 +823,7 @@ export const OrchestrationThread = Schema.Struct({
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   titleSource: Schema.optional(ThreadTitleSource).pipe(
     Schema.withDecodingDefault(() => "legacy" as const),
   ),
@@ -1580,6 +1588,8 @@ const ThreadTitleGenerationStartCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   expectedTitleRevision: NonNegativeInt,
+  trigger: Schema.optional(Schema.Literal("auto-refine")),
+  refinementTurn: Schema.optional(NonNegativeInt),
   titleSourceText: Schema.optional(Schema.String),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   titleGenerationModelSelection: Schema.optional(ModelSelection),
@@ -1593,6 +1603,8 @@ const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   requestId: CommandId,
   expectedTitleRevision: NonNegativeInt,
   title: TrimmedNonEmptyString,
+  needsRefinement: Schema.optional(Schema.Boolean),
+  refinementTurn: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 
@@ -1866,6 +1878,7 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadReferences: Schema.optional(Schema.Array(ThreadReference)).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   titleSource: Schema.optional(ThreadTitleSource).pipe(
     Schema.withDecodingDefault(() => "legacy" as const),
   ),
@@ -1927,6 +1940,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   titleSource: Schema.optional(ThreadTitleSource),
   titleRevision: Schema.optional(NonNegativeInt),
   titleUpdatedAt: Schema.optional(IsoDateTime),
@@ -1942,7 +1956,9 @@ export const ThreadTitleRegenerationStartedPayload = Schema.Struct({
   threadId: ThreadId,
   titleRegeneration: ThreadTitleRegeneration,
   expectedTitleRevision: NonNegativeInt,
-  origin: Schema.Literals(["first-turn", "explicit"]),
+  origin: Schema.Literals(["first-turn", "explicit", "auto-refine"]),
+  refinementTurn: Schema.optional(NonNegativeInt),
+  titleState: Schema.optional(ThreadTitleState),
   titleSourceText: Schema.optional(Schema.String),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   titleGenerationModelSelection: Schema.optional(ModelSelection),
@@ -1953,6 +1969,7 @@ export const ThreadTitleRegeneratedPayload = Schema.Struct({
   requestId: CommandId,
   title: TrimmedNonEmptyString,
   titleSource: Schema.Literal("generated"),
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   titleRevision: NonNegativeInt,
   titleUpdatedAt: IsoDateTime,
 });

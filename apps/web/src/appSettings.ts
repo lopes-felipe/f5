@@ -294,6 +294,10 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
 }
 
 export const AppSettingsSchema = Schema.Struct({
+  usageTab: Schema.Literals(["activity", "limits"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("activity" as const)),
+    Schema.withDecodingDefault(() => "activity" as const),
+  ),
   composerCollapseOnScroll: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
     Schema.withDecodingDefault(() => true),

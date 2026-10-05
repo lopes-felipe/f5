@@ -82,6 +82,8 @@ import type {
 } from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type {
+  UsageConsumeResetCreditInput,
+  UsageConsumeResetCreditResult,
   UsageGetAccountsInput,
   UsageAccounts,
   UsageGetSummaryInput,
@@ -708,6 +710,9 @@ export interface NativeApi {
     onSnapshotUpdated: (callback: (snapshot: AgentsSnapshot) => void) => () => void;
   };
   usage: {
+    consumeResetCredit: (
+      input: UsageConsumeResetCreditInput,
+    ) => Promise<UsageConsumeResetCreditResult>;
     getAccounts: (input: UsageGetAccountsInput) => Promise<UsageAccounts>;
     getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
   };

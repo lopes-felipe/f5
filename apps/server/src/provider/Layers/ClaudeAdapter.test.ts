@@ -8157,6 +8157,52 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "turns a resume compaction dialog into blocking input and handles an already-aborted signal",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          providerOptions: {
+            claudeAgent: { resumeCompactionPrompt: true, autoCompactWindow: 120000 },
+          },
+        });
+        yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+        const options = harness.getLastCreateQueryInput()?.options as ClaudeQueryOptions;
+        assert.deepEqual(options.supportedDialogKinds, ["resume_return"]);
+        assert.equal(
+          (options.settings as { autoCompactWindow?: number }).autoCompactWindow,
+          120000,
+        );
+        const dialog = options.onUserDialog;
+        assert.ok(dialog);
+        const controller = new AbortController();
+        controller.abort();
+        const resultPromise = dialog(
+          { dialogKind: "resume_return", payload: {} },
+          { signal: controller.signal, requestId: "resume-dialog" },
+        );
+        const requested = yield* Stream.runHead(adapter.streamEvents);
+        assert.equal(requested._tag, "Some");
+        if (requested._tag === "Some") assert.equal(requested.value.type, "user-input.requested");
+        assert.deepEqual(yield* Effect.promise(() => resultPromise), { behavior: "cancelled" });
+        assert.deepEqual(
+          yield* Effect.promise(() =>
+            dialog(
+              { dialogKind: "unknown", payload: {} },
+              { signal: new AbortController().signal, requestId: "unknown-dialog" },
+            ),
+          ),
+          { behavior: "cancelled" },
+        );
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect("handles AskUserQuestion via user-input.requested/resolved lifecycle", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

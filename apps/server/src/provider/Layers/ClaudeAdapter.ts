@@ -320,6 +320,7 @@ interface ClaudeSessionContext {
   baseContextChars: number;
   approximateConversationChars: number;
   compactionRecommendationEmitted: boolean;
+  resumeCompactionDialogShown: boolean;
   resumeAttemptSessionId: string | undefined;
   resumeConfirmed: boolean;
   resumeInvalidatedTurnId: TurnId | undefined;
@@ -2849,7 +2850,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       turnId: TurnId | undefined,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (context.compactionRecommendationEmitted) {
+        if (context.compactionRecommendationEmitted || context.resumeCompactionDialogShown) {
           return;
         }
 
@@ -4751,7 +4752,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const taskStates = new Map<string, ClaudeTaskState>();
 
         const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
-        const providerOptions = input.providerOptions?.claudeAgent;
+        const providerOptions = {
+          autoCompactWindow: options?.oneOffProviderOptions?.autoCompactWindow,
+          resumeCompactionPrompt: options?.oneOffProviderOptions?.resumeCompactionPrompt,
+          ...input.providerOptions?.claudeAgent,
+        };
 
         /**
          * Handle AskUserQuestion tool calls by emitting a `user-input.requested`
@@ -4832,9 +4837,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               Effect.runFork(Deferred.succeed(answersDeferred, {} as ProviderUserInputAnswers));
             };
             callbackOptions.signal.addEventListener("abort", onAbort, { once: true });
+            if (callbackOptions.signal.aborted) onAbort();
 
             // Block until the user provides answers.
-            const answers = yield* Deferred.await(answersDeferred);
+            const answers = yield* Deferred.await(answersDeferred).pipe(
+              Effect.ensuring(
+                Effect.sync(() => callbackOptions.signal.removeEventListener("abort", onAbort)),
+              ),
+            );
             pendingUserInputs.delete(requestId);
 
             // Skip emitting user-input.resolved when the interrupt path
@@ -4893,6 +4903,47 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             } satisfies PermissionResult;
           });
+
+        const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (request, options) =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              if (request.dialogKind !== "resume_return") return { behavior: "cancelled" as const };
+              const context = yield* Ref.get(contextRef);
+              if (!context || !providerOptions?.resumeCompactionPrompt)
+                return { behavior: "cancelled" as const };
+              const question = "Compact this resumed session before continuing?";
+              const answer = yield* handleAskUserQuestion(
+                context,
+                {
+                  questions: [
+                    {
+                      header: "Resume session",
+                      question,
+                      multiSelect: false,
+                      options: [
+                        {
+                          label: "Compact and continue",
+                          description: "Summarize history to use fewer tokens.",
+                        },
+                        {
+                          label: "Keep full history",
+                          description: "Continue with the complete conversation.",
+                        },
+                      ],
+                    },
+                  ],
+                },
+                options,
+              );
+              if (answer.behavior !== "allow") return { behavior: "cancelled" as const };
+              const answers = answer.updatedInput.answers as Record<string, string>;
+              context.resumeCompactionDialogShown = answers[question] === "Compact and continue";
+              return {
+                behavior: "completed" as const,
+                result: answers[question] === "Compact and continue" ? "compact" : "continue",
+              };
+            }),
+          );
 
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
@@ -5237,10 +5288,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
-        const settings = claudeRuntimeSettings({
-          fastMode,
-          ...(typeof thinking === "boolean" ? { thinking } : {}),
-        });
+        const settings = {
+          ...(providerOptions?.autoCompactWindow
+            ? { autoCompactWindow: providerOptions.autoCompactWindow }
+            : {}),
+          ...claudeRuntimeSettings({
+            fastMode,
+            ...(typeof thinking === "boolean" ? { thinking } : {}),
+          }),
+        };
         const configuredBase = {
           ...(selectedModel ? { model: selectedModel } : {}),
           ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -5362,6 +5418,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
+          onUserDialog,
+          supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
           env: queryEnvironment,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
@@ -5454,6 +5512,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           baseContextChars:
             resumeState?.baseContextChars ?? Math.max(0, appendInstructionText?.length ?? 0),
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
+          resumeCompactionDialogShown: false,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,
           resumeAttemptSessionId: existingResumeSessionId,
           resumeConfirmed: false,

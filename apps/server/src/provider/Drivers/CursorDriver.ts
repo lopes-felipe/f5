@@ -1,3 +1,4 @@
+import { makeProviderLimits } from "../../usage/providerLimits.ts";
 /**
  * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
  *
@@ -91,6 +92,14 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         instanceId,
       });
+      const accountUsage = yield* makeProviderLimits({
+        provider: "cursor",
+        instanceId,
+        displayName: displayName || "Cursor",
+        enabled,
+        environment: processEnv,
+        apiEndpoint: effectiveConfig.apiEndpoint,
+      });
       const textGeneration = yield* makeCursorTextGeneration(effectiveConfig, processEnv);
 
       const checkProvider = checkCursorProviderStatus(effectiveConfig, processEnv).pipe(
@@ -128,6 +137,7 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         enabled,
         snapshot,
         adapter,
+        accountUsage,
         textGeneration,
       } satisfies ProviderInstance;
     }),

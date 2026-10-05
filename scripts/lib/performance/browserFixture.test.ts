@@ -35,5 +35,6 @@ it("answers rewind draft reads without adding draft work", () => {
     threadId: "perf-small",
     drafts: [],
   });
+
   expect([...fixture.unknownMethods]).toEqual([]);
 });

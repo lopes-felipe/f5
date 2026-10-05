@@ -228,7 +228,12 @@ import {
   AgentsGetSnapshotInput,
   AgentsSnapshot,
 } from "./backgroundWork";
-import { USAGE_WS_METHODS, UsageGetAccountsInput, UsageGetSummaryInput } from "./usage";
+import {
+  USAGE_WS_METHODS,
+  UsageConsumeResetCreditInput,
+  UsageGetAccountsInput,
+  UsageGetSummaryInput,
+} from "./usage";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { ReviewPreviewDiffInput } from "./review";
 import {
@@ -470,6 +475,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.providerAccountLogout, ProviderAccountStartInput),
   tagRequestBody(WS_METHODS.providerAccountStatus, ProviderAccountStartInput),
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
+  tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
   // Orchestration methods

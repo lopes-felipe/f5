@@ -230,6 +230,10 @@ export function createBrowserFixture(protocolVersion = 1) {
             maxItems: 20,
             quarantinedCount: 0,
           };
+        case "orchestration.getRewindDrafts":
+          return { threadId: id, drafts: [] };
+        case "worktreeSetup.subscribe":
+          return null;
         case "orchestration.getSnapshot":
           return snapshot();
         case "orchestration.getStartupSnapshot":

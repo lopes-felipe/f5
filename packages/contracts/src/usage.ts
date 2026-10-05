@@ -14,6 +14,7 @@ import { ProviderInstanceId } from "./providerInstance";
 export const USAGE_WS_METHODS = {
   getSummary: "usage.getSummary",
   getAccounts: "usage.getAccounts",
+  consumeResetCredit: "usage.consumeResetCredit",
 } as const;
 
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
@@ -29,7 +30,7 @@ export type UsageTokenProvenance = typeof UsageTokenProvenance.Type;
 export const UsageCostProvenance = Schema.Literals(["provider-reported", "unreported"]);
 export type UsageCostProvenance = typeof UsageCostProvenance.Type;
 
-const NonNegativeNumber = Schema.Number.check(Schema.isGreaterThanOrEqualTo(0));
+const NonNegativeNumber = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 
 export const UsageTurnFact = Schema.Struct({
   turnId: TurnId,
@@ -67,6 +68,7 @@ export const UsageMetrics = Schema.Struct({
   cacheWriteTokens: NonNegativeInt,
   totalTokens: NonNegativeInt,
   providerReportedCostUsd: Schema.NullOr(NonNegativeNumber),
+  estimatedCostUsd: Schema.optional(Schema.NullOr(NonNegativeNumber)),
   pricedTurnCount: NonNegativeInt,
   unpricedTurnCount: NonNegativeInt,
 });
@@ -209,7 +211,47 @@ const sectionState = {
   lastAttemptAt: Schema.NullOr(IsoDateTime),
   errorCode: Schema.NullOr(AccountUsageErrorCode),
 };
+export const ProviderUsageWindow = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  usedPercent: NonNegativeNumber,
+  resetsAt: Schema.NullOr(IsoDateTime),
+});
+export type ProviderUsageWindow = typeof ProviderUsageWindow.Type;
+export const UsageResetCredits = Schema.Struct({
+  availableCount: NonNegativeInt,
+  nextExpiresAt: Schema.NullOr(IsoDateTime),
+});
+export const UsageConsumeResetCreditInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  idempotencyKey: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+});
+export type UsageConsumeResetCreditInput = typeof UsageConsumeResetCreditInput.Type;
+export const UsageConsumeResetCreditResult = Schema.Struct({
+  outcome: Schema.Literals(["reset", "nothingToReset", "noCredit", "alreadyRedeemed"]),
+});
+export type UsageConsumeResetCreditResult = typeof UsageConsumeResetCreditResult.Type;
+export const UsagePriceOverride = Schema.Struct({
+  provider: ProviderKind,
+  model: TrimmedNonEmptyString,
+  inputUsdPerMillion: NonNegativeNumber,
+  outputUsdPerMillion: NonNegativeNumber,
+  cacheReadUsdPerMillion: Schema.NullOr(NonNegativeNumber),
+  cacheWriteUsdPerMillion: Schema.NullOr(NonNegativeNumber),
+});
+export type UsagePriceOverride = typeof UsagePriceOverride.Type;
+
 export const AccountUsageSection = Schema.Union([
+  Schema.Struct({
+    ...sectionState,
+    kind: Schema.Literal("provider-limits"),
+    snapshot: Schema.NullOr(
+      Schema.Struct({
+        fetchedAt: IsoDateTime,
+        data: Schema.Struct({ windows: Schema.Array(ProviderUsageWindow) }),
+      }),
+    ),
+  }),
   Schema.Struct({
     ...sectionState,
     kind: Schema.Literal("claude-usage"),
@@ -234,7 +276,10 @@ export const AccountUsageSection = Schema.Union([
     snapshot: Schema.NullOr(
       Schema.Struct({
         fetchedAt: IsoDateTime,
-        data: Schema.Struct({ rateLimits: Schema.Array(CodexAccountRateLimit) }),
+        data: Schema.Struct({
+          rateLimits: Schema.Array(CodexAccountRateLimit),
+          resetCredits: Schema.optional(Schema.NullOr(UsageResetCredits)),
+        }),
       }),
     ),
   }),

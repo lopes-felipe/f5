@@ -27,6 +27,7 @@ type PushQueueEntry =
   | { readonly kind: "coalesced"; readonly key: string };
 
 const DEFAULT_PUSH_QUEUE_CAPACITY = 2_048;
+const DEFAULT_MAX_CLIENT_OUTSTANDING_FRAMES = 2_000;
 const DEFAULT_MAX_CLIENT_BUFFERED_BYTES = 4 * 1024 * 1024;
 const SLOW_CLIENT_CLOSE_CODE = 1013;
 const SLOW_CLIENT_CLOSE_REASON = "Client fell behind; reconnecting to resynchronize.";
@@ -40,10 +41,15 @@ export interface WebSocketSendController {
 export function makeWebSocketSendController(input: {
   readonly clients: Ref.Ref<Set<WebSocket>>;
   readonly maxClientBufferedBytes?: number;
+  readonly maxClientOutstandingFrames?: number;
 }): WebSocketSendController {
   const maxClientBufferedBytes = Math.max(
     1,
     input.maxClientBufferedBytes ?? DEFAULT_MAX_CLIENT_BUFFERED_BYTES,
+  );
+  const maxClientOutstandingFrames = Math.max(
+    1,
+    input.maxClientOutstandingFrames ?? DEFAULT_MAX_CLIENT_OUTSTANDING_FRAMES,
   );
   interface PendingFrame {
     readonly message: string;
@@ -151,7 +157,10 @@ export function makeWebSocketSendController(input: {
         const budgetedOutstanding = oversizedFrameInFlight
           ? state.pendingBytes
           : logicalOutstanding;
-        if (budgetedOutstanding + logicalBytes > maxClientBufferedBytes) {
+        if (
+          budgetedOutstanding + logicalBytes > maxClientBufferedBytes ||
+          state.pending.length + 1 >= maxClientOutstandingFrames
+        ) {
           yield* closeSlowClient(client);
           return false;
         }

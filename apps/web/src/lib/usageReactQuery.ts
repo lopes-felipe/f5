@@ -53,6 +53,6 @@ export function usageAccountsQueryOptions() {
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     refetchIntervalInBackground: false,
-    refetchInterval: (query) => (accountJobsPending(query.state.data) ? 1_000 : false),
+    refetchInterval: (query) => (accountJobsPending(query.state.data) ? 1_000 : 300_000),
   });
 }

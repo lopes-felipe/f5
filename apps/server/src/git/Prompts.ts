@@ -297,12 +297,13 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
           `The previous title was ${JSON.stringify(input.previousTitle)}.`,
         ].join("\n")
       : "You write concise thread titles for coding conversations.",
-    responseShape: "Return a JSON object with key: title.",
+    responseShape: "Return a JSON object with keys: title, needsRefinement.",
     rules: [
       isRegeneration
         ? "Title should summarize the thread's current state, not just its initial request."
         : "Title should summarize the user's request, not restate it verbatim.",
       ...(isRegeneration ? ["Return a different title from the previous title."] : []),
+      "Set needsRefinement to true only if the user intent is too vague for a specific title. Never infer intent from assistant actions.",
       "Keep it short and specific (3-8 words).",
       "Avoid quotes, filler, prefixes, and trailing punctuation.",
       "If images are attached, use them as primary context for visual/UI issues.",
@@ -312,6 +313,7 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
   });
   const outputSchema = Schema.Struct({
     title: Schema.String,
+    needsRefinement: Schema.optional(Schema.Boolean),
   });
 
   return { prompt, outputSchema };
