@@ -1,7 +1,7 @@
 import { composerAttachmentStatus } from "~/lib/attachmentValidation";
 import { AttachmentUploadProgress } from "./AttachmentUploadProgress";
 import { PopupFocusContext } from "~/components/ui/popupFocus";
-import type { ComposerMention } from "~/composer-editor-mentions";
+import { type ComposerMention, insertComposerMentionTrigger } from "~/composer-editor-mentions";
 import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { useAppSettings } from "~/appSettings";
@@ -213,23 +213,23 @@ export function ChatComposer({
   const handleMentionFile = () => {
     const current = composerEditorRef.current?.readSnapshot();
     if (!current) return;
-    const before = current.value.slice(0, current.expandedCursor);
-    const after = current.value.slice(current.expandedCursor);
-    const insertion = before.length === 0 || /\s$/.test(before) ? "@" : " @";
-    const nextValue = `${before}${insertion}${after}`;
-    const nextExpandedCursor = before.length + insertion.length;
-    const nextCursor = collapseExpandedComposerCursor(
-      nextValue,
-      nextExpandedCursor,
+    const next = insertComposerMentionTrigger(
+      current.value,
+      current.expandedCursor,
       current.mentions,
     );
+    const nextCursor = collapseExpandedComposerCursor(
+      next.value,
+      next.expandedCursor,
+      next.mentions,
+    );
     onPromptChange(
-      nextValue,
+      next.value,
       nextCursor,
-      nextExpandedCursor,
+      next.expandedCursor,
       false,
       current.terminalContextIds,
-      current.mentions,
+      next.mentions,
     );
     composerEditorRef.current?.focusAt(nextCursor);
   };
@@ -254,7 +254,7 @@ export function ChatComposer({
       <form
         ref={composerFormRef}
         onSubmit={sendControls.onSend}
-        className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width)"
+        className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) shrink-0"
         data-chat-composer-form="true"
       >
         <div

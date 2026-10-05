@@ -278,7 +278,7 @@ import { ChatHeader } from "./chat/ChatHeader";
 import { ChatStatusAnnouncer } from "./chat/ChatStatusAnnouncer";
 import { useComposerFocusRequestStore } from "../composerFocusRequestStore";
 import { JumpToLatestButton } from "./chat/JumpToLatestButton";
-import { ComposerDock } from "./chat/composer/ComposerDock";
+import { ComposerDock, ComposerDockColumn } from "./chat/composer/ComposerDock";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME, ComposerTray } from "./chat/composer/ComposerTray";
 import { ThreadNoticeStack, type ThreadNotice } from "./chat/ThreadNoticeStack";
 import {
@@ -376,6 +376,7 @@ const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
+const COMPOSER_FOCUS_REQUEST_MAX_FRAMES = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now" | "steer";
 const SCRIPT_TERMINAL_ROWS = 30;
@@ -2739,12 +2740,24 @@ export default function ChatView({
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.threadId !== threadId) return;
     if (!hasActiveThread) return;
-    const frame = window.requestAnimationFrame(() => {
+    // The editor ref can attach a few frames after the thread does (details
+    // still loading), and a ref attaching does not re-run this effect, so
+    // retry for up to ~2s of frames.
+    let frame = 0;
+    let attempts = 0;
+    const tryFocus = () => {
       const editor = composerEditorRef.current;
-      if (!editor) return;
+      if (!editor) {
+        if (attempts < COMPOSER_FOCUS_REQUEST_MAX_FRAMES) {
+          attempts += 1;
+          frame = window.requestAnimationFrame(tryFocus);
+        }
+        return;
+      }
       editor.focusAtEnd();
       useComposerFocusRequestStore.getState().clearComposerFocusRequest(composerFocusRequest.nonce);
-    });
+    };
+    frame = window.requestAnimationFrame(tryFocus);
     return () => window.cancelAnimationFrame(frame);
   }, [composerFocusRequest, hasActiveThread, threadId]);
   const promptStashFallbackSelection = useMemo<PromptStashDraftSelection>(
@@ -6981,12 +6994,7 @@ export default function ChatView({
 
               {/* Composer dock: tray, composer and branch line float over the timeline end */}
               <ComposerDock>
-                <div
-                  className={cn(
-                    "mx-auto w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] px-3 sm:px-5",
-                    isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4",
-                  )}
-                >
+                <ComposerDockColumn className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}>
                   <ComposerTray>
                     {threadNotices.length > 0 ? (
                       <ThreadNoticeStack notices={threadNotices} />
@@ -7131,7 +7139,7 @@ export default function ChatView({
                         : {})}
                     />
                   )}
-                </div>
+                </ComposerDockColumn>
               </ComposerDock>
             </div>
 

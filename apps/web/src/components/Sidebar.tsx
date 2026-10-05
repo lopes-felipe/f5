@@ -421,7 +421,9 @@ export default function Sidebar() {
     });
   }, []);
   useEffect(() => {
-    if (lastCreatedWorkflowId) handleWorkflowCreated(lastCreatedWorkflowId);
+    if (!lastCreatedWorkflowId) return;
+    handleWorkflowCreated(lastCreatedWorkflowId);
+    useWorkflowCreateDialogStore.getState().clearCreated(lastCreatedWorkflowId);
   }, [handleWorkflowCreated, lastCreatedWorkflowId]);
   const [workflowToArchive, setWorkflowToArchive] = useState<{
     workflowId: SidebarWorkflowId;

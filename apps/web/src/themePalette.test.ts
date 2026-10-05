@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BUILTIN_THEME_PALETTES,
+  CLASSIC_BLACK_THEME_ID,
   DEFAULT_THEME_ID,
   DERIVED_THEME_TOKEN_NAMES,
   MIN_BODY_TEXT_CONTRAST,
@@ -134,6 +135,16 @@ describe("theme palette registry", () => {
     expect(light.primary).toContain("oklch(");
     expect(dark.background).not.toBe(light.background);
     expect(light.primary).toContain("145");
+  });
+
+  it("keeps the pre-redesign default as F5 Black (classic) beside the Graphite default", () => {
+    const graphite = resolveThemePalette(DEFAULT_THEME_ID, []);
+    const classic = resolveThemePalette(CLASSIC_BLACK_THEME_ID, []);
+    expect(graphite.name).toBe("F5 Graphite");
+    expect(classic.id).toBe(CLASSIC_BLACK_THEME_ID);
+    expect(classic.name).toBe("F5 Black (classic)");
+    expect(classic.dark.background).toBe("#161616");
+    expect(BUILTIN_THEME_PALETTES.map((palette) => palette.id)).toContain(CLASSIC_BLACK_THEME_ID);
   });
 
   it("keeps every built-in body-text pair above WCAG AA", () => {

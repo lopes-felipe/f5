@@ -156,6 +156,26 @@ export function replaceComposerMentionRange(
   });
 }
 
+/**
+ * Insert an "@" at the caret (with a leading space unless the caret already
+ * follows whitespace) so the file autocomplete opens as if typed. Mentions
+ * after the caret shift by the inserted length so their chips survive.
+ */
+export function insertComposerMentionTrigger(
+  value: string,
+  expandedCursor: number,
+  mentions: readonly ComposerMention[],
+): { value: string; expandedCursor: number; mentions: ComposerMention[] } {
+  const before = value.slice(0, expandedCursor);
+  const after = value.slice(expandedCursor);
+  const insertion = before.length === 0 || /\s$/.test(before) ? "@" : " @";
+  return {
+    value: `${before}${insertion}${after}`,
+    expandedCursor: before.length + insertion.length,
+    mentions: replaceComposerMentionRange(mentions, before.length, before.length, insertion.length),
+  };
+}
+
 /** Plain-text controls expose the resulting value rather than editor nodes. */
 export function reconcileComposerMentions(
   previous: string,

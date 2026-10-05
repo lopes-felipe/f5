@@ -321,9 +321,9 @@ function OpenCommandPaletteDialog(props: {
 
   const activeThreadId = activeThread?.id;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
-  const workflowProjectId = currentProjectId ?? projects[0]?.id ?? null;
-  // Off a thread (Home, settings, PR hub) "New thread in ..." still targets a
-  // concrete project, matching the sidebar's primary New thread button.
+  // Off a thread (Home, settings, PR hub) "New thread in ..." and "New
+  // workflow in ..." still target a concrete project, the same one the
+  // sidebar's New thread and New workflow buttons use.
   const newThreadProjectId = useMemo(
     () =>
       resolvePrimaryNewThreadProjectId({
@@ -349,6 +349,7 @@ function OpenCommandPaletteDialog(props: {
       threads,
     ],
   );
+  const workflowProjectId = newThreadProjectId;
   const [requestedSearchProjectId, setRequestedSearchProjectId] = useState<ProjectId | null>(null);
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)

@@ -65,7 +65,6 @@ import {
   WORKFLOW_TYPE_DESCRIPTION,
   WORKFLOW_TYPE_DIALOG_LABEL,
   WORKFLOW_TYPE_ICON,
-  WORKFLOW_TYPE_ICON_CLASS,
   WORKFLOW_TYPE_ORDER,
   WORKFLOW_TYPE_TOGGLE_CLASS,
   type WorkflowTypeValue,
@@ -370,6 +369,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       },
       merge: { provider: mergeProvider, model: mergeSelection },
     });
+  // Resolved like the other slots so the picker shows what gets submitted.
+  const readerSelection = resolveWorkflowModelSelection(
+    effectiveReaderSlot.provider,
+    effectiveReaderSlot.model,
+  );
   const sameDocumentAuthors =
     workflowType === "document" &&
     branchAProvider === branchBProvider &&
@@ -772,10 +776,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ? {
                   reader: buildSlot(
                     effectiveReaderSlot.provider,
-                    resolveWorkflowModelSelection(
-                      effectiveReaderSlot.provider,
-                      effectiveReaderSlot.model,
-                    ),
+                    readerSelection,
                     effectiveReaderSlot.modelOptions,
                   ),
                 }
@@ -911,10 +912,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       )}
                     >
                       <span className="flex items-center gap-2 text-sm font-medium">
-                        <TypeIcon
-                          aria-hidden="true"
-                          className={cn("size-4", WORKFLOW_TYPE_ICON_CLASS[type])}
-                        />
+                        {/* Follows the card's text colour, tinted only while selected. */}
+                        <TypeIcon aria-hidden="true" className="size-4" />
                         {WORKFLOW_TYPE_DIALOG_LABEL[type]}
                       </span>
                       <span
@@ -1171,7 +1170,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                       <SlotRow
                         label="Reader model"
                         provider={effectiveReaderSlot.provider}
-                        model={effectiveReaderSlot.model as ModelSlug}
+                        model={readerSelection}
                         modelOptions={effectiveReaderSlot.modelOptions}
                         modelOptionsByProvider={modelOptionsByProvider}
                         onProviderModelChange={(provider, model) =>
@@ -1185,7 +1184,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                         }
                       />
                       {effectiveReaderSlot.provider === mergeProvider &&
-                      effectiveReaderSlot.model === mergeSelection ? (
+                      readerSelection === mergeSelection ? (
                         <p className="text-2xs text-muted-foreground">
                           The reader is the model that writes the final document; a different model
                           usually catches more gaps.

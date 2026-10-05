@@ -31,26 +31,25 @@ export const WORKFLOW_TYPE_ICON: Record<WorkflowTypeValue, LucideIcon> = {
   document: FileTextIcon,
 };
 
-/** Semantic tones per type: planning info, code review success, investigation warning, document attention. */
+/**
+ * Type icons are neutral wherever workflows are listed (sidebar, header,
+ * workflow page): the status colours there mean "running", "needs you" and so
+ * on, so a coloured type icon would read as a status. The icon shape carries
+ * the type.
+ */
 export const WORKFLOW_TYPE_ICON_CLASS: Record<WorkflowTypeValue, string> = {
-  planning: "text-info-foreground",
-  codeReview: "text-success-foreground",
-  investigation: "text-warning-foreground",
-  document: "text-attention-foreground",
+  planning: "text-muted-foreground",
+  codeReview: "text-muted-foreground",
+  investigation: "text-muted-foreground",
+  document: "text-muted-foreground",
 };
 
+/** Tint for the selected type card in the New Workflow dialog only. */
 export const WORKFLOW_TYPE_TOGGLE_CLASS: Record<WorkflowTypeValue, string> = {
   document: "data-pressed:bg-attention/10 data-pressed:text-attention-foreground",
   planning: "data-pressed:bg-info/10 data-pressed:text-info-foreground",
   codeReview: "data-pressed:bg-success/10 data-pressed:text-success-foreground",
   investigation: "data-pressed:bg-warning/10 data-pressed:text-warning-foreground",
-};
-
-export const WORKFLOW_TYPE_BADGE_CLASS: Record<WorkflowTypeValue, string> = {
-  document: "border-attention/40 text-attention-foreground",
-  planning: "border-info/40 text-info-foreground",
-  codeReview: "border-success/40 text-success-foreground",
-  investigation: "border-warning/40 text-warning-foreground",
 };
 
 export function workflowDisplayType(

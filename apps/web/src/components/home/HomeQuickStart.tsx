@@ -12,6 +12,7 @@ import { useWorkflowCreateDialogStore } from "../../workflowCreateDialogStore";
 import { ProjectIcon } from "../ProjectIcon";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { toastManager } from "../ui/toast";
 
 export const QUICK_START_PLACEHOLDER = "What should we work on?";
 
@@ -61,6 +62,13 @@ export function HomeQuickStart(props: {
       }
       requestComposerFocus(threadId);
       setText("");
+    } catch (error) {
+      // Keep the typed text so the user can retry.
+      toastManager.add({
+        type: "error",
+        title: "Could not start thread",
+        description: error instanceof Error ? error.message : "An unexpected error occurred.",
+      });
     } finally {
       setStarting(false);
     }

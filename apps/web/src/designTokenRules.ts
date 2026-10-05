@@ -78,7 +78,7 @@ export const DESIGN_TOKEN_ALLOWLIST: ReadonlySet<string> = new Set([
   "components/ProjectIcon.tsx",
 ]);
 
-/** Test files assert on class strings and are not part of the ratchet. */
+/** Test files assert on class strings and are not scanned. */
 export function isDesignTokenScannedPath(relativePath: string): boolean {
   if (DESIGN_TOKEN_ALLOWLIST.has(relativePath)) return false;
   if (/\.(?:test|browser)\.tsx?$/.test(relativePath)) return false;
@@ -92,20 +92,4 @@ export function countDesignTokenViolations(source: string): DesignTokenCounts {
     if (matches && matches.length > 0) counts[name] = matches.length;
   }
   return counts;
-}
-
-export function sortDesignTokenBaseline(
-  baseline: Record<string, DesignTokenCounts>,
-): Record<string, DesignTokenCounts> {
-  const sorted: Record<string, DesignTokenCounts> = {};
-  for (const path of Object.keys(baseline).toSorted()) {
-    const counts = baseline[path];
-    if (!counts) continue;
-    const ordered: DesignTokenCounts = {};
-    for (const name of DESIGN_TOKEN_RULE_NAMES) {
-      if (counts[name]) ordered[name] = counts[name];
-    }
-    if (Object.keys(ordered).length > 0) sorted[path] = ordered;
-  }
-  return sorted;
 }

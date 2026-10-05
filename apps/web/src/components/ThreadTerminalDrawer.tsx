@@ -12,10 +12,12 @@ import {
 import { type ThreadId } from "@t3tools/contracts";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -210,6 +212,23 @@ export function resolveTerminalSelectionActionPosition(options: {
     x: Math.max(8, Math.min(preferredX, Math.max(viewportWidth - 8, 8))),
     y: Math.max(8, Math.min(preferredY, Math.max(viewportHeight - 8, 8))),
   };
+}
+
+/** Roving focus in the terminal tab strip: wraps at both ends; null for other keys. */
+export function terminalTabIndexForKey(key: string, index: number, count: number): number | null {
+  if (count <= 0) return null;
+  switch (key) {
+    case "ArrowRight":
+      return (index + 1) % count;
+    case "ArrowLeft":
+      return (index - 1 + count) % count;
+    case "Home":
+      return 0;
+    case "End":
+      return count - 1;
+    default:
+      return null;
+  }
 }
 
 export function terminalSelectionActionDelayForClickCount(clickCount: number): number {
@@ -1035,6 +1054,31 @@ export default function ThreadTerminalDrawer({
     resolvedActiveTerminalId,
   ];
   const hasTerminalTabs = normalizedTerminalIds.length > 1;
+  const terminalTabIdPrefix = useId();
+  const terminalTabId = (terminalId: string) => `${terminalTabIdPrefix}-tab-${terminalId}`;
+  const terminalPanelId = `${terminalTabIdPrefix}-panel`;
+  // Tabs pattern with manual activation: arrows, Home and End move focus;
+  // Enter or Space (the button's click) activates, which focuses the
+  // terminal. Delete closes the focused tab, standing in for its close
+  // button, which is pointer-only.
+  const onTerminalTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    terminalId: string,
+  ) => {
+    const orderedIds = resolvedTerminalGroups.flatMap((group) => group.terminalIds);
+    const index = orderedIds.indexOf(terminalId);
+    if (index < 0) return;
+    if (event.key === "Delete") {
+      event.preventDefault();
+      onCloseTerminal(terminalId);
+      return;
+    }
+    const nextIndex = terminalTabIndexForKey(event.key, index, orderedIds.length);
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextId = orderedIds[nextIndex];
+    if (nextId) document.getElementById(terminalTabId(nextId))?.focus();
+  };
   const isSplitView = visibleTerminalIds.length > 1;
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const terminalLabelById = useMemo(
@@ -1191,6 +1235,7 @@ export default function ThreadTerminalDrawer({
               {resolvedTerminalGroups.map((terminalGroup) => (
                 <div
                   key={terminalGroup.id}
+                  role="presentation"
                   className={cn(
                     "flex items-center gap-0.5",
                     terminalGroup.terminalIds.length > 1 &&
@@ -1206,6 +1251,7 @@ export default function ThreadTerminalDrawer({
                     return (
                       <div
                         key={terminalId}
+                        role="presentation"
                         className={cn(
                           "group/tab flex h-6 shrink-0 items-center gap-0.5 rounded-md ps-2 pe-0.5 text-ui",
                           isActive
@@ -1216,9 +1262,13 @@ export default function ThreadTerminalDrawer({
                         <button
                           type="button"
                           role="tab"
+                          id={terminalTabId(terminalId)}
                           aria-selected={isActive}
+                          aria-controls={terminalPanelId}
+                          tabIndex={isActive ? 0 : -1}
                           className="flex min-w-0 items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           onClick={() => onActiveTerminalChange(terminalId)}
+                          onKeyDown={(event) => onTerminalTabKeyDown(event, terminalId)}
                         >
                           <TerminalSquare aria-hidden="true" className="size-3.5 shrink-0" />
                           <span className="truncate">{label}</span>
@@ -1229,6 +1279,9 @@ export default function ThreadTerminalDrawer({
                               <button
                                 type="button"
                                 aria-label={closeTerminalLabel}
+                                // Out of the tab order: Delete on the tab, the
+                                // Close action and the close shortcut cover it.
+                                tabIndex={-1}
                                 className={cn(
                                   "inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-0 outline-none hover:bg-background/70 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/tab:opacity-100 pointer-coarse:opacity-100",
                                   isActive && "opacity-100",
@@ -1291,7 +1344,16 @@ export default function ThreadTerminalDrawer({
         </>
       )}
 
-      <div className="min-h-0 w-full flex-1">
+      <div
+        className="min-h-0 w-full flex-1"
+        {...(hasTerminalTabs
+          ? {
+              id: terminalPanelId,
+              role: "tabpanel",
+              "aria-labelledby": terminalTabId(resolvedActiveTerminalId),
+            }
+          : {})}
+      >
         <div className="flex h-full min-h-0">
           <div className="min-w-0 flex-1">
             {isSplitView ? (

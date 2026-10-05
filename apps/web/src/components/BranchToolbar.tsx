@@ -111,7 +111,7 @@ export default function BranchToolbar({
   return (
     <div
       data-slot="branch-toolbar"
-      className="mx-auto flex h-7 w-full max-w-(--chat-content-max-width) items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
+      className="mx-auto flex h-7 w-full max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
     >
       {envLocked || activeWorktreePath ? (
         <span className="inline-flex items-center gap-1 px-2 text-2xs text-muted-foreground">

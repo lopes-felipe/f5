@@ -44,13 +44,16 @@ export function WorkflowInputSection(props: {
   return (
     <Collapsible defaultOpen={props.defaultOpen} data-slot="workflow-input">
       <section className="rounded-xl border border-border bg-card">
-        <CollapsibleTrigger className="group flex h-10 w-full items-center gap-2 rounded-xl px-4 text-start outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <h2 className="flex-1 text-sm font-semibold text-foreground">{props.label}</h2>
-          <ChevronDownIcon
-            aria-hidden="true"
-            className="size-4 text-muted-foreground transition-transform duration-(--duration-fast) group-data-panel-open:rotate-180"
-          />
-        </CollapsibleTrigger>
+        {/* The heading wraps the trigger: a button may only hold phrasing content. */}
+        <h2 className="text-sm font-semibold text-foreground">
+          <CollapsibleTrigger className="group flex h-10 w-full items-center gap-2 rounded-xl px-4 text-start outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <span className="flex-1">{props.label}</span>
+            <ChevronDownIcon
+              aria-hidden="true"
+              className="size-4 text-muted-foreground transition-transform duration-(--duration-fast) group-data-panel-open:rotate-180"
+            />
+          </CollapsibleTrigger>
+        </h2>
         <CollapsiblePanel>
           <div className="border-t border-border px-4 py-3">
             <p className="whitespace-pre-wrap text-sm text-muted-foreground">{props.text}</p>

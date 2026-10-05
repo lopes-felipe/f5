@@ -2238,7 +2238,7 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   if (tone === "error") {
     return {
       icon: CircleAlertIcon,
-      className: "text-foreground",
+      className: "text-destructive-foreground",
     };
   }
   if (tone === "thinking") {
@@ -2260,7 +2260,7 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
 }
 
 function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
-  if (tone === "error") return "text-destructive-foreground/50";
+  if (tone === "error") return "text-destructive-foreground";
   if (tone === "tool") return "text-muted-foreground";
   if (tone === "thinking") return "text-muted-foreground";
   return "text-muted-foreground";

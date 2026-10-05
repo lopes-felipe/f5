@@ -10,6 +10,8 @@ import {
 
 export const THEME_DEFINITION_VERSION = 1 as const;
 export const DEFAULT_THEME_ID = "f5-black";
+/** The palette `f5-black` used before the Graphite redesign. */
+export const CLASSIC_BLACK_THEME_ID = "f5-black-classic";
 export const MAX_CUSTOM_THEMES = 20;
 export const MAX_THEME_DEFINITION_BYTES = 64 * 1024;
 export const MIN_BODY_TEXT_CONTRAST = 4.5;
@@ -467,6 +469,34 @@ const BUILTIN_THEME_DEFINITIONS: readonly ThemeDefinitionV1[] = [
         border: "oklch(0.295 0.008 260)",
         input: "oklch(0.34 0.01 260)",
         ring: "oklch(0.68 0.17 262)",
+      },
+    },
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    // The pre-redesign default palette, kept under its own id for anyone who
+    // prefers it. The derived chrome/faint/attention tokens still apply.
+    id: CLASSIC_BLACK_THEME_ID,
+    name: "F5 Black (classic)",
+    parameters: normalizeThemeParameters({ baseHue: 264, chroma: 0.185, contrast: 1 }),
+    overrides: {
+      dark: {
+        background: "#161616",
+        foreground: "#f5f5f5",
+        card: "#1b1b1b",
+        "card-foreground": "#f5f5f5",
+        popover: "#1b1b1b",
+        "popover-foreground": "#f5f5f5",
+        secondary: "#202020",
+        "secondary-foreground": "#f5f5f5",
+        muted: "#202020",
+        // Was #7d7d7d (3.96:1 on hover); the nearest grey that meets AA on
+        // background, cards and hover.
+        "muted-foreground": "#878787",
+        accent: "#202020",
+        "accent-foreground": "#f5f5f5",
+        border: "#252525",
+        input: "#292929",
       },
     },
   },

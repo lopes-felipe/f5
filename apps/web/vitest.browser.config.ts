@@ -64,6 +64,7 @@ export default mergeConfig(
         "src/components/chat/CodexTraitsPicker.browser.tsx",
         "src/components/chat/ChatHeader.browser.tsx",
         "src/components/chat/composer/ContextMeter.browser.tsx",
+        "src/components/chat/composer/ComposerDock.browser.tsx",
         "src/components/chat/CommandTranscriptCard.browser.tsx",
         "src/components/chat/ExpandedImagePreview.browser.tsx",
         "src/components/chat/MessagesTimeline.browser.tsx",

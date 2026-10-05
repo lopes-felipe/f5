@@ -17,6 +17,12 @@ function publishDockHeight(host: HTMLElement, dock: HTMLElement): void {
  * closest `data-composer-dock-host` ancestor as `--composer-dock-height` so the
  * timeline can reserve the same space at its end: the last message is never
  * hidden and "at end" detection measures against the padded content.
+ *
+ * The dock never grows taller than its host: its column is a flex stack in
+ * which only the tray shrinks (and scrolls), so the composer stays reachable
+ * with a short window, an open terminal or several pending questions. Only
+ * the centred column takes pointer events; wheel and clicks over the side
+ * gutters reach the timeline underneath.
  */
 export function ComposerDock(props: { children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -41,14 +47,32 @@ export function ComposerDock(props: { children: ReactNode; className?: string })
       ref={ref}
       data-slot="composer-dock"
       className={cn(
-        "pointer-events-none absolute inset-x-0 bottom-0 z-20 pb-safe-add",
+        "pointer-events-none absolute inset-x-0 bottom-0 z-20 flex max-h-full flex-col pb-safe-add",
         // The fade starts above the dock so scrolled text dissolves before it
         // reaches the composer instead of being cut off at its edge.
         "before:pointer-events-none before:absolute before:inset-x-0 before:-top-6 before:bottom-0 before:bg-linear-to-t before:from-background before:from-60% before:to-transparent",
         props.className,
       )}
     >
-      <div className="pointer-events-auto relative">{props.children}</div>
+      <div className="relative flex min-h-0 flex-col">{props.children}</div>
+    </div>
+  );
+}
+
+/**
+ * The dock's centred column (tray, composer, branch line). It is the only
+ * part of the dock that receives pointer events.
+ */
+export function ComposerDockColumn(props: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      data-slot="composer-dock-column"
+      className={cn(
+        "pointer-events-auto mx-auto flex min-h-0 w-full max-w-[calc(var(--chat-content-max-width)+2.5rem)] flex-col px-3 sm:px-5",
+        props.className,
+      )}
+    >
+      {props.children}
     </div>
   );
 }
