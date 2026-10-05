@@ -130,7 +130,7 @@ describe("NextTurnQueuePanel", () => {
     expect(recheckDelivery).toHaveBeenCalledWith({ threadId });
   });
 
-  it("can run the queue head now while keeping move-to-top disabled for only the head", async () => {
+  it("hides run now during an active turn and allows it when the queue is paused and idle", async () => {
     const threadId = ThreadId.makeUnsafe("run-now-queue-thread");
     const firstItemId = CommandId.makeUnsafe("run-now-first-item");
     const secondItemId = CommandId.makeUnsafe("run-now-second-item");
@@ -173,15 +173,26 @@ describe("NextTurnQueuePanel", () => {
       quarantinedCount: 0,
       items: [makeItem(firstItemId, 0, "First"), makeItem(secondItemId, 1, "Second")],
     };
-    const promote = vi.fn(async () => snapshot);
+    const promote = vi.fn(async () => idleSnapshot);
     const reorder = vi.fn(async () => snapshot);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     nativeApiMock.current = { nextTurnQueue: { promote, reorder } };
     useNextTurnQueueStore.getState().applySnapshot(snapshot);
     active = await render(<NextTurnQueuePanel threadId={threadId} />);
 
     const runNowButtons = page.getByRole("button", { name: "Run queued turn now" });
     const moveToTopButtons = page.getByRole("button", { name: "Move queued turn to top" });
+    await expect.element(runNowButtons).not.toBeInTheDocument();
+    expect(promote).not.toHaveBeenCalled();
+
+    const idleSnapshot = {
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      paused: true,
+      blockedKind: "paused" as const,
+      reasonCode: "manual_pause" as const,
+    };
+    useNextTurnQueueStore.getState().applySnapshot(idleSnapshot);
+
     await expect.element(runNowButtons.nth(0)).toBeEnabled();
     await expect.element(runNowButtons.nth(1)).toBeEnabled();
     await expect.element(moveToTopButtons.nth(0)).toBeDisabled();
@@ -190,15 +201,15 @@ describe("NextTurnQueuePanel", () => {
     await runNowButtons.nth(0).click();
     expect(promote).toHaveBeenCalledWith({
       itemId: firstItemId,
-      interruptActive: true,
-      expectedRevision: snapshot.revision,
+      interruptActive: false,
+      expectedRevision: idleSnapshot.revision,
     });
 
     await moveToTopButtons.nth(1).click();
     expect(reorder).toHaveBeenCalledWith({
       threadId,
       orderedItemIds: [secondItemId, firstItemId],
-      expectedRevision: snapshot.revision,
+      expectedRevision: idleSnapshot.revision,
     });
   });
 });
