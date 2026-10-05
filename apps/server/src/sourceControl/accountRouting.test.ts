@@ -248,3 +248,59 @@ it.layer(SqliteClient.layerMemory())("forge account routing", (it) => {
     }),
   );
 });
+
+it.layer(SqliteClient.layerMemory())("forge credential lifecycle", (it) => {
+  it.effect(
+    "retires rotated tokens, supports route removal, and removes account credentials and routes",
+    () =>
+      Effect.gen(function* () {
+        const migration = yield* Effect.promise(
+          () => import("../persistence/Migrations/102_ForgeAccounts.ts"),
+        );
+        yield* migration.default;
+        const values = new Map<string, Uint8Array>();
+        const secrets: ServerSecretStoreShape = {
+          get: (name) => Effect.succeed(values.get(name) ?? null),
+          set: (name, value) =>
+            Effect.sync(() => {
+              values.set(name, value);
+            }),
+          remove: (name) =>
+            Effect.sync(() => {
+              values.delete(name);
+            }),
+          getOrCreateRandom: () => Effect.succeed(new Uint8Array()),
+        };
+        const accounts = yield* makeForgeAccounts({
+          fetch: async () => Response.json({ login: "alice", id: 1 }),
+        }).pipe(Effect.provideService(ServerSecretStore, secrets));
+        const first = yield* accounts.saveAccount({
+          provider: "github",
+          host: "github.com",
+          token: "first",
+        });
+        const second = yield* accounts.saveAccount({
+          provider: "github",
+          host: "github.com",
+          token: "second",
+        });
+        assert.notEqual(first.generation, second.generation);
+        assert.equal(values.size, 1);
+        assert.equal(yield* accounts.getToken(second.id), "second");
+        const route = {
+          provider: "github" as const,
+          host: "github.com",
+          repository: "team/repo",
+          accountId: second.id,
+        };
+        yield* accounts.setRouting(route);
+        yield* accounts.removeRouting(route);
+        assert.equal((yield* accounts.listRouting()).length, 0);
+        yield* accounts.setRouting(route);
+        yield* accounts.removeAccount(second.id);
+        assert.equal(values.size, 0);
+        assert.equal((yield* accounts.listAccounts()).length, 0);
+        assert.equal((yield* accounts.listRouting()).length, 0);
+      }),
+  );
+});

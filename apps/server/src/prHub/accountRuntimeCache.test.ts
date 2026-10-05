@@ -78,16 +78,30 @@ describe("account runtime lifecycle", () => {
 });
 
 it("opens an independent account while another account's initialization is paused", async () => {
-  const {Deferred, Fiber} = await import("effect");
-  await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
-    const scope = yield* Effect.scope, started = yield* Deferred.make<void>(), blocked = yield* Deferred.make<void>();
-    const cache = yield* makeAccountRuntimeCache(scope, (account) => Effect.gen(function* () {
-      if (account.id === "slow") {yield* Deferred.succeed(started, undefined); yield* Deferred.await(blocked);}
-      return account.id;
-    }));
-    const slow = yield* cache.get({id: "slow", generation: "1"}).pipe(Effect.forkChild);
-    yield* Deferred.await(started);
-    expect(yield* cache.get({id: "fast", generation: "1"}).pipe(Effect.timeout("1 second"))).toBe("fast");
-    yield* Deferred.succeed(blocked, undefined); expect(yield* Fiber.join(slow)).toBe("slow");
-  })));
+  const { Deferred, Fiber } = await import("effect");
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scope = yield* Effect.scope,
+          started = yield* Deferred.make<void>(),
+          blocked = yield* Deferred.make<void>();
+        const cache = yield* makeAccountRuntimeCache(scope, (account) =>
+          Effect.gen(function* () {
+            if (account.id === "slow") {
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(blocked);
+            }
+            return account.id;
+          }),
+        );
+        const slow = yield* cache.get({ id: "slow", generation: "1" }).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        expect(
+          yield* cache.get({ id: "fast", generation: "1" }).pipe(Effect.timeout("1 second")),
+        ).toBe("fast");
+        yield* Deferred.succeed(blocked, undefined);
+        expect(yield* Fiber.join(slow)).toBe("slow");
+      }),
+    ),
+  );
 });

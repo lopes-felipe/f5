@@ -291,6 +291,26 @@ export function PrAccounts({
                   {providerLabel(route.provider)} · {route.host}/{route.repository} →{" "}
                   {accounts.find((account) => account.id === route.accountId)?.login ??
                     "Account unavailable"}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      setError(null);
+                      try {
+                        const api = ensureNativeApi().prHub;
+                        await api.removeAccountRouting(route);
+                        setRouting(await api.listAccountRouting());
+                      } catch {
+                        setError("Could not remove repository routing.");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Remove routing
+                  </Button>
                 </li>
               ))}
             </ul>

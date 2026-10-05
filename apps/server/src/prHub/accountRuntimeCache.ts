@@ -49,7 +49,10 @@ export const makeAccountRuntimeCache = <A, E>(
                   );
                   yield* Scope.close(scope, Exit.void);
                 }
-                if (exit._tag === "Success") { const entry = entries.get(account.id); if (entry?.pending === value) entry.value = exit.value; }
+                if (exit._tag === "Success") {
+                  const entry = entries.get(account.id);
+                  if (entry?.pending === value) entry.value = exit.value;
+                }
                 yield* Deferred.done(value, exit);
               }),
             ),

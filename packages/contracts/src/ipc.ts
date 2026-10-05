@@ -802,6 +802,7 @@ export interface NativeApi {
     removeAccount: (input: { accountId: string }) => Promise<void>;
     listAccountRouting: () => Promise<ReadonlyArray<ForgeAccountRouting>>;
     setAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
+    removeAccountRouting: (input: ForgeAccountRouting) => Promise<void>;
     peek: (input: PrHubPeekInput) => Promise<PrHubPeek | null>;
     getStack: (input: PrHubStackInput) => Promise<PrHubStack | null>;
     getViewedFiles: (input: PrHubViewedFilesInput) => Promise<ReadonlyArray<string>>;
