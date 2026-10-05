@@ -90,7 +90,16 @@ function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
     const dynamicImport = new Function("specifier", "return import(specifier)") as (
       specifier: string,
     ) => Promise<typeof import("@ff-labs/fff-node")>;
-    const fff = await dynamicImport("@ff-labs/fff-node");
+    const fff = await dynamicImport(
+      process.env.F5_STANDALONE_DIR
+        ? (loadModule("node:url") as typeof import("node:url")).pathToFileURL(
+            path.join(
+              process.env.F5_STANDALONE_DIR,
+              "node_modules/@ff-labs/fff-node/dist/src/index.js",
+            ),
+          ).href
+        : "@ff-labs/fff-node",
+    );
     finder = unwrap(
       fff.FileFinder.create({
         basePath: rootPath,

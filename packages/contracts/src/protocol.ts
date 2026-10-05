@@ -25,6 +25,13 @@ export type ProviderSendLimits = typeof ProviderSendLimits.Type;
 
 export const ServerBootstrap = Schema.Struct({
   protocolVersion: NonNegativeInt,
+  update: Schema.optional(
+    Schema.Struct({
+      id: Schema.String,
+      outcome: Schema.Literals(["committed", "rolled-back"]),
+      version: Schema.String,
+    }),
+  ),
   capabilities: Schema.Array(Schema.String),
   uploadLimits: Schema.Struct({
     attachments: Schema.Struct({ enabled: Schema.Boolean, maxFileBytes: NonNegativeInt }),

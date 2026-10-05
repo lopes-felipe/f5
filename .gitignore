@@ -34,3 +34,7 @@ scripts/upstream-ports.json.tmp-*
 
 # Local performance samples and machine metadata.
 .performance/
+
+# Standalone CLI build outputs.
+apps/server/dist-exe/
+release-cli/

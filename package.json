@@ -64,7 +64,10 @@
     "sync:vscode-icons": "node scripts/sync-vscode-icons.mjs",
     "perf:server": "bun scripts/performance.ts",
     "perf:interactive": "bun scripts/performance.ts interactive",
-    "perf:compare": "bun scripts/performance.ts compare"
+    "perf:compare": "bun scripts/performance.ts compare",
+    "dist:cli:archive": "node scripts/build-cli-archive.ts",
+    "dist:cli:manifest": "node scripts/merge-cli-release-manifests.ts",
+    "test:cli-smoke": "node scripts/cli-archive-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",

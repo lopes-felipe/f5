@@ -1,3 +1,4 @@
+import { javascriptRuntimeExecutable } from "@t3tools/shared/hostRuntime";
 import { profileGithubEnvironment } from "./profileGithubEnvironment";
 import { appendGitConfigPairs } from "./gitConfigEnvironment";
 import { assertExecutionDirectory } from "../profiles/executionDirectory";
@@ -118,7 +119,7 @@ export async function profileGitEnvironment(input: {
               [`credential.https://${url.host}.helper`, ""],
               [
                 `credential.https://${url.host}.helper`,
-                `!${shellQuote(process.execPath)} -e ${shellQuote(helperSource)} --`,
+                `!${shellQuote(javascriptRuntimeExecutable())} -e ${shellQuote(helperSource)} --`,
               ],
             ]);
             environment.F5_GIT_CREDENTIAL_HOST = url.host;
@@ -232,7 +233,7 @@ export async function profileGitEnvironment(input: {
       // Execute immutable bundled code: no mutable helper file can redirect profile credentials.
       pairs.push([
         "credential.helper",
-        `!${shellQuote(process.execPath)} -e ${shellQuote(helperSource)} --`,
+        `!${shellQuote(javascriptRuntimeExecutable())} -e ${shellQuote(helperSource)} --`,
       ]);
       environment.F5_GIT_CREDENTIAL_HOST = url.host;
       environment.F5_GIT_CREDENTIAL_TOKEN = token;

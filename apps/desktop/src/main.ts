@@ -2100,7 +2100,9 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
     }
     await cleanupBeforeExit();
     shutdownComplete = true;
-    autoUpdater.quitAndInstall();
+    // NSIS can relaunch explicitly after the parent has drained all profile backends.
+    if (process.platform === "win32") autoUpdater.quitAndInstall(false, true);
+    else autoUpdater.quitAndInstall();
     restoreStdIoCapture?.();
     return { accepted: true, completed: true };
   } catch (error: unknown) {
