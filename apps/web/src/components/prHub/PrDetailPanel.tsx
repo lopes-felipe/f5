@@ -46,7 +46,7 @@ export interface PrDetailPanelProps {
 function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-[11px] uppercase tracking-wide text-muted-foreground/70">{label}</span>
+      <span className="text-2xs uppercase tracking-wide text-muted-foreground">{label}</span>
       <span className="min-w-0 truncate text-sm text-foreground">{children}</span>
     </div>
   );
@@ -55,7 +55,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 function ChipRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-      <span className="text-[11px] uppercase tracking-wide text-muted-foreground/70">{label}</span>
+      <span className="text-2xs uppercase tracking-wide text-muted-foreground">{label}</span>
       {children}
     </div>
   );

@@ -10,7 +10,7 @@ import { resolveThreadStatusPillForThread, type ThreadStatusPill } from "../thre
 import type { Project, Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;
-export const ITEM_ICON_CLASS = "size-4 text-muted-foreground/80";
+export const ITEM_ICON_CLASS = "size-4 text-muted-foreground";
 export const ADDON_ICON_CLASS = "size-4";
 
 export interface CommandPaletteItem {

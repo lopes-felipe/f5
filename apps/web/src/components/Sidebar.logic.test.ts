@@ -7,6 +7,7 @@ import {
   isTrailingDoubleClick,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
+  resolvePrimaryNewThreadProjectId,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarNewThreadIntent,
   resolveThreadRowClassName,
@@ -183,6 +184,62 @@ describe("resolveSidebarNewThreadEnvMode", () => {
         defaultEnvMode: "worktree",
       }),
     ).toBe("local");
+  });
+});
+
+describe("resolvePrimaryNewThreadProjectId", () => {
+  const active = ProjectId.makeUnsafe("project-active");
+  const draft = ProjectId.makeUnsafe("project-draft");
+  const recent = ProjectId.makeUnsafe("project-recent");
+  const first = ProjectId.makeUnsafe("project-first");
+
+  it("prefers the open thread's project, then the open draft's", () => {
+    expect(
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: active,
+        activeDraftProjectId: draft,
+        mostRecentProjectId: recent,
+        firstProjectId: first,
+      }),
+    ).toBe(active);
+    expect(
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: undefined,
+        activeDraftProjectId: draft,
+        mostRecentProjectId: recent,
+        firstProjectId: first,
+      }),
+    ).toBe(draft);
+  });
+
+  it("falls back to the most recent project, then the first project", () => {
+    expect(
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: null,
+        activeDraftProjectId: null,
+        mostRecentProjectId: recent,
+        firstProjectId: first,
+      }),
+    ).toBe(recent);
+    expect(
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: undefined,
+        activeDraftProjectId: undefined,
+        mostRecentProjectId: null,
+        firstProjectId: first,
+      }),
+    ).toBe(first);
+  });
+
+  it("returns null without projects", () => {
+    expect(
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: undefined,
+        activeDraftProjectId: undefined,
+        mostRecentProjectId: null,
+        firstProjectId: null,
+      }),
+    ).toBeNull();
   });
 });
 
@@ -478,25 +535,39 @@ describe("resolveThreadStatusPill", () => {
 });
 
 describe("resolveThreadRowClassName", () => {
-  it("uses the darker selected palette when a thread is both selected and active", () => {
+  it("uses the stronger selected tint and the active bar when selected and active", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
-    expect(className).toContain("bg-primary/22");
-    expect(className).toContain("hover:bg-primary/26");
-    expect(className).toContain("dark:bg-primary/30");
-    expect(className).not.toContain("bg-accent/85");
+    expect(className).toContain("bg-primary/15");
+    expect(className).toContain("hover:bg-primary/20");
+    expect(className).toContain("before:bg-primary");
+    expect(className).not.toContain(" bg-accent ");
   });
 
   it("uses selected hover colors for selected threads", () => {
     const className = resolveThreadRowClassName({ isActive: false, isSelected: true });
-    expect(className).toContain("bg-primary/15");
-    expect(className).toContain("hover:bg-primary/19");
-    expect(className).toContain("dark:bg-primary/22");
+    expect(className).toContain("bg-primary/10");
+    expect(className).toContain("hover:bg-primary/15");
     expect(className).not.toContain("hover:bg-accent");
+    expect(className).not.toContain("before:bg-primary");
   });
 
-  it("keeps the accent palette for active-only threads", () => {
+  it("marks the active row with the accent fill and primary bar", () => {
     const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
-    expect(className).toContain("bg-accent/85");
-    expect(className).toContain("hover:bg-accent");
+    expect(className.split(" ")).toContain("bg-accent");
+    expect(className).toContain("before:bg-primary");
+    expect(className).toContain("font-medium");
+  });
+
+  it("weights unread rows without the active treatment", () => {
+    const unread = resolveThreadRowClassName({
+      isActive: false,
+      isSelected: false,
+      isUnread: true,
+    });
+    expect(unread).toContain("font-medium text-foreground");
+    expect(unread).not.toContain("before:bg-primary");
+    const read = resolveThreadRowClassName({ isActive: false, isSelected: false });
+    expect(read).toContain("text-muted-foreground");
+    expect(read).not.toContain("font-medium");
   });
 });

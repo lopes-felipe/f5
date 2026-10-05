@@ -2,6 +2,7 @@ import type { Thread } from "../../types";
 import "../../index.css";
 
 import { PlanningWorkflowId, ThreadId, TurnId } from "@t3tools/contracts";
+import type { AnchorHTMLAttributes } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -16,6 +17,9 @@ const nativeApiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../nativeApi", () => ({
+  ensureNativeApi: () => {
+    throw new Error("Native API not available in this test");
+  },
   readNativeApi: () => ({
     orchestration: {
       retryWorkflow: nativeApiMocks.retryWorkflow,
@@ -27,12 +31,25 @@ vi.mock("../../nativeApi", () => ({
 vi.mock("@tanstack/react-router", async () => {
   const actual =
     await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
-  return { ...actual, useNavigate: () => vi.fn() };
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+    // Step cards link to their threads; no router is mounted here.
+    Link: ({
+      to: _to,
+      params: _params,
+      children,
+      ...rest
+    }: AnchorHTMLAttributes<HTMLAnchorElement> & { to?: unknown; params?: unknown }) => (
+      <a href="#" {...rest}>
+        {children}
+      </a>
+    ),
+  };
 });
 
 vi.mock("./WorkflowRunInspector", () => ({ WorkflowRunInspector: () => null }));
 vi.mock("./WorkflowImplementDialog", () => ({ WorkflowImplementDialog: () => null }));
-vi.mock("./WorkflowTimelinePhaseList", () => ({ WorkflowTimelinePhaseList: () => null }));
 
 import { WorkflowView } from "./WorkflowView";
 
@@ -284,6 +301,111 @@ describe("WorkflowView retry", () => {
       await expect
         .element(page.getByRole("button", { name: "Retry anyway" }))
         .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+describe("WorkflowView steps", () => {
+  const branchAThreadId = ThreadId.makeUnsafe("workflow-branch-a");
+
+  function makeBranchAThread(): Thread {
+    const workflow = createPlanningWorkflow({ id: workflowId });
+    return {
+      id: branchAThreadId,
+      codexThreadId: null,
+      projectId: workflow.projectId,
+      title: "A long generated thread title",
+      model: "claude-sonnet-4-5",
+      runtimeMode: "full-access",
+      interactionMode: "plan",
+      session: null,
+      messages: [],
+      commandExecutions: [],
+      proposedPlans: [],
+      error: null,
+      createdAt: workflow.createdAt,
+      archivedAt: null,
+      lastInteractionAt: workflow.updatedAt,
+      estimatedContextTokens: null,
+      estimatedThinkingTokens: null,
+      modelContextWindowTokens: null,
+      latestTurn: null,
+      branch: null,
+      worktreePath: null,
+      turnDiffSummaries: [],
+      activities: [],
+      detailsLoaded: true,
+      tasks: [],
+      tasksTurnId: null,
+      tasksUpdatedAt: null,
+    };
+  }
+
+  function stepByLabel(label: string): HTMLElement | undefined {
+    return Array.from(document.querySelectorAll<HTMLElement>('[data-slot="workflow-step"]')).find(
+      (step) => step.textContent?.includes(label),
+    );
+  }
+
+  beforeEach(() => {
+    useStore.setState({
+      threads: [makeBranchAThread()],
+      planningWorkflows: [createPlanningWorkflow({ id: workflowId })],
+    });
+  });
+
+  afterEach(async () => {
+    document.body.innerHTML = "";
+    useStore.setState({ threads: [], planningWorkflows: [] });
+    await page.viewport(1280, 720);
+  });
+
+  it("shows phases as board columns on wide screens", async () => {
+    await page.viewport(1440, 900);
+    const screen = await render(<WorkflowView workflowId={workflowId} />);
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="workflow-board"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-slot="workflow-phase-list"]')).toBeNull();
+      expect(document.querySelectorAll('[data-slot="workflow-board-column"]')).toHaveLength(7);
+      await expect
+        .element(page.getByRole("heading", { level: 1 }))
+        .toHaveTextContent("Workflow status test");
+      expect(document.body.textContent).not.toContain("Back to chat");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("falls back to the step list on narrow screens", async () => {
+    await page.viewport(760, 900);
+    const screen = await render(<WorkflowView workflowId={workflowId} />);
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-slot="workflow-phase-list"]')).not.toBeNull();
+      });
+      expect(document.querySelector('[data-slot="workflow-board"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("labels steps by role and shows the thread's model, or the slot before it exists", async () => {
+    await page.viewport(1440, 900);
+    const screen = await render(<WorkflowView workflowId={workflowId} />);
+    try {
+      await vi.waitFor(() => expect(stepByLabel("Branch A")).toBeDefined());
+      const branchA = stepByLabel("Branch A")!;
+      expect(branchA.textContent).not.toContain("A long generated thread title");
+      // The thread exists: its actual model wins over the configured slot.
+      expect(branchA.querySelector('[title^="Claude · "]')).not.toBeNull();
+      // Merge has no thread yet: the configured slot shows instead.
+      const merge = stepByLabel("Merge")!;
+      expect(merge.dataset.stepState).toBe("pending");
+      expect(merge.querySelector('[title^="Codex · "]')).not.toBeNull();
     } finally {
       await screen.unmount();
     }

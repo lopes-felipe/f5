@@ -27,6 +27,7 @@ import {
 } from "../../lib/prHubReactQuery";
 import { ensureNativeApi } from "../../nativeApi";
 import { onPrHubAdvisoriesUpdated } from "../../wsNativeApi";
+import { AppTitlebar } from "../AppTitlebar";
 import { Button } from "../ui/button";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
@@ -267,63 +268,72 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <GitPullRequestIcon className="size-5 text-muted-foreground" />
-            <h1 className="font-heading text-lg font-semibold">Pull Requests</h1>
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
+      <AppTitlebar
+        className="border-b border-border"
+        breadcrumb={[
+          {
+            label: "Pull requests",
+            icon: <GitPullRequestIcon className="size-3.5 shrink-0 text-muted-foreground" />,
+          },
+        ]}
+        status={
+          <span className="hidden truncate text-2xs text-muted-foreground @md/titlebar:inline">
             {snapshot?.lastPolledAt
               ? `Updated ${formatRelativeTimeLabel(snapshot.lastPolledAt)}`
               : "Not refreshed yet"}
             {snapshot?.viewerLogin ? ` · ${snapshot.viewerLogin}` : ""}
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <ToggleGroup
-            variant="outline"
-            size="sm"
-            value={[viewMode]}
-            onValueChange={(value) => {
-              const next = value[0];
-              if (next === "inbox" || next === "focus") setViewMode(next);
-            }}
-          >
-            <Toggle value="inbox" aria-label="Inbox view">
-              <InboxIcon /> Inbox
-            </Toggle>
-            <Toggle value="focus" aria-label="Focus view">
-              <TargetIcon /> Focus
-            </Toggle>
-          </ToggleGroup>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!snapshot || isAnalyzing}
-            onClick={() => {
-              void analyzeKeys();
-            }}
-          >
-            <SparklesIcon className={isAnalyzing ? "animate-pulse" : ""} />
-            {isAnalyzing ? "Suggesting..." : "Suggest actions"}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={isRefreshing}
-            onClick={() => {
-              setIsRefreshing(true);
-              void ensureNativeApi()
-                .prHub.refresh({ mode: "force" })
-                .finally(() => setIsRefreshing(false));
-            }}
-          >
-            <RefreshCwIcon className={isRefreshing ? "animate-spin" : ""} />
-            Refresh
-          </Button>
-        </div>
-      </header>
+          </span>
+        }
+        trailing={
+          <div className="flex shrink-0 items-center gap-1.5">
+            <ToggleGroup
+              variant="outline"
+              size="sm"
+              value={[viewMode]}
+              onValueChange={(value) => {
+                const next = value[0];
+                if (next === "inbox" || next === "focus") setViewMode(next);
+              }}
+            >
+              <Toggle value="inbox" aria-label="Inbox view">
+                <InboxIcon /> <span className="hidden @2xl/titlebar:inline">Inbox</span>
+              </Toggle>
+              <Toggle value="focus" aria-label="Focus view">
+                <TargetIcon /> <span className="hidden @2xl/titlebar:inline">Focus</span>
+              </Toggle>
+            </ToggleGroup>
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label={isAnalyzing ? "Suggesting actions" : "Suggest actions"}
+              disabled={!snapshot || isAnalyzing}
+              onClick={() => {
+                void analyzeKeys();
+              }}
+            >
+              <SparklesIcon className={isAnalyzing ? "motion-safe:animate-pulse" : ""} />
+              <span className="hidden @xl/titlebar:inline">
+                {isAnalyzing ? "Suggesting..." : "Suggest actions"}
+              </span>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              aria-label="Refresh pull requests"
+              disabled={isRefreshing}
+              onClick={() => {
+                setIsRefreshing(true);
+                void ensureNativeApi()
+                  .prHub.refresh({ mode: "force" })
+                  .finally(() => setIsRefreshing(false));
+              }}
+            >
+              <RefreshCwIcon className={isRefreshing ? "animate-spin" : ""} />
+              <span className="hidden @xl/titlebar:inline">Refresh</span>
+            </Button>
+          </div>
+        }
+      />
 
       {banner || snapshot?.coverage.length ? (
         <div className="shrink-0 space-y-1 border-b border-warning/30 bg-warning/8 px-5 py-2 text-xs text-warning-foreground">
@@ -549,7 +559,7 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
                 {FILTER_LABELS[key]}
                 {(counts?.[key] ?? 0) > 0 ? (
                   <span
-                    className={`tabular-nums ${isActive ? "text-secondary-foreground" : "text-muted-foreground/72"}`}
+                    className={`tabular-nums ${isActive ? "text-secondary-foreground" : "text-muted-foreground"}`}
                   >
                     {counts?.[key]}
                   </span>

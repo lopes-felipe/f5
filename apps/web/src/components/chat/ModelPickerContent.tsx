@@ -415,11 +415,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
             <div className="border-b px-3 py-2">
               <ComboboxInput
                 ref={searchInputRef}
-                className="rounded-md [&_input]:font-sans"
+                className="rounded-md"
                 inputClassName="border-0 shadow-none ring-0 focus-visible:ring-0"
                 placeholder="Search models..."
                 showTrigger={false}
-                startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground/50" />}
+                startAddon={<SearchIcon className="size-4 shrink-0 text-muted-foreground" />}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 onKeyDown={(event) => {

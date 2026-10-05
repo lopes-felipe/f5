@@ -1461,6 +1461,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           <Input
             nativeInput
             size="sm"
+            className="font-mono"
             value={urlInput}
             onChange={(event) => setUrlInput(event.currentTarget.value)}
             placeholder="localhost:5173"
@@ -1619,7 +1620,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         >
           {viewportLinked ? <LinkIcon /> : <UnlinkIcon />}
         </Button>
-        <span className="min-w-20 text-[11px] tabular-nums text-muted-foreground">
+        <span className="min-w-20 text-2xs tabular-nums text-muted-foreground">
           {activeViewport ? `${activeViewport.width} × ${activeViewport.height}` : "Fit panel"}
         </span>
         <Select

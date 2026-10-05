@@ -64,6 +64,7 @@ import { createPlanningWorkflow, createDocumentReaderPass } from "../test/workfl
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
 import { createComposerMention } from "../composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "../composerMentionHistoryStore";
+import { requestComposerFocus, useComposerFocusRequestStore } from "../composerFocusRequestStore";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -1662,16 +1663,21 @@ async function waitForButtonContainingText(text: string): Promise<HTMLButtonElem
   );
 }
 
-async function waitForInteractionModeButton(
+/** Resolves once the Agent/Plan toggle group shows `expectedLabel` as the pressed mode. */
+async function waitForPressedInteractionMode(
   expectedLabel: "Agent" | "Plan",
 ): Promise<HTMLButtonElement> {
-  return waitForElement(
-    () =>
-      Array.from(document.querySelectorAll("button")).find(
-        (button) => button.textContent?.trim() === expectedLabel,
-      ) as HTMLButtonElement | null,
-    `Unable to find ${expectedLabel} interaction mode button.`,
-  );
+  return waitForElement(() => {
+    const group = document.querySelector('[data-composer-control="interactionMode"]');
+    const pressed = Array.from(group?.querySelectorAll("button") ?? []).filter(
+      (button) => button.getAttribute("aria-pressed") === "true",
+    );
+    // The group must never be empty or hold two modes at once.
+    if (pressed.length !== 1) return null;
+    return pressed[0]?.textContent?.trim() === expectedLabel
+      ? (pressed[0] as HTMLButtonElement)
+      : null;
+  }, `Expected ${expectedLabel} to be the only pressed interaction mode.`);
 }
 
 async function waitForImagesToLoad(scope: ParentNode): Promise<void> {
@@ -1838,7 +1844,32 @@ async function waitForTimelineRowVisible(rowSelector: string, message: string): 
   );
 }
 
+/**
+ * LegendList finishes its initial scroll to the end asynchronously, over a
+ * few frames after mount. A test that scrolls before then races that scroll,
+ * which a user never does, so wait until the scroll position and content
+ * height hold still.
+ */
+async function waitForTimelineScrollToSettle(): Promise<void> {
+  const STABLE_FRAMES = 6;
+  let stableFrames = 0;
+  let previous = "";
+  const deadline = performance.now() + 4_000;
+  while (stableFrames < STABLE_FRAMES && performance.now() < deadline) {
+    await nextFrame();
+    const scrollContainer = document.querySelector<HTMLElement>(
+      '[data-slot="messages-scroll-container"]',
+    );
+    const current = scrollContainer
+      ? `${scrollContainer.scrollTop}:${scrollContainer.scrollHeight}`
+      : "";
+    stableFrames = current !== "" && current === previous ? stableFrames + 1 : 0;
+    previous = current;
+  }
+}
+
 async function scrollTimelineRowIntoView(rowSelector: string): Promise<void> {
+  await waitForTimelineScrollToSettle();
   await vi.waitFor(
     async () => {
       const scrollContainer = document.querySelector<HTMLElement>(
@@ -2497,6 +2528,8 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("keeps nested work-group rows from overlapping the next row", async () => {
+    // The target group sits in a finished turn; measure it expanded.
+    persistAppSettings({ collapseCompletedWorkLogs: false });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotWithNestedWorkGroupTarget(),
@@ -3634,6 +3667,99 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("docks the composer with notices in its tray, the meter in its footer, and the last message clear", async () => {
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-dock-target" as MessageId,
+      targetText: "dock target",
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              estimatedContextTokens: 38_000,
+              modelContextWindowTokens: 200_000,
+              session: thread.session
+                ? { ...thread.session, lastError: "Provider crashed during the turn" }
+                : thread.session,
+            }
+          : thread,
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      const composerForm = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-chat-composer-form="true"]'),
+        "Composer form should render.",
+      );
+      await vi.waitFor(
+        () => {
+          expect(
+            document.querySelector(
+              '[data-chat-composer-footer="true"] [data-slot="context-meter"]',
+            ),
+          ).not.toBeNull();
+          const notices = document.querySelector<HTMLElement>(
+            '[data-slot="composer-tray"] [data-slot="thread-notice-stack"]',
+          );
+          expect(notices?.textContent).toContain("Provider crashed during the turn");
+          // The tray sits directly on the composer's top edge.
+          const tray = document.querySelector<HTMLElement>('[data-slot="composer-tray"]')!;
+          expect(
+            Math.abs(
+              tray.getBoundingClientRect().bottom - composerForm.getBoundingClientRect().top,
+            ),
+          ).toBeLessThan(2);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await vi.waitFor(
+        () => {
+          const lastMessage = document.querySelector<HTMLElement>(
+            '[data-message-id="msg-assistant-21"]',
+          );
+          const dock = document.querySelector<HTMLElement>('[data-slot="composer-dock"]');
+          expect(lastMessage, "Last message should render at the end.").not.toBeNull();
+          expect(dock).not.toBeNull();
+          expect(lastMessage!.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+            dock!.getBoundingClientRect().top + 1,
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("focuses the composer when Home hands off a focus request for this thread", async () => {
+    requestComposerFocus(THREAD_ID);
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-focus-handoff" as MessageId,
+        targetText: "focus handoff",
+      }),
+    });
+
+    try {
+      const composerEditor = await waitForComposerEditor();
+      await vi.waitFor(() => {
+        expect(composerEditor.contains(document.activeElement)).toBe(true);
+        expect(useComposerFocusRequestStore.getState().request).toBeNull();
+      });
+      expect(
+        wsRequests.some((request) => JSON.stringify(request).includes("thread.turn.start")),
+      ).toBe(false);
+    } finally {
+      useComposerFocusRequestStore.setState({ request: null });
+      await mounted.cleanup();
+    }
+  });
+
   it("toggles plan mode with Shift+Tab only while the composer is focused", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -3644,12 +3770,11 @@ describe("ChatView timeline (full app)", () => {
     });
 
     try {
-      const initialModeButton = await waitForInteractionModeButton("Agent");
+      await waitForPressedInteractionMode("Agent");
       const initialComposerShell = await waitForComposerShell();
-      expect(initialModeButton.title).toContain("enter plan mode");
       expect(initialComposerShell.className).toContain("border-border");
-      expect(initialComposerShell.className).toContain("focus-within:border-ring/45");
-      expect(initialComposerShell.className).not.toContain("border-success/10");
+      expect(initialComposerShell.className).toContain("focus-within:border-ring/60");
+      expect(initialComposerShell.className).not.toContain("border-warning/40");
 
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -3661,7 +3786,7 @@ describe("ChatView timeline (full app)", () => {
       );
       await waitForLayout();
 
-      expect((await waitForInteractionModeButton("Agent")).title).toContain("enter plan mode");
+      await waitForPressedInteractionMode("Agent");
 
       const composerEditor = await waitForComposerEditor();
       composerEditor.focus();
@@ -3676,13 +3801,10 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Plan")).title).toContain(
-            "return to normal chat mode",
-          );
+          await waitForPressedInteractionMode("Plan");
           const composerShell = await waitForComposerShell();
-          expect(composerShell.className).toContain("border-warning/10");
-          expect(composerShell.className).toContain("focus-within:border-warning/45");
-          expect(composerShell.className).not.toContain("border-purple-500/10");
+          expect(composerShell.className).toContain("border-warning/40");
+          expect(composerShell.className).toContain("focus-within:border-warning/60");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -3698,14 +3820,26 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         async () => {
-          expect((await waitForInteractionModeButton("Agent")).title).toContain("enter plan mode");
+          await waitForPressedInteractionMode("Agent");
           const composerShell = await waitForComposerShell();
           expect(composerShell.className).toContain("border-border");
-          expect(composerShell.className).toContain("focus-within:border-ring/45");
-          expect(composerShell.className).not.toContain("border-warning/10");
+          expect(composerShell.className).toContain("focus-within:border-ring/60");
+          expect(composerShell.className).not.toContain("border-warning/40");
         },
         { timeout: 8_000, interval: 16 },
       );
+
+      // Pressing the active mode must not empty the group; pressing the other switches.
+      (await waitForPressedInteractionMode("Agent")).click();
+      await waitForLayout();
+      await waitForPressedInteractionMode("Agent");
+      const planToggle = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          '[data-composer-control="interactionMode"] button',
+        ),
+      ).find((button) => button.textContent?.trim() === "Plan");
+      planToggle?.click();
+      await waitForPressedInteractionMode("Plan");
     } finally {
       await mounted.cleanup();
     }
@@ -4667,7 +4801,7 @@ describe("ChatView timeline (full app)", () => {
       scrollContainer.dispatchEvent(new Event("scroll"));
 
       const useMetaForMod = isMacPlatform(navigator.platform);
-      const scrollButton = await waitForButtonContainingText("Scroll to bottom");
+      const scrollButton = await waitForButtonContainingText("Jump to latest");
       expect(scrollButton.textContent).toContain(useMetaForMod ? "⌘Enter" : "Ctrl+Enter");
 
       const composerEditor = await waitForComposerEditor();
@@ -4684,7 +4818,7 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         () => {
-          expect(document.body.textContent).not.toContain("Scroll to bottom");
+          expect(document.body.textContent).not.toContain("Jump to latest");
         },
         { timeout: 8_000, interval: 16 },
       );
@@ -4740,7 +4874,7 @@ describe("ChatView timeline (full app)", () => {
       scrollContainer.scrollTop = 0;
       scrollContainer.dispatchEvent(new Event("scroll"));
 
-      await waitForButtonContainingText("Scroll to bottom");
+      await waitForButtonContainingText("Jump to latest");
 
       const useMetaForMod = isMacPlatform(navigator.platform);
       dialogButton.dispatchEvent(
@@ -4754,7 +4888,7 @@ describe("ChatView timeline (full app)", () => {
       );
       await waitForLayout();
 
-      expect(document.body.textContent).toContain("Scroll to bottom");
+      expect(document.body.textContent).toContain("Jump to latest");
       expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
 
       portaledMenuButton.dispatchEvent(
@@ -4768,7 +4902,7 @@ describe("ChatView timeline (full app)", () => {
       );
       await waitForLayout();
 
-      expect(document.body.textContent).toContain("Scroll to bottom");
+      expect(document.body.textContent).toContain("Jump to latest");
       expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
     } finally {
       portaledMenuPopup.remove();
@@ -5026,7 +5160,7 @@ describe("ChatView timeline (full app)", () => {
       );
       await waitForLayout();
 
-      expect(document.body.textContent).not.toContain("Scroll to bottom");
+      expect(document.body.textContent).not.toContain("Jump to latest");
       expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
     } finally {
       await mounted.cleanup();
@@ -6087,7 +6221,7 @@ describe("ChatView timeline (full app)", () => {
 
   it("keeps an opened historical inline diff visible after an optimistic composer send", async () => {
     const sentText = "another one after opened inline diff";
-    persistAppSettings({ showFileChangeDiffsInline: true });
+    persistAppSettings({ showFileChangeDiffsInline: true, collapseCompletedWorkLogs: false });
     const initialSnapshot = createSnapshotWithHistoricalFileChange();
     const nextTurnId = TurnId.makeUnsafe("turn-after-historical-file-change-inline-live");
     const mounted = await mountChatView({
@@ -6235,7 +6369,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("keeps an opened historical inline diff visible after live user-turn events", async () => {
-    persistAppSettings({ showFileChangeDiffsInline: true });
+    persistAppSettings({ showFileChangeDiffsInline: true, collapseCompletedWorkLogs: false });
     fixture.resolveWsRequest = (body) => {
       if (body._tag === ORCHESTRATION_WS_METHODS.getTurnDiff) {
         return {
@@ -6337,7 +6471,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("renders fallback inline diffs for Claude-style file-change activities with empty changedFiles", async () => {
-    persistAppSettings({ showFileChangeDiffsInline: true });
+    persistAppSettings({ showFileChangeDiffsInline: true, collapseCompletedWorkLogs: false });
     fixture.resolveWsRequest = (body) => {
       if (body._tag !== ORCHESTRATION_WS_METHODS.getTurnDiff) {
         return null;
@@ -6386,7 +6520,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("recovers an inline fallback diff after a later turn-diff completion event", async () => {
-    persistAppSettings({ showFileChangeDiffsInline: true });
+    persistAppSettings({ showFileChangeDiffsInline: true, collapseCompletedWorkLogs: false });
     let connectedClient: TestWsClient | null = null;
     let checkpointReady = false;
     let turnDiffRequestCount = 0;
@@ -6501,7 +6635,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("keeps an opened inline diff visible when the turn settles before later assistant messages", async () => {
-    persistAppSettings({ showFileChangeDiffsInline: true });
+    persistAppSettings({ showFileChangeDiffsInline: true, collapseCompletedWorkLogs: false });
     fixture.resolveWsRequest = (body) => {
       if (body._tag === ORCHESTRATION_WS_METHODS.getTurnDiff) {
         return {

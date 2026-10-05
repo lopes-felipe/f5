@@ -40,12 +40,17 @@ import {
   ImageIcon,
   LoaderCircleIcon,
   type LucideIcon,
+  MessageSquarePlusIcon,
   SearchIcon,
   SquarePenIcon,
   TerminalIcon,
   ZapIcon,
 } from "lucide-react";
 import { McpIcon, type Icon } from "../Icons";
+import { SectionLabel } from "../ui/section-label";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { FileChip } from "./FileChip";
+import { ComposerDockSpacer } from "./composer/ComposerDock";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { Button } from "../ui/button";
@@ -65,14 +70,21 @@ import {
   computeMessageDurationStart,
   deriveCodexCollaborationResponseRows,
   deriveTimelineTurnRailItems,
+  findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
+  isFileChangeWorkEntry,
+  isFileReadWorkEntry,
+  isSearchWorkEntry,
   normalizeCompactToolLabel,
+  normalizedSearchSummary,
+  normalizedWorkEntryHeading,
   resolveActiveTurnRailIndex,
   resolveCodexCollaborationHeading,
   resolveCodexCollaborationStatusLabel,
   resolveTimelineTurnRailHasPersistentGutter,
   resolveTimelineTurnRailHitStripWidth,
   sampleTimelineMinimapRowIndices,
+  summarizeWorkGroup,
   TIMELINE_TURN_RAIL_MIN_ITEMS,
 } from "./MessagesTimeline.logic";
 import { TimelineTurnRail } from "./TimelineTurnRail";
@@ -109,6 +121,42 @@ import {
   resolveChangedFilesPresentation,
   type ChangedFilesPresentation,
 } from "./changedFilesPresentation";
+
+export interface MessagesTimelineEmptyState {
+  projectName: string | null;
+  envMode: "local" | "worktree";
+  branch: string | null;
+}
+
+function MessagesTimelineEmpty(props: { emptyState: MessagesTimelineEmptyState | undefined }) {
+  const { emptyState } = props;
+  const envLabel = emptyState
+    ? [emptyState.envMode === "worktree" ? "Worktree" : "Local", emptyState.branch]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+  return (
+    <Empty className="flex-1 gap-3" data-testid="messages-timeline-empty">
+      {emptyState ? (
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <MessageSquarePlusIcon />
+          </EmptyMedia>
+          <EmptyTitle className="text-base">
+            {emptyState.projectName ? `New thread in ${emptyState.projectName}` : "New thread"}
+          </EmptyTitle>
+          {envLabel ? (
+            <EmptyDescription className="text-ui tabular-nums">{envLabel}</EmptyDescription>
+          ) : null}
+        </EmptyHeader>
+      ) : null}
+      <p className="text-ui text-muted-foreground">Send a message to start the conversation.</p>
+    </Empty>
+  );
+}
+
+const WORK_META_CHIP_CLASS_NAME =
+  "inline-flex h-5 items-center rounded-md border border-border bg-muted/50 px-1.5 text-2xs text-muted-foreground";
 
 type InlineExactFileChangeDiffComponent =
   (typeof import("./InlineExactFileChangeDiff"))["InlineExactFileChangeDiff"];
@@ -152,6 +200,8 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
 
 const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.1;
 
+const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
+
 interface MessagesTimelineProps {
   threadId?: ThreadId | null;
   hasMessages: boolean;
@@ -184,6 +234,14 @@ interface MessagesTimelineProps {
   nowIso: string;
   expandedWorkGroups: Record<string, number>;
   onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
+  /**
+   * Per-group overrides of the "collapse finished work logs" setting:
+   * `true` keeps a prior turn's group open, `false` collapses it.
+   */
+  workGroupCollapseOverrides?: Readonly<Record<string, boolean>>;
+  onSetWorkGroupExpanded?: ((groupId: string, expanded: boolean) => void) | undefined;
+  /** Context for the empty-thread state; omitted renders the plain hint. */
+  emptyState?: MessagesTimelineEmptyState | undefined;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (
@@ -301,6 +359,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   nowIso,
   expandedWorkGroups,
   onToggleWorkGroup,
+  workGroupCollapseOverrides = EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES,
+  onSetWorkGroupExpanded,
+  emptyState,
   onOpenTurnDiff,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
@@ -397,6 +458,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           groupedEntries,
+          isPriorTurn: false,
+          workSummary: summarizeWorkGroup(groupedEntries),
         });
         index = cursor - 1;
         continue;
@@ -441,11 +504,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       });
     }
 
+    // Groups above the newest user message belong to finished turns.
+    const lastUserMessageRowIndex = findLastUserMessageRowIndex(nextRows);
+    for (let rowIndex = 0; rowIndex < lastUserMessageRowIndex; rowIndex += 1) {
+      const row = nextRows[rowIndex];
+      if (row?.kind === "work") nextRows[rowIndex] = { ...row, isPriorTurn: true };
+    }
+
     if (isWorking) {
       nextRows.push({
         kind: "working",
         id: "working-indicator-row",
         createdAt: activeTurnStartedAt,
+        activity: latestWorkActivityHeading(nextRows),
       });
     }
 
@@ -825,6 +896,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       settings.showFileChangeDiffsInline,
       chatDiffContext,
       expandedWorkGroups,
+      settings.collapseCompletedWorkLogs,
+      workGroupCollapseOverrides,
       expandedCommandExecutions,
       isRevertingCheckpoint,
       resolvedTheme,
@@ -858,6 +931,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       chatDiffContext,
       expandedCommandExecutions,
       expandedWorkGroups,
+      settings.collapseCompletedWorkLogs,
+      workGroupCollapseOverrides,
       isRevertingCheckpoint,
       markdownCwd,
       nowIso,
@@ -897,6 +972,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row.kind,
                 row.id,
                 row.createdAt,
+                row.isPriorTurn ? "prior" : "current",
                 ...row.groupedEntries.map((entry) => {
                   const turnDiffSummary = entry.turnId
                     ? turnDiffSummaryByTurnId.get(entry.turnId)
@@ -951,7 +1027,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             case "proposed-plan":
               return [row.kind, row.id, row.createdAt, row.proposedPlan.updatedAt].join(":");
             case "working":
-              return [row.kind, row.id, row.createdAt ?? ""].join(":");
+              return [row.kind, row.id, row.createdAt ?? "", row.activity ?? ""].join(":");
           }
         })
         .join("||"),
@@ -994,17 +1070,56 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             );
           }
 
+          const expanded =
+            workGroupCollapseOverrides[groupId] ??
+            !(row.isPriorTurn && settings.collapseCompletedWorkLogs);
+          if (!expanded) {
+            return (
+              <div className="min-w-0 px-1 py-0.5">
+                <button
+                  type="button"
+                  aria-expanded={false}
+                  data-slot="work-group-summary"
+                  className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-lg px-2 text-left text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => onSetWorkGroupExpanded?.(groupId, true)}
+                >
+                  <ChevronRightIcon
+                    aria-hidden="true"
+                    className="size-3.5 shrink-0 text-faint-foreground"
+                  />
+                  <span className="min-w-0 truncate">{row.workSummary}</span>
+                </button>
+              </div>
+            );
+          }
+          const canCollapse = row.isPriorTurn && onSetWorkGroupExpanded !== undefined;
+
           return (
-            <div className="rounded-xl border border-border/45 bg-card/25 px-2 py-1.5">
-              {groupState.showHeader && (
-                <div className="mb-1.5 flex items-center justify-between gap-2 px-0.5">
-                  <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground/55">
-                    {groupState.groupLabel} ({row.groupedEntries.length})
-                  </p>
+            <div className="rounded-xl border border-border bg-card/50 px-2 py-1.5">
+              {(groupState.showHeader || canCollapse) && (
+                <div className="mb-1 flex min-h-6 items-center justify-between gap-2 px-0.5">
+                  {canCollapse ? (
+                    <button
+                      type="button"
+                      aria-expanded
+                      className="flex min-w-0 items-center gap-1 rounded-sm text-2xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() => onSetWorkGroupExpanded?.(groupId, false)}
+                    >
+                      <ChevronDownIcon
+                        aria-hidden="true"
+                        className="size-3.5 shrink-0 text-faint-foreground"
+                      />
+                      <span className="truncate">{row.workSummary}</span>
+                    </button>
+                  ) : (
+                    <SectionLabel as="span" count={row.groupedEntries.length} className="min-h-0">
+                      {groupState.groupLabel}
+                    </SectionLabel>
+                  )}
                   {groupState.hasOverflow && (
                     <button
                       type="button"
-                      className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
+                      className="shrink-0 rounded-sm text-2xs text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => onToggleWorkGroup(groupId, groupState.paginatedEntryCount)}
                     >
                       {groupState.isExpanded
@@ -1042,7 +1157,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           if (String(row.message.id).startsWith("resume:"))
             return (
               <div
-                className="my-4 flex items-center gap-3 text-xs text-muted-foreground"
+                className="my-4 flex items-center gap-3 text-2xs font-medium text-muted-foreground"
                 role="separator"
               >
                 <span className="h-px flex-1 bg-border" />
@@ -1062,7 +1177,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           return (
             <div className="group/user-message flex flex-col items-end">
               <div
-                className="max-w-[80%] rounded-2xl rounded-br-sm border border-border bg-secondary px-4 py-3"
+                className="max-w-[85%] rounded-xl rounded-br-md border border-border bg-secondary px-4 py-2.5"
                 data-slot="user-message-bubble"
               >
                 {userFiles.map((file) => (
@@ -1111,7 +1226,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                                 />
                               </button>
                             ) : (
-                              <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+                              <div className="flex min-h-18 items-center justify-center px-2 py-3 text-center text-2xs text-muted-foreground">
                                 {image.name}
                               </div>
                             )}
@@ -1153,7 +1268,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 )}
               </div>
               <div className="mt-1 flex items-center gap-1 pr-1">
-                <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+                <div className="flex items-center gap-0.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/user-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
                   {displayedUserMessage.copyText && (
                     <MessageCopyButton text={displayedUserMessage.copyText} />
                   )}
@@ -1193,7 +1308,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     />
                   )}
                 </div>
-                <p className="text-[10px] text-muted-foreground/30">
+                <p className="text-2xs text-muted-foreground tabular-nums">
                   {formatTimestamp(row.message.createdAt, timestampFormat)}
                 </p>
               </div>
@@ -1213,20 +1328,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           return (
             <>
               {row.showCompletionDivider && (
-                <div className="my-3 flex items-center gap-3">
+                <div className="my-3 flex items-center gap-3" role="separator">
                   <span className="h-px flex-1 bg-border" />
-                  <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {row.completionSummary ? `Response • ${row.completionSummary}` : "Response"}
-                  </span>
+                  <SectionLabel as="span" className="min-h-0">
+                    {row.completionSummary ?? "Response"}
+                  </SectionLabel>
                   <span className="h-px flex-1 bg-border" />
                 </div>
               )}
               <div className="group/assistant-message min-w-0 px-1 py-0.5">
-                <div className="mb-1 flex justify-end">
-                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant-message:opacity-100 pointer-coarse:opacity-100">
-                    <AssistantMessageActions rawText={row.message.text} />
-                  </div>
-                </div>
                 {reasoningText ? (
                   <ReasoningSection
                     reasoningText={reasoningText}
@@ -1275,26 +1385,27 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     }));
                   };
                   return (
-                    <div className="relative mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-                      <div className="sticky top-0 z-[2] -mx-2.5 -mt-2.5 mb-1.5 flex items-center justify-between gap-2 rounded-t-lg border-b border-border/60 bg-card/95 px-2.5 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-                        <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
-                          <span>Changed files ({changedFileCountLabel})</span>
+                    <div className="relative mt-3 rounded-xl border border-border bg-card p-2.5">
+                      <div className="sticky top-0 z-2 -mx-2.5 -mt-2.5 mb-1.5 flex items-center justify-between gap-2 rounded-t-xl border-b border-border bg-card/95 px-2.5 py-1 backdrop-blur-sm supports-backdrop-filter:bg-card/85">
+                        <SectionLabel as="span" count={checkpointFiles.length} className="min-w-0">
+                          <span>Changed files</span>
                           {hasNonZeroStat(summaryStat) && (
-                            <>
-                              <span className="mx-1">•</span>
+                            <span className="ms-2 font-normal">
                               <DiffStatLabel
                                 additions={summaryStat.additions}
                                 deletions={summaryStat.deletions}
                               />
-                            </>
+                            </span>
                           )}
-                        </p>
-                        <div className="flex items-center gap-1.5">
+                          <span className="sr-only"> ({changedFileCountLabel})</span>
+                        </SectionLabel>
+                        <div className="flex items-center gap-1">
                           {isExpanded ? (
                             <Button
                               type="button"
                               size="xs"
-                              variant="outline"
+                              variant="ghost"
+                              className="text-muted-foreground"
                               onClick={() => onToggleAllDirectories()}
                             >
                               {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
@@ -1304,9 +1415,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                             type="button"
                             size="xs"
                             variant="ghost"
+                            className="text-muted-foreground"
+                            aria-expanded={isExpanded}
                             onClick={togglePresentation}
                           >
                             {isExpanded ? "Show less" : "Show more"}
+                            <ChevronDownIcon
+                              aria-hidden="true"
+                              className={cn(
+                                "size-3.5 transition-transform duration-(--duration-fast)",
+                                isExpanded && "rotate-180",
+                              )}
+                            />
                           </Button>
                           <Button
                             type="button"
@@ -1334,18 +1454,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                           {checkpointFiles
                             .slice(0, CHANGED_FILES_COMPACT_PREVIEW_COUNT)
                             .map((file) => (
-                              <button
+                              <FileChip
                                 key={`${turnSummary.turnId}:${file.path}`}
-                                type="button"
-                                className="max-w-56 truncate rounded border border-border/55 bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75 hover:text-foreground"
-                                title={file.path}
+                                path={file.path}
+                                theme={resolvedTheme}
+                                className="max-w-56"
                                 onClick={() => onOpenTurnDiff(turnSummary.turnId, file.path)}
-                              >
-                                {file.path}
-                              </button>
+                              />
                             ))}
                           {checkpointFiles.length > CHANGED_FILES_COMPACT_PREVIEW_COUNT ? (
-                            <span className="px-1 py-0.5 text-[10px] text-muted-foreground/55">
+                            <span className="inline-flex h-6 items-center px-1 text-2xs text-muted-foreground tabular-nums">
                               +{checkpointFiles.length - CHANGED_FILES_COMPACT_PREVIEW_COUNT}
                             </span>
                           ) : null}
@@ -1354,15 +1472,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     </div>
                   );
                 })()}
-                <p className="mt-1.5 text-[10px] text-muted-foreground/30">
-                  {formatMessageMeta(
-                    row.message.createdAt,
-                    row.message.streaming
-                      ? formatElapsed(row.durationStart, nowIso)
-                      : formatElapsed(row.durationStart, row.message.completedAt),
-                    timestampFormat,
-                  )}
-                </p>
+                <div className="mt-1.5 flex min-h-7 items-center justify-between gap-2">
+                  <p className="text-2xs text-muted-foreground tabular-nums">
+                    {formatMessageMeta(
+                      row.message.createdAt,
+                      row.message.streaming
+                        ? formatElapsed(row.durationStart, nowIso)
+                        : formatElapsed(row.durationStart, row.message.completedAt),
+                      timestampFormat,
+                    )}
+                  </p>
+                  <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-(--duration-fast) focus-within:opacity-100 group-hover/assistant-message:opacity-100 has-[[data-popup-open]]:opacity-100 pointer-coarse:opacity-100">
+                    <AssistantMessageActions rawText={row.message.text} />
+                  </div>
+                </div>
               </div>
             </>
           );
@@ -1396,17 +1519,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
       {row.kind === "working" && (
         <div className="py-0.5 pl-1.5">
-          <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
-            <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
+          <div className="flex min-w-0 items-center gap-2 pt-1 text-ui text-muted-foreground">
+            <span aria-hidden="true" className="inline-flex shrink-0 items-center gap-0.5">
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:200ms]" />
+              <span className="size-1 rounded-full bg-faint-foreground motion-safe:animate-status-pulse motion-safe:[animation-delay:400ms]" />
             </span>
-            <span>
+            <span className="shrink-0 tabular-nums">
               {row.createdAt
-                ? `Working for ${formatWorkingTimer(row.createdAt, nowIso) ?? "0s"}`
-                : "Working..."}
+                ? `Working · ${formatWorkingTimer(row.createdAt, nowIso) ?? "0s"}`
+                : "Working…"}
             </span>
+            {row.activity ? (
+              <span className="min-w-0 truncate text-muted-foreground">· {row.activity}</span>
+            ) : null}
           </div>
         </div>
       )}
@@ -1423,7 +1549,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     const dimmed = revertDimFromRowIndex >= 0 && index >= revertDimFromRowIndex;
     const reverting = dimmed && pendingRevert !== null;
     return (
-      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
+      <div
+        className="mx-auto w-full min-w-0 max-w-(--chat-content-max-width) overflow-x-clip"
+        data-timeline-root="true"
+      >
         {pendingRevert && index === revertDimFromRowIndex ? (
           <RevertStatusPill label={pendingRevert.label} />
         ) : null}
@@ -1450,15 +1579,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     // through `listHeaderContent` would silently drop it on empty threads.
     return (
       <div
-        className="flex h-full flex-col overflow-y-auto overscroll-y-contain px-3 sm:px-5"
+        className="flex h-full flex-col overflow-y-auto overscroll-y-contain px-3 pb-(--composer-dock-height) sm:px-5"
         data-slot="messages-scroll-container"
       >
         {listHeaderContent ? <div className="pt-3 sm:pt-4">{listHeaderContent}</div> : null}
-        <div className="flex flex-1 items-center justify-center">
-          <p className="text-sm text-muted-foreground/30">
-            Send a message to start the conversation.
-          </p>
-        </div>
+        <MessagesTimelineEmpty emptyState={emptyState} />
       </div>
     );
   }
@@ -1522,7 +1647,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             {listHeaderContent}
           </>
         }
-        ListFooterComponent={<div className="h-3 sm:h-4" />}
+        // Reserves room for the floating composer dock so the last row
+        // scrolls fully clear of it.
+        ListFooterComponent={
+          <ComposerDockSpacer className="h-[calc(var(--composer-dock-height,0px)+0.75rem)] sm:h-[calc(var(--composer-dock-height,0px)+1rem)]" />
+        }
       />
       {minimapRowIndices.length > 1 ? (
         <TimelineMinimap
@@ -1659,7 +1788,7 @@ function TimelineMinimap(props: {
                     ? "bg-primary/80"
                     : "bg-foreground/55"
                   : row.kind === "work"
-                    ? "bg-amber-500/70"
+                    ? "bg-warning/70"
                     : "bg-muted-foreground/50",
                 isActive ? "w-3 h-0.5 opacity-100" : "w-1.5",
               )}
@@ -1762,6 +1891,9 @@ type TimelineRow =
       id: string;
       createdAt: string;
       groupedEntries: TimelineWorkEntry[];
+      /** Above the newest user message, so eligible for collapsing. */
+      isPriorTurn: boolean;
+      workSummary: string;
     }
   | {
       kind: "message";
@@ -1785,7 +1917,18 @@ type TimelineRow =
       commandExecution: TimelineCommandExecution;
       nestedDiagnostics?: ReadonlyArray<TimelineWorkEntry>;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | { kind: "working"; id: string; createdAt: string | null; activity: string | null };
+
+/** Heading of the newest tool entry in the current turn, for the working row. */
+function latestWorkActivityHeading(rows: ReadonlyArray<TimelineRow>): string | null {
+  const lastRow = rows.at(-1);
+  if (lastRow?.kind !== "work") return null;
+  for (let index = lastRow.groupedEntries.length - 1; index >= 0; index -= 1) {
+    const entry = lastRow.groupedEntries[index];
+    if (entry && entry.tone === "tool") return toolWorkEntryHeading(entry);
+  }
+  return null;
+}
 
 interface WorkGroupRenderState {
   groupLabel: string;
@@ -1895,7 +2038,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
       <UserMessageBody text={displayText} skillCall={props.skillCall} terminalContexts={[]} />
       <button
         type="button"
-        className="mt-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-muted-foreground"
+        className="mt-1 text-2xs text-muted-foreground transition-colors hover:text-foreground"
         aria-expanded={expanded}
         data-scroll-anchor-ignore
         onClick={() => setExpanded((current) => !current)}
@@ -2017,7 +2160,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
         return (
           <div
-            className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+            className="wrap-break-word whitespace-pre-wrap chat-plaintext leading-relaxed text-foreground"
             {...(testRenderCountProps ?? {})}
           >
             {inlineNodes}
@@ -2052,7 +2195,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
     return (
       <div
-        className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+        className="wrap-break-word whitespace-pre-wrap chat-plaintext leading-relaxed text-foreground"
         {...(testRenderCountProps ?? {})}
       >
         {inlineNodes}
@@ -2067,7 +2210,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   if (hasSkillPrefix) {
     return (
       <div
-        className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+        className="wrap-break-word whitespace-pre-wrap chat-plaintext leading-relaxed text-foreground"
         {...(testRenderCountProps ?? {})}
       >
         {skillNodes}
@@ -2080,7 +2223,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
   return (
     <pre
-      className="whitespace-pre-wrap wrap-break-word font-mono text-sm leading-relaxed text-foreground"
+      className="whitespace-pre-wrap wrap-break-word chat-plaintext leading-relaxed text-foreground"
       {...(testRenderCountProps ?? {})}
     >
       {textAfterSkillPrefix}
@@ -2095,32 +2238,32 @@ function workToneIcon(tone: TimelineWorkEntry["tone"]): {
   if (tone === "error") {
     return {
       icon: CircleAlertIcon,
-      className: "text-foreground/92",
+      className: "text-foreground",
     };
   }
   if (tone === "thinking") {
     return {
       icon: BotIcon,
-      className: "text-foreground/92",
+      className: "text-foreground",
     };
   }
   if (tone === "info") {
     return {
       icon: CheckIcon,
-      className: "text-foreground/92",
+      className: "text-foreground",
     };
   }
   return {
     icon: ZapIcon,
-    className: "text-foreground/92",
+    className: "text-foreground",
   };
 }
 
 function workToneClass(tone: "thinking" | "tool" | "info" | "error"): string {
-  if (tone === "error") return "text-rose-300/50 dark:text-rose-300/50";
-  if (tone === "tool") return "text-muted-foreground/70";
-  if (tone === "thinking") return "text-muted-foreground/50";
-  return "text-muted-foreground/40";
+  if (tone === "error") return "text-destructive-foreground/50";
+  if (tone === "tool") return "text-muted-foreground";
+  if (tone === "thinking") return "text-muted-foreground";
+  return "text-muted-foreground";
 }
 
 interface WorkEntryChangedFilePreview {
@@ -2203,20 +2346,6 @@ function normalizedReadWorkEntry(
     filePaths: workEntry.readPaths,
     ...(workEntry.lineSummary ? { lineSummary: workEntry.lineSummary } : {}),
   };
-}
-
-function normalizedSearchSummary(
-  workEntry: Pick<TimelineWorkEntry, "command" | "searchSummary">,
-): string | null {
-  if (workEntry.command) {
-    const commandClassification = classifyCompactCommand(workEntry.command);
-    if (commandClassification.kind === "search") {
-      return commandClassification.summary;
-    }
-  }
-
-  const searchSummary = workEntry.searchSummary?.trim();
-  return searchSummary && searchSummary.length > 0 ? searchSummary : null;
 }
 
 function workEntryReadFilesForPreview(
@@ -2321,56 +2450,6 @@ interface ParsedFileReadDetail {
   line: number | undefined;
   endLine: number | undefined;
   column: number | undefined;
-}
-
-function normalizedWorkEntryHeading(
-  workEntry: Pick<TimelineWorkEntry, "label" | "toolTitle">,
-): string {
-  return normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label).trim();
-}
-
-function isSearchWorkEntry(
-  workEntry: Pick<
-    TimelineWorkEntry,
-    "command" | "itemType" | "label" | "requestKind" | "searchSummary" | "toolTitle"
-  >,
-): boolean {
-  if (normalizedSearchSummary(workEntry)) {
-    return true;
-  }
-
-  if (workEntry.requestKind !== "command" && workEntry.itemType !== "command_execution") {
-    return false;
-  }
-
-  return normalizedWorkEntryHeading(workEntry).toLowerCase().startsWith("searching ");
-}
-
-function isFileReadWorkEntry(
-  workEntry: Pick<TimelineWorkEntry, "label" | "readPaths" | "requestKind" | "toolTitle">,
-): boolean {
-  if (workEntry.requestKind === "file-read" || (workEntry.readPaths?.length ?? 0) > 0) {
-    return true;
-  }
-  const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
-  return normalizedLabel === "read" || normalizedLabel === "read file";
-}
-
-function isFileChangeWorkEntry(
-  workEntry: Pick<
-    TimelineWorkEntry,
-    "fileChangeId" | "itemType" | "label" | "requestKind" | "toolTitle"
-  >,
-): boolean {
-  if (
-    workEntry.fileChangeId ||
-    workEntry.requestKind === "file-change" ||
-    workEntry.itemType === "file_change"
-  ) {
-    return true;
-  }
-  const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
-  return normalizedLabel === "file change" || normalizedLabel === "write file";
 }
 
 function inferredFileOperationHeading(
@@ -2847,19 +2926,19 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
 
   return (
-    <div className="rounded-lg px-1 py-1">
-      <div className="flex items-center gap-2 transition-[opacity,translate] duration-200">
+    <div className="rounded-lg px-1 py-0.5">
+      <div className="flex min-h-6 items-center gap-2 transition-[opacity,translate] duration-200">
         <span
           className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
         >
-          <EntryIcon className="size-3" />
+          <EntryIcon className="size-3.5" />
         </span>
         <div className="min-w-0 flex-1 overflow-hidden">
           <p
             className={cn(
-              "truncate text-[11px] leading-5",
+              "truncate text-ui leading-6",
               workToneClass(workEntry.tone),
-              preview ? "text-muted-foreground/70" : "",
+              preview ? "text-muted-foreground" : "",
             )}
             title={displayText}
           >
@@ -2875,7 +2954,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               <button
                 type="button"
                 aria-expanded={inlineDiffExpanded}
-                className={cn("text-left text-foreground/80", workToneClass(workEntry.tone))}
+                className={cn("text-left text-foreground", workToneClass(workEntry.tone))}
                 onClick={() => {
                   if (!window.getSelection()?.isCollapsed) return;
                   chatDiffContext.onToggleFileChangeDiff(workEntry.id);
@@ -2884,32 +2963,32 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
                 {heading}
               </button>
             ) : (
-              <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
+              <span className={cn("text-foreground", workToneClass(workEntry.tone))}>
                 {heading}
               </span>
             )}
             {(workEntry.warningCount ?? 1) > 1 ? (
-              <span className="ml-1 rounded bg-secondary/60 px-1 py-0.5 text-[9px] tabular-nums text-muted-foreground/65">
+              <span className="ml-1 rounded-sm bg-secondary px-1 py-0.5 text-2xs tabular-nums text-muted-foreground">
                 ×{workEntry.warningCount}
               </span>
             ) : null}
             {inlineFilePreview ? (
               <>
-                <span className="text-muted-foreground/55"> {" - "}</span>
+                <span className="text-muted-foreground"> {" - "}</span>
                 <button
                   type="button"
-                  className="max-w-full cursor-pointer truncate text-left text-muted-foreground/55 underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground/80 hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                  className="max-w-full cursor-pointer truncate text-left text-muted-foreground underline decoration-dotted underline-offset-2 transition-colors hover:text-foreground hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
                   onClick={() => openFileChip(inlineFilePreview.targetPath)}
                   title={inlineFilePreview.label}
                 >
                   {inlineFilePreview.label}
                 </button>
                 {inlineFilePreview.trailingText ? (
-                  <span className="text-muted-foreground/55">{inlineFilePreview.trailingText}</span>
+                  <span className="text-muted-foreground">{inlineFilePreview.trailingText}</span>
                 ) : null}
               </>
             ) : preview ? (
-              <span className="text-muted-foreground/55"> - {preview}</span>
+              <span className="text-muted-foreground"> - {preview}</span>
             ) : null}
           </p>
           {imageExpanded && workEntry.imagePath && (
@@ -2920,7 +2999,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         </div>
       </div>
       {hasChangedFiles && !previewIsChangedFiles && (
-        <div className="mt-1 flex flex-wrap gap-1 pl-6">
+        <div className="mt-1 flex flex-wrap gap-1 pl-7">
           {(fileChangeEntry
             ? fileChangePreviews.slice(0, 4)
             : (workEntry.changedFiles?.slice(0, 4) ?? [])
@@ -2928,28 +3007,20 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             const filePath = typeof file === "string" ? file : file.targetPath;
             const fileLabel = typeof file === "string" ? file : file.displayPath;
             return (
-              <span
+              <FileChip
                 key={`${workEntry.id}:${filePath}`}
-                role="button"
-                tabIndex={0}
-                className="cursor-pointer rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75 transition-colors hover:border-border hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                path={filePath}
+                label={fileLabel}
                 title={filePath}
+                theme={resolvedTheme}
+                size="sm"
                 onClick={() => openFileChip(filePath)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" && event.key !== " ") {
-                    return;
-                  }
-                  event.preventDefault();
-                  openFileChip(filePath);
-                }}
-              >
-                {fileLabel}
-              </span>
+              />
             );
           })}
           {(fileChangeEntry ? fileChangePreviews.length : (workEntry.changedFiles?.length ?? 0)) >
             4 && (
-            <span className="px-1 text-[10px] text-muted-foreground/55">
+            <span className="px-1 text-2xs text-muted-foreground">
               +
               {(fileChangeEntry
                 ? fileChangePreviews.length
@@ -2959,43 +3030,35 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         </div>
       )}
       {!hasChangedFiles && !inlineFilePreview && commandReadFiles.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1 pl-6">
+        <div className="mt-1 flex flex-wrap gap-1 pl-7">
           {commandReadFiles.slice(0, 4).map((file) => (
-            <span
+            <FileChip
               key={`${workEntry.id}:${file.rawPath}`}
-              role="button"
-              tabIndex={0}
-              className="cursor-pointer rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75 transition-colors hover:border-border hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              path={file.targetPath}
+              label={file.displayPath}
               title={file.rawPath}
+              theme={resolvedTheme}
+              size="sm"
               onClick={() => openFileChip(file.targetPath)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") {
-                  return;
-                }
-                event.preventDefault();
-                openFileChip(file.targetPath);
-              }}
-            >
-              {file.displayPath}
-            </span>
+            />
           ))}
           {commandReadFiles.length > 4 && (
-            <span className="px-1 text-[10px] text-muted-foreground/55">
+            <span className="px-1 text-2xs text-muted-foreground">
               +{commandReadFiles.length - 4}
             </span>
           )}
         </div>
       )}
       {canRenderInlineDiff ? (
-        <div className="mt-1 flex items-center justify-between gap-2 pl-6 pr-1">
-          <span className="text-[10px] text-muted-foreground/60">
+        <div className="mt-1 flex items-center justify-between gap-2 pl-7 pr-1">
+          <span className="text-2xs text-muted-foreground">
             {formatInlineDiffFileCountLabel(inlineDiffFileCount)}
           </span>
           <Button
             type="button"
             size="xs"
             variant="ghost"
-            className="h-6 px-2 text-[10px] text-muted-foreground/70 hover:text-foreground/85"
+            className="h-6 px-2 text-2xs text-muted-foreground hover:text-foreground"
             onMouseEnter={() => void preloadInlineDiffComponents()}
             onFocus={() => void preloadInlineDiffComponents()}
             onClick={() => chatDiffContext.onToggleFileChangeDiff(workEntry.id)}
@@ -3093,18 +3156,18 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
 
   return (
     <Collapsible
-      className="group rounded-xl border border-border/60 bg-card/35"
+      className="group rounded-xl border border-border bg-card"
       open={open}
       onOpenChange={handleOpenChange}
     >
       <CollapsibleTrigger
         className={cn(
-          "flex w-full items-start gap-3 px-3 py-3 text-left",
+          "flex w-full items-start gap-3 rounded-xl px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
           !hasNestedContent && "cursor-default",
         )}
         disabled={!hasNestedContent}
       >
-        <span className="mt-0.5 shrink-0 text-muted-foreground/70">
+        <span className="mt-0.5 shrink-0 text-faint-foreground">
           {hasNestedContent ? (
             open ? (
               <ChevronDownIcon className="size-4" />
@@ -3125,35 +3188,31 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex rounded-full border border-border bg-muted/30 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <span className="inline-flex h-5 items-center rounded-full border border-border bg-muted/50 px-2 text-2xs font-medium text-muted-foreground">
               MCP tool call
             </span>
           </div>
-          <p className="mt-1.5 text-sm font-medium text-foreground" title={hoverTitle}>
+          <p className="mt-1.5 text-ui font-medium text-foreground" title={hoverTitle}>
             {heading}
           </p>
         </div>
       </CollapsibleTrigger>
       {hasNestedContent && (
         <CollapsiblePanel>
-          <div className="border-t border-border/60 px-3 py-3">
+          <div className="border-t border-border px-3 py-3">
             <div className="space-y-3">
               {workEntry.mcpInput && (
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                    Input
-                  </p>
-                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-background/70 p-2 font-mono text-[12px] leading-5 text-foreground">
+                  <p className="text-2xs font-medium text-muted-foreground">Input</p>
+                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-muted/40 p-2 font-mono text-xs leading-5 text-foreground">
                     {workEntry.mcpInput}
                   </pre>
                 </div>
               )}
               {workEntry.mcpResult && (
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                    Result
-                  </p>
-                  <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2 text-[12px] text-foreground">
+                  <p className="text-2xs font-medium text-muted-foreground">Result</p>
+                  <div className="mt-1 max-h-80 overflow-auto rounded-md bg-muted/40 p-2 text-ui text-foreground">
                     <ChatMarkdown
                       text={workEntry.mcpResult}
                       cwd={markdownCwd}
@@ -3236,10 +3295,10 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   }, []);
 
   return (
-    <Collapsible className="rounded-lg px-1 py-1" open={open} onOpenChange={handleOpenChange}>
+    <Collapsible className="rounded-lg px-1 py-0.5" open={open} onOpenChange={handleOpenChange}>
       <CollapsibleTrigger
         className={cn(
-          "flex w-full items-start gap-2 rounded-md px-0 py-1 text-left",
+          "flex min-h-6 w-full items-start gap-2 rounded-md px-0 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
           !hasNestedContent && "cursor-default",
         )}
         disabled={!hasNestedContent}
@@ -3247,37 +3306,33 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
         <span
           className={cn("flex size-5 shrink-0 items-center justify-center", iconConfig.className)}
         >
-          <EntryIcon className="size-3" />
+          <EntryIcon className="size-3.5" />
         </span>
         <div className="min-w-0 flex-1 overflow-hidden">
           <p
             className={cn(
-              "truncate text-[.6875rem] leading-5",
+              "truncate text-ui leading-5",
               workToneClass(workEntry.tone),
-              preview ? "text-muted-foreground/70" : "",
+              preview ? "text-muted-foreground" : "",
             )}
             title={displayText}
           >
-            <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
-              {heading}
-            </span>
-            {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
+            <span className={cn("text-foreground", workToneClass(workEntry.tone))}>{heading}</span>
+            {preview && <span className="text-muted-foreground"> - {preview}</span>}
           </p>
           {(workEntry.subagentType || workEntry.subagentModel || workEntry.subagentThreadId) && (
             <div className="mt-1 flex flex-wrap gap-1">
               {workEntry.subagentType && (
-                <span className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 text-[10px] text-muted-foreground/75">
-                  {workEntry.subagentType}
-                </span>
+                <span className={WORK_META_CHIP_CLASS_NAME}>{workEntry.subagentType}</span>
               )}
               {workEntry.subagentModel && (
-                <span className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75">
+                <span className={cn(WORK_META_CHIP_CLASS_NAME, "font-mono")}>
                   {workEntry.subagentModel}
                 </span>
               )}
               {workEntry.subagentThreadId && (
                 <span
-                  className="max-w-48 truncate rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
+                  className={cn(WORK_META_CHIP_CLASS_NAME, "max-w-48 truncate font-mono")}
                   title={workEntry.subagentThreadId}
                 >
                   {workEntry.subagentThreadId}
@@ -3289,7 +3344,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
         {hasNestedContent && (
           <ChevronDownIcon
             className={cn(
-              "mt-1 size-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-200",
+              "mt-1 size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
               open ? "rotate-180" : "",
             )}
           />
@@ -3297,24 +3352,20 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
       </CollapsibleTrigger>
       {hasNestedContent && (
         <CollapsiblePanel>
-          <div className="mt-1 ml-6 space-y-2 rounded-lg border border-border/45 bg-background/60 p-3">
+          <div className="mt-1 ml-7 space-y-2 rounded-lg bg-muted/40 p-3">
             {workEntry.subagentPath &&
               (!isCodexCollaboration || (hasCorrelatedAgentPath && responseRows.length === 0)) && (
                 <div>
-                  <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                    Agent
-                  </p>
-                  <p className="break-all font-mono text-[.6875rem] text-muted-foreground/75">
+                  <p className="mb-1 text-2xs font-medium text-muted-foreground">Agent</p>
+                  <p className="break-all font-mono text-xs text-muted-foreground">
                     {workEntry.subagentPath}
                   </p>
                 </div>
               )}
             {workEntry.subagentPrompt && !isCodexCollaboration && (
               <div>
-                <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                  Tool Call
-                </p>
-                <div className="text-[12px] text-muted-foreground/80">
+                <p className="mb-1 text-2xs font-medium text-muted-foreground">Tool Call</p>
+                <div className="text-ui text-muted-foreground">
                   <ChatMarkdown
                     text={workEntry.subagentPrompt}
                     cwd={markdownCwd}
@@ -3326,15 +3377,15 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
             {isCodexCollaboration &&
               responseRows.map((state) => (
                 <div key={state.threadId} data-subagent-state={state.status}>
-                  <p className="break-all font-mono text-[.6875rem] text-muted-foreground/75">
+                  <p className="break-all font-mono text-xs text-muted-foreground">
                     {state.threadId}
                   </p>
-                  <p className="text-[12px] text-muted-foreground/80">
+                  <p className="text-ui text-muted-foreground">
                     {resolveCodexCollaborationStatusLabel(state.status)}
                     {state.message ? ` - ${state.message}` : ""}
                   </p>
                   {workEntry.subagentPath && workEntry.subagentThreadId === state.threadId ? (
-                    <p className="break-all font-mono text-[.6875rem] text-muted-foreground/65">
+                    <p className="break-all font-mono text-xs text-muted-foreground">
                       {workEntry.subagentPath}
                     </p>
                   ) : null}
@@ -3344,19 +3395,15 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
             workEntry.codexCollaborationTool === "wait" &&
             workEntry.status === "completed" &&
             responseRows.length === 0 ? (
-              <p className="text-[12px] text-muted-foreground/75">No agents completed yet.</p>
+              <p className="text-ui text-muted-foreground">No agents completed yet.</p>
             ) : null}
             {isCodexCollaboration && workEntry.subagentStatesTruncated ? (
-              <p className="text-[.6875rem] text-muted-foreground/65">
-                Additional agent details omitted
-              </p>
+              <p className="text-xs text-muted-foreground">Additional agent details omitted</p>
             ) : null}
             {workEntry.subagentResult && !isCodexCollaboration && (
               <div>
-                <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                  Result
-                </p>
-                <div className="text-[12px] text-muted-foreground/80">
+                <p className="mb-1 text-2xs font-medium text-muted-foreground">Result</p>
+                <div className="text-ui text-muted-foreground">
                   <ChatMarkdown
                     text={workEntry.subagentResult}
                     cwd={markdownCwd}
@@ -3439,29 +3486,27 @@ const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
       <CollapsibleTrigger
         disabled={!canExpand}
         className={cn(
-          "flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1 text-left",
-          canExpand && "hover:bg-secondary/35",
+          "flex min-h-6 w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          canExpand && "hover:bg-accent/60",
         )}
       >
         <span className="flex size-5 shrink-0 items-center justify-center">
           <StatusIcon
-            className={cn("size-3", failed ? "text-rose-400/70" : "text-muted-foreground/60")}
+            className={cn("size-3.5", failed ? "text-destructive" : "text-faint-foreground")}
           />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[.6875rem] leading-4 text-muted-foreground/70">
-            <span className={failed ? "text-rose-300/75" : "text-foreground/70"}>
+          <p className="truncate text-ui leading-5 text-muted-foreground">
+            <span className={failed ? "text-destructive-foreground" : "text-foreground"}>
               {workEntry.label}
             </span>
-            {metadata.length > 0 ? (
-              <span className="text-muted-foreground/45"> — {metadata.join(" · ")}</span>
-            ) : null}
+            {metadata.length > 0 ? <span> — {metadata.join(" · ")}</span> : null}
           </p>
         </div>
         {canExpand ? (
           <ChevronRightIcon
             className={cn(
-              "size-3 shrink-0 text-muted-foreground/45 transition-transform",
+              "size-3.5 shrink-0 text-faint-foreground transition-transform duration-(--duration-fast)",
               open && "rotate-90",
             )}
           />
@@ -3469,16 +3514,16 @@ const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
       </CollapsibleTrigger>
       {canExpand ? (
         <CollapsiblePanel>
-          <div className="ml-6 space-y-2 rounded-md border border-border/40 bg-background/55 p-2 text-[10px] text-muted-foreground/70">
+          <div className="ml-7 space-y-2 rounded-md bg-muted/40 p-2 text-xs text-muted-foreground">
             {diagnostic.sourcePath ? (
               <div>
-                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Source</p>
+                <p className="mb-0.5 text-2xs font-medium">Source</p>
                 <p className="break-all font-mono">{diagnostic.sourcePath}</p>
               </div>
             ) : null}
             {diagnostic.statusMessage || diagnostic.rationale ? (
               <div>
-                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Status</p>
+                <p className="mb-0.5 text-2xs font-medium">Status</p>
                 <p className="whitespace-pre-wrap wrap-break-word">
                   {diagnostic.statusMessage ?? diagnostic.rationale}
                 </p>
@@ -3486,8 +3531,8 @@ const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
             ) : null}
             {fullOutput ? (
               <div>
-                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Output</p>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word rounded bg-secondary/35 p-2 font-mono">
+                <p className="mb-0.5 text-2xs font-medium">Output</p>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word rounded-sm bg-muted p-2 font-mono">
                   {fullOutput}
                 </pre>
               </div>
@@ -3512,15 +3557,15 @@ const NestedDiagnosticList = memo(function NestedDiagnosticList(props: {
   const hasOverflow = props.diagnostics.length > WORK_LOG_PAGE_SIZE;
 
   return (
-    <div className={cn("ml-5 border-l border-border/45 pl-2", props.className)}>
+    <div className={cn("ml-5 border-l border-border pl-2", props.className)}>
       {hasOverflow ? (
         <div className="flex items-center justify-between gap-2 px-1 py-0.5">
-          <p className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/45">
+          <p className="text-2xs font-medium text-muted-foreground">
             Diagnostics ({props.diagnostics.length})
           </p>
           <button
             type="button"
-            className="text-[9px] uppercase tracking-[0.1em] text-muted-foreground/50 transition-colors hover:text-foreground/75"
+            className="rounded-sm text-2xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => {
               setRevealedCount((current) =>
                 current >= props.diagnostics.length
@@ -3590,7 +3635,7 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       <time
         dateTime={workEntry.createdAt}
         title={new Date(workEntry.createdAt).toLocaleString()}
-        className="absolute right-1 top-2 text-[9px] tabular-nums text-muted-foreground opacity-0 group-hover/work-entry:opacity-100 group-focus-within/work-entry:opacity-100"
+        className="absolute right-1 top-1.5 text-2xs tabular-nums text-muted-foreground opacity-0 group-hover/work-entry:opacity-100 group-focus-within/work-entry:opacity-100 pointer-coarse:opacity-100"
       >
         {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
       </time>

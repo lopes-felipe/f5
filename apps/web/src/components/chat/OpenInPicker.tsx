@@ -133,19 +133,19 @@ export const OpenInPicker = memo(function OpenInPicker({
   return (
     <Group aria-label="Subscription actions">
       <Button
-        size="xs"
+        size="sm"
         variant="outline"
         disabled={!preferredEditor || !openInCwd}
         onClick={() => openInEditor(preferredEditor)}
       >
         {primaryOption?.Icon && <primaryOption.Icon aria-hidden="true" className="size-3.5" />}
-        <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+        <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
           Open
         </span>
       </Button>
-      <GroupSeparator className="hidden @sm/header-actions:block" />
+      <GroupSeparator className="hidden @xl/header-actions:block" />
       <Menu>
-        <MenuTrigger render={<Button aria-label="Copy options" size="icon-xs" variant="outline" />}>
+        <MenuTrigger render={<Button aria-label="Copy options" size="icon-sm" variant="outline" />}>
           <ChevronDownIcon aria-hidden="true" className="size-4" />
         </MenuTrigger>
         <MenuPopup align="end">

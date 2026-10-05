@@ -6,15 +6,19 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { readNativeApi } from "~/nativeApi";
+import { Button } from "../ui/button";
+import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 import { UserInputAttachments } from "./UserInputAttachments";
 
 /** Message questions keep their drafts mounted while the conversation continues. */
 export function AsyncUserInputPanel({
   threadId,
   input,
+  variant = "standalone",
 }: {
   threadId: ThreadId;
   input: PendingUserInput;
+  variant?: ComposerPanelVariant;
 }) {
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -76,18 +80,25 @@ export function AsyncUserInputPanel({
   };
   if (resolved) return null;
   return (
-    <section className="mb-2 rounded-lg border border-border p-3" aria-label="Question from agent">
+    <section
+      className={
+        variant === "tray"
+          ? COMPOSER_TRAY_PANEL_CLASS_NAME
+          : "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card p-3"
+      }
+      aria-label="Question from agent"
+    >
       {input.questions.map((question) => (
         <div key={question.id} className="mb-3">
-          <p className="mb-2 text-sm">{question.question}</p>
-          <div className="flex flex-wrap gap-2">
+          <p className="mb-2 text-ui font-medium text-foreground">{question.question}</p>
+          <div className="flex flex-wrap gap-1.5">
             {question.options.map((option) => (
               <button
                 key={option.label}
                 disabled={busy}
                 type="button"
                 aria-pressed={answers[question.id]?.includes(option.label) ?? false}
-                className="rounded border px-2 py-1 text-xs"
+                className="h-7 rounded-md border border-border px-2 text-ui text-muted-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 aria-pressed:border-primary/60 aria-pressed:bg-primary/10 aria-pressed:text-foreground"
                 onClick={() =>
                   setAnswers((current) => ({
                     ...current,
@@ -105,7 +116,7 @@ export function AsyncUserInputPanel({
           </div>
           <textarea
             aria-label={`Answer: ${question.question}`}
-            className="mt-2 w-full rounded border bg-transparent p-2 text-sm"
+            className="mt-2 w-full rounded-md border border-input bg-background p-2 text-ui outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30"
             disabled={busy}
             value={custom[question.id] ?? ""}
             onChange={(event) =>
@@ -114,10 +125,10 @@ export function AsyncUserInputPanel({
           />
         </div>
       ))}
-      <div className="flex items-center gap-3 text-xs">
-        <button type="button" disabled={busy} onClick={() => void resolve(false)}>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <Button type="button" size="sm" disabled={busy} onClick={() => void resolve(false)}>
           Answer
-        </button>
+        </Button>
         <UserInputAttachments
           threadId={threadId}
           attachments={attachments}
@@ -128,7 +139,7 @@ export function AsyncUserInputPanel({
         />
       </div>
       {error ? (
-        <p role="alert" className="mt-2 text-xs text-destructive">
+        <p role="alert" className="mt-2 text-xs text-destructive-foreground">
           {error}
         </p>
       ) : null}

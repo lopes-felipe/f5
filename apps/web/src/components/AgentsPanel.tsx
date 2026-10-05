@@ -13,13 +13,13 @@ const STATUS_PRESENTATION: Record<
   BackgroundWorkStatus,
   { readonly label: string; readonly dotClassName: string }
 > = {
-  running: { label: "Working", dotClassName: "bg-sky-500" },
-  monitoring: { label: "Monitoring", dotClassName: "bg-sky-500" },
+  running: { label: "Working", dotClassName: "bg-info" },
+  monitoring: { label: "Monitoring", dotClassName: "bg-info" },
   idle: { label: "Idle", dotClassName: "bg-muted-foreground/50" },
-  completed: { label: "Completed", dotClassName: "bg-emerald-500" },
+  completed: { label: "Completed", dotClassName: "bg-success" },
   failed: { label: "Failed", dotClassName: "bg-destructive" },
   stopped: { label: "Stopped", dotClassName: "bg-muted-foreground/50" },
-  interrupted: { label: "Interrupted", dotClassName: "bg-amber-500" },
+  interrupted: { label: "Interrupted", dotClassName: "bg-warning" },
 };
 
 function elapsedLabel(startedAt: string, completedAt: string | null, now: number): string | null {
@@ -69,7 +69,7 @@ function AgentRow(props: {
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-baseline gap-2">
           <span className="truncate text-sm font-medium text-foreground">{props.entry.title}</span>
-          <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+          <span className="ml-auto shrink-0 font-mono text-2xs text-muted-foreground">
             {elapsed}
           </span>
         </span>
@@ -79,7 +79,7 @@ function AgentRow(props: {
             {props.entry.outputTruncated ? " …" : ""}
           </span>
         ) : null}
-        <span className="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-muted-foreground/80">
+        <span className="mt-1 flex min-w-0 items-center gap-1.5 text-2xs text-muted-foreground">
           <span className="shrink-0">{presentation.label}</span>
           <span aria-hidden="true">·</span>
           <span className="truncate">{source}</span>
@@ -101,7 +101,7 @@ function AgentRow(props: {
       </span>
       <ChevronRightIcon
         aria-hidden="true"
-        className="mt-1 size-3.5 shrink-0 text-muted-foreground/50 group-hover:text-foreground"
+        className="mt-1 size-3.5 shrink-0 text-muted-foreground group-hover:text-foreground"
       />
     </button>
   );
@@ -118,7 +118,7 @@ function AgentSection(props: {
   const Icon = props.icon;
   return (
     <section aria-label={props.title}>
-      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+      <div className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-2xs font-medium tracking-wider text-muted-foreground uppercase">
         <Icon aria-hidden="true" className="size-3" />
         {props.title}
         <span className="ml-auto font-mono tracking-normal">{props.entries.length}</span>
@@ -170,7 +170,7 @@ export function AgentsPanelView(props: AgentsPanelViewProps) {
   if (props.model.directEntries.length === 0 && props.model.workflowEntries.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <BotIcon aria-hidden="true" className="size-6 text-muted-foreground/60" />
+        <BotIcon aria-hidden="true" className="size-6 text-muted-foreground" />
         <p className="text-sm font-medium">No agent work yet</p>
         <p className="max-w-64 text-xs text-muted-foreground">
           Subagents and workflow work appear here with durable status, even after a server restart.
@@ -199,7 +199,7 @@ export function AgentsPanelView(props: AgentsPanelViewProps) {
           />
         </div>
       </ScrollArea>
-      <footer className="border-t border-border/60 px-3 py-2 text-[10px] text-muted-foreground">
+      <footer className="border-t border-border/60 px-3 py-2 text-2xs text-muted-foreground">
         <div className="flex items-center justify-between gap-3">
           <span>
             {props.model.liveCount > 0 ? `${props.model.liveCount} working` : "No active agents"}

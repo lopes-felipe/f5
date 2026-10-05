@@ -39,7 +39,7 @@ export function QuotaMeter(props: {
           style={{ width: `${percent ?? 0}%` }}
         />
       </div>
-      <p className="text-[11px] text-muted-foreground">{reset}</p>
+      <p className="text-2xs text-muted-foreground">{reset}</p>
     </div>
   );
 }

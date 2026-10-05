@@ -120,7 +120,7 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
   return (
     <div data-testid="inline-file-diff" data-work-entry-id={workEntryId}>
       {exactFileChangeQuery.isLoading && !exactFileChangeData?.fileChange ? (
-        <p className="px-3 py-2 text-[11px] text-muted-foreground/65">Loading diff...</p>
+        <p className="px-3 py-2 text-2xs text-muted-foreground">Loading diff...</p>
       ) : (
         <div className="max-h-80 space-y-2 overflow-auto">
           {renderableFiles.map((fileDiff) => {
@@ -140,10 +140,10 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
                     title={displayPath}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="text-muted-foreground/55">
+                      <span className="text-muted-foreground">
                         <ChevronRightIcon className="size-3" />
                       </span>
-                      <span className="truncate font-mono text-[11px] text-foreground/85">
+                      <span className="truncate font-mono text-2xs text-foreground">
                         {displayPath}
                       </span>
                     </div>

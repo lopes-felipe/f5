@@ -209,14 +209,14 @@ function ProviderAuthEmail(props: {
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       {props.separator ? <span aria-hidden>·</span> : null}
-      {props.prefix ? <span className="text-muted-foreground/80">{props.prefix}</span> : null}
+      {props.prefix ? <span className="text-muted-foreground">{props.prefix}</span> : null}
       <Tooltip>
         <TooltipTrigger
           render={
             <button
               type="button"
               className={cn(
-                "min-w-0 cursor-pointer rounded-sm font-mono text-[11px] leading-none transition hover:text-foreground",
+                "min-w-0 cursor-pointer rounded-sm font-mono text-2xs leading-none transition hover:text-foreground",
                 revealed ? "text-muted-foreground" : "select-none text-muted-foreground blur-[2px]",
               )}
               onClick={() => setRevealed((value) => !value)}
@@ -574,12 +574,11 @@ export function ProviderInstanceCard({
                   showBadge={Boolean(accentColor)}
                   statusDotClassName={statusStyle.dot}
                   className="size-5"
-                  iconClassName="size-4 text-foreground/80"
-                  badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 text-[7px]"
+                  iconClassName="size-4 text-foreground"
                 />
               ) : FallbackIconComponent ? (
                 <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
-                  <FallbackIconComponent className="size-4 text-foreground/80" aria-hidden />
+                  <FallbackIconComponent className="size-4 text-foreground" aria-hidden />
                   <span
                     className={cn(
                       "pointer-events-none absolute -left-0.5 -top-0.5 size-2 rounded-full ring-2 ring-background",
@@ -598,7 +597,7 @@ export function ProviderInstanceCard({
                 // label. Custom instances (and any instance the user has
                 // since renamed) keep the chip so their slug stays
                 // visible for copy/paste + disambiguation.
-                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">
+                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-2xs text-muted-foreground">
                   {instanceId}
                 </code>
               ) : null}
@@ -618,7 +617,7 @@ export function ProviderInstanceCard({
                         type="button"
                         size="xs"
                         variant="outline"
-                        className="h-5 shrink-0 gap-1 rounded-full border-warning/50 px-1.5 text-[10px] text-warning hover:text-warning"
+                        className="h-5 shrink-0 gap-1 rounded-full border-warning/50 px-1.5 text-2xs text-warning hover:text-warning"
                         aria-label="Update available - view details"
                       >
                         <ArrowUpCircleIcon className="size-3" />
@@ -633,7 +632,7 @@ export function ProviderInstanceCard({
                   >
                     <div className="grid min-w-0 gap-3">
                       <div className="grid gap-1">
-                        <p className="text-[13px] leading-tight font-semibold text-foreground">
+                        <p className="text-ui leading-tight font-semibold text-foreground">
                           Update available
                         </p>
                         <p className="text-xs leading-snug text-muted-foreground">
@@ -641,12 +640,12 @@ export function ProviderInstanceCard({
                         </p>
                       </div>
                       <div className="grid gap-1.5">
-                        <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                        <p className="text-2xs font-medium text-muted-foreground">
                           {versionAdvisory.updateCommand.channel} install command
                         </p>
                         <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
                           <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                            <code className="flex h-full w-max items-center pr-3 font-mono text-[11px] whitespace-nowrap text-foreground">
+                            <code className="flex h-full w-max items-center pr-3 font-mono text-2xs whitespace-nowrap text-foreground">
                               {updateCommandDisplay}
                             </code>
                           </ScrollArea>

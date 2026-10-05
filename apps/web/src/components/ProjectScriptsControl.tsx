@@ -365,20 +365,20 @@ export default function ProjectScriptsControl({
       {primaryScript ? (
         <Group aria-label="Project scripts">
           <Button
-            size="xs"
+            size="sm"
             variant="outline"
             onClick={() => onRunScript(primaryScript)}
             title={`Run ${primaryScript.name}`}
           >
             <ScriptIcon icon={primaryScript.icon} />
-            <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+            <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
               {primaryScript.name}
             </span>
           </Button>
-          <GroupSeparator className="hidden @sm/header-actions:block" />
+          <GroupSeparator className="hidden @xl/header-actions:block" />
           <Menu highlightItemOnHover={false}>
             <MenuTrigger
-              render={<Button size="icon-xs" variant="outline" aria-label="Script actions" />}
+              render={<Button size="icon-sm" variant="outline" aria-label="Script actions" />}
             >
               <ChevronDownIcon className="size-4" />
             </MenuTrigger>
@@ -434,9 +434,9 @@ export default function ProjectScriptsControl({
           </Menu>
         </Group>
       ) : (
-        <Button size="xs" variant="outline" onClick={openAddDialog} title="Add action">
-          <PlusIcon className="size-3.5" />
-          <span className="sr-only @sm/header-actions:not-sr-only @sm/header-actions:ml-0.5">
+        <Button size="sm" variant="outline" onClick={openAddDialog} title="Add action">
+          <PlusIcon className="size-4" />
+          <span className="sr-only @xl/header-actions:not-sr-only @xl/header-actions:ml-0.5">
             Add action
           </span>
         </Button>

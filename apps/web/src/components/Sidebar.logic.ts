@@ -64,6 +64,25 @@ export function resolveSidebarNewThreadIntent(input: {
   };
 }
 
+/**
+ * Project targeted by global "new thread" / "new workflow" commands: the
+ * project of the open thread or draft, else the most recently active project,
+ * else the first project.
+ */
+export function resolvePrimaryNewThreadProjectId(input: {
+  readonly activeThreadProjectId: ProjectId | null | undefined;
+  readonly activeDraftProjectId: ProjectId | null | undefined;
+  readonly mostRecentProjectId: ProjectId | null;
+  readonly firstProjectId: ProjectId | null;
+}): ProjectId | null {
+  return (
+    input.activeThreadProjectId ??
+    input.activeDraftProjectId ??
+    input.mostRecentProjectId ??
+    input.firstProjectId
+  );
+}
+
 export function reconcileFrozenOrder<T, Key extends string>(input: {
   items: readonly T[];
   getKey: (item: T) => Key;
@@ -156,35 +175,51 @@ export function toggleWorkflowThreadListExpansion(input: {
   };
 }
 
+/** 2px primary bar on the leading edge of the active row. */
+export const SIDEBAR_ACTIVE_ROW_BAR_CLASS_NAME =
+  "before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-primary";
+
+/**
+ * Sidebar row recipe: 32px, `text-ui`, focus ring. Active rows get `bg-accent`
+ * and the primary bar; selected rows a primary tint; unread rows are
+ * `font-medium text-foreground`.
+ */
 export function resolveThreadRowClassName(input: {
   isActive: boolean;
   isSelected: boolean;
+  isUnread?: boolean | undefined;
 }): string {
   const baseClassName =
-    "h-7 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
+    "relative h-8 w-full translate-x-0 cursor-pointer justify-start gap-2 rounded-lg px-2 text-left text-ui select-none outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
 
   if (input.isSelected && input.isActive) {
     return cn(
       baseClassName,
-      "bg-primary/22 text-foreground font-medium hover:bg-primary/26 hover:text-foreground dark:bg-primary/30 dark:hover:bg-primary/36",
+      SIDEBAR_ACTIVE_ROW_BAR_CLASS_NAME,
+      "bg-primary/15 font-medium text-foreground hover:bg-primary/20 hover:text-foreground dark:bg-primary/22 dark:hover:bg-primary/28",
     );
   }
 
   if (input.isSelected) {
     return cn(
       baseClassName,
-      "bg-primary/15 text-foreground hover:bg-primary/19 hover:text-foreground dark:bg-primary/22 dark:hover:bg-primary/28",
+      "bg-primary/10 text-foreground hover:bg-primary/15 hover:text-foreground dark:bg-primary/16 dark:hover:bg-primary/22",
     );
   }
 
   if (input.isActive) {
     return cn(
       baseClassName,
-      "bg-accent/85 text-foreground font-medium hover:bg-accent hover:text-foreground dark:bg-accent/55 dark:hover:bg-accent/70",
+      SIDEBAR_ACTIVE_ROW_BAR_CLASS_NAME,
+      "bg-accent font-medium text-foreground hover:bg-accent hover:text-foreground",
     );
   }
 
-  return cn(baseClassName, "text-muted-foreground hover:bg-accent hover:text-foreground");
+  return cn(
+    baseClassName,
+    input.isUnread ? "font-medium text-foreground" : "text-muted-foreground",
+    "hover:bg-accent/60 hover:text-foreground",
+  );
 }
 
 export function threadBucketExpansionKey(

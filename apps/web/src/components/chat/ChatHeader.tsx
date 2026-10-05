@@ -1,50 +1,63 @@
 import {
   type EditorId,
+  type ProjectId,
   type ProjectScript,
-  type ProviderKind,
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
-import { memo, useState } from "react";
+import { memo, useState, type ComponentType } from "react";
 import GitActionsControl from "../GitActionsControl";
 import {
   BotIcon,
+  ChevronRightIcon,
   DiffIcon,
   EllipsisIcon,
   FilesIcon,
+  PanelRightIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalSquareIcon,
 } from "lucide-react";
-import { Badge } from "../ui/badge";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
-import { Toggle } from "../ui/toggle";
-import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
-import ContextWindowBadge from "./ContextWindowBadge";
-import ThinkingTokenBadge from "./ThinkingTokenBadge";
 import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
+import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuItem,
+  MenuPopup,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
+import { Separator } from "../ui/separator";
+import { ToolbarToggle } from "../ui/toolbar-toggle";
 import { InlineTitleEditor } from "../InlineTitleEditor";
+import { ProjectIcon } from "../ProjectIcon";
 import type { ThreadActionId, ThreadActionMenuItem } from "../../hooks/useThreadActionController";
+import {
+  WORKFLOW_TYPE_ICON,
+  WORKFLOW_TYPE_ICON_CLASS,
+  type WorkflowTypeValue,
+} from "../../lib/workflowType";
+import { cn } from "../../lib/utils";
+import type { ThreadStatusPill } from "../../threadStatus";
+import type { Project } from "../../types";
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
   isServerThread: boolean;
   activeThreadTitle: string;
-  estimatedContextTokens: number | null;
-  estimatedThinkingTokens: number | null;
-  modelContextWindowTokens: number | null;
-  model: string;
-  provider: ProviderKind | null;
-  tokenUsageSource?: "provider" | "estimated" | null | undefined;
+  activeProjectId?: ProjectId | undefined;
+  activeProjectIcon?: Project["icon"] | undefined;
   activeProjectName: string | undefined;
   onNewThreadInProject?: (() => void) | undefined;
   onOpenProjectSettings?: (() => void) | undefined;
   workflowTitle?: string | undefined;
+  workflowType?: WorkflowTypeValue | undefined;
   onOpenWorkflow?: (() => void) | undefined;
+  threadStatus?: ThreadStatusPill | null | undefined;
   isGitRepo: boolean;
   openInCwd: string | null;
   activeProjectScripts: ProjectScript[] | undefined;
@@ -74,21 +87,36 @@ interface ChatHeaderProps {
   onToggleDiff: () => void;
 }
 
+interface PanelToggleSpec {
+  key: string;
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  ariaLabel: string;
+  shortcutLabel: string | null;
+  pressed: boolean;
+  disabled: boolean;
+  disabledReason: string;
+  badgeCount?: number;
+  onToggle: () => void;
+}
+
+const CRUMB_SEPARATOR = (
+  <ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-faint-foreground" />
+);
+
 export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   isServerThread,
   activeThreadTitle,
-  estimatedContextTokens,
-  estimatedThinkingTokens,
-  modelContextWindowTokens,
-  model,
-  provider,
-  tokenUsageSource,
+  activeProjectId,
+  activeProjectIcon,
   activeProjectName,
   onNewThreadInProject,
   onOpenProjectSettings,
   workflowTitle,
+  workflowType,
   onOpenWorkflow,
+  threadStatus,
   isGitRepo,
   openInCwd,
   activeProjectScripts,
@@ -119,50 +147,89 @@ export const ChatHeader = memo(function ChatHeader({
 }: ChatHeaderProps) {
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const isRenaming = renamingThreadId === activeThreadId;
+  const agentsWorkingLabel =
+    liveAgentCount > 0
+      ? `${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
+      : null;
+
+  const panels: PanelToggleSpec[] = [
+    {
+      key: "files",
+      icon: FilesIcon,
+      label: "Files",
+      ariaLabel: "Toggle workspace files",
+      shortcutLabel: null,
+      pressed: filesOpen,
+      disabled: !workspaceFilesAvailable,
+      disabledReason: "Workspace files are unavailable until this thread has an active project.",
+      onToggle: onToggleFiles,
+    },
+    {
+      key: "diff",
+      icon: DiffIcon,
+      label: "Diff",
+      ariaLabel: "Toggle diff panel",
+      shortcutLabel: diffToggleShortcutLabel,
+      pressed: diffOpen,
+      disabled: !isGitRepo && !diffOpen,
+      disabledReason: "Diff panel is unavailable because this project is not a git repository.",
+      onToggle: onToggleDiff,
+    },
+    {
+      key: "agents",
+      icon: BotIcon,
+      label: agentsWorkingLabel ? `Agents · ${agentsWorkingLabel}` : "Agents",
+      ariaLabel: agentsWorkingLabel
+        ? `Toggle Agents panel, ${agentsWorkingLabel}`
+        : "Toggle Agents panel",
+      shortcutLabel: null,
+      pressed: agentsOpen,
+      disabled: false,
+      disabledReason: "",
+      badgeCount: liveAgentCount,
+      onToggle: onToggleAgents,
+    },
+    {
+      key: "terminal",
+      icon: TerminalSquareIcon,
+      label: "Terminal",
+      ariaLabel: "Toggle terminal drawer",
+      shortcutLabel: terminalToggleShortcutLabel,
+      pressed: terminalOpen,
+      disabled: !terminalAvailable,
+      disabledReason: "Terminal is unavailable until this thread has an active project.",
+      onToggle: onToggleTerminal,
+    },
+  ];
+
+  const WorkflowIcon = workflowType ? WORKFLOW_TYPE_ICON[workflowType] : null;
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
-        <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-        {isRenaming ? (
-          <InlineTitleEditor
-            key={activeThreadId}
-            ariaLabel="Rename thread"
-            className="min-w-24 max-w-72 flex-1 truncate rounded border border-ring bg-transparent px-1 text-sm font-medium text-foreground outline-none"
-            initialValue={activeThreadTitle}
-            onCancel={() => setRenamingThreadId(null)}
-            onCommit={(title) => {
-              setRenamingThreadId(null);
-              onRenameThread(title);
-            }}
-          />
-        ) : (
-          <h2
-            className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-            title={activeThreadTitle}
-            onDoubleClick={() => {
-              if (threadActionItems.some((item) => item.id === "rename" && !item.disabled))
-                setRenamingThreadId(activeThreadId);
-            }}
-          >
-            {activeThreadTitle}
-          </h2>
-        )}
-        <ThreadQueueCountBadge threadId={activeThreadId} />
+    <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2">
+      <nav
+        aria-label="Breadcrumb"
+        className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden"
+      >
         {activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
           <Menu>
             <MenuTrigger
               render={
                 <button
                   type="button"
-                  className="min-w-0 shrink cursor-pointer"
+                  className="flex min-w-0 max-w-44 shrink cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-ui text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={`Project actions for ${activeProjectName}`}
                 />
               }
             >
-              <Badge variant="outline" className="min-w-0 max-w-44 truncate hover:bg-accent">
-                {activeProjectName}
-              </Badge>
+              {activeProjectId ? (
+                <ProjectIcon
+                  projectId={activeProjectId}
+                  name={activeProjectName}
+                  icon={activeProjectIcon}
+                  className="size-4 shrink-0"
+                />
+              ) : null}
+              <span className="hidden truncate @md/header-actions:inline">{activeProjectName}</span>
             </MenuTrigger>
             <MenuPopup side="bottom" align="start">
               <MenuItem onClick={onNewThreadInProject}>
@@ -176,32 +243,74 @@ export const ChatHeader = memo(function ChatHeader({
             </MenuPopup>
           </Menu>
         ) : activeProjectName ? (
-          <Badge variant="outline" className="min-w-0 shrink truncate">
-            {activeProjectName}
-          </Badge>
+          <span className="flex min-w-0 shrink items-center gap-1.5 px-1 text-ui text-muted-foreground">
+            {activeProjectId ? (
+              <ProjectIcon
+                projectId={activeProjectId}
+                name={activeProjectName}
+                icon={activeProjectIcon}
+                className="size-4 shrink-0"
+              />
+            ) : null}
+            <span className="truncate">{activeProjectName}</span>
+          </span>
         ) : null}
+        {activeProjectName ? CRUMB_SEPARATOR : null}
         {workflowTitle && onOpenWorkflow ? (
-          <button type="button" onClick={onOpenWorkflow} className="min-w-0 shrink">
-            <Badge variant="outline" className="min-w-0 shrink truncate">
-              {workflowTitle}
-            </Badge>
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={onOpenWorkflow}
+              title={workflowTitle}
+              className="flex min-w-0 max-w-40 shrink items-center gap-1.5 rounded-md px-1 py-0.5 text-ui text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {WorkflowIcon && workflowType ? (
+                <WorkflowIcon
+                  aria-hidden="true"
+                  className={cn("size-4 shrink-0", WORKFLOW_TYPE_ICON_CLASS[workflowType])}
+                />
+              ) : null}
+              <span className="truncate">{workflowTitle}</span>
+            </button>
+            {CRUMB_SEPARATOR}
+          </>
         ) : null}
-        <ContextWindowBadge
-          estimatedContextTokens={estimatedContextTokens}
-          modelContextWindowTokens={modelContextWindowTokens}
-          model={model}
-          provider={provider}
-          tokenUsageSource={tokenUsageSource}
-        />
-        <ThinkingTokenBadge estimatedThinkingTokens={estimatedThinkingTokens} />
-        {activeProjectName && !isGitRepo && (
-          <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
-            No Git
-          </Badge>
+        {isRenaming ? (
+          <InlineTitleEditor
+            key={activeThreadId}
+            ariaLabel="Rename thread"
+            className="min-w-24 max-w-72 flex-1 truncate rounded-sm border border-ring bg-transparent px-1 text-sm font-medium text-foreground outline-none"
+            initialValue={activeThreadTitle}
+            onCancel={() => setRenamingThreadId(null)}
+            onCommit={(title) => {
+              setRenamingThreadId(null);
+              onRenameThread(title);
+            }}
+          />
+        ) : (
+          <h2
+            className="min-w-0 shrink truncate px-1 text-sm font-medium text-foreground"
+            title={activeThreadTitle}
+            onDoubleClick={() => {
+              if (threadActionItems.some((item) => item.id === "rename" && !item.disabled))
+                setRenamingThreadId(activeThreadId);
+            }}
+          >
+            {activeThreadTitle}
+          </h2>
         )}
-      </div>
-      <div className="@container/header-actions flex min-w-0 flex-1 items-center justify-end gap-2 @sm/header-actions:gap-3">
+        {threadStatus ? (
+          <ThreadStatusPillBadge
+            pill={threadStatus}
+            variant="chip"
+            live={false}
+            hideLabelBelowMd
+            className="shrink-0"
+          />
+        ) : null}
+        <ThreadQueueCountBadge threadId={activeThreadId} />
+      </nav>
+      <div className="flex shrink-0 items-center justify-end gap-2">
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}
@@ -227,137 +336,96 @@ export const ChatHeader = memo(function ChatHeader({
             isServerThread={isServerThread}
           />
         )}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="relative shrink-0"
-                pressed={agentsOpen}
-                onPressedChange={onToggleAgents}
-                aria-label={
-                  liveAgentCount > 0
-                    ? `Toggle Agents panel, ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
-                    : "Toggle Agents panel"
-                }
-                variant="outline"
-                size="xs"
-              >
-                <BotIcon className="size-3" />
-                {liveAgentCount > 0 ? (
-                  <span className="absolute -top-1.5 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-semibold text-white">
-                    {liveAgentCount}
-                  </span>
-                ) : null}
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            Toggle Agents panel
-            {liveAgentCount > 0
-              ? ` · ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
-              : ""}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={terminalOpen}
-                onPressedChange={onToggleTerminal}
-                aria-label="Toggle terminal drawer"
-                variant="outline"
-                size="xs"
-                disabled={!terminalAvailable}
-              >
-                <TerminalSquareIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!terminalAvailable
-              ? "Terminal is unavailable until this thread has an active project."
-              : terminalToggleShortcutLabel
-                ? `Toggle terminal drawer (${terminalToggleShortcutLabel})`
-                : "Toggle terminal drawer"}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={filesOpen}
-                onPressedChange={onToggleFiles}
-                aria-label="Toggle workspace files"
-                variant="outline"
-                size="xs"
-                disabled={!workspaceFilesAvailable}
-              >
-                <FilesIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {workspaceFilesAvailable
-              ? "Toggle workspace files"
-              : "Workspace files are unavailable until this thread has an active project."}
-          </TooltipPopup>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Toggle
-                className="shrink-0"
-                pressed={diffOpen}
-                onPressedChange={onToggleDiff}
-                aria-label="Toggle diff panel"
-                variant="outline"
-                size="xs"
-                disabled={!isGitRepo && !diffOpen}
-              >
-                <DiffIcon className="size-3" />
-              </Toggle>
-            }
-          />
-          <TooltipPopup side="bottom">
-            {!isGitRepo && !diffOpen
-              ? "Diff panel is unavailable because this project is not a git repository."
-              : diffToggleShortcutLabel
-                ? `Toggle diff panel (${diffToggleShortcutLabel})`
-                : "Toggle diff panel"}
-          </TooltipPopup>
-        </Tooltip>
+        {activeProjectName ? (
+          <Separator orientation="vertical" className="mx-0.5 h-4 self-center" />
+        ) : null}
+        <div
+          role="group"
+          aria-label="Panels"
+          className="hidden items-center gap-0.5 @sm/header-actions:flex"
+        >
+          {panels.map((panel) => (
+            <ToolbarToggle
+              key={panel.key}
+              icon={panel.icon}
+              label={panel.label}
+              ariaLabel={panel.ariaLabel}
+              shortcutLabel={panel.shortcutLabel}
+              pressed={panel.pressed}
+              onPressedChange={() => panel.onToggle()}
+              disabled={panel.disabled}
+              disabledReason={panel.disabledReason}
+              badgeCount={panel.badgeCount}
+            />
+          ))}
+        </div>
         <Menu>
           <MenuTrigger
             render={
               <Button
                 type="button"
-                size="icon-xs"
-                variant="outline"
-                aria-label="Thread actions"
-                title="Thread actions"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Panels"
+                className="relative text-muted-foreground @sm/header-actions:hidden"
               />
             }
           >
-            <EllipsisIcon aria-hidden="true" className="size-3.5" />
+            <PanelRightIcon aria-hidden="true" className="size-4" />
+            {liveAgentCount > 0 ? (
+              <span
+                aria-hidden="true"
+                className="absolute -top-1 -right-1 size-2 rounded-full bg-info"
+              />
+            ) : null}
           </MenuTrigger>
           <MenuPopup side="bottom" align="end">
-            {threadActionItems.map((item) => (
-              <MenuItem
+            {panels.map((panel) => (
+              <MenuCheckboxItem
+                key={panel.key}
+                checked={panel.pressed}
+                disabled={panel.disabled}
+                aria-label={panel.ariaLabel}
+                onCheckedChange={() => panel.onToggle()}
+              >
+                {panel.label}
+              </MenuCheckboxItem>
+            ))}
+          </MenuPopup>
+        </Menu>
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Thread actions"
+                title="Thread actions"
+                className="text-muted-foreground"
+              />
+            }
+          >
+            <EllipsisIcon aria-hidden="true" className="size-4" />
+          </MenuTrigger>
+          <MenuPopup side="bottom" align="end">
+            {threadActionItems.map((item, index) => (
+              <ThreadActionMenuEntry
                 key={item.id}
-                disabled={item.disabled}
-                variant={item.destructive ? "destructive" : "default"}
-                onClick={() => {
+                item={item}
+                separatorBefore={
+                  item.destructive === true &&
+                  index > 0 &&
+                  threadActionItems[index - 1]?.destructive !== true
+                }
+                onSelect={() => {
                   if (item.id === "rename") {
                     setRenamingThreadId(activeThreadId);
                     return;
                   }
                   onThreadAction(item.id);
                 }}
-              >
-                {item.label}
-              </MenuItem>
+              />
             ))}
           </MenuPopup>
         </Menu>
@@ -365,3 +433,22 @@ export const ChatHeader = memo(function ChatHeader({
     </div>
   );
 });
+
+function ThreadActionMenuEntry(props: {
+  item: ThreadActionMenuItem;
+  separatorBefore: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <>
+      {props.separatorBefore ? <MenuSeparator /> : null}
+      <MenuItem
+        disabled={props.item.disabled}
+        variant={props.item.destructive ? "destructive" : "default"}
+        onClick={props.onSelect}
+      >
+        {props.item.label}
+      </MenuItem>
+    </>
+  );
+}

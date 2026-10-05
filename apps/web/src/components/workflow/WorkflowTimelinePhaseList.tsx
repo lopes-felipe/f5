@@ -1,81 +1,57 @@
-import { Circle, CircleAlert, CircleCheckBig, CircleDot } from "lucide-react";
-
 import { cn } from "../../lib/utils";
 import { type Thread } from "../../types";
-import { WorkflowThreadLinkRow } from "./WorkflowThreadLinkRow";
-import {
-  type WorkflowTimelinePhase,
-  type WorkflowTimelinePhaseState,
-} from "./workflowTimelineTypes";
+import { WorkflowStateGlyph } from "./WorkflowStateGlyph";
+import { WorkflowStepCard } from "./WorkflowStepCard";
+import { type WorkflowTimelinePhase } from "./workflowTimelineTypes";
 
-const PHASE_ICON = {
-  completed: CircleCheckBig,
-  active: CircleDot,
-  skipped: Circle,
-  pending: Circle,
-  error: CircleAlert,
-} as const;
-
-const PHASE_ICON_CLASS: Record<WorkflowTimelinePhaseState, string> = {
-  completed: "text-emerald-500",
-  active: "text-primary animate-pulse",
-  skipped: "text-muted-foreground/30",
-  pending: "text-muted-foreground/30",
-  error: "text-red-500",
-};
-
-const PHASE_LABEL_CLASS: Record<WorkflowTimelinePhaseState, string> = {
-  completed: "text-foreground",
-  active: "text-foreground font-semibold",
-  skipped: "text-muted-foreground/50 line-through",
-  pending: "text-muted-foreground/50",
-  error: "text-red-500",
-};
-
+/** List form of a workflow: phases top to bottom, each with its step rows. */
 export function WorkflowTimelinePhaseList(props: {
   phases: readonly WorkflowTimelinePhase[];
   threadById: ReadonlyMap<Thread["id"], Thread>;
 }) {
   return (
-    <div>
+    <ol data-slot="workflow-phase-list" aria-label="Workflow steps" className="flex flex-col">
       {props.phases.map((phase, phaseIndex) => {
         const isLast = phaseIndex === props.phases.length - 1;
-        const Icon = PHASE_ICON[phase.state];
-        const borderColor = phase.state === "completed" ? "border-emerald-500/30" : "border-border";
-
+        const dimmed = phase.state === "pending" || phase.state === "skipped";
         return (
-          <div key={phase.id}>
-            <div className="flex items-center gap-2 py-2">
-              <Icon size={18} className={PHASE_ICON_CLASS[phase.state]} />
-              <span className={cn("text-sm", PHASE_LABEL_CLASS[phase.state])}>{phase.label}</span>
+          <li key={phase.id} data-phase-state={phase.state}>
+            <div className="flex h-8 items-center gap-2 px-2">
+              <WorkflowStateGlyph state={phase.state} />
+              <span
+                className={cn(
+                  "text-ui font-medium",
+                  dimmed ? "text-muted-foreground" : "text-foreground",
+                  phase.state === "skipped" && "line-through",
+                  phase.state === "error" && "text-destructive-foreground",
+                )}
+              >
+                {phase.label}
+              </span>
             </div>
-
-            <div
-              className={cn(
-                "ml-[8px] border-l-2 pb-2 pl-4",
-                isLast ? "border-transparent" : borderColor,
-              )}
-            >
-              <div className="space-y-2 text-sm">
+            {phase.steps.length > 0 ? (
+              <div
+                className={cn(
+                  "ms-4 border-s ps-2 pb-2",
+                  isLast
+                    ? "border-transparent"
+                    : phase.state === "completed"
+                      ? "border-success/30"
+                      : "border-border",
+                )}
+              >
                 {phase.steps.map((step) => (
-                  <WorkflowThreadLinkRow
+                  <WorkflowStepCard
                     key={step.key}
-                    threadId={step.threadId}
+                    step={step}
                     thread={step.threadId ? props.threadById.get(step.threadId) : undefined}
-                    threadTitleDisplay={
-                      step.threadId
-                        ? (props.threadById.get(step.threadId)?.title ?? undefined)
-                        : undefined
-                    }
-                    fallbackLabel={step.label}
-                    stepState={step.state}
                   />
                 ))}
               </div>
-            </div>
-          </div>
+            ) : null}
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }

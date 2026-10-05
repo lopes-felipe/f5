@@ -26,6 +26,8 @@ import {
   UI_FONT_SIZE_DEFAULT,
   UI_FONT_SIZE_MAX,
   UI_FONT_SIZE_MIN,
+  CHAT_CONTENT_WIDTH_DEFAULT,
+  CHAT_CONTENT_WIDTH_OPTIONS,
   clampFontSize,
   normalizeAppearanceSettings,
   normalizeFontFamilyPreference,
@@ -70,6 +72,7 @@ export const DISPLAY_PROFILE_KEYS = [
   "showReasoningExpanded",
   "runtimeWarningVisibility",
   "showProviderRuntimeMetadata",
+  "collapseCompletedWorkLogs",
 ] as const;
 export type DisplayProfileKey = (typeof DISPLAY_PROFILE_KEYS)[number];
 export const DISPLAY_PROFILE_NAMES = ["minimal", "balanced", "detailed"] as const;
@@ -132,6 +135,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly themeId?: unknown;
   readonly themePaletteVersion?: unknown;
   readonly customThemes?: unknown;
+  collapseCompletedWorkLogs?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -321,6 +325,10 @@ export const AppSettingsSchema = Schema.Struct({
   chatFontSize: ChatFontSizeSchema,
   monoFontFamily: FontFamilyPreferenceSchema,
   terminalFontSize: TerminalFontSizeSchema,
+  chatContentWidth: Schema.Literals(CHAT_CONTENT_WIDTH_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some(CHAT_CONTENT_WIDTH_DEFAULT)),
+    Schema.withDecodingDefault(() => CHAT_CONTENT_WIDTH_DEFAULT),
+  ),
   themeId: Schema.String.check(Schema.isMaxLength(64)).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_THEME_ID)),
     Schema.withDecodingDefault(() => DEFAULT_THEME_ID),
@@ -431,6 +439,12 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   runtimeWarningVisibility: Schema.Literals(["hidden", "summarized", "full"]).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_RUNTIME_WARNING_VISIBILITY)),
+  ),
+  // Collapse a finished turn's work log to a one-line summary once the next
+  // user message arrives. The latest turn never collapses under the reader.
+  collapseCompletedWorkLogs: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
   ),
   workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
     Schema.withConstructorDefault(() => Option.some("essential" as const)),
@@ -551,6 +565,7 @@ export function buildDisplayProfilePresets(
       showReasoningExpanded: false,
       runtimeWarningVisibility: "hidden",
       showProviderRuntimeMetadata: false,
+      collapseCompletedWorkLogs: true,
     },
     balanced: pickDisplayProfileValues(defaults),
     detailed: {
@@ -563,8 +578,25 @@ export function buildDisplayProfilePresets(
       showReasoningExpanded: true,
       runtimeWarningVisibility: "full",
       showProviderRuntimeMetadata: true,
+      collapseCompletedWorkLogs: false,
     },
   };
+}
+
+/**
+ * Settings saved before `collapseCompletedWorkLogs` existed: users already on
+ * the Detailed profile keep every work log expanded, so the new default does
+ * not silently move them to Custom.
+ */
+function migrateCollapseCompletedWorkLogs(parsed: PersistedAppSettingsValue): boolean | undefined {
+  if (typeof parsed.collapseCompletedWorkLogs === "boolean") {
+    return parsed.collapseCompletedWorkLogs;
+  }
+  const detailed = buildDisplayProfilePresets(DEFAULT_APP_SETTINGS).detailed;
+  const wasDetailed = DISPLAY_PROFILE_KEYS.every(
+    (key) => key === "collapseCompletedWorkLogs" || parsed[key] === detailed[key],
+  );
+  return wasDetailed ? false : undefined;
 }
 
 function normalizeClaudeSubagentModel(value: string | null | undefined): string {
@@ -698,6 +730,10 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           : runtimeMetadataMigrated.themeId,
       themePaletteVersion: CURRENT_THEME_PALETTE_VERSION,
     };
+    const collapseCompletedWorkLogs = migrateCollapseCompletedWorkLogs(runtimeMetadataMigrated);
+    if (collapseCompletedWorkLogs !== undefined) {
+      migrated.collapseCompletedWorkLogs = collapseCompletedWorkLogs;
+    }
     return normalizeAppSettings(
       Schema.decodeUnknownSync(AppSettingsSchema)({
         ...DEFAULT_APP_SETTINGS,

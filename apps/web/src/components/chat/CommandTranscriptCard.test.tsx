@@ -210,13 +210,15 @@ describe("CommandTranscriptCard", () => {
       />,
     );
 
-    expect(markup).toContain("text-cyan-700");
-    expect(markup).toContain("text-sky-700");
-    expect(markup).toContain("text-amber-700");
-    expect(markup).toContain("text-rose-700");
-    expect(markup).toContain("text-teal-700");
-    expect(markup).toContain("text-indigo-700");
-    expect(markup).toContain("text-orange-700");
+    // Syntax colours come from the semantic tokens so themes recolour them.
+    expect(markup).toContain('<span class="text-attention-foreground">FOO=bar</span>');
+    expect(markup).toContain('<span class="text-info-foreground">bun</span>');
+    expect(markup).toContain('<span class="text-warning-foreground">--watch</span>');
+    expect(markup).toContain('<span class="text-destructive-foreground">$HOME</span>');
+    expect(markup).toContain('<span class="text-success-foreground">./script.sh</span>');
+    expect(markup).toContain('<span class="text-attention-foreground">$(pwd)</span>');
+    expect(markup).toContain('<span class="text-warning-foreground">42</span>');
+    expect(markup).not.toMatch(/text-(cyan|sky|amber|rose|teal|indigo|orange)-\d/);
     expect(markup).toContain("FOO=bar");
     expect(markup).toContain("bun");
     expect(markup).toContain("--watch");

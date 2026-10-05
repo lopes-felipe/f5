@@ -39,7 +39,7 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
   };
   return (
     <section
-      className="rounded-2xl border border-border bg-card p-5"
+      className="rounded-xl border border-border bg-card p-5"
       data-settings-search-target="providers.session-notes"
     >
       <h2 className="text-sm font-medium text-foreground">Thread summaries</h2>
@@ -81,7 +81,7 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
         ) : null}
       </div>
       {unavailable ? (
-        <p className="mt-2 text-xs text-amber-600" role="status">
+        <p className="mt-2 text-xs text-warning-foreground" role="status">
           The selected summary provider is unavailable. Existing notes are kept until it is
           available or you choose another provider. No fallback model will be used.
         </p>

@@ -14,13 +14,9 @@ import { NextTurnQueueController } from "../components/NextTurnQueueController";
 import { LegacyPinnedThreadsMigrationController } from "../components/LegacyPinnedThreadsMigrationController";
 import { SnoozedThreadWakeController } from "../components/SnoozedThreadWakeController";
 import ThreadSidebar from "../components/Sidebar";
-import {
-  Sidebar,
-  SidebarProvider,
-  SidebarRail,
-  SidebarTrigger,
-  useSidebar,
-} from "~/components/ui/sidebar";
+import { WorkflowCreateDialog } from "../components/workflow/WorkflowCreateDialog";
+import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
+import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
 import { resolveSettingsNavigationSearch } from "~/components/settings/settingsCategories";
 import {
   canAcceptThreadSidebarWidth,
@@ -32,16 +28,20 @@ import {
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 
-function CollapsedSidebarControl() {
-  const { isMobile, open, openMobile } = useSidebar();
-  if (isMobile ? openMobile : open) {
-    return null;
-  }
-
+/** App-wide "New workflow" dialog, opened through `workflowCreateDialogStore`. */
+function WorkflowCreateDialogHost() {
+  const projectId = useWorkflowCreateDialogStore((state) => state.projectId);
+  const close = useWorkflowCreateDialogStore((state) => state.close);
+  const notifyCreated = useWorkflowCreateDialogStore((state) => state.notifyCreated);
+  if (!projectId) return null;
   return (
-    <SidebarTrigger
-      aria-label="Toggle main sidebar"
-      className="fixed top-1.5 left-2 z-50 size-7 border border-border/60 bg-background/85 shadow-sm backdrop-blur"
+    <WorkflowCreateDialog
+      open
+      projectId={projectId}
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+      onWorkflowCreated={notifyCreated}
     />
   );
 }
@@ -103,8 +103,9 @@ function ChatRouteLayout() {
       <CommandPalette>
         <Sidebar
           side="left"
+          variant="inset"
           collapsible="offcanvas"
-          className="border-r border-border bg-card text-foreground"
+          className="p-0 text-foreground"
           resizable={{
             defaultWidth: THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
             storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
@@ -129,7 +130,7 @@ function ChatRouteLayout() {
         <PreviewBrowserHost>
           <Outlet />
         </PreviewBrowserHost>
-        <CollapsedSidebarControl />
+        <WorkflowCreateDialogHost />
       </CommandPalette>
     </SidebarProvider>
   );

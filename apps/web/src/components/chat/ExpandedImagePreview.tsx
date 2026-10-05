@@ -257,7 +257,7 @@ export function ExpandedImageDialog({
           name={item.name}
           onContextMenu={handleContextMenu}
         />
-        <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
+        <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground">
           {item.name}
           {preview.images.length > 1 ? ` (${preview.index + 1}/${preview.images.length})` : ""}
         </p>

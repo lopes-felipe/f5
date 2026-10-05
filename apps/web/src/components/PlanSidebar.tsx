@@ -31,14 +31,14 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 function stepStatusIcon(status: string): React.ReactNode {
   if (status === "completed") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
+      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-success/15 text-success-foreground">
         <CheckIcon className="size-3" />
       </span>
     );
   }
   if (status === "inProgress") {
     return (
-      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-400">
+      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-info/15 text-info-foreground">
         <LoaderIcon className="size-3 animate-spin" />
       </span>
     );
@@ -133,12 +133,12 @@ const PlanSidebar = memo(function PlanSidebar({
         <div className="flex items-center gap-2">
           <Badge
             variant="secondary"
-            className="rounded-md bg-blue-500/10 px-1.5 py-0 text-[10px] font-semibold tracking-wide text-blue-400 uppercase"
+            className="rounded-md bg-info/10 px-1.5 py-0 text-2xs font-semibold tracking-wide text-info-foreground uppercase"
           >
             Plan
           </Badge>
           {activePlan ? (
-            <span className="text-[11px] text-muted-foreground/60">
+            <span className="text-2xs text-muted-foreground">
               {formatTimestamp(activePlan.createdAt, timestampFormat)}
             </span>
           ) : null}
@@ -151,7 +151,7 @@ const PlanSidebar = memo(function PlanSidebar({
                   <Button
                     size="icon-xs"
                     variant="ghost"
-                    className="text-muted-foreground/50 hover:text-foreground/70"
+                    className="text-muted-foreground hover:text-foreground"
                     aria-label="Plan actions"
                   />
                 }
@@ -177,7 +177,7 @@ const PlanSidebar = memo(function PlanSidebar({
             variant="ghost"
             onClick={onClose}
             aria-label="Close plan sidebar"
-            className="text-muted-foreground/50 hover:text-foreground/70"
+            className="text-muted-foreground hover:text-foreground"
           >
             <PanelRightCloseIcon className="size-3.5" />
           </Button>
@@ -189,7 +189,7 @@ const PlanSidebar = memo(function PlanSidebar({
         <div className="p-3 space-y-4">
           {/* Explanation */}
           {activePlan?.explanation ? (
-            <p className="text-[13px] leading-relaxed text-muted-foreground/80">
+            <p className="text-ui leading-relaxed text-muted-foreground">
               {activePlan.explanation}
             </p>
           ) : null}
@@ -197,7 +197,7 @@ const PlanSidebar = memo(function PlanSidebar({
           {/* Plan Steps */}
           {activePlan && activePlan.steps.length > 0 ? (
             <div className="space-y-1">
-              <p className="mb-2 text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase">
+              <p className="mb-2 text-2xs font-semibold tracking-widest text-muted-foreground uppercase">
                 Steps
               </p>
               {activePlan.steps.map((step) => (
@@ -205,19 +205,19 @@ const PlanSidebar = memo(function PlanSidebar({
                   key={`${step.status}:${step.step}`}
                   className={cn(
                     "flex items-start gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-200",
-                    step.status === "inProgress" && "bg-blue-500/5",
-                    step.status === "completed" && "bg-emerald-500/5",
+                    step.status === "inProgress" && "bg-info/5",
+                    step.status === "completed" && "bg-success/5",
                   )}
                 >
                   <div className="mt-0.5">{stepStatusIcon(step.status)}</div>
                   <p
                     className={cn(
-                      "text-[13px] leading-snug",
+                      "text-ui leading-snug",
                       step.status === "completed"
-                        ? "text-muted-foreground/50 line-through decoration-muted-foreground/20"
+                        ? "text-muted-foreground line-through decoration-muted-foreground/20"
                         : step.status === "inProgress"
-                          ? "text-foreground/90"
-                          : "text-muted-foreground/70",
+                          ? "text-foreground"
+                          : "text-muted-foreground",
                     )}
                   >
                     {step.step}
@@ -236,11 +236,11 @@ const PlanSidebar = memo(function PlanSidebar({
                 onClick={() => setProposedPlanExpanded((v) => !v)}
               >
                 {proposedPlanExpanded ? (
-                  <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground/40 transition-transform" />
+                  <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground transition-transform" />
                 ) : (
-                  <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/40 transition-transform" />
+                  <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground transition-transform" />
                 )}
-                <span className="text-[10px] font-semibold tracking-widest text-muted-foreground/40 uppercase group-hover:text-muted-foreground/60">
+                <span className="text-2xs font-semibold tracking-widest text-muted-foreground uppercase group-hover:text-foreground">
                   {planTitle ?? "Full Plan"}
                 </span>
               </button>
@@ -259,8 +259,8 @@ const PlanSidebar = memo(function PlanSidebar({
           {/* Empty state */}
           {!activePlan && !planMarkdown ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <p className="text-[13px] text-muted-foreground/40">No active plan yet.</p>
-              <p className="mt-1 text-[11px] text-muted-foreground/30">
+              <p className="text-ui text-muted-foreground">No active plan yet.</p>
+              <p className="mt-1 text-2xs text-muted-foreground">
                 Plans will appear here when generated.
               </p>
             </div>

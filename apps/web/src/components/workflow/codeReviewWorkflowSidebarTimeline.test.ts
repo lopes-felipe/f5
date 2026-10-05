@@ -79,4 +79,18 @@ describe("deriveCodeReviewTimelinePhases", () => {
     expect(phases[1]!.steps[0]!.state).toBe("active");
     expect(phases[1]!.steps[0]!.threadId).toBeNull();
   });
+
+  it("carries the reviewer and consolidation model slots", () => {
+    const claude = { provider: "claudeAgent" as const, model: "claude-sonnet-4-5" };
+    const workflow = makeWorkflow({
+      reviewerB: { ...makeWorkflow().reviewerB, slot: claude },
+    });
+    const phases = deriveCodeReviewTimelinePhases(workflow);
+
+    expect(phases[0]!.steps.map((step) => step.modelSlot)).toEqual([
+      workflow.reviewerA.slot,
+      claude,
+    ]);
+    expect(phases[1]!.steps[0]!.modelSlot).toEqual(workflow.consolidation.slot);
+  });
 });

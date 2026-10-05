@@ -55,7 +55,7 @@ export function GeneralSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
+      <section className="rounded-xl border border-border bg-card p-5 space-y-3">
         <label className="block">
           Default permissions
           <select
@@ -106,7 +106,7 @@ export function GeneralSettings() {
         )}
       </section>
       {typeof window !== "undefined" && window.desktopBridge && (
-        <section className="rounded-2xl border border-border bg-card p-5">
+        <section className="rounded-xl border border-border bg-card p-5">
           <h2 className="text-sm font-medium">Quit shortcut</h2>
           <Select
             value={settings.quitShortcutMode}

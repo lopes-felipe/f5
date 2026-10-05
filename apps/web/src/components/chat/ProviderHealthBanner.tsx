@@ -30,31 +30,25 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
     status: status.status === "disabled" ? "warning" : status.status,
   });
   const StatusIcon = presentation.icon;
-  const dismissButtonClassName = isError
-    ? "inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
-    : "inline-flex size-6 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:text-foreground";
-
   return (
-    <div className="pt-3 mx-auto max-w-3xl">
-      <Alert variant={isError ? "error" : "warning"}>
-        <StatusIcon aria-label={presentation.ariaLabel} />
-        <AlertTitle>{title}</AlertTitle>
-        <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
-          {status.message ?? defaultMessage}
-        </AlertDescription>
-        {onDismiss && (
-          <AlertAction>
-            <button
-              type="button"
-              aria-label="Dismiss provider status"
-              className={dismissButtonClassName}
-              onClick={onDismiss}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </AlertAction>
-        )}
-      </Alert>
-    </div>
+    <Alert variant={isError ? "error" : "warning"}>
+      <StatusIcon aria-label={presentation.ariaLabel} />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="line-clamp-3" title={status.message ?? defaultMessage}>
+        {status.message ?? defaultMessage}
+      </AlertDescription>
+      {onDismiss && (
+        <AlertAction>
+          <button
+            type="button"
+            aria-label="Dismiss provider status"
+            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onDismiss}
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </AlertAction>
+      )}
+    </Alert>
   );
 });

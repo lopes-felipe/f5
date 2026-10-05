@@ -272,7 +272,7 @@ export function ProviderModelsSection({
                 <span
                   className={cn(
                     "min-w-0 truncate text-xs",
-                    isHidden ? "text-muted-foreground line-through" : "text-foreground/90",
+                    isHidden ? "text-muted-foreground line-through" : "text-foreground",
                   )}
                 >
                   {model.name}
@@ -284,7 +284,7 @@ export function ProviderModelsSection({
                         <Button
                           size="icon-xs"
                           variant="ghost"
-                          className="size-5 rounded-sm p-0 text-muted-foreground/60 hover:text-muted-foreground"
+                          className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
                           aria-label={`Details for ${model.name}`}
                         />
                       }
@@ -293,11 +293,11 @@ export function ProviderModelsSection({
                     </TooltipTrigger>
                     <TooltipPopup side="top" className="max-w-56">
                       <div className="space-y-1">
-                        <code className="block text-[11px] text-foreground">{model.slug}</code>
+                        <code className="block text-2xs text-foreground">{model.slug}</code>
                         {capLabels.length > 0 ? (
                           <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                             {capLabels.map((label) => (
-                              <span key={label} className="text-[10px] text-muted-foreground">
+                              <span key={label} className="text-2xs text-muted-foreground">
                                 {label}
                               </span>
                             ))}
@@ -307,11 +307,9 @@ export function ProviderModelsSection({
                     </TooltipPopup>
                   </Tooltip>
                 ) : null}
-                {isHidden ? (
-                  <span className="text-[10px] text-muted-foreground">hidden</span>
-                ) : null}
+                {isHidden ? <span className="text-2xs text-muted-foreground">hidden</span> : null}
                 {model.isCustom ? (
-                  <span className="text-[10px] text-muted-foreground">custom</span>
+                  <span className="text-2xs text-muted-foreground">custom</span>
                 ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
@@ -369,7 +367,7 @@ export function ProviderModelsSection({
                         variant="ghost"
                         className={cn(
                           "size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground",
-                          isFavorite && "text-yellow-500 hover:text-yellow-600",
+                          isFavorite && "text-warning-foreground hover:text-warning-foreground",
                         )}
                         onClick={() => handleToggleFavorite(model.slug)}
                         aria-label={`${isFavorite ? "Remove" : "Add"} ${model.name} ${

@@ -5,7 +5,7 @@ export function FileBreadcrumbs({ path, threadId }: { path: string; threadId?: T
   return (
     <nav
       aria-label="File location"
-      className="flex min-w-0 flex-wrap items-center gap-1 text-[11px] text-muted-foreground"
+      className="flex min-w-0 flex-wrap items-center gap-1 text-2xs text-muted-foreground"
     >
       {parts.map((part, index) => (
         <span key={parts.slice(0, index + 1).join("/")}>

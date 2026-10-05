@@ -35,7 +35,8 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   { "key": "ctrl+tab", "command": "thread.switchRecentNext" },
   { "key": "ctrl+shift+tab", "command": "thread.switchRecentPrevious" },
   { "key": "alt+tab", "command": "model.switchRecent" },
-  { "key": "mod+k", "command": "commandPalette.toggle", "when": "!terminalFocus" }
+  { "key": "mod+k", "command": "commandPalette.toggle", "when": "!terminalFocus" },
+  { "key": "mod+/", "command": "help.shortcuts", "when": "!terminalFocus" }
 ]
 ```
 
@@ -79,6 +80,7 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)
 - `model.switchRecent`: cycle to the next recent model (`Alt+Tab` by default)
 - `commandPalette.toggle`: open or close the command palette
+- `help.shortcuts`: open or close the keyboard shortcuts reference (`Mod+/` by default)
 - `palette.files`: open the command palette in project-file mode
 - `projectContentSearch.toggle`: open the command palette in project-content mode
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)

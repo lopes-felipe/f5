@@ -22,12 +22,13 @@ import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
 import { HttpResponse, http, ws } from "msw";
 import { setupWorker } from "msw/browser";
 import type { ReactNode } from "react";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 
 import { parsePersistedAppSettings } from "../appSettings";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useRecoveryStateStore } from "../recoveryStateStore";
@@ -237,6 +238,58 @@ function createSnapshot(
     threads,
     updatedAt: NOW_ISO,
   };
+}
+
+function createSnapshotProject(
+  id: ProjectId,
+  title: string,
+): OrchestrationReadModel["projects"][number] {
+  return {
+    id,
+    title,
+    workspaceRoot: `/repo/${id}`,
+    defaultModel: "gpt-5",
+    scripts: [],
+    memories: [],
+    createdAt: NOW_ISO,
+    updatedAt: NOW_ISO,
+    deletedAt: null,
+  };
+}
+
+/** Summary fields that make a thread "Plan Ready" (activities only load with details). */
+function createPlanReadyOverrides(
+  key: string,
+): Pick<SnapshotThread, "interactionMode" | "latestTurn" | "proposedPlans"> {
+  const turnId = `turn-${key}` as never;
+  return {
+    interactionMode: "plan",
+    latestTurn: {
+      turnId,
+      state: "completed",
+      assistantMessageId: null,
+      requestedAt: NOW_ISO,
+      startedAt: NOW_ISO,
+      completedAt: NOW_ISO,
+    },
+    proposedPlans: [
+      {
+        id: `plan-${key}` as never,
+        turnId,
+        planMarkdown: "# Plan",
+        implementedAt: null,
+        implementationThreadId: null,
+        createdAt: NOW_ISO,
+        updatedAt: NOW_ISO,
+      },
+    ],
+  };
+}
+
+function queryAttentionRows(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[data-testid^='attention-thread-row-']"),
+  );
 }
 
 function createEmptySnapshot(): OrchestrationReadModel {
@@ -986,6 +1039,7 @@ describe("Thread sidebar", () => {
       mode: "command",
       openIntent: null,
     });
+    useShortcutsDialogStore.setState({ open: false });
     Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
   });
@@ -1378,6 +1432,75 @@ describe("Thread sidebar", () => {
         () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
         "Command palette root search input should render.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the keyboard shortcuts dialog from mod+/, the sidebar footer and the palette", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            ...createSidebarShortcutBindings(),
+            { command: "commandPalette.toggle", shortcut: createShortcut("k") },
+            { command: "help.shortcuts", shortcut: createShortcut("/") },
+          ],
+        };
+      },
+    });
+    const findDialog = () =>
+      document.querySelector<HTMLElement>('[data-testid="shortcuts-dialog"]');
+    const waitForDialogClosed = () =>
+      vi.waitFor(() => expect(findDialog()).toBeNull(), { timeout: 4_000, interval: 16 });
+
+    try {
+      const footerButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Keyboard shortcuts"]'),
+        "The sidebar footer should offer a shortcuts button.",
+      );
+      // Keybindings arrive with the server config; retry until the shortcut lands.
+      await vi.waitFor(
+        async () => {
+          if (!useShortcutsDialogStore.getState().open) {
+            await dispatchShortcut({ key: "/" });
+          }
+          expect(useShortcutsDialogStore.getState().open).toBe(true);
+        },
+        { timeout: 4_000, interval: 50 },
+      );
+      const dialog = await waitForElement(findDialog, "mod+/ should open the shortcuts dialog.");
+      expect(dialog.textContent).toContain("Keyboard shortcuts");
+      const paletteRow = await waitForElement(
+        () => dialog.querySelector<HTMLElement>('[data-shortcut-command="commandPalette.toggle"]'),
+        "The palette binding should be listed.",
+      );
+      expect(paletteRow.textContent).toContain("Toggle command palette");
+
+      const filter = dialog.querySelector<HTMLInputElement>('input[aria-label="Filter shortcuts"]');
+      expect(filter).not.toBeNull();
+      await page.getByRole("textbox", { name: "Filter shortcuts" }).fill("zzz-no-match");
+      await vi.waitFor(() => expect(dialog.textContent).toContain("No shortcuts match"));
+
+      await dispatchShortcut({ key: "/" });
+      await waitForDialogClosed();
+
+      footerButton.click();
+      await waitForElement(findDialog, "The sidebar footer button should open the dialog.");
+      await userEvent.keyboard("{Escape}");
+      await waitForDialogClosed();
+
+      await dispatchShortcut({ key: "k" });
+      const paletteInput = await waitForElement(
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
+        "Command palette should open.",
+      );
+      await page.elementLocator(paletteInput).fill("keyboard shortcuts");
+      await page.getByText("Show keyboard shortcuts", { exact: true }).click();
+      await waitForElement(findDialog, "The palette action should open the dialog.");
     } finally {
       await mounted.cleanup();
     }
@@ -2494,6 +2617,136 @@ describe("Thread sidebar", () => {
       await unhoverSidebar("left");
 
       expectSidebarTitleOrder(["Older thread", "Newer thread"]);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists threads that need the user in a capped Needs you section frozen under hover", async () => {
+    const attentionThread = (index: number, lastInteractionAt: string) =>
+      createSnapshotThread({
+        id: `attention-${index}` as ThreadId,
+        title: `Attention ${index}`,
+        createdAt: "2026-03-11T12:00:00.000Z",
+        lastInteractionAt,
+        updatedAt: lastInteractionAt,
+        ...createPlanReadyOverrides(String(index)),
+      });
+    const minute = (value: number) => `2026-03-11T12:${String(value).padStart(2, "0")}:00.000Z`;
+    const initialThreads = [
+      createSnapshotThread({ id: THREAD_ID, title: "Quiet thread" }),
+      ...Array.from({ length: 6 }, (_, index) => attentionThread(index, minute(index + 1))),
+    ];
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot(initialThreads);
+      },
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-testid='sidebar-attention-section']"),
+        "Needs you section should render when threads wait on the user.",
+      );
+      const visibleIds = () =>
+        queryAttentionRows().map((row) => row.dataset.testid?.replace("attention-thread-row-", ""));
+      expect(visibleIds()).toEqual([
+        "attention-5",
+        "attention-4",
+        "attention-3",
+        "attention-2",
+        "attention-1",
+      ]);
+      expect(querySidebarButtonByText("Show all (6)")).not.toBeNull();
+      for (const row of queryAttentionRows()) {
+        expect(row.hasAttribute("data-thread-item")).toBe(false);
+      }
+      // The project list still owns the canonical row and its test id.
+      expect(document.querySelectorAll("[data-testid='thread-row-attention-5']")).toHaveLength(1);
+      expect(document.querySelector("[data-testid='attention-thread-row-thread-1']")).toBeNull();
+
+      await hoverSidebar("left");
+      useStore
+        .getState()
+        .syncServerReadModel(
+          createSnapshot([
+            createSnapshotThread({ id: THREAD_ID, title: "Quiet thread" }),
+            ...Array.from({ length: 5 }, (_, index) =>
+              attentionThread(index + 1, minute(index + 2)),
+            ),
+            attentionThread(0, minute(30)),
+          ]),
+        );
+      await waitForLayout();
+      expect(visibleIds()[0]).toBe("attention-5");
+
+      await unhoverSidebar("left");
+      await vi.waitFor(() => expect(visibleIds()[0]).toBe("attention-0"), {
+        timeout: 8_000,
+        interval: 16,
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("targets the open thread's project from the primary New thread and New workflow actions", async () => {
+    const secondProjectId = "project-2" as ProjectId;
+    const secondThreadId = "thread-sidebar-primary-actions" as ThreadId;
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${secondThreadId}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID, title: "Project One thread" }),
+            createSnapshotThread({
+              id: secondThreadId,
+              projectId: secondProjectId,
+              title: "Project Two thread",
+              lastInteractionAt: "2026-03-01T00:00:00.000Z",
+            }),
+          ]),
+          projects: [
+            createSnapshotProject(PROJECT_ID, "Project One"),
+            createSnapshotProject(secondProjectId, "Project Two"),
+          ],
+        };
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          bootstrapProjectId: secondProjectId,
+          bootstrapThreadId: secondThreadId,
+        };
+      },
+    });
+
+    try {
+      const newWorkflow = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>("[data-testid='sidebar-new-workflow']"),
+        "Primary New workflow action should render.",
+      );
+      newWorkflow.click();
+      await vi.waitFor(
+        () => expect(useWorkflowCreateDialogStore.getState().projectId).toBe(secondProjectId),
+        { timeout: 8_000, interval: 16 },
+      );
+      useWorkflowCreateDialogStore.getState().close();
+
+      const newThread = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>("[data-testid='sidebar-new-thread']"),
+        "Primary New thread action should render.",
+      );
+      newThread.click();
+      const newThreadPath = await waitForPath(
+        mounted.router,
+        (pathname) => UUID_ROUTE_RE.test(pathname),
+        "Primary New thread should navigate to a draft thread route.",
+      );
+      expect(
+        useComposerDraftStore.getState().getDraftThreadByProjectId(secondProjectId)?.threadId,
+      ).toBe(newThreadPath.slice(1));
     } finally {
       await mounted.cleanup();
     }

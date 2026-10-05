@@ -88,13 +88,13 @@ export function StorageActionConfirmDialog({
                     {category.targets.slice(0, 12).map((target) => (
                       <li
                         key={target.id}
-                        className="truncate font-mono text-[11px] text-muted-foreground"
+                        className="truncate font-mono text-2xs text-muted-foreground"
                       >
                         {target.path ?? target.label}
                       </li>
                     ))}
                     {category.targets.length > 12 ? (
-                      <li className="text-[11px] text-muted-foreground">
+                      <li className="text-2xs text-muted-foreground">
                         {category.targets.length - 12} more targets
                       </li>
                     ) : null}

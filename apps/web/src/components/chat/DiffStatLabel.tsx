@@ -12,11 +12,11 @@ export const DiffStatLabel = memo(function DiffStatLabel(props: {
   const { additions, deletions, showParentheses = false } = props;
   return (
     <>
-      {showParentheses && <span className="text-muted-foreground/70">(</span>}
+      {showParentheses && <span className="text-muted-foreground">(</span>}
       <span className="text-diff-addition">+{additions}</span>
-      <span className="mx-0.5 text-muted-foreground/70">/</span>
+      <span className="mx-0.5 text-muted-foreground">/</span>
       <span className="text-diff-deletion">-{deletions}</span>
-      {showParentheses && <span className="text-muted-foreground/70">)</span>}
+      {showParentheses && <span className="text-muted-foreground">)</span>}
     </>
   );
 });

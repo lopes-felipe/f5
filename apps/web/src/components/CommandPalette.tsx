@@ -23,6 +23,8 @@ import {
   FileIcon,
   FolderIcon,
   FolderPlusIcon,
+  HomeIcon,
+  KeyboardIcon,
   ListOrderedIcon,
   MessageSquareIcon,
   PauseCircleIcon,
@@ -33,6 +35,8 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -42,12 +46,17 @@ import {
   type ReactNode,
 } from "react";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useShortcutsDialogStore } from "../shortcutsDialogStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOpenGlobalSearchResult } from "../hooks/useOpenGlobalSearchResult";
 import { useAppSettings } from "../appSettings";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import { isTerminalFocused } from "../lib/terminalFocus";
-import { compareThreadsByActivity, getMostRecentThreadForProject } from "../lib/threadOrdering";
+import {
+  compareThreadsByActivity,
+  getMostRecentProject,
+  getMostRecentThreadForProject,
+} from "../lib/threadOrdering";
 import {
   appendBrowsePathSegment,
   canNavigateUp,
@@ -95,6 +104,7 @@ import {
 } from "./CommandPalette.logic";
 import { CommandPaletteResults } from "./CommandPaletteResults";
 import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
+import { resolvePrimaryNewThreadProjectId } from "./Sidebar.logic";
 import {
   Command,
   CommandDialog,
@@ -117,6 +127,8 @@ const FILE_SEARCH_DEBOUNCE_MS = 180;
 const CONTENT_SEARCH_DEBOUNCE_MS = 180;
 const FILE_SEARCH_LIMIT = 100;
 
+const ShortcutsDialog = lazy(() => import("./ShortcutsDialog"));
+
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
     return "Finder";
@@ -133,6 +145,14 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const toggleOpen = useCommandPaletteStore((store) => store.toggleOpen);
   const toggleMode = useCommandPaletteStore((store) => store.toggleMode);
   const keybindings = useServerKeybindings();
+  const shortcutsOpen = useShortcutsDialogStore((store) => store.open);
+  const toggleShortcuts = useShortcutsDialogStore((store) => store.toggleOpen);
+  // Mount the lazily loaded shortcuts dialog on first open, then keep it
+  // mounted so its close animation can play.
+  const [shortcutsRequested, setShortcutsRequested] = useState(false);
+  if (shortcutsOpen && !shortcutsRequested) {
+    setShortcutsRequested(true);
+  }
   const routeThreadId = useHandleNewThread().routeThreadId;
   const terminalOpen = useTerminalStateStore((state) =>
     routeThreadId
@@ -155,6 +175,12 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           event.stopPropagation();
           toggleOpen();
           return;
+        case "help.shortcuts":
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          toggleShortcuts();
+          return;
         case "palette.files":
           event.preventDefault();
           event.stopPropagation();
@@ -171,7 +197,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [keybindings, terminalOpen, toggleMode, toggleOpen]);
+  }, [keybindings, setOpen, terminalOpen, toggleMode, toggleOpen, toggleShortcuts]);
 
   // Close the palette when this container unmounts (e.g. on route change).
   // Hoisted here so the cleanup fires once at unmount rather than every time
@@ -196,6 +222,11 @@ export function CommandPalette({ children }: { children: ReactNode }) {
       <CommandDialog open={open} onOpenChange={setOpen}>
         <CommandPaletteDialog />
       </CommandDialog>
+      {shortcutsRequested ? (
+        <Suspense fallback={null}>
+          <ShortcutsDialog />
+        </Suspense>
+      ) : null}
     </>
   );
 }
@@ -291,6 +322,33 @@ function OpenCommandPaletteDialog(props: {
   const activeThreadId = activeThread?.id;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
   const workflowProjectId = currentProjectId ?? projects[0]?.id ?? null;
+  // Off a thread (Home, settings, PR hub) "New thread in ..." still targets a
+  // concrete project, matching the sidebar's primary New thread button.
+  const newThreadProjectId = useMemo(
+    () =>
+      resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: activeThread?.projectId,
+        activeDraftProjectId: activeDraftThread?.projectId,
+        mostRecentProjectId:
+          getMostRecentProject(
+            projects,
+            threads,
+            planningWorkflows,
+            codeReviewWorkflows,
+            investigationWorkflows,
+          )?.id ?? null,
+        firstProjectId: projects[0]?.id ?? null,
+      }),
+    [
+      activeDraftThread?.projectId,
+      activeThread?.projectId,
+      codeReviewWorkflows,
+      investigationWorkflows,
+      planningWorkflows,
+      projects,
+      threads,
+    ],
+  );
   const [requestedSearchProjectId, setRequestedSearchProjectId] = useState<ProjectId | null>(null);
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)
@@ -698,8 +756,8 @@ function OpenCommandPaletteDialog(props: {
   const actionItems: Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> = [];
 
   if (projects.length > 0) {
-    const activeProjectTitle = currentProjectId
-      ? (projectTitleById.get(currentProjectId) ?? null)
+    const activeProjectTitle = newThreadProjectId
+      ? (projectTitleById.get(newThreadProjectId) ?? null)
       : null;
     const workflowProjectTitle = workflowProjectId
       ? (projectTitleById.get(workflowProjectId) ?? null)
@@ -718,8 +776,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <SquarePenIcon className={ITEM_ICON_CLASS} />,
         shortcutCommand: "chat.new",
         run: async () => {
-          if (!currentProjectId) return;
-          await handleNewThread(currentProjectId, {
+          if (!newThreadProjectId) return;
+          await handleNewThread(newThreadProjectId, {
             branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
             worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
           });
@@ -837,6 +895,31 @@ function OpenCommandPaletteDialog(props: {
       },
     );
   }
+
+  if (location.pathname !== "/") {
+    actionItems.push({
+      kind: "action",
+      value: "action:go-home",
+      searchTerms: ["home", "dashboard", "mission control", "start"],
+      title: "Go to Home",
+      icon: <HomeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/" });
+      },
+    });
+  }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:shortcuts",
+    searchTerms: ["keyboard", "shortcuts", "hotkeys", "help", "cheatsheet"],
+    title: "Show keyboard shortcuts",
+    icon: <KeyboardIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "help.shortcuts",
+    run: async () => {
+      useShortcutsDialogStore.getState().setOpen(true);
+    },
+  });
 
   actionItems.push({
     kind: "action",
@@ -1328,23 +1411,23 @@ function OpenCommandPaletteDialog(props: {
               <Kbd>
                 <ArrowDownIcon />
               </Kbd>
-              <span className={cn("text-muted-foreground/80")}>Navigate</span>
+              <span className={cn("text-muted-foreground")}>Navigate</span>
             </KbdGroup>
             {!canSubmitBrowsePath || hasHighlightedBrowseItem ? (
               <KbdGroup className="items-center gap-1.5">
                 <Kbd>Enter</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Select</span>
+                <span className={cn("text-muted-foreground")}>Select</span>
               </KbdGroup>
             ) : null}
             {isSubmenu ? (
               <KbdGroup className="items-center gap-1.5">
                 <Kbd>Backspace</Kbd>
-                <span className={cn("text-muted-foreground/80")}>Back</span>
+                <span className={cn("text-muted-foreground")}>Back</span>
               </KbdGroup>
             ) : null}
             <KbdGroup className="items-center gap-1.5">
               <Kbd>Esc</Kbd>
-              <span className={cn("text-muted-foreground/80")}>Close</span>
+              <span className={cn("text-muted-foreground")}>Close</span>
             </KbdGroup>
           </div>
           {searchMode !== "all" && searchProject ? (
@@ -1406,7 +1489,7 @@ function OpenCommandPaletteDialog(props: {
             <Button
               variant="ghost"
               size="xs"
-              className="h-auto px-2 text-xs text-muted-foreground/80 hover:bg-transparent hover:text-foreground"
+              className="h-auto px-2 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground"
               disabled={isPickingProjectFolder}
               onClick={() => {
                 void handleOpenProjectFromFileManager();

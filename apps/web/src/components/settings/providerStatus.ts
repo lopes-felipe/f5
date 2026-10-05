@@ -5,8 +5,9 @@ import type { ServerProvider, ServerProviderUpdateCommand } from "@t3tools/contr
  * the default-driver card and per-instance cards share the same language.
  */
 export const PROVIDER_STATUS_STYLES = {
+  // Disabled is a choice, not a fault: a neutral dot rather than a warning.
   disabled: {
-    dot: "bg-amber-400",
+    dot: "bg-faint-foreground",
   },
   error: {
     dot: "bg-destructive",

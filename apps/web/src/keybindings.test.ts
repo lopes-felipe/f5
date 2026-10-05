@@ -849,6 +849,27 @@ describe("Phase 3 shortcut contexts", () => {
       command,
     );
   });
+  it("maps mod+/ to the shortcuts reference unless the terminal has focus", () => {
+    const slash = event({ key: "/", ctrlKey: true });
+    assert.equal(
+      resolveShortcutCommand(slash, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+      "help.shortcuts",
+    );
+    assert.notEqual(
+      resolveShortcutCommand(slash, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: true },
+      }),
+      "help.shortcuts",
+    );
+    assert.equal(
+      shortcutLabelForCommand(DEFAULT_RESOLVED_KEYBINDINGS, "help.shortcuts", "MacIntel"),
+      "⌘/",
+    );
+  });
   it("only maps undo with a visible toast outside editable elements", () => {
     const undo = event({ key: "z", ctrlKey: true });
     assert.equal(

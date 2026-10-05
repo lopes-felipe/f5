@@ -13,30 +13,28 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
 }) {
   if (!error) return null;
   return (
-    <div className="pt-3 mx-auto max-w-3xl">
-      <Alert variant="error">
-        <CircleAlertIcon />
-        <AlertDescription className="line-clamp-3" title={error}>
-          {error}
-          {occurredAt ? (
-            <time className="mt-1 block text-[10px] opacity-70" dateTime={occurredAt}>
-              {new Date(occurredAt).toLocaleString()}
-            </time>
-          ) : null}
-        </AlertDescription>
-        {onDismiss && (
-          <AlertAction>
-            <button
-              type="button"
-              aria-label="Dismiss error"
-              className="inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"
-              onClick={onDismiss}
-            >
-              <XIcon className="size-3.5" />
-            </button>
-          </AlertAction>
-        )}
-      </Alert>
-    </div>
+    <Alert variant="error">
+      <CircleAlertIcon />
+      <AlertDescription className="line-clamp-3" title={error}>
+        {error}
+        {occurredAt ? (
+          <time className="mt-1 block text-2xs text-muted-foreground" dateTime={occurredAt}>
+            {new Date(occurredAt).toLocaleString()}
+          </time>
+        ) : null}
+      </AlertDescription>
+      {onDismiss && (
+        <AlertAction>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:text-destructive-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onDismiss}
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </AlertAction>
+      )}
+    </Alert>
   );
 });

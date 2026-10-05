@@ -39,22 +39,24 @@ interface CommandTranscriptCardProps {
 const STATUS_BADGE_CLASS_NAME: Record<OrchestrationCommandExecutionSummary["status"], string> = {
   running: "border-info/32 bg-info/8 text-info-foreground dark:bg-info/16",
   completed: "border-success/32 bg-success/8 text-success-foreground dark:bg-success/16",
-  failed: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-  interrupted: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  declined: "border-zinc-500/30 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300",
+  failed:
+    "border-destructive/32 bg-destructive/8 text-destructive-foreground dark:bg-destructive/16",
+  interrupted: "border-warning/32 bg-warning/8 text-warning-foreground dark:bg-warning/16",
+  declined: "border-border bg-muted/40 text-muted-foreground",
 };
 
+// Shell syntax colours from the semantic set so themes recolour them too.
 const COMMAND_TOKEN_CLASS_NAME: Record<DisplayCommandTokenKind, string> = {
-  command: "text-sky-700 dark:text-sky-300",
-  env: "text-cyan-700 dark:text-cyan-300",
-  flag: "text-amber-700 dark:text-amber-300",
-  number: "text-orange-700 dark:text-orange-300",
-  operator: "text-muted-foreground/85",
-  path: "text-teal-700 dark:text-teal-300",
-  string: "text-emerald-700 dark:text-emerald-300",
-  substitution: "text-indigo-700 dark:text-indigo-300",
+  command: "text-info-foreground",
+  env: "text-attention-foreground",
+  flag: "text-warning-foreground",
+  number: "text-warning-foreground",
+  operator: "text-muted-foreground",
+  path: "text-success-foreground",
+  string: "text-success-foreground",
+  substitution: "text-attention-foreground",
   text: "text-foreground",
-  variable: "text-rose-700 dark:text-rose-300",
+  variable: "text-destructive-foreground",
   whitespace: "text-inherit",
 };
 
@@ -133,7 +135,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
 
   return (
     <div>
-      <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Output</p>
+      <p className="text-2xs uppercase tracking-wider text-muted-foreground">Output</p>
       <div className="mt-1 max-h-80 overflow-auto rounded-md bg-background/70 p-2">
         <pre className="whitespace-pre-wrap break-words font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
           {props.isLoadingOutput
@@ -147,7 +149,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
       </div>
       {showPreviewToggle && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             Showing a compact preview for this large transcript.
           </p>
           <Button
@@ -163,7 +165,7 @@ const CommandTranscriptOutput = memo(function CommandTranscriptOutput(props: {
         </div>
       )}
       {props.outputTruncated && (
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-2xs text-muted-foreground">
           Transcript output was truncated to fit the retention limit.
         </p>
       )}
@@ -289,7 +291,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
           className="flex min-w-0 flex-1 items-start gap-3 text-left"
           aria-expanded={expanded}
         >
-          <span className="mt-0.5 text-muted-foreground/70">
+          <span className="mt-0.5 text-muted-foreground">
             {expanded ? (
               <ChevronDownIcon className="size-4" />
             ) : (
@@ -300,18 +302,16 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
             <div className="flex flex-wrap items-center gap-2">
               <span
                 className={cn(
-                  "inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em]",
+                  "inline-flex rounded-full border px-2 py-0.5 text-2xs font-medium uppercase tracking-wider",
                   STATUS_BADGE_CLASS_NAME[detailSource.status],
                 )}
               >
                 {detailSource.status}
               </span>
               {detailSource.exitCode !== null && (
-                <span className="text-[10px] text-muted-foreground">
-                  exit {detailSource.exitCode}
-                </span>
+                <span className="text-2xs text-muted-foreground">exit {detailSource.exitCode}</span>
               )}
-              <span className="text-[10px] text-muted-foreground">{meta}</span>
+              <span className="text-2xs text-muted-foreground">{meta}</span>
             </div>
             <code className="mt-2 block overflow-x-auto whitespace-pre-wrap break-all font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
               {summaryText === displayCommand ? (
@@ -348,9 +348,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
           <div className="space-y-3">
             {showCommandSection && (
               <div>
-                <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                  Command
-                </p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Command</p>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-background/70 p-2 font-mono text-[length:var(--f5-chat-font-size)] text-foreground">
                   <HighlightedCommandText command={displayCommand} />
                 </pre>
@@ -367,9 +365,7 @@ export const CommandTranscriptCard = memo(function CommandTranscriptCard({
 
             {showDetailSection && (
               <div>
-                <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                  Detail
-                </p>
+                <p className="text-2xs uppercase tracking-wider text-muted-foreground">Detail</p>
                 <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
                   {normalizedDetail}
                 </p>

@@ -5,11 +5,31 @@
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
   --animate-status-pulse: status-pulse 2s infinite;
+  --animate-rise: rise var(--duration-base) var(--ease-out) both;
+  --animate-panel-in: panel-in var(--duration-base) var(--ease-out) both;
+  --animate-fade-in: fade-in var(--duration-fast) ease-out both;
+  /* Type scale (F1): 11px is the floor and is reserved for meta text. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.25rem;
   --font-sans:
-    "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-    sans-serif;
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-heading:
+    "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono:
-    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    "JetBrains Mono", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --color-faint-foreground: var(--faint-foreground);
+  --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
+  --color-chrome: var(--chrome);
+  /* ui/sidebar.tsx tokens map onto the app palette; the sidebar sits on chrome (Canvas shell). */
+  --color-sidebar: var(--chrome);
+  --color-sidebar-foreground: var(--foreground);
+  --color-sidebar-accent: var(--accent);
+  --color-sidebar-accent-foreground: var(--accent-foreground);
+  --color-sidebar-border: var(--border);
   --color-warning-foreground: var(--warning-foreground);
   --color-warning: var(--warning);
   --color-success-foreground: var(--success-foreground);
@@ -62,11 +82,101 @@
       opacity: 1;
     }
   }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  @keyframes panel-in {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+/*
+ * Surfaces (V3). Canvas: the main view and right panel floating on the chrome.
+ * Raised: cards, composer, popovers that sit on a canvas.
+ */
+@utility surface-canvas {
+  background-color: var(--background);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 2px 12px -4px rgb(0 0 0 / 0.08);
+  &:where(.dark, .dark *) {
+    border-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.35),
+      0 4px 20px -6px rgb(0 0 0 / 0.5);
+  }
+}
+
+@utility surface-raised {
+  background-color: var(--card);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 4px 16px -8px rgb(0 0 0 / 0.12);
+  &:where(.dark, .dark *) {
+    border-color: color-mix(in oklab, var(--foreground) 7%, transparent);
+    box-shadow:
+      0 1px 2px rgb(0 0 0 / 0.3),
+      0 8px 24px -12px rgb(0 0 0 / 0.6);
+  }
+}
+
+@utility surface-overlay {
+  background-color: var(--popover);
+  border: 1px solid var(--border);
+  box-shadow:
+    0 2px 4px rgb(0 0 0 / 0.06),
+    0 16px 40px -12px rgb(0 0 0 / 0.22);
+  &:where(.dark, .dark *) {
+    border-color: color-mix(in oklab, var(--foreground) 9%, transparent);
+    box-shadow:
+      0 2px 4px rgb(0 0 0 / 0.4),
+      0 16px 48px -12px rgb(0 0 0 / 0.7);
+  }
+}
+
+/* Staggered list entry: children rise in 28ms steps (set --i per child). */
+@utility stagger-children {
+  & > * {
+    animation: rise var(--duration-base) var(--ease-out) both;
+    animation-delay: calc(min(var(--i, 0), 12) * 28ms);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    & > * {
+      animation: none;
+    }
+  }
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
+  }
+  /* Keyboard focus fallback for controls without their own ring. Zero
+     specificity, so any `focus-visible:` utility (ring or outline-none)
+     still wins. */
+  :where(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    [role="link"],
+    [tabindex]:not([tabindex="-1"])
+  ):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
   body {
     @apply bg-background text-foreground relative;
@@ -101,12 +211,29 @@
     --border: ButtonBorder !important;
     --input: ButtonBorder !important;
     --ring: Highlight !important;
+    --faint-foreground: GrayText !important;
+    --attention: Highlight !important;
+    --chrome: Canvas !important;
+    --info-foreground: CanvasText !important;
+    --success-foreground: CanvasText !important;
+    --warning-foreground: CanvasText !important;
+    --destructive-foreground: CanvasText !important;
+    --attention-foreground: CanvasText !important;
   }
 }
 
 :root {
   color-scheme: light;
-  --radius: 0.625rem;
+  --radius: 0.75rem;
+  --app-header-height: 52px;
+  --chat-content-max-width: 56rem;
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  /* Pre-hydration fallbacks; applyThemePalette writes the derived values. */
+  --faint-foreground: color-mix(in oklab, var(--muted-foreground) 60%, var(--background));
+  --attention: oklch(0.58 0.16 300);
+  --attention-foreground: oklch(0.42 0.16 300);
+  --chrome: color-mix(in oklab, var(--background) 94%, var(--color-black));
   --background: var(--color-white);
   --foreground: var(--color-neutral-800);
   --card: var(--color-white);
@@ -175,9 +302,17 @@
 
 body {
   font-family: var(--font-sans);
+  /* Inter: straight-sided 1, open 4/6/9, distinct lowercase l. */
+  font-feature-settings: "cv11", "ss01", "ss03";
   margin: 0;
   padding: 0;
   min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
 }
 
 html,
@@ -192,21 +327,12 @@ body,
   overscroll-behavior-y: none;
 }
 
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0.035;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-repeat: repeat;
-  background-size: 256px 256px;
-}
-
-pre,
-code,
-textarea,
-input {
+/*
+ * Monospace is for code-like elements only. Inputs inherit the UI face and opt
+ * in with `font-mono` when the value is a path, URL, command, chord or slug.
+ * Low specificity keeps the utilities able to override it.
+ */
+:where(pre, code, kbd, samp) {
   font-family: var(--font-mono);
 }
 
@@ -218,7 +344,8 @@ input {
 }
 
 .composer-editor-surface,
-.chat-markdown {
+.chat-markdown,
+.chat-plaintext {
   font-family: var(--f5-chat-font-family);
   font-size: var(--f5-chat-font-size);
 }
@@ -238,7 +365,12 @@ input {
 .drag-region input,
 .drag-region textarea,
 .drag-region select,
-.drag-region a {
+.drag-region a,
+.drag-region [role="button"],
+.drag-region [role="link"],
+.drag-region [role="tab"],
+.drag-region [role="menuitem"],
+.drag-region [data-no-drag] {
   -webkit-app-region: no-drag;
 }
 
@@ -252,20 +384,12 @@ input {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: color-mix(in oklab, var(--foreground) 14%, transparent);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: color-mix(in oklab, var(--foreground) 24%, transparent);
 }
 
 .turn-chip-strip {

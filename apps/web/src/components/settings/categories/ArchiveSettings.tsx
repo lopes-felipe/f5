@@ -402,7 +402,7 @@ export function ArchiveSettings() {
 
   return (
     <section
-      className="rounded-2xl border border-border bg-card p-5"
+      className="rounded-xl border border-border bg-card p-5"
       data-settings-search-target="archive.items"
     >
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -446,7 +446,7 @@ export function ArchiveSettings() {
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <label className="relative min-w-0 flex-1">
           <span className="sr-only">Search archive</span>
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground/60" />
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -480,10 +480,10 @@ export function ArchiveSettings() {
           {groupedItems.map((group) => (
             <div key={group.projectId} className="space-y-2">
               <div className="flex items-center justify-between gap-3">
-                <h3 className="truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <h3 className="truncate text-ui font-semibold text-foreground">
                   {group.projectName}
                 </h3>
-                <span className="text-[11px] text-muted-foreground/70">
+                <span className="text-2xs text-muted-foreground">
                   {group.items.length} item{group.items.length === 1 ? "" : "s"}
                 </span>
               </div>
@@ -520,16 +520,16 @@ export function ArchiveSettings() {
                             variant="secondary"
                             size="sm"
                             className={cn(
-                              "shrink-0 rounded-md px-1.5 py-0 text-[10px] uppercase",
+                              "shrink-0 rounded-md px-1.5 py-0 text-2xs",
                               item.kind === "thread"
                                 ? "bg-primary/10 text-primary"
-                                : "bg-blue-500/10 text-blue-400",
+                                : "bg-info/10 text-info-foreground",
                             )}
                           >
                             {item.kind === "thread" ? "Thread" : "Workflow"}
                           </Badge>
                         </div>
-                        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted-foreground">
                           {item.kind === "workflow" ? <WorkflowIcon className="size-3" /> : null}
                           <span className="truncate">{item.subtitle}</span>
                           <span aria-hidden="true">·</span>

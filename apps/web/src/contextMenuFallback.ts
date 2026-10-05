@@ -45,8 +45,8 @@ export function showContextMenuFallback<T extends string>(
       btn.textContent = item.label;
       const isDestructiveAction = item.destructive === true || item.id === "delete";
       btn.className = isDestructiveAction
-        ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-destructive hover:bg-accent cursor-default"
-        : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-popover-foreground hover:bg-accent cursor-default";
+        ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-destructive hover:bg-accent cursor-default"
+        : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-popover-foreground hover:bg-accent cursor-default";
       btn.addEventListener("click", () => cleanup(item.id));
       menu.appendChild(btn);
     }

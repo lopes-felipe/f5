@@ -14,7 +14,10 @@ import { memo, useState } from "react";
 import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
 import { recordModelSelection } from "../../modelPreferencesStore";
+import { cn } from "~/lib/utils";
+
 import { Button } from "../ui/button";
+import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
 import {
   Menu,
   MenuGroup,
@@ -147,7 +150,10 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
           <Button
             size="sm"
             variant="ghost"
-            className="min-w-0 max-w-40 shrink justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:max-w-48 sm:px-3 [&_svg]:mx-0"
+            className={cn(
+              COMPOSER_CHIP_CLASS_NAME,
+              "min-w-0 max-w-40 shrink justify-start overflow-hidden sm:max-w-48 [&_svg]:mx-0",
+            )}
           />
         }
       >

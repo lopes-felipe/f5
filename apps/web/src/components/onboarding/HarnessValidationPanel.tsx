@@ -57,12 +57,12 @@ const BRAND_ACCENTS: Record<HarnessBrandAccent, BrandAccentStyles> = {
     iconClass: "size-6",
   },
   cursor: {
-    tile: "bg-cyan-500/10 border border-cyan-500/20",
+    tile: "bg-info/10 border border-info/20",
     icon: CursorIcon,
-    iconClass: "size-6 text-cyan-500",
+    iconClass: "size-6 text-info-foreground",
   },
   opencode: {
-    tile: "bg-zinc-500/10 border border-zinc-500/20",
+    tile: "bg-muted/10 border border-border/20",
     icon: OpenCodeIcon,
     iconClass: "size-5",
   },
@@ -180,8 +180,8 @@ function segmentToneFor(result: ServerHarnessValidationResult | null | undefined
 }
 
 const SEGMENT_TONE_CLASSES: Record<SegmentTone, string> = {
-  ready: "bg-emerald-500/80",
-  warning: "bg-amber-500/80",
+  ready: "bg-success/80",
+  warning: "bg-warning/80",
   error: "bg-destructive/80",
   idle: "bg-muted-foreground/20",
 };
@@ -217,7 +217,7 @@ const HarnessRow = memo(function HarnessRow({
         "rounded-2xl border border-border/70 bg-background/40 p-4 transition-colors",
         "motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500",
         "hover:border-foreground/25",
-        presentation.kind === "ready" && "border-emerald-500/25 shadow-sm shadow-emerald-500/10",
+        presentation.kind === "ready" && "border-success/25 shadow-sm shadow-success/10",
       )}
       style={{ animationDelay: `${animationDelayMs}ms` }}
     >
@@ -232,16 +232,16 @@ const HarnessRow = memo(function HarnessRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-medium text-foreground">{meta.displayName}</h3>
-            <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
+            <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 font-mono text-2xs text-muted-foreground">
               {meta.cliLabel}
             </span>
             {presentation.kind === "ready" && result?.version ? (
-              <span className="rounded-full border border-emerald-500/25 bg-emerald-500/8 px-2 py-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+              <span className="rounded-full border border-success/25 bg-success/8 px-2 py-0.5 text-2xs text-success-foreground">
                 {result.version}
               </span>
             ) : null}
             {presentation.kind === "ready" && result ? (
-              <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 text-2xs text-muted-foreground">
                 {authPillLabel(result.authStatus)}
               </span>
             ) : null}
@@ -262,9 +262,9 @@ const HarnessRow = memo(function HarnessRow({
                   className={cn(
                     "size-4",
                     providerPresentation?.variant === "ready"
-                      ? "text-emerald-500"
+                      ? "text-success-foreground"
                       : providerPresentation?.variant === "warning"
-                        ? "text-amber-500"
+                        ? "text-warning-foreground"
                         : "text-destructive",
                   )}
                   aria-label={providerPresentation.ariaLabel}
@@ -278,13 +278,11 @@ const HarnessRow = memo(function HarnessRow({
           </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] uppercase tracking-wide text-muted-foreground/80">
-              Covers
-            </span>
+            <span className="text-2xs uppercase tracking-wide text-muted-foreground">Covers</span>
             {modelNames.map((name) => (
               <span
                 key={name}
-                className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
+                className="rounded-full border border-border/80 bg-background/70 px-2 py-0.5 font-mono text-2xs text-muted-foreground"
               >
                 {name}
               </span>
@@ -452,7 +450,7 @@ export function HarnessValidationPanel() {
               Verify that the CLI harnesses behind your model providers are installed,
               authenticated, and reachable before you start a thread.
             </p>
-            <p className="text-xs text-muted-foreground/80">
+            <p className="text-xs text-muted-foreground">
               This checks harness connectivity only; MCP and project setup are not validated.
             </p>
           </div>
@@ -489,7 +487,7 @@ export function HarnessValidationPanel() {
         <span
           className={cn(
             "text-xs",
-            summary.kind === "idle" ? "text-muted-foreground/80" : "text-muted-foreground",
+            summary.kind === "idle" ? "text-muted-foreground" : "text-muted-foreground",
           )}
         >
           {summary.kind === "pending" ? (

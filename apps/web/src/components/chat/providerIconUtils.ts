@@ -65,9 +65,9 @@ export function providerIconClassName(
     return "text-[#d97757]";
   }
   if (provider === "grok") {
-    return "text-foreground/80";
+    return "text-foreground";
   }
-  return "text-muted-foreground/75";
+  return "text-muted-foreground";
 }
 
 export function findProviderStatus(

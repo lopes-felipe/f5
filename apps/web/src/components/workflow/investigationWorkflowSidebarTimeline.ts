@@ -1,12 +1,14 @@
 import type {
   InvestigationPhaseStatus,
   InvestigationWorkflow,
+  ThreadId,
   WorkflowStepStatus,
 } from "@t3tools/contracts";
-import type {
-  WorkflowTimelinePhase as TimelinePhase,
-  WorkflowTimelinePhaseState as PhaseState,
-  WorkflowTimelineStepState as StepState,
+import {
+  threadLabelsFromPhases,
+  type WorkflowTimelinePhase as TimelinePhase,
+  type WorkflowTimelinePhaseState as PhaseState,
+  type WorkflowTimelineStepState as StepState,
 } from "./workflowTimelineTypes";
 
 function workflowStepState(status: WorkflowStepStatus): StepState {
@@ -62,12 +64,14 @@ function deriveInvestigationPhase(workflow: InvestigationWorkflow): TimelinePhas
         label: workflow.investigatorA.label,
         threadId: workflow.investigatorA.investigationThreadId,
         state: aState,
+        modelSlot: workflow.investigatorA.slot,
       },
       {
         key: "investigator-b",
         label: workflow.investigatorB.label,
         threadId: workflow.investigatorB.investigationThreadId,
         state: bState,
+        modelSlot: workflow.investigatorB.slot,
       },
     ],
   };
@@ -86,12 +90,14 @@ function deriveCrossReviewPhase(workflow: InvestigationWorkflow): TimelinePhase 
         label: "Cross-review A",
         threadId: workflow.investigatorA.crossReviewThreadId,
         state: aState,
+        modelSlot: null,
       },
       {
         key: "cross-review-b",
         label: "Cross-review B",
         threadId: workflow.investigatorB.crossReviewThreadId,
         state: bState,
+        modelSlot: null,
       },
     ],
   };
@@ -110,12 +116,14 @@ function deriveSelfReviewPhase(workflow: InvestigationWorkflow): TimelinePhase {
         label: "Own-model review A",
         threadId: workflow.investigatorA.selfReviewThreadId,
         state: aState,
+        modelSlot: null,
       },
       {
         key: "own-model-review-b",
         label: "Own-model review B",
         threadId: workflow.investigatorB.selfReviewThreadId,
         state: bState,
+        modelSlot: null,
       },
     ],
   };
@@ -133,6 +141,7 @@ function deriveSynthesisPhase(workflow: InvestigationWorkflow): TimelinePhase {
         label: "RCA Synthesis",
         threadId: workflow.synthesis.threadId,
         state,
+        modelSlot: workflow.synthesis.slot,
       },
     ],
   };
@@ -147,4 +156,11 @@ export function deriveInvestigationTimelinePhases(
   }
   phases.push(deriveSynthesisPhase(workflow));
   return phases;
+}
+
+/** Role label per thread (investigator slot labels, cross-reviews, "RCA Synthesis"). */
+export function deriveInvestigationWorkflowThreadLabels(
+  workflow: InvestigationWorkflow,
+): ReadonlyMap<ThreadId, string> {
+  return threadLabelsFromPhases(deriveInvestigationTimelinePhases(workflow));
 }

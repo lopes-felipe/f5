@@ -84,7 +84,7 @@ export function NotificationsSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Notifications</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -114,7 +114,7 @@ export function NotificationsSettings() {
             />
           </label>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Thread status notifications</p>
               <p className="text-xs text-muted-foreground">
@@ -152,7 +152,7 @@ export function NotificationsSettings() {
             </Select>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">PR attention notifications</p>
               <p className="text-xs text-muted-foreground">
@@ -170,7 +170,7 @@ export function NotificationsSettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Flag my PRs as stalled after</p>
               <p className="text-xs text-muted-foreground">
@@ -244,7 +244,7 @@ export function NotificationsSettings() {
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Git</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -252,7 +252,7 @@ export function NotificationsSettings() {
           </p>
         </div>
 
-        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">Auto-refresh git status</p>
             <p className="text-xs text-muted-foreground">
@@ -313,7 +313,7 @@ export function NotificationsSettings() {
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">PR Hub</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -322,7 +322,7 @@ export function NotificationsSettings() {
         </div>
 
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Auto-refresh PR Hub</p>
               <p className="text-xs text-muted-foreground">
@@ -403,7 +403,7 @@ export function NotificationsSettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Clear PR Hub data</p>
               <p className="text-xs text-muted-foreground">

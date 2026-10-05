@@ -64,13 +64,8 @@ import {
   isLatestTurnSettled,
 } from "../session-logic";
 import { useStore } from "../store";
-import {
-  Sidebar,
-  SidebarInset,
-  SidebarProvider,
-  SidebarRail,
-  SidebarTrigger,
-} from "~/components/ui/sidebar";
+import { Sidebar, SidebarInset, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import { AppTitlebar } from "~/components/AppTitlebar";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const AgentsPanel = lazy(() =>
@@ -272,7 +267,8 @@ const RightPanelInlineSidebar = (props: {
       <Sidebar
         side="right"
         collapsible="offcanvas"
-        className="border-l border-border bg-card text-foreground"
+        // A second canvas beside the main one: same 8px gutter on the chrome.
+        className="border-l-0 bg-transparent py-2 pe-2 text-foreground *:data-[slot=sidebar-inner]:overflow-hidden *:data-[slot=sidebar-inner]:rounded-xl *:data-[slot=sidebar-inner]:surface-canvas"
         resizable={{
           minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
@@ -301,17 +297,14 @@ function ThreadDetailErrorView(props: {
 }) {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
-      <header className="border-b border-border px-3 py-2 sm:px-5 sm:py-3">
-        <div className="flex items-center gap-3">
-          <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-          <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-foreground">{props.title}</p>
-            <p className="text-xs text-muted-foreground">Unable to load thread details.</p>
-          </div>
-        </div>
-      </header>
+      <AppTitlebar
+        breadcrumb={[{ label: props.title }]}
+        status={
+          <span className="text-xs text-muted-foreground">Unable to load thread details.</span>
+        }
+      />
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-5 sm:py-4">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className="mx-auto w-full max-w-(--chat-content-max-width)">
           <div className="rounded-2xl border border-border/70 bg-card/70 p-4 shadow-sm backdrop-blur-sm">
             <p className="text-sm font-medium text-foreground">Thread details failed to load</p>
             <p className="mt-2 text-sm text-muted-foreground">

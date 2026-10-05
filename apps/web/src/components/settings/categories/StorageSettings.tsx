@@ -178,7 +178,7 @@ function TargetRow({
         />
         <span className="min-w-0">
           <span className="block truncate text-xs font-medium text-foreground">{target.label}</span>
-          <span className="block truncate text-[11px] text-muted-foreground">
+          <span className="block truncate text-2xs text-muted-foreground">
             {target.disabledReason ?? target.detail ?? target.path ?? category.title}
           </span>
         </span>
@@ -199,7 +199,7 @@ function TargetRow({
 function ResultSummary({ result }: { readonly result: StorageCleanupResult }) {
   const visibleWarnings = result.warnings.slice(0, 5);
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section className="rounded-xl border border-border bg-card p-5">
       <div className="mb-3">
         <h2 className="text-sm font-medium text-foreground">Last cleanup result</h2>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -558,7 +558,7 @@ export function StorageSettings() {
     <>
       <StorageAutomationSettings />
       <section
-        className="rounded-2xl border border-border bg-card p-5"
+        className="rounded-xl border border-border bg-card p-5"
         data-settings-search-target="storage.backup"
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -642,7 +642,7 @@ export function StorageSettings() {
       </section>
 
       <section
-        className="rounded-2xl border border-border bg-card p-5"
+        className="rounded-xl border border-border bg-card p-5"
         data-settings-search-target="storage.usage"
       >
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -727,7 +727,7 @@ export function StorageSettings() {
         ) : null}
 
         {running && progress ? (
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="mt-4 flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
             <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
               <Loader2Icon className="size-3.5 shrink-0 animate-spin" />
               <span className="truncate">{progress.message}</span>
@@ -766,7 +766,7 @@ export function StorageSettings() {
                     ? report.logsBytes
                     : report.legacyBytes;
             return (
-              <section key={sectionId} className="rounded-2xl border border-border bg-card p-5">
+              <section key={sectionId} className="rounded-xl border border-border bg-card p-5">
                 <div className="mb-4 flex items-start justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-medium text-foreground">
@@ -896,7 +896,7 @@ export function StorageSettings() {
             );
           })}
 
-          <section className="rounded-2xl border border-border bg-card p-5">
+          <section className="rounded-xl border border-border bg-card p-5">
             <div>
               <h2 className="text-sm font-medium text-foreground">
                 Attachments ({formatByteSize(report.attachmentsBytes)})

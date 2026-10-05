@@ -55,6 +55,15 @@ describe("shared keybinding helpers", () => {
     expect(parseKeybindingShortcut("mod++")).toMatchObject({ key: "+", modKey: true });
   });
 
+  it("opens the keyboard shortcuts reference with mod+/ outside the terminal", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+/",
+      command: "help.shortcuts",
+      when: "!terminalFocus",
+    });
+    expect(parseKeybindingShortcut("mod+/")).toMatchObject({ key: "/", modKey: true });
+  });
+
   it("includes the Pull Requests navigation default", () => {
     expect(DEFAULT_KEYBINDINGS).toContainEqual({
       key: "mod+shift+p",

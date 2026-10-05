@@ -71,6 +71,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "projectContentSearch.toggle",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   "commandPalette.toggle",
+  "help.shortcuts",
 ] as const;
 
 export const SCRIPT_RUN_COMMAND_PATTERN = Schema.TemplateLiteral([

@@ -1035,8 +1035,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain("group rounded-xl border border-border/60 bg-card/35");
-    expect(markup).toContain("border-t border-border/60 px-3 py-3");
+    expect(markup).toContain("group rounded-xl border border-border bg-card");
+    expect(markup).toContain("border-t border-border px-3 py-3");
     expect(markup).toContain('viewBox="0 0 180 180"');
     expect(markup).not.toContain("rounded-xl border border-border/45 bg-card/25 px-2 py-1.5");
     expect(markup).not.toContain(

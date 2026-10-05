@@ -5,7 +5,10 @@ import type {
   RuntimeItemStatus,
 } from "@t3tools/contracts";
 
+import { classifyCompactCommand } from "@t3tools/shared/commandSummary";
+
 import { extractTrailingAttachedFiles } from "../../lib/attachedFiles";
+import type { WorkLogEntry } from "../../session-logic";
 import { extractTrailingTerminalContexts } from "../../lib/terminalContext";
 
 export interface TimelineDurationMessage {
@@ -36,6 +39,176 @@ export function computeMessageDurationStart(
 
 export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
+}
+
+/** The work-entry fields the classifiers below read. */
+export type WorkEntryClassificationSource = Pick<
+  WorkLogEntry,
+  | "label"
+  | "toolTitle"
+  | "command"
+  | "itemType"
+  | "requestKind"
+  | "searchSummary"
+  | "readPaths"
+  | "fileChangeId"
+  | "changedFiles"
+  | "tone"
+  | "subagentType"
+>;
+
+export function normalizedWorkEntryHeading(
+  workEntry: Pick<WorkLogEntry, "label" | "toolTitle">,
+): string {
+  return normalizeCompactToolLabel(workEntry.toolTitle ?? workEntry.label).trim();
+}
+
+export function normalizedSearchSummary(
+  workEntry: Pick<WorkLogEntry, "command" | "searchSummary">,
+): string | null {
+  if (workEntry.command) {
+    const commandClassification = classifyCompactCommand(workEntry.command);
+    if (commandClassification.kind === "search") {
+      return commandClassification.summary;
+    }
+  }
+
+  const searchSummary = workEntry.searchSummary?.trim();
+  return searchSummary && searchSummary.length > 0 ? searchSummary : null;
+}
+
+export function isSearchWorkEntry(
+  workEntry: Pick<
+    WorkLogEntry,
+    "command" | "itemType" | "label" | "requestKind" | "searchSummary" | "toolTitle"
+  >,
+): boolean {
+  if (normalizedSearchSummary(workEntry)) {
+    return true;
+  }
+
+  if (workEntry.requestKind !== "command" && workEntry.itemType !== "command_execution") {
+    return false;
+  }
+
+  return normalizedWorkEntryHeading(workEntry).toLowerCase().startsWith("searching ");
+}
+
+export function isFileReadWorkEntry(
+  workEntry: Pick<WorkLogEntry, "label" | "readPaths" | "requestKind" | "toolTitle">,
+): boolean {
+  if (workEntry.requestKind === "file-read" || (workEntry.readPaths?.length ?? 0) > 0) {
+    return true;
+  }
+  const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
+  return normalizedLabel === "read" || normalizedLabel === "read file";
+}
+
+export function isFileChangeWorkEntry(
+  workEntry: Pick<
+    WorkLogEntry,
+    "fileChangeId" | "itemType" | "label" | "requestKind" | "toolTitle"
+  >,
+): boolean {
+  if (
+    workEntry.fileChangeId ||
+    workEntry.requestKind === "file-change" ||
+    workEntry.itemType === "file_change"
+  ) {
+    return true;
+  }
+  const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
+  return normalizedLabel === "file change" || normalizedLabel === "write file";
+}
+
+type WorkSummaryBucket = "edit" | "read" | "search" | "command" | "agent" | "tool" | "error";
+
+const WORK_SUMMARY_BUCKET_ORDER: ReadonlyArray<WorkSummaryBucket> = [
+  "edit",
+  "read",
+  "search",
+  "command",
+  "agent",
+  "tool",
+  "error",
+];
+
+export const WORK_SUMMARY_MAX_BUCKETS = 4;
+
+function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
+const WORK_SUMMARY_BUCKET_LABEL: Record<WorkSummaryBucket, (count: number) => string> = {
+  edit: (count) => `Edited ${plural(count, "file")}`,
+  read: (count) => `Read ${plural(count, "file")}`,
+  search: (count) => plural(count, "search", "searches"),
+  command: (count) => `Ran ${plural(count, "command")}`,
+  agent: (count) => plural(count, "agent"),
+  tool: (count) => plural(count, "tool call"),
+  error: (count) => plural(count, "error"),
+};
+
+function classifyWorkEntryForSummary(entry: WorkEntryClassificationSource): {
+  bucket: WorkSummaryBucket;
+  weight: number;
+} | null {
+  if (entry.tone === "error") return { bucket: "error", weight: 1 };
+  if (isFileChangeWorkEntry(entry)) {
+    return { bucket: "edit", weight: Math.max(1, entry.changedFiles?.length ?? 0) };
+  }
+  if (isSearchWorkEntry(entry)) return { bucket: "search", weight: 1 };
+  if (isFileReadWorkEntry(entry)) {
+    return { bucket: "read", weight: Math.max(1, entry.readPaths?.length ?? 0) };
+  }
+  if (entry.subagentType) return { bucket: "agent", weight: 1 };
+  if (entry.command || entry.itemType === "command_execution" || entry.requestKind === "command") {
+    return { bucket: "command", weight: 1 };
+  }
+  if (entry.tone === "tool") return { bucket: "tool", weight: 1 };
+  return null;
+}
+
+/**
+ * One-line summary of a collapsed work group, e.g. "Edited 2 files · Read 5
+ * files · Ran 3 commands · 1 more". At most four buckets are named; the rest
+ * are counted as "N more". Thinking and info entries are not counted.
+ */
+export function summarizeWorkGroup(entries: ReadonlyArray<WorkEntryClassificationSource>): string {
+  const totals = new Map<WorkSummaryBucket, number>();
+  const entryCounts = new Map<WorkSummaryBucket, number>();
+  for (const entry of entries) {
+    const classified = classifyWorkEntryForSummary(entry);
+    if (!classified) continue;
+    totals.set(classified.bucket, (totals.get(classified.bucket) ?? 0) + classified.weight);
+    entryCounts.set(classified.bucket, (entryCounts.get(classified.bucket) ?? 0) + 1);
+  }
+  const present = WORK_SUMMARY_BUCKET_ORDER.filter((bucket) => totals.has(bucket));
+  if (present.length === 0) {
+    return plural(entries.length, "step");
+  }
+  const named = present.slice(0, WORK_SUMMARY_MAX_BUCKETS);
+  const parts = named.map((bucket) => WORK_SUMMARY_BUCKET_LABEL[bucket](totals.get(bucket) ?? 0));
+  const remaining = present
+    .slice(WORK_SUMMARY_MAX_BUCKETS)
+    .reduce((sum, bucket) => sum + (entryCounts.get(bucket) ?? 0), 0);
+  if (remaining > 0) parts.push(`${remaining} more`);
+  return parts.join(" · ");
+}
+
+/**
+ * Index of the newest user message row, or -1. Work groups above it belong to
+ * finished turns and may collapse; the latest turn never collapses under the
+ * reader.
+ */
+export function findLastUserMessageRowIndex(
+  rows: ReadonlyArray<{ readonly kind: string; readonly message?: { readonly role: string } }>,
+): number {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index];
+    if (row?.kind === "message" && row.message?.role === "user") return index;
+  }
+  return -1;
 }
 
 export interface TimelineRowIndexSource {

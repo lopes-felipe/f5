@@ -1,5 +1,19 @@
 import { PROFILES_SETTINGS_DESCRIPTORS } from "./categories/ProfilesSettings.descriptors";
 import { ProjectId } from "@t3tools/contracts";
+import {
+  ArchiveIcon,
+  BellIcon,
+  BotIcon,
+  FolderIcon,
+  HardDriveIcon,
+  InfoIcon,
+  type LucideIcon,
+  MonitorIcon,
+  PaletteIcon,
+  PlugIcon,
+  SlidersHorizontalIcon,
+  UsersIcon,
+} from "lucide-react";
 
 import { ABOUT_SETTINGS_DESCRIPTORS } from "./categories/AboutSettings.descriptors";
 import { APPEARANCE_SETTINGS_DESCRIPTORS } from "./categories/AppearanceSettings.descriptors";
@@ -14,8 +28,8 @@ import { STORAGE_SETTINGS_DESCRIPTORS } from "./categories/StorageSettings.descr
 import { searchSettingsItems, type SettingsItemDescriptor } from "./settingsSearch";
 
 export const SETTINGS_CATEGORIES = [
-  "profiles",
   "general",
+  "profiles",
   "appearance",
   "display",
   "notifications",
@@ -28,6 +42,36 @@ export const SETTINGS_CATEGORIES = [
 ] as const;
 
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
+
+export interface SettingsCategoryGroup {
+  readonly id: "app" | "interface" | "agents" | "data" | "about";
+  /** null renders the group without a heading (About stands alone). */
+  readonly label: string | null;
+  readonly categories: ReadonlyArray<SettingsCategory>;
+}
+
+/** Navigation groups, in `SETTINGS_CATEGORIES` order. */
+export const SETTINGS_CATEGORY_GROUPS: ReadonlyArray<SettingsCategoryGroup> = [
+  { id: "app", label: "App", categories: ["general", "profiles"] },
+  { id: "interface", label: "Interface", categories: ["appearance", "display", "notifications"] },
+  { id: "agents", label: "Agents", categories: ["providers", "integrations", "projects"] },
+  { id: "data", label: "Data", categories: ["archive", "storage"] },
+  { id: "about", label: null, categories: ["about"] },
+];
+
+export const SETTINGS_CATEGORY_ICONS = {
+  general: SlidersHorizontalIcon,
+  profiles: UsersIcon,
+  appearance: PaletteIcon,
+  display: MonitorIcon,
+  notifications: BellIcon,
+  providers: BotIcon,
+  integrations: PlugIcon,
+  projects: FolderIcon,
+  archive: ArchiveIcon,
+  storage: HardDriveIcon,
+  about: InfoIcon,
+} as const satisfies Record<SettingsCategory, LucideIcon>;
 
 export const SETTINGS_CATEGORY_LABELS = {
   profiles: "Profiles",

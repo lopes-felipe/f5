@@ -6,9 +6,13 @@ import { SidebarInset } from "../components/ui/sidebar";
 function PullRequestsRouteView() {
   const search = Route.useSearch();
 
+  // PullRequestsView renders its own title bar so the view toggle and
+  // refresh actions sit in the same row as the breadcrumb.
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <PullRequestsView focusedPrKey={search.pr ?? null} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <PullRequestsView focusedPrKey={search.pr ?? null} />
+      </div>
     </SidebarInset>
   );
 }

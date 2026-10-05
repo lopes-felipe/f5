@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import {
+  CHAT_CONTENT_MAX_WIDTH,
+  CHAT_CONTENT_WIDTH_LABELS,
+  CHAT_CONTENT_WIDTH_OPTIONS,
   CHAT_FONT_SIZE_MAX,
   CHAT_FONT_SIZE_MIN,
   CURATED_MONO_FONT_FAMILIES,
@@ -15,6 +18,7 @@ import {
   parseFontFamilyPreference,
 } from "../../../appearanceSettings";
 import { buildAppSettingsPatch } from "../../../appSettings";
+import { cn } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { ThemeSettings } from "../ThemeSettings";
@@ -213,7 +217,7 @@ export function AppearanceSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Theme</h2>
           <p className="mt-1 text-xs text-muted-foreground">Choose how F5 looks across the app.</p>
@@ -238,10 +242,10 @@ export function AppearanceSettings() {
                 >
                   <span className="flex flex-col">
                     <span className="text-sm font-medium">{option.label}</span>
-                    <span className="text-xs">{option.description}</span>
+                    <span className="text-ui">{option.description}</span>
                   </span>
                   {selected ? (
-                    <span className="rounded bg-primary/14 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                    <span className="inline-flex h-5 items-center rounded-full bg-primary/12 px-2 text-2xs font-medium text-primary">
                       Selected
                     </span>
                   ) : null}
@@ -265,7 +269,7 @@ export function AppearanceSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-medium text-foreground">Fonts</h2>
@@ -305,7 +309,7 @@ export function AppearanceSettings() {
           />
           <FontFamilyField
             label="Chat font"
-            description="Used by assistant messages and the composer."
+            description="Used by messages and the composer."
             ariaLabel="Chat font family"
             value={settings.chatFontFamily}
             curatedFamilies={CURATED_UI_FONT_FAMILIES}
@@ -323,7 +327,7 @@ export function AppearanceSettings() {
           />
           <FontFamilyField
             label="Code font"
-            description="Used by code, diffs, file previews, user prompts, and terminals."
+            description="Used by code, diffs, file previews, and terminals."
             ariaLabel="Code font family"
             value={settings.monoFontFamily}
             curatedFamilies={CURATED_MONO_FONT_FAMILIES}
@@ -339,6 +343,43 @@ export function AppearanceSettings() {
             maximum={TERMINAL_FONT_SIZE_MAX}
             onChange={(terminalFontSize) => updateSettings({ terminalFontSize })}
           />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="mb-4">
+          <h2 className="text-sm font-medium text-foreground">Conversation width</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Maximum width of messages and the composer. Narrow columns are easier to scan; wide
+            columns fit more code and tables.
+          </p>
+        </div>
+        <div
+          className="grid gap-2 sm:grid-cols-3"
+          role="radiogroup"
+          aria-label="Conversation width"
+        >
+          {CHAT_CONTENT_WIDTH_OPTIONS.map((option) => {
+            const selected = settings.chatContentWidth === option;
+            return (
+              <button
+                key={option}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={cn(
+                  "flex flex-col items-start rounded-lg border px-3 py-2 text-left transition-colors duration-(--duration-fast) focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                  selected
+                    ? "border-primary/60 bg-primary/10 text-foreground"
+                    : "border-border bg-background text-muted-foreground hover:bg-accent",
+                )}
+                onClick={() => updateSettings({ chatContentWidth: option })}
+              >
+                <span className="text-sm font-medium">{CHAT_CONTENT_WIDTH_LABELS[option]}</span>
+                <span className="text-xs tabular-nums">{CHAT_CONTENT_MAX_WIDTH[option]}</span>
+              </button>
+            );
+          })}
         </div>
       </section>
     </>

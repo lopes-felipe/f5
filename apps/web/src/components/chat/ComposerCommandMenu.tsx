@@ -62,7 +62,7 @@ export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
           ))}
         </CommandList>
         {props.items.length === 0 && (
-          <p className="px-3 py-2 text-muted-foreground/70 text-xs">
+          <p className="px-3 py-2 text-muted-foreground text-xs">
             {props.isLoading
               ? "Searching workspace files..."
               : props.triggerKind === "path"
@@ -103,17 +103,15 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         />
       ) : null}
       {props.item.type === "slash-command" ? (
-        <BotIcon className="size-4 text-muted-foreground/80" />
+        <BotIcon className="size-4 text-muted-foreground" />
       ) : null}
-      {props.item.type === "skill" ? <BotIcon className="size-4 text-muted-foreground/80" /> : null}
+      {props.item.type === "skill" ? <BotIcon className="size-4 text-muted-foreground" /> : null}
       <span className="flex min-w-0 items-center gap-1.5 truncate">
         <span className="truncate">{props.item.label}</span>
       </span>
-      <span className="truncate text-muted-foreground/70 text-xs">{props.item.description}</span>
+      <span className="truncate text-muted-foreground text-xs">{props.item.description}</span>
       {props.item.type === "skill" && props.item.argumentHint ? (
-        <span className="truncate text-[11px] text-muted-foreground/60">
-          {props.item.argumentHint}
-        </span>
+        <span className="truncate text-2xs text-muted-foreground">{props.item.argumentHint}</span>
       ) : null}
     </CommandItem>
   );

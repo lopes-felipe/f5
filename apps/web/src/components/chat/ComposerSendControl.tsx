@@ -1,7 +1,10 @@
-import { ChevronDownIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronDownIcon, LoaderCircleIcon } from "lucide-react";
+
+import { cn } from "~/lib/utils";
 
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 
@@ -17,9 +20,11 @@ export function ComposerSendControl({
   itemCount,
   maxItems,
   serverThread,
+  sendShortcutLabel,
   onIntent,
   onInterrupt,
 }: {
+  readonly sendShortcutLabel?: string | undefined;
   readonly running: boolean;
   readonly hasSendableContent: boolean;
   readonly dispatchBlocked: boolean;
@@ -70,26 +75,30 @@ export function ComposerSendControl({
             {textLabel}
           </Button>
         ) : (
-          <button
-            type="submit"
-            className={`flex h-9 w-9 items-center justify-center bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8 ${showMenu ? "rounded-l-full rounded-r-none" : "rounded-full"}`}
-            disabled={disabled}
-            aria-label={connecting ? "Connecting" : busy ? busyLabel : "Send message"}
-          >
-            {busy || connecting ? (
-              <LoaderCircleIcon className="size-3.5 animate-spin" />
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <path
-                  d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="submit"
+                  className={cn(
+                    "flex size-8 items-center justify-center bg-primary text-primary-foreground outline-none transition-colors duration-(--duration-fast) hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card disabled:opacity-40",
+                    showMenu ? "rounded-l-full rounded-r-none" : "rounded-full",
+                  )}
+                  disabled={disabled}
+                  aria-label={connecting ? "Connecting" : busy ? busyLabel : "Send message"}
                 />
-              </svg>
-            )}
-          </button>
+              }
+            >
+              {busy || connecting ? (
+                <LoaderCircleIcon className="size-4 animate-spin" />
+              ) : (
+                <ArrowUpIcon className="size-4" aria-hidden="true" />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {sendShortcutLabel ? `Send (${sendShortcutLabel})` : "Send"}
+            </TooltipPopup>
+          </Tooltip>
         )}
         {showMenu ? (
           <Menu>
@@ -122,11 +131,12 @@ export function ComposerSendControl({
       {running ? (
         <button
           type="button"
-          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105"
+          className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-destructive text-white outline-none transition-colors duration-(--duration-fast) hover:bg-destructive/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
           onClick={onInterrupt}
           aria-label="Stop generation"
+          title="Stop generation"
         >
-          <span className="size-2 rounded-sm bg-current" />
+          <span className="size-2.5 rounded-xs bg-current" />
         </button>
       ) : null}
     </div>

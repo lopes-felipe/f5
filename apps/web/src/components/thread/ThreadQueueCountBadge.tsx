@@ -2,7 +2,12 @@ import type { ThreadId } from "@t3tools/contracts";
 
 import { useNextTurnQueueBadge, useNextTurnQueueCount } from "../../nextTurnQueueStore";
 import { cn } from "../../lib/utils";
+import { Badge } from "../ui/badge";
 
+/**
+ * Queued-turn count for a thread. Not a live region: it appears in lists
+ * (sidebar, Home) where many rows change at once.
+ */
 export function ThreadQueueCountBadge({
   threadId,
   className,
@@ -15,20 +20,16 @@ export function ThreadQueueCountBadge({
 
   if (badge === "none") return null;
 
+  const label = badge === "paused" ? `${count} queued turns, paused` : `${count} queued turns`;
   return (
-    <span
-      role="status"
-      aria-label={badge === "paused" ? `${count} queued turns, paused` : `${count} queued turns`}
-      title={badge === "paused" ? `${count} queued turns · paused` : `${count} queued turns`}
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full border px-1.5 py-px font-mono text-[10px] tabular-nums",
-        badge === "paused"
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-          : "border-border/60 bg-muted/60 text-muted-foreground",
-        className,
-      )}
+    <Badge
+      variant={badge === "paused" ? "warning" : "secondary"}
+      size="sm"
+      aria-label={label}
+      title={label}
+      className={cn("shrink-0 rounded-full px-1.5 tabular-nums", className)}
     >
       {count} queued{badge === "paused" ? " · paused" : ""}
-    </span>
+    </Badge>
   );
 }

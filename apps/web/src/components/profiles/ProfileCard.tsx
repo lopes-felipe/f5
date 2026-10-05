@@ -70,10 +70,10 @@ export function ProfileCard({
               ) : null}
             </div>
             <p className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <code className="rounded bg-muted/60 px-1 py-0.5 text-[10px]">{profile.slug}</code>
+              <code className="rounded bg-muted/60 px-1 py-0.5 text-2xs">{profile.slug}</code>
               <span>{profileLocationLabel(profile)}</span>
               <span aria-hidden>·</span>
-              <span className="max-w-full truncate font-mono text-[11px]" title={profile.stateDir}>
+              <span className="max-w-full truncate font-mono text-2xs" title={profile.stateDir}>
                 {profile.stateDir}
               </span>
             </p>

@@ -62,7 +62,7 @@ const TOAST_ICONS = {
 } as const;
 
 const toastCloseClassName =
-  "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-faint-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 type ToastActionConfig = {
   children?: ReactNode | undefined;

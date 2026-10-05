@@ -1,7 +1,10 @@
 import { RUNTIME_MODE_VALUES, type ProviderKind, type RuntimeMode } from "@t3tools/contracts";
 import { runtimeModeCapabilities, runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 
+import { cn } from "~/lib/utils";
+
 import { Button } from "../ui/button";
+import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
 import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 
@@ -62,7 +65,11 @@ export function RuntimeModePicker(props: {
         render={
           <Button
             variant="ghost"
-            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+            className={cn(
+              COMPOSER_CHIP_CLASS_NAME,
+              props.value === "full-access" &&
+                "text-warning-foreground hover:text-warning-foreground data-popup-open:text-warning-foreground",
+            )}
             size="sm"
             type="button"
             disabled={props.disabled}
@@ -71,7 +78,7 @@ export function RuntimeModePicker(props: {
         }
       >
         <Icon />
-        <span className="sr-only sm:not-sr-only">{presentation.label}</span>
+        <span className="sr-only @lg/composer-footer:not-sr-only">{presentation.label}</span>
       </MenuTrigger>
       <MenuPopup align="end" side="top">
         <MenuGroup>

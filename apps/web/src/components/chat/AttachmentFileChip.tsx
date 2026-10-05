@@ -1,4 +1,4 @@
-import { VscodeEntryIcon } from "./VscodeEntryIcon";
+import { FileChip } from "./FileChip";
 import { useTheme } from "../../hooks/useTheme";
 import { useState } from "react";
 import type { ChatAttachment } from "../../types";
@@ -18,27 +18,23 @@ export function AttachmentFileChip({ file }: { file: ChatAttachment }) {
   } catch {
     /* Optimistic local files can still be downloaded until the server publishes them. */
   }
+  const size = (
+    <span className="shrink-0 text-muted-foreground tabular-nums">
+      {(file.sizeBytes / 1024).toFixed(0)} KiB
+    </span>
+  );
   return (
-    <div className="mb-2 rounded border border-border p-2">
-      <VscodeEntryIcon
-        pathValue={file.name}
-        kind="file"
+    <div className="mb-2 flex flex-col items-start gap-2">
+      <FileChip
+        path={file.name}
+        label={file.name}
         theme={resolvedTheme}
-        className="mr-1 inline-block"
+        trailing={size}
+        {...(relativePath ? { onClick: () => setOpen(true) } : { href: url, download: file.name })}
       />
-      {relativePath ? (
-        <button className="underline" onClick={() => setOpen(true)}>
-          {file.name}
-        </button>
-      ) : (
-        <a href={url} download={file.name} className="underline">
-          {file.name}
-        </a>
+      {file.mimeType.startsWith("video/") && (
+        <video controls preload="metadata" src={url} className="max-w-full rounded-lg" />
       )}
-      <span className="ml-2 text-xs text-muted-foreground">
-        {(file.sizeBytes / 1024).toFixed(0)} KiB
-      </span>
-      {file.mimeType.startsWith("video/") && <video controls preload="metadata" src={url} />}
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogPopup className="h-[80vh] max-w-5xl p-4">
           <DialogTitle>{file.name}</DialogTitle>

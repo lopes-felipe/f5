@@ -23,6 +23,7 @@ import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import type { PreviewPresentation } from "../previewPresentationStore";
 import type { RightPanelSurface } from "../rightPanelStore";
+import { Kbd } from "./ui/kbd";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { ScrollArea } from "./ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -136,6 +137,7 @@ function RightPanelEmptyState(props: {
   planAvailable: boolean;
   agentsAvailable: boolean;
   liveAgentCount: number;
+  diffShortcutLabel: string | null;
 }) {
   const actions = [
     {
@@ -146,6 +148,7 @@ function RightPanelEmptyState(props: {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
+      shortcut: null,
     },
     {
       kind: "diff",
@@ -155,6 +158,7 @@ function RightPanelEmptyState(props: {
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
       onClick: props.onAddDiff,
+      shortcut: props.diffShortcutLabel,
     },
     {
       kind: "plan",
@@ -164,6 +168,7 @@ function RightPanelEmptyState(props: {
       available: props.planAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.plan,
       onClick: props.onAddPlan,
+      shortcut: null,
     },
     {
       kind: "files",
@@ -173,6 +178,7 @@ function RightPanelEmptyState(props: {
       available: props.filesAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.files,
       onClick: props.onAddFiles,
+      shortcut: null,
     },
     {
       kind: "preview",
@@ -182,6 +188,7 @@ function RightPanelEmptyState(props: {
       available: props.previewAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.preview,
       onClick: props.onAddPreview,
+      shortcut: null,
     },
   ] as const;
 
@@ -190,7 +197,7 @@ function RightPanelEmptyState(props: {
       <div className="w-full max-w-lg">
         <div className="mb-5 text-center">
           <h3 className="text-sm font-medium text-foreground">Open a panel</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-1 text-ui text-muted-foreground">
             Choose what to keep alongside this conversation.
           </p>
         </div>
@@ -199,16 +206,19 @@ function RightPanelEmptyState(props: {
             const Icon = action.icon;
             const content = (
               <>
-                <span className="flex items-center gap-2">
-                  <Icon className="size-4" />
-                  <span className="text-sm font-medium">{action.label}</span>
+                <span className="flex w-full items-center gap-2">
+                  <Icon className="size-4 text-muted-foreground" />
+                  <span className="text-sm font-medium text-foreground">{action.label}</span>
                   {action.kind === "agents" && props.liveAgentCount > 0 ? (
-                    <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    <span className="rounded-full bg-info/15 px-1.5 py-0.5 text-2xs font-medium text-info-foreground tabular-nums">
                       {props.liveAgentCount} working
                     </span>
                   ) : null}
+                  {action.shortcut && action.available ? (
+                    <Kbd className="ml-auto">{action.shortcut}</Kbd>
+                  ) : null}
                 </span>
-                <span className="text-xs leading-relaxed text-muted-foreground">
+                <span className="text-ui leading-relaxed text-muted-foreground">
                   {action.available ? action.description : action.disabledReason}
                 </span>
               </>
@@ -219,7 +229,7 @@ function RightPanelEmptyState(props: {
                   key={action.kind}
                   type="button"
                   onClick={action.onClick}
-                  className="flex min-h-24 flex-col items-start justify-center gap-2 rounded-lg border border-border/80 bg-card/40 px-4 text-left transition hover:border-border hover:bg-accent/60"
+                  className="flex min-h-24 flex-col items-start justify-center gap-2 rounded-xl border border-border bg-card px-4 text-left transition-colors duration-(--duration-fast) hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
                   {content}
                 </button>
@@ -233,7 +243,7 @@ function RightPanelEmptyState(props: {
                   <button
                     type="button"
                     aria-disabled="true"
-                    className="flex min-h-24 cursor-not-allowed flex-col items-start justify-center gap-2 rounded-lg border border-border/80 bg-card/40 px-4 text-left opacity-45"
+                    className="flex min-h-24 cursor-not-allowed flex-col items-start justify-center gap-2 rounded-xl border border-dashed border-border bg-transparent px-4 text-left opacity-60"
                   >
                     {content}
                   </button>
@@ -353,8 +363,10 @@ export function RightPanelTabs(props: {
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
       <div
         className={cn(
-          "flex h-10 shrink-0 items-center border-b border-border bg-card/70 px-2",
-          ownsDesktopTitleBar && "drag-region",
+          "flex shrink-0 items-center border-b border-border px-2",
+          // The inline panel owns the desktop title bar strip above it, so it
+          // matches the canvas title bar height; the sheet keeps its own.
+          ownsDesktopTitleBar ? "drag-region h-(--app-header-height)" : "h-10",
         )}
       >
         <div ref={tabListRef} className="min-w-0 flex-1">
@@ -371,7 +383,7 @@ export function RightPanelTabs(props: {
                     onAuxClick={(event) => handleTabAuxClick(event, surface)}
                     onContextMenu={(event) => void handleTabContextMenu(event, surface)}
                     className={cn(
-                      "group flex h-7 min-w-24 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm [-webkit-app-region:no-drag]",
+                      "group flex h-7 min-w-24 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui [-webkit-app-region:no-drag]",
                       active
                         ? "bg-accent text-foreground"
                         : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
@@ -391,7 +403,7 @@ export function RightPanelTabs(props: {
                             />
                             <span className="truncate">{title}</span>
                             {surface.kind === "agents" && props.liveAgentCount > 0 ? (
-                              <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-semibold text-white">
+                              <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-info px-1 text-2xs leading-none font-semibold text-white tabular-nums">
                                 {props.liveAgentCount}
                               </span>
                             ) : null}
@@ -404,11 +416,14 @@ export function RightPanelTabs(props: {
                     </Tooltip>
                     <button
                       type="button"
-                      className="flex size-4 shrink-0 items-center justify-center rounded opacity-0 hover:bg-muted focus:opacity-100 group-hover:opacity-100"
+                      className={cn(
+                        "flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground opacity-0 outline-none hover:bg-background/70 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:opacity-100",
+                        active && "opacity-100",
+                      )}
                       aria-label={`Close ${title}`}
                       onClick={() => props.onCloseSurface(surface)}
                     >
-                      <XIcon className="size-3" />
+                      <XIcon className="size-3.5" />
                     </button>
                   </div>
                 );
@@ -482,6 +497,7 @@ export function RightPanelTabs(props: {
             planAvailable={props.planAvailable}
             agentsAvailable={props.agentsAvailable}
             liveAgentCount={props.liveAgentCount}
+            diffShortcutLabel={shortcutLabelForCommand(keybindings, "diff.toggle")}
           />
         ) : (
           props.children

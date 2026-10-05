@@ -303,7 +303,7 @@ const EMPTY_DISAMBIGUATOR_MAP: ReadonlyMap<string, string | null> = new Map();
 
 const MarkdownContainer = memo(function MarkdownContainer(props: { children: ReactNode }) {
   return (
-    <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground/80">
+    <div className="chat-markdown w-full min-w-0 leading-relaxed text-foreground">
       {props.children}
     </div>
   );

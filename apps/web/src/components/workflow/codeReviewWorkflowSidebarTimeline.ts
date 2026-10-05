@@ -1,8 +1,9 @@
-import type { CodeReviewWorkflow } from "@t3tools/contracts";
-import type {
-  WorkflowTimelinePhase as TimelinePhase,
-  WorkflowTimelinePhaseState as PhaseState,
-  WorkflowTimelineStepState as StepState,
+import type { CodeReviewWorkflow, ThreadId } from "@t3tools/contracts";
+import {
+  threadLabelsFromPhases,
+  type WorkflowTimelinePhase as TimelinePhase,
+  type WorkflowTimelinePhaseState as PhaseState,
+  type WorkflowTimelineStepState as StepState,
 } from "./workflowTimelineTypes";
 
 // ---------------------------------------------------------------------------
@@ -53,12 +54,14 @@ function deriveReviewersPhase(workflow: CodeReviewWorkflow): TimelinePhase {
         label: workflow.reviewerA.label,
         threadId: workflow.reviewerA.threadId,
         state: aState,
+        modelSlot: workflow.reviewerA.slot,
       },
       {
         key: "reviewer-b",
         label: workflow.reviewerB.label,
         threadId: workflow.reviewerB.threadId,
         state: bState,
+        modelSlot: workflow.reviewerB.slot,
       },
     ],
   };
@@ -93,6 +96,7 @@ function deriveMergePhase(workflow: CodeReviewWorkflow): TimelinePhase {
         label: "Review Merge",
         threadId: consolidation.threadId,
         state,
+        modelSlot: consolidation.slot,
       },
     ],
   };
@@ -104,4 +108,11 @@ function deriveMergePhase(workflow: CodeReviewWorkflow): TimelinePhase {
 
 export function deriveCodeReviewTimelinePhases(workflow: CodeReviewWorkflow): TimelinePhase[] {
   return [deriveReviewersPhase(workflow), deriveMergePhase(workflow)];
+}
+
+/** Role label per thread (reviewer slot labels, "Review Merge"). */
+export function deriveCodeReviewWorkflowThreadLabels(
+  workflow: CodeReviewWorkflow,
+): ReadonlyMap<ThreadId, string> {
+  return threadLabelsFromPhases(deriveCodeReviewTimelinePhases(workflow));
 }

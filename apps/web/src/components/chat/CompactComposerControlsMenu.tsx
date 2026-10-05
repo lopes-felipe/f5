@@ -1,7 +1,8 @@
 import { ProviderInteractionMode, RuntimeMode, type ProviderKind } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
-import { BotIcon, EllipsisIcon, ListTodoIcon, NotebookPenIcon } from "lucide-react";
+import { BotIcon, EllipsisIcon, GaugeIcon, ListTodoIcon, NotebookPenIcon } from "lucide-react";
 import { Button } from "../ui/button";
+import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
 import {
   Menu,
   MenuGroup,
@@ -25,6 +26,8 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   provider: ProviderKind;
   traitsMenuContent?: ReactNode;
+  /** Context-window summary shown as an info row, since the meter is hidden when compact. */
+  contextSummary?: string | null;
   onCompactConversation?: () => void;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
@@ -38,7 +41,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <Button
             size="sm"
             variant="ghost"
-            className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
+            className={COMPOSER_CHIP_CLASS_NAME}
             aria-label="More composer controls"
             disabled={props.disabled}
           />
@@ -47,6 +50,18 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         <EllipsisIcon aria-hidden="true" className="size-4" />
       </MenuTrigger>
       <MenuPopup align="start">
+        {props.contextSummary ? (
+          <>
+            <div
+              data-slot="compact-context-summary"
+              className="flex items-center gap-2 px-2 py-1.5 text-xs tabular-nums text-muted-foreground"
+            >
+              <GaugeIcon aria-hidden="true" className="size-4 shrink-0 text-faint-foreground" />
+              {props.contextSummary}
+            </div>
+            <MenuDivider />
+          </>
+        ) : null}
         {props.traitsMenuContent ? (
           <>
             {props.traitsMenuContent}
@@ -67,7 +82,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
               >
                 <MenuRadioItem value="default">
                   <BotIcon className="size-4 shrink-0" />
-                  Chat
+                  Agent
                 </MenuRadioItem>
                 <MenuRadioItem value="plan">
                   <NotebookPenIcon className="size-4 shrink-0" />
@@ -103,7 +118,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
             <MenuItem onClick={props.onTogglePlanSidebar} disabled={props.disabled}>
               <ListTodoIcon className="size-4 shrink-0" />
-              {props.planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"}
+              {props.planSidebarOpen ? "Hide plan panel" : "Show plan panel"}
             </MenuItem>
           </>
         ) : null}

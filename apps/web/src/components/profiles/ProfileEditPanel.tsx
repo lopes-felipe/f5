@@ -58,9 +58,9 @@ export function ProfileEditPanel({
               commit({ name: trimmed });
             }}
           />
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-2xs text-muted-foreground">
             Renaming does not change the launch command — the{" "}
-            <code className="rounded bg-muted/60 px-1 py-0.5 text-[10px]">{profile.slug}</code> slug
+            <code className="rounded bg-muted/60 px-1 py-0.5 text-2xs">{profile.slug}</code> slug
             stays the same.
           </span>
         </label>

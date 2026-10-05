@@ -123,6 +123,26 @@ function makeAssistantEntry(id: string, text: string, offsetSeconds: number): Ti
   } as unknown as TimelineEntry;
 }
 
+function makeReadWorkEntry(id: string, path: string, offsetSeconds: number): TimelineEntry {
+  const createdAt = new Date(
+    Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
+  ).toISOString();
+  return {
+    id,
+    kind: "work",
+    createdAt,
+    entry: {
+      id,
+      createdAt,
+      label: "Read file",
+      tone: "tool",
+      requestKind: "file-read",
+      readPaths: [path],
+      changedFiles: [path],
+    },
+  } as unknown as TimelineEntry;
+}
+
 function makeCommandEntry(
   id: string,
   overrides: Partial<OrchestrationCommandExecution> = {},
@@ -222,6 +242,9 @@ function TimelineHarness(
     Record<string, boolean>
   >(props.initialExpandedCommandExecutions ?? {});
   const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
+  const [workGroupCollapseOverrides, setWorkGroupCollapseOverrides] = useState<
+    Record<string, boolean>
+  >({});
   const [expandedFileChangeDiffs, setExpandedFileChangeDiffs] = useState<Record<string, boolean>>(
     {},
   );
@@ -275,6 +298,10 @@ function TimelineHarness(
                     : Math.min(paginatedEntryCount, revealedEntries + WORK_LOG_PAGE_SIZE),
               };
             });
+          }}
+          workGroupCollapseOverrides={workGroupCollapseOverrides}
+          onSetWorkGroupExpanded={(groupId, expanded) => {
+            setWorkGroupCollapseOverrides((current) => ({ ...current, [groupId]: expanded }));
           }}
           onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
           revertTurnCountByUserMessageId={props.revertTurnCountByUserMessageId ?? new Map()}
@@ -589,6 +616,95 @@ describe("MessagesTimeline (LegendList)", () => {
         const taskPanel = host.querySelector('[data-testid="tasks-panel-stub"]');
         expect(taskPanel, "Tasks panel must render alongside the empty state.").not.toBeNull();
       });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps the latest turn's work log open and collapses it once the next turn starts", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    let api: TimelineHarnessApi | null = null;
+    const firstTurn = [
+      makeUserEntry("collapse-user-1", "Read the sources", 0),
+      makeReadWorkEntry("collapse-work-1", "src/a.ts", 1),
+      makeReadWorkEntry("collapse-work-2", "src/b.ts", 2),
+    ];
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={firstTurn}
+        initialIsWorking
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+    const summaryButton = () =>
+      host.querySelector<HTMLButtonElement>('[data-slot="work-group-summary"]');
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("src/a.ts");
+      });
+      expect(summaryButton()).toBeNull();
+
+      // The turn settles under the reader: the group must stay open.
+      const settledTurn = [...firstTurn, makeAssistantEntry("collapse-assistant-1", "Done.", 3)];
+      api!.setTimelineState({ entries: settledTurn, isWorking: false });
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Done.");
+      });
+      expect(summaryButton()).toBeNull();
+      expect(host.textContent).toContain("src/b.ts");
+
+      // The next send pushes the group into a prior turn, which collapses.
+      api!.setTimelineState({
+        entries: [...settledTurn, makeUserEntry("collapse-user-2", "Now fix it", 4)],
+        isWorking: true,
+      });
+      await vi.waitFor(() => {
+        expect(summaryButton()).not.toBeNull();
+      });
+      expect(summaryButton()!.textContent).toContain("Read 2 files");
+      expect(summaryButton()!.getAttribute("aria-expanded")).toBe("false");
+      expect(host.textContent).not.toContain("src/a.ts");
+
+      summaryButton()!.click();
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("src/a.ts");
+      });
+      expect(summaryButton()).toBeNull();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps prior work logs open when the collapse setting is off", async () => {
+    persistAppSettings({ collapseCompletedWorkLogs: false });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("open-user-1", "Read the sources", 0),
+          makeReadWorkEntry("open-work-1", "src/a.ts", 1),
+          makeAssistantEntry("open-assistant-1", "Done.", 2),
+          makeUserEntry("open-user-2", "Again", 3),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("src/a.ts");
+      });
+      expect(host.querySelector('[data-slot="work-group-summary"]')).toBeNull();
     } finally {
       await screen.unmount();
       host.remove();
@@ -1023,9 +1139,13 @@ describe("MessagesTimeline (LegendList)", () => {
       isAtEndCalls.length = 0;
       api!.setHeaderContent(<div data-testid="short-header" style={{ height: 0 }} />);
 
-      await vi.waitFor(() => {
-        expect(isAtEndCalls).toContain(true);
-      });
+      // Reflow settles over a few frames; under full-suite load that can exceed 1s.
+      await vi.waitFor(
+        () => {
+          expect(isAtEndCalls).toContain(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
     } finally {
       await screen.unmount();
       host.remove();

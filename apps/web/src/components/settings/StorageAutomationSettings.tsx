@@ -93,7 +93,7 @@ export function StorageAutomationSettings() {
 
   return (
     <section
-      className="space-y-4 rounded-2xl border border-border bg-card p-5"
+      className="space-y-4 rounded-xl border border-border bg-card p-5"
       data-settings-search-target="storage.automation"
     >
       <div>

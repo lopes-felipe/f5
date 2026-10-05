@@ -2,8 +2,8 @@ import { ProfilesSettings } from "./categories/ProfilesSettings";
 import { SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { isElectron } from "../../env";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
+import { AppTitlebar } from "../AppTitlebar";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SidebarInset } from "../ui/sidebar";
@@ -17,8 +17,12 @@ import { NotificationsSettings } from "./categories/NotificationsSettings";
 import { ProjectsSettings } from "./categories/ProjectsSettings";
 import { ProvidersSettings } from "./categories/ProvidersSettings";
 import { StorageSettings } from "./categories/StorageSettings";
+import { cn } from "../../lib/utils";
+import { SectionLabel } from "../ui/section-label";
 import {
   SETTINGS_CATEGORIES,
+  SETTINGS_CATEGORY_GROUPS,
+  SETTINGS_CATEGORY_ICONS,
   SETTINGS_CATEGORY_LABELS,
   filterSettingsItems,
   getSettingsItemDescriptor,
@@ -210,33 +214,27 @@ export function SettingsLayout({
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        {isElectron && (
-          <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground/70">
-              Settings
-            </span>
-          </div>
-        )}
+        <AppTitlebar webVisibility="mobile-only" />
 
         {scopeHeader}
         {scopedContent ? (
           <div className="min-h-0 flex-1 overflow-auto">{scopedContent}</div>
         ) : (
           <div className="min-h-0 flex-1 overflow-hidden p-6">
-            <div className="mx-auto flex h-full w-full max-w-6xl flex-col gap-6">
+            <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6">
               <header className="space-y-1">
-                <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
-                <p className="text-sm text-muted-foreground">
+                <h1 className="text-xl font-semibold tracking-tight text-foreground">Settings</h1>
+                <p className="text-ui text-muted-foreground">
                   Configure app-level preferences for this device.
                 </p>
               </header>
 
-              <div className="flex min-h-0 flex-1 flex-col gap-6 lg:flex-row">
+              <div className="flex min-h-0 flex-1 flex-col gap-6 lg:flex-row lg:gap-8">
                 <nav
                   aria-label="Settings categories"
-                  className="lg:sticky lg:top-6 lg:w-60 lg:self-start"
+                  className="lg:sticky lg:top-0 lg:w-56 lg:shrink-0 lg:self-start"
                 >
-                  <div className="rounded-2xl border border-border bg-card p-3">
+                  <div>
                     <div ref={searchContainerRef} className="relative mb-3">
                       <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                       <Input
@@ -325,56 +323,80 @@ export function SettingsLayout({
                                 role="option"
                                 aria-selected={index === activeSearchResultIndex}
                                 tabIndex={-1}
-                                className={`flex w-full flex-col rounded-lg px-2.5 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none ${
-                                  index === activeSearchResultIndex ? "bg-accent" : ""
-                                }`}
+                                className={cn(
+                                  "flex w-full flex-col rounded-lg px-2.5 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+                                  index === activeSearchResultIndex && "bg-accent",
+                                )}
                                 onMouseMove={() => setActiveSearchResultIndex(index)}
                                 onClick={() => selectSearchResult(result.id)}
                               >
-                                <span className="text-xs font-medium text-foreground">
+                                <span className="text-ui font-medium text-foreground">
                                   {result.label}
                                 </span>
-                                <span className="text-[11px] text-muted-foreground">
+                                <span className="text-2xs text-muted-foreground">
                                   {SETTINGS_CATEGORY_LABELS[result.category]}
                                 </span>
                               </button>
                             ))
                           ) : (
-                            <p className="px-2.5 py-2 text-xs text-muted-foreground">
+                            <p className="px-2.5 py-2 text-ui text-muted-foreground">
                               No settings found.
                             </p>
                           )}
                         </div>
                       ) : null}
                     </div>
-                    <div className="flex flex-col gap-1">
-                      {SETTINGS_CATEGORIES.map((candidate) => {
-                        const selected = candidate === category;
-                        return (
-                          <button
-                            key={candidate}
-                            type="button"
-                            aria-current={selected ? "page" : undefined}
-                            className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                              selected
-                                ? "bg-primary/8 text-foreground"
-                                : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                            }`}
-                            onClick={() => {
-                              clearSearch();
-                              onCategoryChange(candidate);
-                            }}
-                          >
-                            {SETTINGS_CATEGORY_LABELS[candidate]}
-                          </button>
-                        );
-                      })}
+                    <div className="flex flex-col gap-3">
+                      {SETTINGS_CATEGORY_GROUPS.map((group) => (
+                        <div
+                          key={group.id}
+                          role="group"
+                          aria-label={group.label ?? SETTINGS_CATEGORY_LABELS.about}
+                          className="flex flex-col gap-0.5"
+                        >
+                          {group.label ? (
+                            <SectionLabel as="div" className="px-2">
+                              {group.label}
+                            </SectionLabel>
+                          ) : null}
+                          {group.categories.map((candidate) => {
+                            const selected = candidate === category;
+                            const Icon = SETTINGS_CATEGORY_ICONS[candidate];
+                            return (
+                              <button
+                                key={candidate}
+                                type="button"
+                                aria-current={selected ? "page" : undefined}
+                                className={cn(
+                                  "flex h-8 items-center gap-2 rounded-md px-2 text-left text-ui outline-none transition-colors duration-(--duration-fast) focus-visible:ring-2 focus-visible:ring-ring",
+                                  selected
+                                    ? "bg-accent font-medium text-foreground"
+                                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                                )}
+                                onClick={() => {
+                                  clearSearch();
+                                  onCategoryChange(candidate);
+                                }}
+                              >
+                                <Icon
+                                  aria-hidden="true"
+                                  className={cn(
+                                    "size-4 shrink-0",
+                                    selected ? "text-foreground" : "text-faint-foreground",
+                                  )}
+                                />
+                                {SETTINGS_CATEGORY_LABELS[candidate]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </nav>
 
                 <div ref={contentRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-1">
-                  <div className="flex flex-col gap-6">
+                  <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
                     {SETTINGS_CATEGORIES.map((candidate) => {
                       const selected = candidate === category;
                       return (

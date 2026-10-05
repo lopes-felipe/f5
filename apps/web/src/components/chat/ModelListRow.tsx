@@ -73,7 +73,7 @@ export const ModelListRow = memo(function ModelListRow(props: {
               aria-label={favoriteLabel}
             >
               <StarIcon
-                className={cn("size-4", props.isFavorite && "fill-current text-yellow-500")}
+                className={cn("size-4", props.isFavorite && "fill-current text-warning-foreground")}
               />
             </button>
           }
@@ -95,18 +95,16 @@ export const ModelListRow = memo(function ModelListRow(props: {
                   )}
             </span>
             {props.isSelected ? (
-              <span className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 py-px text-[10px] font-medium uppercase leading-none text-primary">
+              <span className="shrink-0 rounded border border-primary/30 bg-primary/10 px-1 py-px text-2xs font-medium uppercase leading-none text-primary">
                 Active
               </span>
             ) : null}
           </div>
           {props.jumpLabel ? (
-            <Kbd className="h-4 min-w-0 shrink-0 rounded-sm px-1.5 text-[10px]">
-              {props.jumpLabel}
-            </Kbd>
+            <Kbd className="h-4 min-w-0 shrink-0 rounded-sm px-1.5 text-2xs">{props.jumpLabel}</Kbd>
           ) : null}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs font-normal leading-snug text-muted-foreground/70">
+        <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs font-normal leading-snug text-muted-foreground">
           {props.showProvider ? (
             <>
               {ProviderIcon ? (

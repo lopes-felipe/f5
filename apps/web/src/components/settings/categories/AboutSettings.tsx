@@ -14,7 +14,7 @@ export function AboutSettings() {
 
   return (
     <section
-      className="rounded-2xl border border-border bg-card p-5"
+      className="rounded-xl border border-border bg-card p-5"
       data-settings-search-target="about.version"
     >
       <div className="mb-4">
@@ -24,7 +24,7 @@ export function AboutSettings() {
         </p>
       </div>
 
-      <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+      <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
         <div>
           <p className="text-sm font-medium text-foreground">Version</p>
           <p className="text-xs text-muted-foreground">Current version of the application.</p>

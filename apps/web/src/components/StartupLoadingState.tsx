@@ -1,5 +1,7 @@
 import { GitPullRequestIcon, RocketIcon, SearchIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
+import { cn } from "../lib/utils";
 import { Skeleton } from "./ui/skeleton";
 import { SidebarInset, SidebarMenuSkeleton } from "./ui/sidebar";
 
@@ -40,6 +42,20 @@ export function StartupSidebarSkeleton() {
   );
 }
 
+/** Title bar placeholder: same height as `AppTitlebar` on web. */
+function TitlebarSkeleton({ children }: { readonly children?: ReactNode }) {
+  return (
+    <div aria-hidden="true" className="flex h-11 shrink-0 items-center gap-2 px-3">
+      {children ?? <Skeleton className="h-3.5 w-40 rounded-full" />}
+    </div>
+  );
+}
+
+/**
+ * Mirrors the Canvas timeline: a right-aligned user bubble, an assistant
+ * reply in plain prose, and a work row, so content lands where the skeleton
+ * was instead of jumping.
+ */
 export function ThreadDetailsLoadingState({
   label = "Loading thread details...",
   testId,
@@ -49,33 +65,27 @@ export function ThreadDetailsLoadingState({
 }) {
   return (
     <div
-      className="mx-auto w-full max-w-3xl space-y-4 px-3 py-3 sm:px-5 sm:py-4"
+      className="mx-auto w-full max-w-(--chat-content-max-width) px-3 py-4 sm:px-5 sm:py-6"
       role="status"
       aria-live="polite"
       aria-label={label}
       data-testid={testId}
     >
       <span className="sr-only">{label}</span>
-      <p aria-hidden="true" className="px-1 text-xs text-muted-foreground">
-        {label}
-      </p>
-      <div
-        aria-hidden="true"
-        className="rounded-lg border border-border/70 bg-card/70 p-4 shadow-sm backdrop-blur-sm"
-      >
-        <div className="space-y-3">
-          <Skeleton className="h-4 w-28 rounded-full" />
+      <div aria-hidden="true" className="space-y-6">
+        <div className="flex justify-end">
+          <Skeleton className="h-9 w-7/12 rounded-2xl" />
+        </div>
+        <div className="space-y-2.5">
           <Skeleton className="h-3 w-full rounded-full" />
           <Skeleton className="h-3 w-11/12 rounded-full" />
-          <Skeleton className="h-3 w-10/12 rounded-full" />
+          <Skeleton className="h-3 w-9/12 rounded-full" />
         </div>
-      </div>
-      <div
-        aria-hidden="true"
-        className="rounded-lg border border-border/70 bg-card/70 p-4 shadow-sm backdrop-blur-sm"
-      >
-        <div className="space-y-3">
-          <Skeleton className="h-4 w-36 rounded-full" />
+        <div className="flex items-center gap-2">
+          <Skeleton className="size-4 rounded-md" />
+          <Skeleton className="h-3 w-44 rounded-full" />
+        </div>
+        <div className="space-y-2.5">
           <Skeleton className="h-3 w-full rounded-full" />
           <Skeleton className="h-3 w-8/12 rounded-full" />
         </div>
@@ -87,11 +97,18 @@ export function ThreadDetailsLoadingState({
 export function StartupThreadRouteSkeleton() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+      <TitlebarSkeleton />
       <ThreadDetailsLoadingState label="Loading thread" testId="startup-thread-skeleton" />
     </SidebarInset>
   );
 }
 
+const WORKFLOW_SKELETON_COLUMNS = [3, 2, 2, 1] as const;
+
+/**
+ * Mirrors `WorkflowPageLayout`: breadcrumb title bar, title and meta line,
+ * then the phase board at `lg+` (a single list column below it).
+ */
 export function StartupWorkflowRouteSkeleton({
   kind,
 }: {
@@ -105,7 +122,6 @@ export function StartupWorkflowRouteSkeleton({
       : kind === "investigation"
         ? "Loading investigation workflow"
         : "Loading code review workflow";
-  const badgeWidth = kind === "planning" ? "w-16" : kind === "investigation" ? "w-16" : "w-20";
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
@@ -118,53 +134,32 @@ export function StartupWorkflowRouteSkeleton({
         data-kind={kind}
       >
         <span className="sr-only">{label}</span>
-        <div aria-hidden="true" className="border-b border-border px-6 py-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="min-w-0 space-y-3">
-              <div className="flex items-center gap-2">
-                <Icon className="size-3.5 text-muted-foreground/60" />
-                <Skeleton className={`h-3 ${badgeWidth} rounded-full`} />
-              </div>
-              <Skeleton className="h-7 w-64 max-w-[70vw] rounded-md" />
-              <Skeleton className="h-4 w-40 rounded-full" />
-            </div>
-            <div className="flex gap-2">
-              <Skeleton className="h-9 w-24 rounded-md" />
-              <Skeleton className="h-9 w-28 rounded-md" />
-            </div>
+        <TitlebarSkeleton>
+          <Skeleton className="h-3.5 w-24 rounded-full" />
+          <Icon className="size-3.5 text-faint-foreground" />
+          <Skeleton className="h-3.5 w-20 rounded-full" />
+        </TitlebarSkeleton>
+        <div aria-hidden="true" className="min-h-0 flex-1 space-y-6 px-4 py-5 sm:px-6">
+          <div className="space-y-2.5">
+            <Skeleton className="h-6 w-72 max-w-[70vw] rounded-md" />
+            <Skeleton className="h-3 w-56 rounded-full" />
           </div>
-        </div>
-        <div
-          aria-hidden="true"
-          className="grid min-h-0 flex-1 gap-6 p-6 lg:grid-cols-[22rem_minmax(0,1fr)]"
-        >
-          <aside className="overflow-hidden rounded-lg border border-border bg-card p-4">
-            <div className="space-y-4">
-              {[0, 1, 2, 3].map((index) => (
-                <div key={index} className="flex items-start gap-3">
-                  <Skeleton className="mt-0.5 size-5 rounded-full" />
-                  <div className="min-w-0 flex-1 space-y-2">
-                    <Skeleton className="h-4 w-32 rounded-full" />
-                    <Skeleton className="h-3 w-24 rounded-full" />
+          <div className="flex gap-3">
+            {WORKFLOW_SKELETON_COLUMNS.map((cardCount, columnIndex) => (
+              <div
+                key={columnIndex}
+                className={cn("w-full space-y-2 lg:w-60", columnIndex > 0 && "max-lg:hidden")}
+              >
+                <Skeleton className="h-3 w-24 rounded-full" />
+                {Array.from({ length: cardCount }, (_, cardIndex) => (
+                  <div key={cardIndex} className="space-y-2 rounded-lg border border-border p-3">
+                    <Skeleton className="h-3.5 w-32 rounded-full" />
+                    <Skeleton className="h-3 w-20 rounded-full" />
                   </div>
-                </div>
-              ))}
-            </div>
-          </aside>
-          <main className="min-h-0 min-w-0 rounded-lg border border-border bg-card p-5">
-            <div className="space-y-5">
-              <Skeleton className="h-5 w-48 rounded-full" />
-              <div className="space-y-2">
-                <Skeleton className="h-3 w-full rounded-full" />
-                <Skeleton className="h-3 w-11/12 rounded-full" />
-                <Skeleton className="h-3 w-10/12 rounded-full" />
+                ))}
               </div>
-              <div className="space-y-2">
-                <Skeleton className="h-3 w-full rounded-full" />
-                <Skeleton className="h-3 w-9/12 rounded-full" />
-              </div>
-            </div>
-          </main>
+            ))}
+          </div>
         </div>
       </div>
     </SidebarInset>

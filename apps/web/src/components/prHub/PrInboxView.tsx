@@ -140,7 +140,7 @@ export function PrInboxView({
     <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[22rem_minmax(0,1fr)]">
       <div className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-e">
         <PrSpineList prs={ordered} selectedKey={selectedKey} onSelect={setSelectedKey} />
-        <footer className="hidden shrink-0 items-center gap-3 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground lg:flex">
+        <footer className="hidden shrink-0 items-center gap-3 border-t border-border px-3 py-1.5 text-2xs text-muted-foreground lg:flex">
           <span className="flex items-center gap-1">
             <Kbd>↑</Kbd>
             <Kbd>↓</Kbd> navigate

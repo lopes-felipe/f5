@@ -242,17 +242,17 @@ export function NextTurnQueueRow({
                 />
               ))}
               {display.attachedFilePaths.map((filePath) => (
-                <span key={filePath} className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                <span key={filePath} className="rounded bg-muted px-1.5 py-0.5 text-2xs">
                   {filePath.split(/[\\/]/).at(-1)}
                 </span>
               ))}
               {display.fileCount > 0 && (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-2xs">
                   {display.fileCount} file{display.fileCount === 1 ? "" : "s"}
                 </span>
               )}
               {display.imageCount > 0 ? (
-                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                <span className="rounded bg-muted px-1.5 py-0.5 text-2xs">
                   {display.imageCount} image{display.imageCount === 1 ? "" : "s"}
                 </span>
               ) : null}
@@ -269,7 +269,7 @@ export function NextTurnQueueRow({
                 />
               ))}
             <p
-              className={`mt-1 truncate text-[11px] ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+              className={`mt-1 truncate text-2xs ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
             >
               {item.status === "dispatching" ? (
                 <LoaderCircleIcon className="mr-1 inline size-3 animate-spin" />

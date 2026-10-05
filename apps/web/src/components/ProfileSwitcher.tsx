@@ -43,7 +43,7 @@ export function ProfileSwitcher() {
         }
       />
       <PopoverPopup className="w-80 p-0" align="start">
-        <p className="px-3 pb-1.5 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        <p className="px-3 pb-1.5 pt-3 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
           Profiles
         </p>
         <div className="px-1 pb-1">
@@ -58,7 +58,7 @@ export function ProfileSwitcher() {
                 <ProfileAvatar profile={profile} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-foreground">{profile.name}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">
+                  <p className="truncate text-2xs text-muted-foreground">
                     {profile.slug} · {profileLocationLabel(profile)}
                   </p>
                 </div>

@@ -17,7 +17,9 @@ function WorkflowRouteView() {
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <WorkflowView workflowId={workflowId} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <WorkflowView workflowId={workflowId} />
+      </div>
     </SidebarInset>
   );
 }

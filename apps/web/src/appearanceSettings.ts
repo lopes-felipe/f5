@@ -14,15 +14,14 @@ export const FONT_FAMILY_PREFERENCE_MAX_LENGTH = 200;
 const FONT_FAMILY_PREFERENCE_MAX_COUNT = 4;
 
 export const DEFAULT_UI_FONT_STACK =
-  '"DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
+  '"Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
 export const DEFAULT_MONO_FONT_STACK =
-  '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace';
+  '"JetBrains Mono", "SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
 
 export const CURATED_UI_FONT_FAMILIES = [
-  "DM Sans",
+  "Inter",
   "SF Pro Text",
   "Segoe UI",
-  "Inter",
   "Roboto",
   "Helvetica Neue",
   "Arial",
@@ -50,6 +49,21 @@ const GENERIC_FONT_FAMILIES = new Set([
 const CSS_WIDE_KEYWORDS = new Set(["inherit", "initial", "revert", "revert-layer", "unset"]);
 const SAFE_FONT_FAMILY_NAME = /^[\p{L}\p{M}\p{N} ._+-]+$/u;
 
+export const CHAT_CONTENT_WIDTH_OPTIONS = ["narrow", "comfortable", "wide"] as const;
+export type ChatContentWidth = (typeof CHAT_CONTENT_WIDTH_OPTIONS)[number];
+export const CHAT_CONTENT_WIDTH_DEFAULT: ChatContentWidth = "comfortable";
+/** Max width of the conversation column (timeline, composer, banners). */
+export const CHAT_CONTENT_MAX_WIDTH: Record<ChatContentWidth, string> = {
+  narrow: "48rem",
+  comfortable: "56rem",
+  wide: "72rem",
+};
+export const CHAT_CONTENT_WIDTH_LABELS: Record<ChatContentWidth, string> = {
+  narrow: "Narrow",
+  comfortable: "Comfortable",
+  wide: "Wide",
+};
+
 export interface AppearanceSettings {
   readonly uiFontFamily: string;
   readonly uiFontSize: number;
@@ -57,6 +71,14 @@ export interface AppearanceSettings {
   readonly chatFontSize: number;
   readonly monoFontFamily: string;
   readonly terminalFontSize: number;
+  readonly chatContentWidth: ChatContentWidth;
+}
+
+export function normalizeChatContentWidth(value: unknown): ChatContentWidth {
+  return typeof value === "string" &&
+    (CHAT_CONTENT_WIDTH_OPTIONS as readonly string[]).includes(value)
+    ? (value as ChatContentWidth)
+    : CHAT_CONTENT_WIDTH_DEFAULT;
 }
 
 export type FontFamilyPreferenceResult =
@@ -177,6 +199,7 @@ export function normalizeAppearanceSettings(
       TERMINAL_FONT_SIZE_MAX,
       TERMINAL_FONT_SIZE_DEFAULT,
     ),
+    chatContentWidth: normalizeChatContentWidth(settings.chatContentWidth),
   };
 }
 
@@ -193,6 +216,10 @@ export function applyAppearanceSettings(root: HTMLElement, input: AppearanceSett
   root.style.setProperty("--font-mono", monoStack);
   root.style.setProperty("--f5-chat-font-family", chatStack);
   root.style.setProperty("--f5-chat-font-size", `${settings.chatFontSize}px`);
+  root.style.setProperty(
+    "--chat-content-max-width",
+    CHAT_CONTENT_MAX_WIDTH[settings.chatContentWidth],
+  );
   root.style.setProperty("--diffs-font-family", monoStack);
   root.style.setProperty("--diffs-header-font-family", uiStack);
 }

@@ -211,6 +211,7 @@ describe("formatKeybindingCommandLabel", () => {
     );
     expect(formatKeybindingCommandLabel("modelPicker.toggle")).toBe("Toggle model picker");
     expect(formatKeybindingCommandLabel("modelPicker.jump.4")).toBe("Pick model 4");
+    expect(formatKeybindingCommandLabel("help.shortcuts")).toBe("Show keyboard shortcuts");
     expect(
       formatKeybindingCommandLabel("script.build.run", [
         {

@@ -1,46 +1,6 @@
-import { partitionDroppedAttachments } from "../lib/droppedAttachments";
-import {
-  attachedFileReferenceWarnings,
-  resolveAttachedFileReferencePaths,
-  createCachedAbsolutePathComparisonNormalizer,
-  identityAbsolutePathNormalizer,
-} from "./ChatView.logic";
-import { FileTextIcon } from "lucide-react";
-import { workflowDisplayType } from "../lib/workflowType";
-import { applyBulkThreadAction } from "../bulkThreadActions";
-import { resolveSnoozePreset } from "../lib/snoozePresets";
-import { ProfileSwitcher } from "./ProfileSwitcher";
-import { registerProjectFromPath } from "../lib/registerProject";
-import {
-  ArchiveIcon,
-  ArrowLeftIcon,
-  ChevronRightIcon,
-  FolderPlusIcon,
-  FolderIcon,
-  GaugeIcon,
-  GitPullRequestIcon,
-  HomeIcon,
-  LoaderCircleIcon,
-  MoonIcon,
-  PinIcon,
-  RocketIcon,
-  ScrollTextIcon,
-  SearchIcon,
-  SettingsIcon,
-  SquarePenIcon,
-  TerminalIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  memo,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
+import { ArrowLeftIcon, FolderPlusIcon, KeyboardIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { useShortcutsDialogStore } from "../shortcutsDialogStore";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   type DragCancelEvent,
@@ -53,83 +13,44 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
+import { SortableContext, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
-import { CSS } from "@dnd-kit/utilities";
 import {
-  type CodeReviewWorkflow,
-  type InvestigationWorkflow,
-  type DesktopUpdateState,
-  type PlanningWorkflow,
-  PlanningWorkflowId,
   ProjectId,
   ThreadId,
-  type CodeReviewWorkflowId,
-  type InvestigationWorkflowId,
   type GitStatusResult,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { isArchivedWorkflow, partitionWorkflowsByArchive } from "@t3tools/shared/workflowArchive";
+import { isArchivedWorkflow } from "@t3tools/shared/workflowArchive";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
-import {
-  type DraftThreadState,
-  flushComposerDraftPersistence,
-  useComposerDraftStore,
-} from "../composerDraftStore";
-import { isElectron } from "../env";
-import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
-import { formatRelativeTimeLabel } from "../lib/relativeTime";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { useStartupReady } from "../lib/startupReady";
-import { cn, isMacPlatform, newCommandId } from "../lib/utils";
-import { WORKFLOW_TYPE_BADGE_CLASS } from "../lib/workflowType";
+import { cn, newCommandId } from "../lib/utils";
 import {
   getMostRecentProject,
   getMostRecentThreadForProject,
   isArchivedThread,
   isSnoozedThread,
-  partitionThreadsByArchive,
-  sortThreadsByActivity,
 } from "../lib/threadOrdering";
-import {
-  getProjectActiveThreadsWithPinnedDraft,
-  getProjectThreadsWithDraft,
-  getVisibleThreadsWithPinnedDraft,
-  isDraftThreadId,
-} from "../lib/draftThreads";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
 import { gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
-import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
-import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useThreadStatusById } from "../hooks/useThreadStatusById";
+import {
+  bucketThreadsByAttention,
+  selectStandaloneThreadsByActivity,
+} from "../lib/threadAttentionBuckets";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
+import { pillForStatus } from "../threadStatus";
 import { toastManager } from "./ui/toast";
 import { type Project, type Thread } from "../types";
-import { ProjectIcon } from "./ProjectIcon";
-import {
-  getArm64IntelBuildWarningDescription,
-  getDesktopUpdateActionError,
-  getDesktopUpdateButtonTooltip,
-  getDesktopUpdateReleaseNotes,
-  isDesktopUpdateButtonDisabled,
-  resolveDesktopUpdateButtonAction,
-  shouldShowArm64IntelBuildWarning,
-  shouldHighlightDesktopUpdateError,
-  shouldShowDesktopUpdateButton,
-  shouldToastDesktopUpdateActionResult,
-} from "./desktopUpdate.logic";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
 import {
   AlertDialog,
@@ -140,677 +61,57 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "./ui/alert-dialog";
-import { ThreadWorktreeIndicator } from "./ThreadWorktreeIndicator";
-import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
-import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
 import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarHeader,
-  SidebarMenuAction,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
   SidebarSeparator,
-  SidebarTrigger,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { setWorkflowArchived } from "../archiveActions";
 import {
   reconcileFrozenOrder,
-  resolveSidebarNewThreadIntent,
-  resolveSidebarComposerDraftPreview,
-  resolveThreadRowClassName,
-  resolveThreadStatusPill,
-  resolveWorkflowThreadListExpanded,
-  isTrailingDoubleClick,
-  shouldStartThreadRowRenameOnDoubleClick,
+  resolvePrimaryNewThreadProjectId,
   shouldClearThreadSelectionOnMouseDown,
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
   type SidebarThreadBucket,
 } from "./Sidebar.logic";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
-import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
-import { ThreadQueueCountBadge } from "./thread/ThreadQueueCountBadge";
 import { StartupSidebarSkeleton } from "./StartupLoadingState";
-import { WorkflowCreateDialog } from "./workflow/WorkflowCreateDialog";
-import { threadIdsForCodeReviewWorkflow } from "./workflow/codeReviewWorkflowUtils";
-import { threadIdsForInvestigationWorkflow } from "./workflow/investigationWorkflowUtils";
-import { threadIdsForWorkflow, workflowThreadDisplayTitle } from "./workflow/workflowUtils";
 import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
-import { Kbd } from "./ui/kbd";
 import { orderedPinnedThreadIds, replacePinnedThreads } from "../threadPinSnooze";
-import { orderActiveSidebarThreads, projectSnoozedThreads } from "./Sidebar.pinSnooze.logic";
+import { SidebarThreadSearchResults } from "./SidebarThreadSearch";
+import { SidebarAddProjectForm, useAddProject } from "./sidebar/SidebarAddProjectForm";
+import { SidebarArm64Warning, SidebarBrandHeader } from "./sidebar/SidebarBrandHeader";
+import { SidebarAttentionSection } from "./sidebar/SidebarAttentionSection";
+import { SIDEBAR_NAV_ROW_CLASS_NAME, SidebarNav } from "./sidebar/SidebarNav";
+import { SidebarPrimaryActions } from "./sidebar/SidebarPrimaryActions";
+import { SidebarProjectItem, type SidebarProjectActions } from "./sidebar/SidebarProjectItem";
+import type { SidebarThreadRowIndicators } from "./sidebar/SidebarWorkflowItem";
 import {
-  nativeThreadActionMenuItems,
-  useThreadActionController,
-} from "../hooks/useThreadActionController";
-import { InlineTitleEditor } from "./InlineTitleEditor";
-import { SidebarThreadSearchInput, SidebarThreadSearchResults } from "./SidebarThreadSearch";
+  type SidebarHoverFreezeSnapshot,
+  type SidebarWorkflowId,
+  type SidebarWorkflowType,
+  type ThreadPr,
+  buildProjectSidebarLists,
+  prStatusIndicator,
+  terminalStatusFromRunningIds,
+  threadIdFromPinnedSortableId,
+  workflowEntryKey,
+} from "./sidebar/sidebarLists";
+import { useDesktopUpdate } from "./sidebar/useDesktopUpdate";
+import { useSidebarThreadActions } from "./sidebar/useSidebarThreadActions";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
-interface TerminalStatusIndicator {
-  label: "Terminal process running";
-  colorClass: string;
-  pulse: boolean;
-}
-
-interface PrStatusIndicator {
-  label: "PR open" | "PR closed" | "PR merged";
-  colorClass: string;
-  tooltip: string;
-  url: string;
-}
-
-type ThreadPr = GitStatusResult["pr"];
-
-type SidebarWorkflowEntry =
-  | {
-      type: "planning";
-      workflow: PlanningWorkflow;
-    }
-  | {
-      type: "codeReview";
-      workflow: CodeReviewWorkflow;
-    }
-  | {
-      type: "investigation";
-      workflow: InvestigationWorkflow;
-    };
-
-type ArchivedSidebarItem =
-  | {
-      kind: "thread";
-      key: string;
-      sortAt: string;
-      createdAt: string;
-      thread: Thread;
-    }
-  | {
-      kind: "workflow";
-      key: string;
-      sortAt: string;
-      createdAt: string;
-      type: SidebarWorkflowEntry["type"];
-      workflow: PlanningWorkflow | CodeReviewWorkflow | InvestigationWorkflow;
-    };
-
-type SidebarProjectDraftThread = DraftThreadState & {
-  threadId: ThreadId;
-};
-
-interface ProjectSidebarLists {
-  projectWorkflows: SidebarWorkflowEntry[];
-  workflowThreadsByKey: Map<string, Thread[]>;
-  activeThreads: Thread[];
-  snoozedThreads: Thread[];
-  archivedSidebarItems: ArchivedSidebarItem[];
-  projectDraftThreadId: ThreadId | null;
-}
-
-interface SidebarHoverFreezeSnapshot {
-  workflowKeysByProjectId: Readonly<Record<string, readonly string[]>>;
-  workflowThreadIdsByWorkflowKey: Readonly<Record<string, readonly ThreadId[]>>;
-  activeThreadIdsByProjectId: Readonly<Record<string, readonly ThreadId[]>>;
-  archivedItemKeysByProjectId: Readonly<Record<string, readonly string[]>>;
-}
-
-function workflowEntryKey(entry: SidebarWorkflowEntry): string {
-  return `${entry.type}:${entry.workflow.id}`;
-}
-
-function buildProjectSidebarLists(input: {
-  project: Project;
-  threads: ReadonlyArray<Thread>;
-  planningWorkflows: ReadonlyArray<PlanningWorkflow>;
-  codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
-  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
-  draftThread: SidebarProjectDraftThread | null;
-}): ProjectSidebarLists {
-  const {
-    project,
-    threads,
-    planningWorkflows,
-    codeReviewWorkflows,
-    investigationWorkflows,
-    draftThread,
-  } = input;
-  const allProjectPlanningWorkflows = planningWorkflows.filter(
-    (workflow) => workflow.projectId === project.id,
-  );
-  const allProjectCodeReviewWorkflows = codeReviewWorkflows.filter(
-    (workflow) => workflow.projectId === project.id,
-  );
-  const allProjectInvestigationWorkflows = investigationWorkflows.filter(
-    (workflow) => workflow.projectId === project.id,
-  );
-  const {
-    activeWorkflows: activeProjectPlanningWorkflows,
-    archivedWorkflows: archivedProjectPlanningWorkflows,
-  } = partitionWorkflowsByArchive(allProjectPlanningWorkflows);
-  const {
-    activeWorkflows: activeProjectCodeReviewWorkflows,
-    archivedWorkflows: archivedProjectCodeReviewWorkflows,
-  } = partitionWorkflowsByArchive(allProjectCodeReviewWorkflows);
-  const {
-    activeWorkflows: activeProjectInvestigationWorkflows,
-    archivedWorkflows: archivedProjectInvestigationWorkflows,
-  } = partitionWorkflowsByArchive(allProjectInvestigationWorkflows);
-  const projectWorkflows = sortWorkflowEntriesByActivity([
-    ...activeProjectPlanningWorkflows.map((workflow) => ({
-      workflow,
-      type: "planning" as const,
-    })),
-    ...activeProjectCodeReviewWorkflows.map((workflow) => ({
-      workflow,
-      type: "codeReview" as const,
-    })),
-    ...activeProjectInvestigationWorkflows.map((workflow) => ({
-      workflow,
-      type: "investigation" as const,
-    })),
-  ]);
-  const archivedProjectWorkflows = sortWorkflowEntriesByActivity([
-    ...archivedProjectPlanningWorkflows.map((workflow) => ({
-      workflow,
-      type: "planning" as const,
-    })),
-    ...archivedProjectCodeReviewWorkflows.map((workflow) => ({
-      workflow,
-      type: "codeReview" as const,
-    })),
-    ...archivedProjectInvestigationWorkflows.map((workflow) => ({
-      workflow,
-      type: "investigation" as const,
-    })),
-  ]);
-
-  const workflowThreadIds = new Set(
-    allProjectPlanningWorkflows.flatMap((workflow) => threadIdsForWorkflow(workflow)),
-  );
-  for (const workflow of allProjectCodeReviewWorkflows) {
-    for (const threadId of threadIdsForCodeReviewWorkflow(workflow)) {
-      workflowThreadIds.add(threadId);
-    }
-  }
-  for (const workflow of allProjectInvestigationWorkflows) {
-    for (const threadId of threadIdsForInvestigationWorkflow(workflow)) {
-      workflowThreadIds.add(threadId);
-    }
-  }
-
-  const workflowThreadsByKey = new Map(
-    projectWorkflows.map((entry) => [
-      workflowEntryKey(entry),
-      sortThreadsByActivity(
-        threads.filter((thread) => {
-          if (thread.projectId !== project.id) {
-            return false;
-          }
-          if (isSnoozedThread(thread)) {
-            return false;
-          }
-          if (entry.type === "planning") {
-            return threadIdsForWorkflow(entry.workflow).includes(thread.id);
-          }
-          if (entry.type === "codeReview") {
-            return threadIdsForCodeReviewWorkflow(entry.workflow).includes(thread.id);
-          }
-          return threadIdsForInvestigationWorkflow(entry.workflow).includes(thread.id);
-        }),
-      ),
-    ]),
-  );
-
-  const persistedProjectThreads = threads.filter(
-    (thread) => thread.projectId === project.id && !workflowThreadIds.has(thread.id),
-  );
-  const projectThreads = getProjectThreadsWithDraft({
-    projectId: project.id,
-    projectThreads: persistedProjectThreads,
-    draftThread,
-    projectModel: project.model,
-  });
-  const { archivedThreads: unsortedArchivedThreads } = partitionThreadsByArchive(projectThreads);
-  const activeThreads = getProjectActiveThreadsWithPinnedDraft({
-    projectId: project.id,
-    projectThreads: persistedProjectThreads,
-    draftThread,
-    projectModel: project.model,
-  });
-  const archivedThreads = sortThreadsByActivity(unsortedArchivedThreads);
-  const archivedSidebarItems = sortArchivedSidebarItems([
-    ...archivedProjectWorkflows.map((entry) => ({
-      kind: "workflow" as const,
-      key: `workflow:${entry.workflow.id}`,
-      sortAt: entry.workflow.updatedAt,
-      createdAt: entry.workflow.createdAt,
-      type: entry.type,
-      workflow: entry.workflow,
-    })),
-    ...archivedThreads.map((thread) => ({
-      kind: "thread" as const,
-      key: `thread:${thread.id}`,
-      sortAt: thread.lastInteractionAt,
-      createdAt: thread.createdAt,
-      thread,
-    })),
-  ]);
-  const projectDraftThreadId =
-    draftThread && !persistedProjectThreads.some((thread) => thread.id === draftThread.threadId)
-      ? draftThread.threadId
-      : null;
-  const orderedActiveThreads = orderActiveSidebarThreads({
-    threads: activeThreads,
-    draftThreadId: projectDraftThreadId,
-  });
-  const snoozedThreads = projectSnoozedThreads(threads, project.id);
-
-  return {
-    projectWorkflows,
-    workflowThreadsByKey,
-    activeThreads: orderedActiveThreads,
-    snoozedThreads,
-    archivedSidebarItems,
-    projectDraftThreadId,
-  };
-}
-
-function sortWorkflowEntriesByActivity(
-  workflows: ReadonlyArray<SidebarWorkflowEntry>,
-): SidebarWorkflowEntry[] {
-  return workflows.toSorted(
-    (left, right) =>
-      right.workflow.updatedAt.localeCompare(left.workflow.updatedAt) ||
-      right.workflow.id.localeCompare(left.workflow.id),
-  );
-}
-
-function sortArchivedSidebarItems(
-  items: ReadonlyArray<ArchivedSidebarItem>,
-): ArchivedSidebarItem[] {
-  return items.toSorted(
-    (left, right) =>
-      right.sortAt.localeCompare(left.sortAt) ||
-      right.createdAt.localeCompare(left.createdAt) ||
-      right.key.localeCompare(left.key),
-  );
-}
-
-function isWorkflowRouteActive(
-  pathname: string,
-  workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
-  type: SidebarWorkflowEntry["type"],
-): boolean {
-  if (type === "planning") {
-    return pathname === `/workflow/${workflowId}` || pathname === `/_chat/workflow/${workflowId}`;
-  }
-  if (type === "codeReview") {
-    return (
-      pathname === `/code-review/${workflowId}` || pathname === `/_chat/code-review/${workflowId}`
-    );
-  }
-  return (
-    pathname === `/investigation/${workflowId}` || pathname === `/_chat/investigation/${workflowId}`
-  );
-}
-
-function workflowRouteForType(type: SidebarWorkflowEntry["type"]) {
-  switch (type) {
-    case "planning":
-      return "/workflow/$workflowId" as const;
-    case "codeReview":
-      return "/code-review/$workflowId" as const;
-    case "investigation":
-      return "/investigation/$workflowId" as const;
-  }
-}
-
-function workflowTypeLabel(
-  type: SidebarWorkflowEntry["type"],
-  workflow: SidebarWorkflowEntry["workflow"],
-): string {
-  if (workflowDisplayType(type, workflow) === "document") return "Document";
-  switch (type) {
-    case "planning":
-      return "Feature";
-    case "codeReview":
-      return "Review";
-    case "investigation":
-      return "Investigation";
-  }
-}
-
-function terminalStatusFromRunningIds(
-  runningTerminalIds: string[],
-): TerminalStatusIndicator | null {
-  if (runningTerminalIds.length === 0) {
-    return null;
-  }
-  return {
-    label: "Terminal process running",
-    colorClass: "text-teal-600 dark:text-teal-300/90",
-    pulse: true,
-  };
-}
-
-function resolveThreadRecencyTextClassName(input: {
-  isHighlighted: boolean;
-  hideOnHover: boolean;
-  archived?: boolean | undefined;
-}): string {
-  const toneClass = input.archived
-    ? input.isHighlighted
-      ? "text-foreground/65"
-      : "text-muted-foreground/40"
-    : input.isHighlighted
-      ? "text-foreground/72 dark:text-foreground/82"
-      : "text-muted-foreground/40";
-
-  return [
-    "block text-[10px]",
-    input.hideOnHover ? "group-hover/thread-row:hidden group-focus-within/thread-row:hidden" : "",
-    toneClass,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function ThreadRowTrailingMeta(props: {
-  thread: Pick<Thread, "id" | "branch" | "worktreePath" | "titleRegeneration">;
-  lastInteractionAt: string;
-  terminalStatus: TerminalStatusIndicator | null;
-  isHighlighted: boolean;
-  archived?: boolean | undefined;
-  showDraftIndicator?: boolean | undefined;
-  action?:
-    | {
-        label: string;
-        ariaLabel: string;
-        onClick: () => void;
-      }
-    | undefined;
-}) {
-  const action = props.action ?? null;
-  const draft = useComposerDraftStore((store) => store.draftsByThreadId[props.thread.id]);
-  const draftPreview =
-    props.showDraftIndicator === false ? null : resolveSidebarComposerDraftPreview(draft);
-  const actionClassName = props.isHighlighted ? "text-foreground/70" : "text-muted-foreground/70";
-
-  return (
-    <div className="ml-auto flex shrink-0 items-center gap-1.5">
-      {props.thread.titleRegeneration ? (
-        <LoaderCircleIcon
-          aria-label="Regenerating thread title"
-          className="size-3 animate-spin text-muted-foreground"
-        />
-      ) : null}
-      {draftPreview ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span
-                role="img"
-                aria-label="Unsent draft"
-                className="inline-flex items-center justify-center text-muted-foreground/70"
-              >
-                <SquarePenIcon className="size-3" />
-              </span>
-            }
-          />
-          <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-            Draft: {draftPreview}
-          </TooltipPopup>
-        </Tooltip>
-      ) : null}
-      <ThreadWorktreeIndicator thread={props.thread} />
-      {props.terminalStatus ? (
-        <span
-          role="img"
-          aria-label={props.terminalStatus.label}
-          title={props.terminalStatus.label}
-          className={`inline-flex items-center justify-center ${props.terminalStatus.colorClass}`}
-        >
-          <TerminalIcon
-            className={`size-3 ${props.terminalStatus.pulse ? "animate-status-pulse" : ""}`}
-          />
-        </span>
-      ) : null}
-      <div className="shrink-0 text-right">
-        <span
-          className={resolveThreadRecencyTextClassName({
-            isHighlighted: props.isHighlighted,
-            hideOnHover: action !== null,
-            archived: props.archived,
-          })}
-        >
-          {formatRelativeTimeLabel(props.lastInteractionAt)}
-        </span>
-        {action ? (
-          <button
-            type="button"
-            aria-label={action.ariaLabel}
-            className={`hidden whitespace-nowrap rounded-sm px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/thread-row:inline-flex group-focus-within/thread-row:inline-flex ${actionClassName}`}
-            onMouseDown={(event) => {
-              event.stopPropagation();
-            }}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              action.onClick();
-            }}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-            }}
-          >
-            {action.label}
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function prStatusIndicator(pr: ThreadPr): PrStatusIndicator | null {
-  if (!pr) return null;
-
-  if (pr.state === "open") {
-    return {
-      label: "PR open",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      tooltip: `#${pr.number} PR open: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  if (pr.state === "closed") {
-    return {
-      label: "PR closed",
-      colorClass: "text-zinc-500 dark:text-zinc-400/80",
-      tooltip: `#${pr.number} PR closed: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  if (pr.state === "merged") {
-    return {
-      label: "PR merged",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      tooltip: `#${pr.number} PR merged: ${pr.title}`,
-      url: pr.url,
-    };
-  }
-  return null;
-}
-
-function F5Wordmark() {
-  return (
-    <svg
-      aria-label="F5"
-      className="h-2.5 w-auto shrink-0 text-foreground"
-      viewBox="0 0 84 44"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <text
-        x="1"
-        y="33"
-        fill="currentColor"
-        fontFamily="'Arial Black', 'SF Pro Display', sans-serif"
-        fontSize="34"
-        fontWeight="900"
-        letterSpacing="-2"
-      >
-        F5
-      </text>
-    </svg>
-  );
-}
-
-type SortableProjectHandleProps = Pick<ReturnType<typeof useSortable>, "attributes" | "listeners">;
-
-function SortableProjectItem({
-  projectId,
-  children,
-}: {
-  projectId: ProjectId;
-  children: (handleProps: SortableProjectHandleProps) => React.ReactNode;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging, isOver } =
-    useSortable({ id: projectId });
-  return (
-    <li
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(transform),
-        transition,
-      }}
-      className={`group/menu-item relative rounded-md ${
-        isDragging ? "z-20 opacity-80" : ""
-      } ${isOver && !isDragging ? "ring-1 ring-primary/40" : ""}`}
-      data-sidebar="menu-item"
-      data-slot="sidebar-menu-item"
-    >
-      {children({ attributes, listeners })}
-    </li>
-  );
-}
-
-const PINNED_THREAD_SORTABLE_PREFIX = "pinned-thread:";
-
-function pinnedThreadSortableId(threadId: ThreadId): string {
-  return `${PINNED_THREAD_SORTABLE_PREFIX}${threadId}`;
-}
-
-function threadIdFromPinnedSortableId(id: string | number): ThreadId | null {
-  const value = String(id);
-  return value.startsWith(PINNED_THREAD_SORTABLE_PREFIX)
-    ? ThreadId.makeUnsafe(value.slice(PINNED_THREAD_SORTABLE_PREFIX.length))
-    : null;
-}
-
-function PinnedThreadDragHandle({ threadId }: { threadId: ThreadId }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: pinnedThreadSortableId(threadId),
-  });
-  return (
-    <button
-      ref={setNodeRef}
-      type="button"
-      aria-label="Reorder pinned thread"
-      className={cn(
-        "inline-flex size-4 shrink-0 cursor-grab items-center justify-center rounded-sm text-amber-500 active:cursor-grabbing",
-        isDragging && "z-20 opacity-70",
-      )}
-      style={{ transform: CSS.Translate.toString(transform), transition }}
-      onClick={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      {...attributes}
-      {...listeners}
-    >
-      <PinIcon className="size-3" />
-    </button>
-  );
-}
-
-function SidebarThreadTitle({ thread }: { thread: Thread }) {
-  const suppressTooltip = useMediaQuery("(hover: none), (pointer: coarse)");
-  const title = (
-    <span className="min-w-0 flex-1 truncate text-xs" data-testid={`thread-title-${thread.id}`}>
-      {thread.title}
-    </span>
-  );
-
-  if (suppressTooltip) {
-    return title;
-  }
-
-  return (
-    <Tooltip>
-      <TooltipTrigger delay={250} render={title} />
-      <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
-        {thread.title}
-      </TooltipPopup>
-    </Tooltip>
-  );
-}
-
-const ThreadSelectionState = memo(function ThreadSelectionState(props: {
-  threadId: ThreadId;
-  enabled?: boolean;
-  children: (isSelected: boolean) => ReactNode;
-}) {
-  const { threadId, enabled = true, children } = props;
-  const isSelected = useThreadSelectionStore(
-    (state) => enabled && state.selectedThreadIds.has(threadId),
-  );
-
-  return children(isSelected);
-});
-
 export default function Sidebar() {
   const projects = useStore((store) => store.projects);
-  const attachDropToThread = (event: React.DragEvent, thread: Thread) => {
-    if (!event.dataTransfer.types.includes("Files")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const { files, folders } = partitionDroppedAttachments(event.dataTransfer);
-    const store = useComposerDraftStore.getState();
-    if (folders.length) {
-      const result = resolveAttachedFileReferencePaths({
-        files: folders,
-        isElectron,
-        desktopBridge: window.desktopBridge,
-        workspaceRoots: [
-          thread.worktreePath,
-          projects.find((project) => project.id === thread.projectId)?.cwd,
-        ],
-        normalizeAbsolutePathForComparison: createCachedAbsolutePathComparisonNormalizer(
-          window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
-        ),
-      });
-      store.addFilePaths(thread.id, result.filePaths);
-      for (const warning of attachedFileReferenceWarnings(result))
-        toastManager.add({ type: "warning", title: warning });
-    }
-    void store.importImages(thread.id, files).then((result) => {
-      if (result.failures.length)
-        toastManager.add({
-          type: "warning",
-          title: "Some files could not be attached",
-          description: result.failures.map((failure) => failure.message).join("\n"),
-        });
-      else if (result.imported.length)
-        toastManager.add({ type: "success", title: `Files added to ${thread.title}` });
-    });
-  };
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
@@ -818,9 +119,7 @@ export default function Sidebar() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const pinRevision = useStore((store) => store.pinRevision ?? 0);
   const startupReady = useStartupReady();
-  const markThreadUnread = useStore((store) => store.markThreadUnread);
   const toggleProject = useStore((store) => store.toggleProject);
-  const setProjectExpanded = useStore((store) => store.setProjectExpanded);
   const reorderProjects = useStore((store) => store.reorderProjects);
   const draftThreadsByThreadId = useComposerDraftStore((store) => store.draftThreadsByThreadId);
   const projectDraftThreadIdByProjectId = useComposerDraftStore(
@@ -842,8 +141,6 @@ export default function Sidebar() {
     }),
   });
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
-  const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
-  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const { settings: appSettings } = useAppSettings();
@@ -863,15 +160,6 @@ export default function Sidebar() {
     ...serverConfigQueryOptions(),
     select: (config) => config.keybindings,
   });
-  const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
-  const [addingProject, setAddingProject] = useState(false);
-  const [newCwd, setNewCwd] = useState("");
-  const [isPickingFolder, setIsPickingFolder] = useState(false);
-  const [isAddingProject, setIsAddingProject] = useState(false);
-  const [prHubNeedsYouCount, setPrHubNeedsYouCount] = useState(0);
-  const [addProjectError, setAddProjectError] = useState<string | null>(null);
-  const addProjectInputRef = useRef<HTMLInputElement | null>(null);
-  const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
   const [renamingProjectId, setRenamingProjectId] = useState<ProjectId | null>(null);
   const [expandedThreadListsByProject, setExpandedThreadListsByProject] = useState<
     ReadonlySet<string>
@@ -882,9 +170,11 @@ export default function Sidebar() {
   const [collapsedSnoozedSectionsByProject, setCollapsedSnoozedSectionsByProject] = useState<
     ReadonlySet<ProjectId>
   >(() => new Set());
-  const workflowDialogProjectId = useWorkflowCreateDialogStore((state) => state.projectId);
   const openWorkflowCreateDialog = useWorkflowCreateDialogStore((state) => state.open);
-  const closeWorkflowCreateDialog = useWorkflowCreateDialogStore((state) => state.close);
+  const lastCreatedWorkflowId = useWorkflowCreateDialogStore(
+    (state) => state.lastCreatedWorkflowId,
+  );
+  const queueSummary = useNextTurnQueueStore((state) => state.summary);
   const [workflowExpandedById, setWorkflowExpandedById] = useState<
     Readonly<Record<string, boolean>>
   >({});
@@ -894,13 +184,8 @@ export default function Sidebar() {
   const dragInProgressRef = useRef(false);
   const suppressProjectClickAfterDragRef = useRef(false);
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
-  const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
-  const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
-  const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
-  const removeFromSelection = useThreadSelectionStore((s) => s.removeFromSelection);
-  const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const firstProjectId = projects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
     () =>
@@ -913,36 +198,24 @@ export default function Sidebar() {
       )?.id ?? null,
     [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads],
   );
-  const shouldBrowseForProjectImmediately = isElectron;
-  const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
-  const pendingApprovalByThreadId = useMemo(() => {
-    const map = new Map<ThreadId, boolean>();
-    for (const thread of threads) {
-      map.set(thread.id, derivePendingApprovals(thread.activities).length > 0);
-    }
-    return map;
-  }, [threads]);
-  const pendingUserInputByThreadId = useMemo(() => {
-    const map = new Map<ThreadId, boolean>();
-    for (const thread of threads) {
-      map.set(thread.id, derivePendingUserInputs(thread.activities).length > 0);
-    }
-    return map;
-  }, [threads]);
+  const primaryProjectId = resolvePrimaryNewThreadProjectId({
+    activeThreadProjectId: activeThread?.projectId,
+    activeDraftProjectId: activeDraftThread?.projectId,
+    mostRecentProjectId,
+    firstProjectId,
+  });
+  const threadStatusById = useThreadStatusById(threads);
+  const threadActions = useSidebarThreadActions({
+    projects,
+    threads,
+    routeThreadId,
+    activeThread,
+    activeDraftThread,
+    confirmThreadDelete: appSettings.confirmThreadDelete,
+  });
+  const { handleNewThread, deleteThreads } = threadActions;
+  const desktopUpdate = useDesktopUpdate();
 
-  useEffect(() => {
-    const api = readNativeApi();
-    if (!api?.prHub) return;
-
-    const updateCount = (snapshot: { counts: { needs_you: number } }) => {
-      setPrHubNeedsYouCount(snapshot.counts.needs_you);
-    };
-    void api.prHub
-      .getOverview()
-      .then(updateCount)
-      .catch(() => setPrHubNeedsYouCount(0));
-    return api.prHub.onChanged(updateCount);
-  }, []);
   const persistedThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
   const projectCwdById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.cwd] as const)),
@@ -998,6 +271,13 @@ export default function Sidebar() {
     }
     return map;
   }, [threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
+  const indicatorsForThread = (thread: Thread): SidebarThreadRowIndicators => ({
+    threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
+    prStatus: prStatusIndicator(prByThreadId.get(thread.id) ?? null),
+    terminalStatus: terminalStatusFromRunningIds(
+      selectThreadTerminalState(terminalStateByThreadId, thread.id).runningTerminalIds,
+    ),
+  });
   const projectSidebarListsById = useMemo(
     () =>
       new Map(
@@ -1024,6 +304,40 @@ export default function Sidebar() {
       threads,
     ],
   );
+  const pausedQueueThreadIds = useMemo(
+    () =>
+      new Set(
+        (queueSummary?.threads ?? [])
+          .filter((entry) => entry.paused)
+          .map((entry) => entry.threadId),
+      ),
+    [queueSummary],
+  );
+  const liveAttentionThreads = useMemo(
+    () =>
+      bucketThreadsByAttention(
+        selectStandaloneThreadsByActivity({
+          threads,
+          planningWorkflows,
+          codeReviewWorkflows,
+          investigationWorkflows,
+        }),
+        threadStatusById,
+        pausedQueueThreadIds,
+      ).attention,
+    [
+      codeReviewWorkflows,
+      investigationWorkflows,
+      pausedQueueThreadIds,
+      planningWorkflows,
+      threadStatusById,
+      threads,
+    ],
+  );
+  const projectsById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project] as const)),
+    [projects],
+  );
   const createSidebarHoverFreezeSnapshot = useCallback((): SidebarHoverFreezeSnapshot => {
     const workflowKeysByProjectId: Record<string, readonly string[]> = {};
     const workflowThreadIdsByWorkflowKey: Record<string, readonly ThreadId[]> = {};
@@ -1048,42 +362,21 @@ export default function Sidebar() {
       workflowThreadIdsByWorkflowKey,
       activeThreadIdsByProjectId,
       archivedItemKeysByProjectId,
+      attentionThreadIds: liveAttentionThreads.map((thread) => thread.id),
     };
-  }, [projectSidebarListsById, projects]);
+  }, [liveAttentionThreads, projectSidebarListsById, projects]);
+  // Hover freezes the "Needs you" order so rows do not reshuffle under the
+  // pointer; resolved threads still drop out and new ones append at the end.
+  const attentionThreads = reconcileFrozenOrder({
+    items: liveAttentionThreads,
+    getKey: (thread) => thread.id,
+    frozenOrder: sidebarHoverFreezeSnapshot?.attentionThreadIds,
+  });
 
   const handleSidebarSearchResultOpened = useCallback(() => {
     setSidebarSearchQuery("");
   }, []);
 
-  const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const api = readNativeApi();
-    if (!api) {
-      toastManager.add({
-        type: "error",
-        title: "Link opening is unavailable.",
-      });
-      return;
-    }
-
-    void api.shell.openExternal(prUrl).catch((error) => {
-      toastManager.add({
-        type: "error",
-        title: "Unable to open PR link",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      });
-    });
-  }, []);
-
-  const handleNewThread = useCallback(
-    (projectId: ProjectId, options?: Parameters<typeof createProjectBackedDraftThread>[1]) => {
-      setProjectExpanded(projectId, true);
-      return createProjectBackedDraftThread(projectId, options);
-    },
-    [createProjectBackedDraftThread, setProjectExpanded],
-  );
   const focusMostRecentThreadForProject = useCallback(
     (projectId: ProjectId) => {
       const latestThread = getMostRecentThreadForProject(
@@ -1102,6 +395,11 @@ export default function Sidebar() {
     },
     [codeReviewWorkflows, investigationWorkflows, navigate, planningWorkflows, threads],
   );
+  const addProject = useAddProject({
+    projects,
+    onProjectAdded: handleNewThread,
+    onExistingProject: focusMostRecentThreadForProject,
+  });
   const toggleWorkflowCollapsed = useCallback((workflowId: string, fallbackExpanded: boolean) => {
     setWorkflowExpandedById((current) =>
       toggleWorkflowThreadListExpansion({
@@ -1122,19 +420,18 @@ export default function Sidebar() {
       };
     });
   }, []);
+  useEffect(() => {
+    if (lastCreatedWorkflowId) handleWorkflowCreated(lastCreatedWorkflowId);
+  }, [handleWorkflowCreated, lastCreatedWorkflowId]);
   const [workflowToArchive, setWorkflowToArchive] = useState<{
-    workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId;
+    workflowId: SidebarWorkflowId;
     workflowTitle: string;
-    workflowType: SidebarWorkflowEntry["type"];
+    workflowType: SidebarWorkflowType;
   } | null>(null);
   const archiveCancelRef = useRef<HTMLButtonElement>(null);
   const archiveTriggerRef = useRef<HTMLElement | null>(null);
   const archiveWorkflow = useCallback(
-    (
-      workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
-      workflowTitle: string,
-      workflowType: SidebarWorkflowEntry["type"],
-    ) => {
+    (workflowId: SidebarWorkflowId, workflowTitle: string, workflowType: SidebarWorkflowType) => {
       archiveTriggerRef.current =
         document.activeElement instanceof HTMLElement ? document.activeElement : null;
       setWorkflowToArchive({
@@ -1147,10 +444,7 @@ export default function Sidebar() {
   );
 
   const unarchiveWorkflow = useCallback(
-    async (
-      workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
-      workflowType: SidebarWorkflowEntry["type"],
-    ) => {
+    async (workflowId: SidebarWorkflowId, workflowType: SidebarWorkflowType) => {
       await setWorkflowArchived({
         workflowId,
         workflowType,
@@ -1158,120 +452,6 @@ export default function Sidebar() {
       });
     },
     [],
-  );
-
-  const addProjectFromPath = useCallback(
-    async (rawCwd: string) => {
-      const cwd = rawCwd.trim();
-      if (!cwd || isAddingProject) return;
-      const api = readNativeApi();
-      if (!api) return;
-
-      setIsAddingProject(true);
-      const finishAddingProject = () => {
-        setIsAddingProject(false);
-        setNewCwd("");
-        setAddProjectError(null);
-        setAddingProject(false);
-      };
-
-      const existing = projects.find((project) => project.cwd === cwd);
-      if (existing) {
-        focusMostRecentThreadForProject(existing.id);
-        finishAddingProject();
-        return;
-      }
-
-      try {
-        const project = await registerProjectFromPath(cwd);
-        const projectId = project.id;
-        await handleNewThread(projectId).catch((error) => {
-          console.warn("Failed to open the new thread after creating a project", error);
-        });
-      } catch (error) {
-        const description =
-          error instanceof Error ? error.message : "An error occurred while adding the project.";
-        setIsAddingProject(false);
-        if (shouldBrowseForProjectImmediately) {
-          toastManager.add({
-            type: "error",
-            title: "Failed to add project",
-            description,
-          });
-        } else {
-          setAddProjectError(description);
-        }
-        return;
-      }
-      finishAddingProject();
-    },
-    [
-      focusMostRecentThreadForProject,
-      handleNewThread,
-      isAddingProject,
-      projects,
-      shouldBrowseForProjectImmediately,
-    ],
-  );
-
-  const handleAddProject = () => {
-    void addProjectFromPath(newCwd);
-  };
-
-  const canAddProject = newCwd.trim().length > 0 && !isAddingProject;
-
-  const handlePickFolder = async () => {
-    const api = readNativeApi();
-    if (!api || isPickingFolder) return;
-    setIsPickingFolder(true);
-    let pickedPath: string | null = null;
-    try {
-      pickedPath = await api.dialogs.pickFolder();
-    } catch {
-      // Ignore picker failures and leave the current thread selection unchanged.
-    }
-    if (pickedPath) {
-      await addProjectFromPath(pickedPath);
-    } else if (!shouldBrowseForProjectImmediately) {
-      addProjectInputRef.current?.focus();
-    }
-    setIsPickingFolder(false);
-  };
-
-  const handleStartAddProject = () => {
-    setAddProjectError(null);
-    if (shouldBrowseForProjectImmediately) {
-      void handlePickFolder();
-      return;
-    }
-    setAddingProject((prev) => !prev);
-  };
-
-  const cancelRename = useCallback(() => {
-    setRenamingThreadId(null);
-  }, []);
-
-  const startThreadRename = useCallback((threadId: ThreadId) => {
-    setRenamingThreadId(threadId);
-  }, []);
-
-  const {
-    archiveThread,
-    deleteThreads,
-    executeAction: executeThreadAction,
-    menuItemsForThread: threadActionMenuItems,
-    renameThread,
-  } = useThreadActionController({
-    activeThreadId: routeThreadId,
-    onRenameRequested: startThreadRename,
-  });
-
-  const commitRename = useCallback(
-    async (threadId: ThreadId, newTitle: string) => {
-      await renameThread(threadId, newTitle);
-      setRenamingThreadId((current) => (current === threadId ? null : current));
-    },
-    [renameThread],
   );
 
   const cancelProjectRename = useCallback(() => {
@@ -1409,174 +589,6 @@ export default function Sidebar() {
       }
     },
     [clearProjectDraftThreadId, deleteThreads],
-  );
-
-  const handleThreadContextMenu = useCallback(
-    async (threadId: ThreadId, position: { x: number; y: number }) => {
-      const api = readNativeApi();
-      if (!api) return;
-      const thread = threads.find((entry) => entry.id === threadId);
-      if (!thread) return;
-      const clicked = await api.contextMenu.show(
-        nativeThreadActionMenuItems(threadActionMenuItems(thread)),
-        position,
-      );
-      if (clicked) await executeThreadAction(threadId, clicked);
-    },
-    [executeThreadAction, threadActionMenuItems, threads],
-  );
-
-  const handleMultiSelectContextMenu = useCallback(
-    async (position: { x: number; y: number }) => {
-      const api = readNativeApi();
-      if (!api) return;
-      const ids = [...useThreadSelectionStore.getState().selectedThreadIds];
-      if (ids.length === 0) return;
-      const count = ids.length;
-
-      const clicked = await api.contextMenu.show(
-        [
-          { id: "mark-unread", label: `Mark unread (${count})` },
-          { id: "pin", label: `Pin (${count})` },
-          { id: "unpin", label: `Unpin (${count})` },
-          { id: "snooze", label: `Snooze for 3 hours (${count})` },
-          { id: "archive", label: `Archive (${count})` },
-          { id: "delete", label: `Delete (${count})`, destructive: true },
-        ],
-        position,
-      );
-
-      if (clicked === "mark-unread") {
-        for (const id of ids) {
-          markThreadUnread(id);
-        }
-        clearSelection();
-        return;
-      }
-
-      if (
-        clicked === "pin" ||
-        clicked === "unpin" ||
-        clicked === "archive" ||
-        clicked === "snooze"
-      ) {
-        try {
-          const result = await applyBulkThreadAction(
-            ids,
-            clicked,
-            clicked === "snooze" ? resolveSnoozePreset("three-hours") : undefined,
-          );
-          removeFromSelection(result.succeeded);
-          if (result.failures.length)
-            toastManager.add({
-              type: "error",
-              title: `Updated ${result.succeeded.length} of ${count} threads`,
-              description: result.failures
-                .map(({ error }) => (error instanceof Error ? error.message : String(error)))
-                .join("; "),
-            });
-        } catch (error) {
-          toastManager.add({
-            type: "error",
-            title: "Could not update selected threads",
-            description: error instanceof Error ? error.message : String(error),
-          });
-        }
-        return;
-      }
-      if (clicked !== "delete") return;
-
-      if (appSettings.confirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete ${count} thread${count === 1 ? "" : "s"}?`,
-            "This permanently clears conversation history for these threads.",
-          ].join("\n"),
-        );
-        if (!confirmed) return;
-      }
-
-      const { succeeded, failures } = await deleteThreads(ids);
-      removeFromSelection(succeeded);
-      if (succeeded.length !== ids.length) {
-        toastManager.add({
-          type: "error",
-          title: `Deleted ${succeeded.length} of ${ids.length} threads`,
-          description: failures
-            .map(({ error }) => (error instanceof Error ? error.message : "Unknown deletion error"))
-            .join("; "),
-        });
-      }
-    },
-    [
-      appSettings.confirmThreadDelete,
-      clearSelection,
-      deleteThreads,
-      markThreadUnread,
-      removeFromSelection,
-    ],
-  );
-
-  const handleThreadClick = useCallback(
-    (
-      event: MouseEvent,
-      threadId: ThreadId,
-      orderedProjectThreadIds: readonly ThreadId[],
-      options?: { isDraft?: boolean },
-    ) => {
-      const isMac = isMacPlatform(navigator.platform);
-      const isModClick = isMac ? event.metaKey : event.ctrlKey;
-      const isShiftClick = event.shiftKey;
-      const isDraft = options?.isDraft === true;
-
-      if (!isDraft && isModClick) {
-        event.preventDefault();
-        toggleThreadSelection(threadId);
-        return;
-      }
-
-      if (!isDraft && isShiftClick) {
-        event.preventDefault();
-        rangeSelectTo(threadId, orderedProjectThreadIds);
-        return;
-      }
-
-      if (isTrailingDoubleClick(event.detail)) {
-        return;
-      }
-
-      // Plain click — clear selection, set anchor for future shift-clicks, and navigate
-      if (useThreadSelectionStore.getState().hasSelection() || isDraft) {
-        clearSelection();
-      }
-      if (!isDraft) {
-        setSelectionAnchor(threadId);
-      }
-      void navigate({
-        to: "/$threadId",
-        params: { threadId },
-      });
-    },
-    [clearSelection, navigate, rangeSelectTo, setSelectionAnchor, toggleThreadSelection],
-  );
-
-  const handleThreadRowDoubleClick = useCallback(
-    (event: MouseEvent, thread: Thread, options?: { isDraft?: boolean }) => {
-      const shouldRename = shouldStartThreadRowRenameOnDoubleClick({
-        isDraft: options?.isDraft === true,
-        isRenaming: renamingThreadId === thread.id,
-        hasModifierKey: event.metaKey || event.ctrlKey || event.shiftKey || event.altKey,
-        target: event.target instanceof HTMLElement ? event.target : null,
-      });
-      if (!shouldRename) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      startThreadRename(thread.id);
-    },
-    [renamingThreadId, startThreadRename],
   );
 
   const handleProjectContextMenu = useCallback(
@@ -1760,11 +772,12 @@ export default function Sidebar() {
       });
       if (!command) return;
 
-      const projectId =
-        activeThread?.projectId ??
-        activeDraftThread?.projectId ??
-        mostRecentProjectId ??
-        firstProjectId;
+      const projectId = resolvePrimaryNewThreadProjectId({
+        activeThreadProjectId: activeThread?.projectId,
+        activeDraftProjectId: activeDraftThread?.projectId,
+        mostRecentProjectId,
+        firstProjectId,
+      });
 
       if (command === "workflow.new") {
         if (!projectId) return;
@@ -1851,69 +864,6 @@ export default function Sidebar() {
     };
   }, [createSidebarHoverFreezeSnapshot]);
 
-  useEffect(() => {
-    if (!isElectron) return;
-    const bridge = window.desktopBridge;
-    if (
-      !bridge ||
-      typeof bridge.getUpdateState !== "function" ||
-      typeof bridge.onUpdateState !== "function"
-    ) {
-      return;
-    }
-
-    let disposed = false;
-    let receivedSubscriptionUpdate = false;
-    const unsubscribe = bridge.onUpdateState((nextState) => {
-      if (disposed) return;
-      receivedSubscriptionUpdate = true;
-      setDesktopUpdateState(nextState);
-    });
-
-    void bridge
-      .getUpdateState()
-      .then((nextState) => {
-        if (disposed || receivedSubscriptionUpdate) return;
-        setDesktopUpdateState(nextState);
-      })
-      .catch((error) => {
-        console.warn("Failed to fetch the desktop update state", error);
-      });
-
-    return () => {
-      disposed = true;
-      unsubscribe();
-    };
-  }, []);
-
-  const showDesktopUpdateButton = isElectron && shouldShowDesktopUpdateButton(desktopUpdateState);
-
-  const desktopUpdateTooltip = desktopUpdateState
-    ? getDesktopUpdateButtonTooltip(desktopUpdateState)
-    : "Update available";
-  const desktopUpdateReleaseNotes = getDesktopUpdateReleaseNotes(desktopUpdateState);
-
-  const desktopUpdateButtonDisabled = isDesktopUpdateButtonDisabled(desktopUpdateState);
-  const desktopUpdateButtonAction = desktopUpdateState
-    ? resolveDesktopUpdateButtonAction(desktopUpdateState)
-    : "none";
-  const showArm64IntelBuildWarning =
-    isElectron && shouldShowArm64IntelBuildWarning(desktopUpdateState);
-  const arm64IntelBuildWarningDescription =
-    desktopUpdateState && showArm64IntelBuildWarning
-      ? getArm64IntelBuildWarningDescription(desktopUpdateState)
-      : null;
-  const desktopUpdateButtonInteractivityClasses = desktopUpdateButtonDisabled
-    ? "cursor-not-allowed opacity-60"
-    : "hover:bg-accent hover:text-foreground";
-  const desktopUpdateButtonClasses =
-    desktopUpdateState?.status === "downloaded"
-      ? "text-emerald-500"
-      : desktopUpdateState?.status === "downloading"
-        ? "text-sky-400"
-        : shouldHighlightDesktopUpdateError(desktopUpdateState)
-          ? "text-rose-500 animate-pulse"
-          : "text-amber-500 animate-pulse";
   const newThreadShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "chat.new"),
     [keybindings],
@@ -1926,6 +876,10 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "commandPalette.toggle"),
     [keybindings],
   );
+  const shortcutsShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "help.shortcuts"),
+    [keybindings],
+  );
   const pullRequestsShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
@@ -1933,64 +887,6 @@ export default function Sidebar() {
   const handleOpenCommandPalette = useCallback(() => {
     setCommandPaletteOpen(true);
   }, [setCommandPaletteOpen]);
-
-  const handleDesktopUpdateButtonClick = useCallback(() => {
-    const bridge = window.desktopBridge;
-    if (!bridge || !desktopUpdateState) return;
-    if (desktopUpdateButtonDisabled || desktopUpdateButtonAction === "none") return;
-
-    if (desktopUpdateButtonAction === "download") {
-      void bridge
-        .downloadUpdate()
-        .then((result) => {
-          if (result.completed) {
-            toastManager.add({
-              type: "success",
-              title: "Update downloaded",
-              description: "Restart the app from the update button to install it.",
-            });
-          }
-          if (!shouldToastDesktopUpdateActionResult(result)) return;
-          const actionError = getDesktopUpdateActionError(result);
-          if (!actionError) return;
-          toastManager.add({
-            type: "error",
-            title: "Could not download update",
-            description: actionError,
-          });
-        })
-        .catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Could not start update download",
-            description: error instanceof Error ? error.message : "An unexpected error occurred.",
-          });
-        });
-      return;
-    }
-
-    if (desktopUpdateButtonAction === "install") {
-      void bridge
-        .installUpdate()
-        .then((result) => {
-          if (!shouldToastDesktopUpdateActionResult(result)) return;
-          const actionError = getDesktopUpdateActionError(result);
-          if (!actionError) return;
-          toastManager.add({
-            type: "error",
-            title: "Could not install update",
-            description: actionError,
-          });
-        })
-        .catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Could not install update",
-            description: error instanceof Error ? error.message : "An unexpected error occurred.",
-          });
-        });
-    }
-  }, [desktopUpdateButtonAction, desktopUpdateButtonDisabled, desktopUpdateState]);
 
   const expandThreadListForProject = useCallback(
     (projectId: ProjectId, bucket: SidebarThreadBucket) => {
@@ -2066,171 +962,53 @@ export default function Sidebar() {
     );
   }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, threads, threadsHydrated]);
 
-  const wordmark = (
-    <div className="flex items-center gap-2">
-      <SidebarTrigger className="shrink-0 md:hidden" />
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <div className="flex min-w-0 flex-1 items-center gap-1 ml-1 cursor-pointer">
-              <F5Wordmark />
-              <span className="truncate text-sm font-medium tracking-tight text-muted-foreground">
-                Code
-              </span>
-              <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-[0.18em] text-muted-foreground/60">
-                {APP_STAGE_LABEL}
-              </span>
-            </div>
-          }
-        />
-        <TooltipPopup side="bottom" sideOffset={2}>
-          Version {APP_VERSION}
-        </TooltipPopup>
-      </Tooltip>
-    </div>
-  );
+  const projectActions: SidebarProjectActions = {
+    onTitlePointerDownCapture: handleProjectTitlePointerDownCapture,
+    onTitleClick: handleProjectTitleClick,
+    onTitleKeyDown: handleProjectTitleKeyDown,
+    onContextMenu: (projectId, position) => {
+      void handleProjectContextMenu(projectId, position);
+    },
+    onCommitRename: (projectId, value, originalTitle) => {
+      void commitProjectRename(projectId, value, originalTitle);
+    },
+    onCancelRename: cancelProjectRename,
+    onCreateWorkflow: openWorkflowCreateDialog,
+    onToggleWorkflowCollapsed: toggleWorkflowCollapsed,
+    onArchiveWorkflow: (workflowId, title, type) => {
+      void archiveWorkflow(workflowId, title, type);
+    },
+    onUnarchiveWorkflow: (workflowId, type) => {
+      void unarchiveWorkflow(workflowId, type);
+    },
+    onExpandThreadList: expandThreadListForProject,
+    onCollapseThreadList: collapseThreadListForProject,
+    onToggleArchivedSection: toggleArchivedSectionForProject,
+    onToggleSnoozedSection: toggleSnoozedSectionForProject,
+    onPinnedThreadDragEnd: handlePinnedThreadDragEnd,
+  };
 
   return (
     <div ref={sidebarHoverAnchorRef} className="contents">
-      {isElectron ? (
-        <>
-          <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px]">
-            {wordmark}
-            <ProfileSwitcher />
-            {showDesktopUpdateButton && (
-              <div className="ml-auto mt-1.5 flex items-center gap-0.5">
-                {desktopUpdateReleaseNotes ? (
-                  <Popover>
-                    <PopoverTrigger
-                      render={
-                        <button
-                          type="button"
-                          aria-label="Show update release notes"
-                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                        >
-                          <ScrollTextIcon className="size-3.5" />
-                        </button>
-                      }
-                    />
-                    <PopoverPopup align="end" className="w-80 max-w-[calc(100vw-2rem)]">
-                      <div className="space-y-2">
-                        <PopoverTitle className="text-sm">
-                          What’s new in {desktopUpdateState?.availableVersion ?? "this update"}
-                        </PopoverTitle>
-                        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                          {desktopUpdateReleaseNotes}
-                        </div>
-                      </div>
-                    </PopoverPopup>
-                  </Popover>
-                ) : null}
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <button
-                        type="button"
-                        aria-label={desktopUpdateTooltip}
-                        aria-disabled={desktopUpdateButtonDisabled || undefined}
-                        disabled={desktopUpdateButtonDisabled}
-                        className={`inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors ${desktopUpdateButtonInteractivityClasses} ${desktopUpdateButtonClasses}`}
-                        onClick={handleDesktopUpdateButtonClick}
-                      >
-                        <RocketIcon className="size-3.5" />
-                      </button>
-                    }
-                  />
-                  <TooltipPopup side="bottom">{desktopUpdateTooltip}</TooltipPopup>
-                </Tooltip>
-              </div>
-            )}
-          </SidebarHeader>
-        </>
-      ) : (
-        <SidebarHeader className="gap-3 px-3 py-2 sm:gap-2.5 sm:px-4 sm:py-3">
-          {wordmark}
-          <ProfileSwitcher />
-        </SidebarHeader>
-      )}
+      <SidebarBrandHeader update={desktopUpdate} />
+      <SidebarPrimaryActions
+        projectId={primaryProjectId}
+        newThreadShortcutLabel={newThreadShortcutLabel}
+        workflowShortcutLabel={workflowShortcutLabel}
+        onNewThread={threadActions.createThreadInProject}
+        onNewWorkflow={openWorkflowCreateDialog}
+        onAddProject={addProject.handleStartAddProject}
+      />
 
       <SidebarContent className="gap-0">
-        <SidebarGroup className="px-2 pt-2 pb-1">
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="sm"
-                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                isActive={isOnHome}
-                onClick={() => void navigate({ to: "/" })}
-              >
-                <HomeIcon className="size-3.5" />
-                <span className="text-xs">Home</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarThreadSearchInput
-                query={sidebarSearchQuery}
-                onQueryChange={setSidebarSearchQuery}
-                onOpenCommandPalette={handleOpenCommandPalette}
-                commandPaletteShortcutLabel={commandPaletteShortcutLabel}
-              />
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="sm"
-                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                isActive={isOnPullRequests}
-                onClick={() => void navigate({ to: "/pull-requests" })}
-              >
-                <GitPullRequestIcon className="size-3.5" />
-                <span className="flex-1 truncate text-xs">Pull Requests</span>
-                {prHubNeedsYouCount > 0 ? (
-                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-sm bg-warning/12 px-1 text-[10px] font-medium text-warning-foreground">
-                    {prHubNeedsYouCount}
-                  </span>
-                ) : null}
-                {pullRequestsShortcutLabel ? (
-                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
-                    {pullRequestsShortcutLabel}
-                  </Kbd>
-                ) : null}
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                size="sm"
-                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                isActive={isOnUsage}
-                onClick={() => void navigate({ to: "/usage" })}
-              >
-                <GaugeIcon className="size-3.5" />
-                <span className="flex-1 truncate text-xs">Usage</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          </SidebarMenu>
-        </SidebarGroup>
-        {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
-          <SidebarGroup className="px-2 pt-2 pb-0">
-            <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
-              <TriangleAlertIcon />
-              <AlertTitle>Intel build on Apple Silicon</AlertTitle>
-              <AlertDescription>{arm64IntelBuildWarningDescription}</AlertDescription>
-              {desktopUpdateButtonAction !== "none" ? (
-                <AlertAction>
-                  <Button
-                    size="xs"
-                    variant="outline"
-                    disabled={desktopUpdateButtonDisabled}
-                    onClick={handleDesktopUpdateButtonClick}
-                  >
-                    {desktopUpdateButtonAction === "download"
-                      ? "Download ARM build"
-                      : "Install ARM build"}
-                  </Button>
-                </AlertAction>
-              ) : null}
-            </Alert>
-          </SidebarGroup>
-        ) : null}
+        <SidebarNav
+          searchQuery={sidebarSearchQuery}
+          onSearchQueryChange={setSidebarSearchQuery}
+          onOpenCommandPalette={handleOpenCommandPalette}
+          commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+          pullRequestsShortcutLabel={pullRequestsShortcutLabel}
+        />
+        <SidebarArm64Warning update={desktopUpdate} />
         {sidebarSearchQuery.trim().length > 0 ? (
           <SidebarThreadSearchResults
             query={sidebarSearchQuery}
@@ -2240,93 +1018,39 @@ export default function Sidebar() {
             onResultOpened={handleSidebarSearchResultOpened}
           />
         ) : null}
-        <SidebarGroup className={cn("px-2 py-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
-          <div className="mb-1 flex items-center justify-between px-2">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-              Projects
-            </span>
+        <div className={cn("px-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
+          <SidebarAttentionSection
+            threads={attentionThreads}
+            projectsById={projectsById}
+            routeThreadId={routeThreadId}
+            indicatorsForThread={indicatorsForThread}
+            actions={threadActions}
+          />
+        </div>
+        <SidebarGroup
+          className={cn("px-2 pt-0 pb-2", sidebarSearchQuery.trim().length > 0 && "hidden")}
+        >
+          <div className="flex h-7 items-center justify-between px-2">
+            <span className="text-2xs font-medium text-muted-foreground">Projects</span>
             <Tooltip>
               <TooltipTrigger
                 render={
                   <button
                     type="button"
                     aria-label="Add project"
-                    aria-pressed={shouldShowProjectPathEntry}
-                    className="inline-flex size-5 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-accent hover:text-foreground"
-                    onClick={handleStartAddProject}
+                    aria-pressed={addProject.showPathEntry}
+                    className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                    onClick={addProject.handleStartAddProject}
                   />
                 }
               >
-                <FolderPlusIcon className="size-3.5" />
+                <FolderPlusIcon className="size-4" />
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
           </div>
 
-          {shouldShowProjectPathEntry && (
-            <div className="mb-2 px-1">
-              {isElectron && (
-                <button
-                  type="button"
-                  className="mb-1.5 flex w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary py-1.5 text-xs text-foreground/80 transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                  onClick={() => void handlePickFolder()}
-                  disabled={isPickingFolder || isAddingProject}
-                >
-                  <FolderIcon className="size-3.5" />
-                  {isPickingFolder ? "Picking folder..." : "Browse for folder"}
-                </button>
-              )}
-              <div className="flex gap-1.5">
-                <input
-                  ref={addProjectInputRef}
-                  className={`min-w-0 flex-1 rounded-md border bg-secondary px-2 py-1 font-mono text-base text-foreground placeholder:text-muted-foreground/40 focus:outline-none sm:text-xs ${
-                    addProjectError
-                      ? "border-red-500/70 focus:border-red-500"
-                      : "border-border focus:border-ring"
-                  }`}
-                  placeholder="/path/to/project"
-                  value={newCwd}
-                  onChange={(event) => {
-                    setNewCwd(event.target.value);
-                    setAddProjectError(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") handleAddProject();
-                    if (event.key === "Escape") {
-                      setAddingProject(false);
-                      setAddProjectError(null);
-                    }
-                  }}
-                  autoFocus
-                />
-                <button
-                  type="button"
-                  className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors duration-150 hover:bg-primary/90 disabled:opacity-60"
-                  onClick={handleAddProject}
-                  disabled={!canAddProject}
-                >
-                  {isAddingProject ? "Adding..." : "Add"}
-                </button>
-              </div>
-              {addProjectError && (
-                <p className="mt-1 px-0.5 text-[11px] leading-tight text-red-400">
-                  {addProjectError}
-                </p>
-              )}
-              <div className="mt-1.5 px-0.5">
-                <button
-                  type="button"
-                  className="text-[11px] text-muted-foreground/50 transition-colors hover:text-muted-foreground"
-                  onClick={() => {
-                    setAddingProject(false);
-                    setAddProjectError(null);
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
+          {addProject.showPathEntry && <SidebarAddProjectForm controller={addProject} />}
 
           <DndContext
             sensors={projectDnDSensors}
@@ -2336,7 +1060,7 @@ export default function Sidebar() {
             onDragEnd={handleProjectDragEnd}
             onDragCancel={handleProjectDragCancel}
           >
-            <SidebarMenu>
+            <SidebarMenu className="gap-px">
               <SortableContext
                 items={projects.map((project) => project.id)}
                 strategy={verticalListSortingStrategy}
@@ -2344,1211 +1068,51 @@ export default function Sidebar() {
                 {projects.map((project) => {
                   const sidebarLists = projectSidebarListsById.get(project.id);
                   if (!sidebarLists) return null;
-                  const projectWorkflows = reconcileFrozenOrder({
-                    items: sidebarLists.projectWorkflows,
-                    getKey: workflowEntryKey,
-                    frozenOrder: sidebarHoverFreezeSnapshot?.workflowKeysByProjectId[project.id],
-                  });
-                  const workflowThreadsByWorkflowId = new Map(
-                    projectWorkflows.map((entry) => {
-                      const workflowKey = workflowEntryKey(entry);
-                      const workflowThreads = reconcileFrozenOrder({
-                        items: sidebarLists.workflowThreadsByKey.get(workflowKey) ?? [],
-                        getKey: (thread) => thread.id,
-                        frozenOrder:
-                          sidebarHoverFreezeSnapshot?.workflowThreadIdsByWorkflowKey[workflowKey],
-                      });
-                      return [entry.workflow.id, workflowThreads] as const;
-                    }),
-                  );
-                  const activeThreads = reconcileFrozenOrder({
-                    items: sidebarLists.activeThreads,
-                    getKey: (thread) => thread.id,
-                    frozenOrder: sidebarHoverFreezeSnapshot?.activeThreadIdsByProjectId[project.id],
-                    prependUnseenKeys: sidebarLists.projectDraftThreadId
-                      ? [sidebarLists.projectDraftThreadId]
-                      : [],
-                  });
-                  const snoozedThreads = sidebarLists.snoozedThreads;
-                  const projectPinnedSortableIds = activeThreads
-                    .filter((thread) => thread.pinnedAt != null)
-                    .map((thread) => pinnedThreadSortableId(thread.id));
-                  const archivedSidebarItems = reconcileFrozenOrder({
-                    items: sidebarLists.archivedSidebarItems,
-                    getKey: (item) => item.key,
-                    frozenOrder:
-                      sidebarHoverFreezeSnapshot?.archivedItemKeysByProjectId[project.id],
-                  });
-                  const projectDraftThreadId = sidebarLists.projectDraftThreadId;
-                  const activeExpanded = expandedThreadListsByProject.has(
-                    threadBucketExpansionKey(project.id, "active"),
-                  );
-                  const archivedExpanded = expandedThreadListsByProject.has(
-                    threadBucketExpansionKey(project.id, "archived"),
-                  );
-                  const archivedSectionCollapsed = collapsedArchivedSectionsByProject.has(
-                    project.id,
-                  );
-                  const snoozedSectionCollapsed = collapsedSnoozedSectionsByProject.has(project.id);
-                  const visibleActiveThreads = getVisibleThreadsWithPinnedDraft({
-                    threads: activeThreads,
-                    expanded: activeExpanded || activeThreads.length <= threadPreviewLimit,
-                    previewLimit: threadPreviewLimit,
-                    draftThreadId: projectDraftThreadId,
-                  });
-                  const visibleArchivedItems =
-                    archivedExpanded || archivedSidebarItems.length <= threadPreviewLimit
-                      ? archivedSidebarItems
-                      : archivedSidebarItems.slice(0, threadPreviewLimit);
-                  const hasHiddenActiveThreads = activeThreads.length > threadPreviewLimit;
-                  const hasHiddenArchivedItems = archivedSidebarItems.length > threadPreviewLimit;
-                  const orderedProjectThreadIds = [
-                    ...visibleActiveThreads
-                      .filter(
-                        (thread) =>
-                          !isDraftThreadId(thread.id, draftThreadsByThreadId, persistedThreadIds),
-                      )
-                      .map((thread) => thread.id),
-                    ...(!snoozedSectionCollapsed ? snoozedThreads.map((thread) => thread.id) : []),
-                    ...(!archivedSectionCollapsed
-                      ? visibleArchivedItems.flatMap((item) =>
-                          item.kind === "thread" ? [item.thread.id] : [],
-                        )
-                      : []),
-                  ];
-
                   return (
-                    <SortableProjectItem key={project.id} projectId={project.id}>
-                      {(dragHandleProps) => (
-                        <Collapsible className="group/collapsible" open={project.expanded}>
-                          <div className="group/project-header relative">
-                            <SidebarMenuButton
-                              size="sm"
-                              className="gap-2 px-2 py-1.5 text-left cursor-grab active:cursor-grabbing hover:bg-accent group-hover/project-header:bg-accent group-hover/project-header:text-sidebar-accent-foreground"
-                              {...dragHandleProps.attributes}
-                              {...dragHandleProps.listeners}
-                              onPointerDownCapture={handleProjectTitlePointerDownCapture}
-                              onClick={(event) => handleProjectTitleClick(event, project.id)}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                void handleProjectContextMenu(project.id, {
-                                  x: event.clientX,
-                                  y: event.clientY,
-                                });
-                              }}
-                              onKeyDown={(event) => {
-                                if (
-                                  event.target !== event.currentTarget ||
-                                  !(
-                                    event.key === "ContextMenu" ||
-                                    (event.shiftKey && event.key === "F10")
-                                  )
-                                ) {
-                                  handleProjectTitleKeyDown(event, project.id);
-                                  return;
-                                }
-                                event.preventDefault();
-                                event.stopPropagation();
-                                const rect = event.currentTarget.getBoundingClientRect();
-                                void handleProjectContextMenu(project.id, {
-                                  x: rect.left,
-                                  y: rect.bottom,
-                                });
-                              }}
-                            >
-                              <ChevronRightIcon
-                                className={`-ml-0.5 size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150 ${
-                                  project.expanded ? "rotate-90" : ""
-                                }`}
-                              />
-                              <ProjectIcon
-                                projectId={project.id}
-                                name={project.name}
-                                icon={project.icon}
-                                className="size-3.5 shrink-0 text-muted-foreground/50"
-                              />
-                              {renamingProjectId === project.id ? (
-                                <InlineTitleEditor
-                                  initialValue={project.name}
-                                  ariaLabel="Rename project"
-                                  className="flex-1 text-xs font-medium text-foreground/90"
-                                  onCommit={(value) =>
-                                    void commitProjectRename(project.id, value, project.name)
-                                  }
-                                  onCancel={cancelProjectRename}
-                                />
-                              ) : (
-                                <span className="flex-1 truncate text-xs font-medium text-foreground/90">
-                                  {project.name}
-                                </span>
-                              )}
-                            </SidebarMenuButton>
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <SidebarMenuAction
-                                    render={
-                                      <button
-                                        type="button"
-                                        aria-label={`Create new thread in ${project.name}`}
-                                        data-testid="new-thread-button"
-                                      />
-                                    }
-                                    showOnHover
-                                    className="top-1 right-1 size-5 rounded-md p-0 text-muted-foreground/70 hover:bg-secondary hover:text-foreground"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      const intent = resolveSidebarNewThreadIntent({
-                                        shiftKey: event.shiftKey,
-                                        metaKey: event.metaKey,
-                                        ctrlKey: event.ctrlKey,
-                                      });
-                                      const activeProjectThread =
-                                        activeThread?.projectId === project.id
-                                          ? activeThread
-                                          : undefined;
-                                      const activeProjectDraft =
-                                        activeDraftThread?.projectId === project.id
-                                          ? activeDraftThread
-                                          : null;
-                                      void handleNewThread(project.id, {
-                                        branch:
-                                          activeProjectThread?.branch ??
-                                          activeProjectDraft?.branch ??
-                                          null,
-                                        worktreePath:
-                                          activeProjectThread?.worktreePath ??
-                                          activeProjectDraft?.worktreePath ??
-                                          null,
-                                        forceNonDefaultEnvMode: intent.forceNonDefaultEnvMode,
-                                      })
-                                        .then(async ({ threadId }) => {
-                                          if (!intent.openInNewWindow) return;
-                                          const openThreadInNewWindow =
-                                            window.desktopBridge?.openThreadInNewWindow;
-                                          if (!openThreadInNewWindow) return;
-                                          flushComposerDraftPersistence();
-                                          const opened = await openThreadInNewWindow(threadId);
-                                          if (!opened) {
-                                            toastManager.add({
-                                              type: "warning",
-                                              title: "Could not open a new window",
-                                              description:
-                                                "The new thread remains open in this window.",
-                                            });
-                                          }
-                                        })
-                                        .catch((error) => {
-                                          toastManager.add({
-                                            type: "error",
-                                            title: "Could not create thread",
-                                            description:
-                                              error instanceof Error
-                                                ? error.message
-                                                : "An unexpected error occurred.",
-                                          });
-                                        });
-                                    }}
-                                  >
-                                    <SquarePenIcon className="size-3.5" />
-                                  </SidebarMenuAction>
-                                }
-                              />
-                              <TooltipPopup side="top">
-                                {`${
-                                  newThreadShortcutLabel
-                                    ? `New thread (${newThreadShortcutLabel})`
-                                    : "New thread"
-                                }. Shift-click forces the alternate workspace mode; Cmd/Ctrl+Shift-click opens a new window.`}
-                              </TooltipPopup>
-                            </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <SidebarMenuAction
-                                    render={
-                                      <button
-                                        type="button"
-                                        aria-label={`Create workflow in ${project.name}`}
-                                      />
-                                    }
-                                    showOnHover
-                                    className="top-1 right-7 size-5 rounded-md p-0 text-muted-foreground/70 hover:bg-secondary hover:text-foreground"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      openWorkflowCreateDialog(project.id);
-                                    }}
-                                  >
-                                    <RocketIcon className="size-3.5" />
-                                  </SidebarMenuAction>
-                                }
-                              />
-                              <TooltipPopup side="top">
-                                {workflowShortcutLabel
-                                  ? `New workflow (${workflowShortcutLabel})`
-                                  : "New workflow"}
-                              </TooltipPopup>
-                            </Tooltip>
-                          </div>
-
-                          <CollapsibleContent keepMounted>
-                            <DndContext
-                              sensors={projectDnDSensors}
-                              collisionDetection={projectCollisionDetection}
-                              modifiers={[
-                                restrictToVerticalAxis,
-                                restrictToFirstScrollableAncestor,
-                              ]}
-                              onDragEnd={handlePinnedThreadDragEnd}
-                            >
-                              <SortableContext
-                                items={projectPinnedSortableIds}
-                                strategy={verticalListSortingStrategy}
-                              >
-                                <SidebarMenuSub className="mx-1 my-0 w-full translate-x-0 gap-0.5 px-1.5 py-0">
-                                  {projectWorkflows.map(({ workflow, type }) => {
-                                    const workflowRoute = workflowRouteForType(type);
-                                    const WorkflowIcon =
-                                      workflowDisplayType(type, workflow) === "document"
-                                        ? FileTextIcon
-                                        : type === "investigation"
-                                          ? SearchIcon
-                                          : RocketIcon;
-                                    const isWorkflowActive = isWorkflowRouteActive(
-                                      pathname,
-                                      workflow.id,
-                                      type,
-                                    );
-                                    const workflowThreads =
-                                      workflowThreadsByWorkflowId.get(workflow.id) ?? [];
-                                    const orderedWorkflowThreadIds = workflowThreads.map(
-                                      (thread) => thread.id,
-                                    );
-                                    const defaultWorkflowExpanded =
-                                      resolveWorkflowThreadListExpanded({
-                                        expandByDefault: appSettings.expandWorkflowThreadsByDefault,
-                                        activeThreadId: routeThreadId,
-                                        workflowThreadIds: orderedWorkflowThreadIds,
-                                      });
-                                    const workflowExpanded = resolveWorkflowThreadListExpanded({
-                                      overrideExpanded: workflowExpandedById[workflow.id],
-                                      expandByDefault: appSettings.expandWorkflowThreadsByDefault,
-                                      activeThreadId: routeThreadId,
-                                      workflowThreadIds: orderedWorkflowThreadIds,
-                                    });
-                                    const workflowCollapsed = !workflowExpanded;
-                                    return (
-                                      <SidebarMenuSubItem
-                                        key={workflow.id}
-                                        className="group/workflow-row relative w-full"
-                                      >
-                                        <SidebarMenuSubButton
-                                          render={<div role="button" tabIndex={0} />}
-                                          size="sm"
-                                          isActive={isWorkflowActive}
-                                          className="gap-2"
-                                          onClick={() => {
-                                            void navigate({
-                                              to: workflowRoute,
-                                              params: { workflowId: workflow.id },
-                                            });
-                                          }}
-                                        >
-                                          <button
-                                            type="button"
-                                            aria-label={
-                                              workflowCollapsed
-                                                ? `Expand ${workflow.title}`
-                                                : `Collapse ${workflow.title}`
-                                            }
-                                            className="inline-flex items-center justify-center rounded-sm text-muted-foreground/70 hover:text-foreground"
-                                            onClick={(event) => {
-                                              event.preventDefault();
-                                              event.stopPropagation();
-                                              toggleWorkflowCollapsed(
-                                                workflow.id,
-                                                defaultWorkflowExpanded,
-                                              );
-                                            }}
-                                          >
-                                            <ChevronRightIcon
-                                              className={`size-3 shrink-0 transition-transform ${
-                                                workflowCollapsed ? "" : "rotate-90"
-                                              }`}
-                                            />
-                                          </button>
-                                          <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                                          <span
-                                            className={cn(
-                                              "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
-                                              WORKFLOW_TYPE_BADGE_CLASS[
-                                                workflowDisplayType(type, workflow)
-                                              ],
-                                            )}
-                                          >
-                                            {workflowTypeLabel(type, workflow)}
-                                          </span>
-                                          <span className="truncate text-xs font-medium">
-                                            {workflow.title}
-                                          </span>
-                                          <button
-                                            type="button"
-                                            aria-label={`Archive ${workflow.title}`}
-                                            className="ml-auto inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground/60 opacity-0 transition group-hover/workflow-row:opacity-100 hover:text-foreground"
-                                            onClick={(event) => {
-                                              event.preventDefault();
-                                              event.stopPropagation();
-                                              void archiveWorkflow(
-                                                workflow.id,
-                                                workflow.title,
-                                                type,
-                                              );
-                                            }}
-                                          >
-                                            <ArchiveIcon className="size-3" />
-                                          </button>
-                                        </SidebarMenuSubButton>
-                                        {!workflowCollapsed && workflowThreads.length > 0 ? (
-                                          <SidebarMenuSub className="mx-0 mt-0.5 mb-0 w-full translate-x-0 gap-0.5 border-l-0 pl-4">
-                                            {workflowThreads.map((thread) => {
-                                              const isActive = routeThreadId === thread.id;
-                                              const threadStatus = resolveThreadStatusPill({
-                                                thread,
-                                                hasPendingApprovals:
-                                                  pendingApprovalByThreadId.get(thread.id) === true,
-                                                hasPendingUserInput:
-                                                  pendingUserInputByThreadId.get(thread.id) ===
-                                                  true,
-                                              });
-                                              const prStatus = prStatusIndicator(
-                                                prByThreadId.get(thread.id) ?? null,
-                                              );
-                                              const terminalStatus = terminalStatusFromRunningIds(
-                                                selectThreadTerminalState(
-                                                  terminalStateByThreadId,
-                                                  thread.id,
-                                                ).runningTerminalIds,
-                                              );
-                                              return (
-                                                <ThreadSelectionState
-                                                  key={thread.id}
-                                                  threadId={thread.id}
-                                                >
-                                                  {(isSelected) => (
-                                                    <SidebarMenuSubItem
-                                                      className="group/thread-row w-full"
-                                                      onDragOver={(event) => {
-                                                        if (
-                                                          event.dataTransfer.types.includes("Files")
-                                                        ) {
-                                                          event.preventDefault();
-                                                          event.stopPropagation();
-                                                          event.dataTransfer.dropEffect = "copy";
-                                                        }
-                                                      }}
-                                                      onDrop={(event) =>
-                                                        attachDropToThread(event, thread)
-                                                      }
-                                                      data-thread-item
-                                                    >
-                                                      <SidebarMenuSubButton
-                                                        render={<div role="button" tabIndex={0} />}
-                                                        size="sm"
-                                                        isActive={isActive}
-                                                        className={resolveThreadRowClassName({
-                                                          isActive,
-                                                          isSelected,
-                                                        })}
-                                                        onClick={(event) => {
-                                                          handleThreadClick(
-                                                            event,
-                                                            thread.id,
-                                                            orderedWorkflowThreadIds,
-                                                            { isDraft: false },
-                                                          );
-                                                        }}
-                                                        onKeyDown={(event) => {
-                                                          if (
-                                                            event.key !== "Enter" &&
-                                                            event.key !== " "
-                                                          ) {
-                                                            return;
-                                                          }
-                                                          event.preventDefault();
-                                                          if (
-                                                            useThreadSelectionStore
-                                                              .getState()
-                                                              .hasSelection()
-                                                          ) {
-                                                            clearSelection();
-                                                          }
-                                                          setSelectionAnchor(thread.id);
-                                                          void navigate({
-                                                            to: "/$threadId",
-                                                            params: { threadId: thread.id },
-                                                          });
-                                                        }}
-                                                        onContextMenu={(event) => {
-                                                          event.preventDefault();
-                                                          const selectionState =
-                                                            useThreadSelectionStore.getState();
-                                                          if (
-                                                            selectionState.selectedThreadIds.has(
-                                                              thread.id,
-                                                            )
-                                                          ) {
-                                                            void handleMultiSelectContextMenu({
-                                                              x: event.clientX,
-                                                              y: event.clientY,
-                                                            });
-                                                          } else {
-                                                            if (selectionState.hasSelection()) {
-                                                              clearSelection();
-                                                            }
-                                                            void handleThreadContextMenu(
-                                                              thread.id,
-                                                              {
-                                                                x: event.clientX,
-                                                                y: event.clientY,
-                                                              },
-                                                            );
-                                                          }
-                                                        }}
-                                                      >
-                                                        <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                                          {prStatus && (
-                                                            <Tooltip>
-                                                              <TooltipTrigger
-                                                                render={
-                                                                  <button
-                                                                    type="button"
-                                                                    aria-label={prStatus.tooltip}
-                                                                    className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-                                                                    onClick={(event) => {
-                                                                      openPrLink(
-                                                                        event,
-                                                                        prStatus.url,
-                                                                      );
-                                                                    }}
-                                                                  >
-                                                                    <GitPullRequestIcon className="size-3" />
-                                                                  </button>
-                                                                }
-                                                              />
-                                                              <TooltipPopup side="top">
-                                                                {prStatus.tooltip}
-                                                              </TooltipPopup>
-                                                            </Tooltip>
-                                                          )}
-                                                          {threadStatus ? (
-                                                            <ThreadStatusPillBadge
-                                                              pill={threadStatus}
-                                                              hideLabelBelowMd
-                                                            />
-                                                          ) : null}
-                                                          <Tooltip>
-                                                            <TooltipTrigger
-                                                              render={
-                                                                <span className="min-w-0 flex-1 truncate text-xs">
-                                                                  {type === "planning"
-                                                                    ? workflowThreadDisplayTitle(
-                                                                        workflow,
-                                                                        thread.title,
-                                                                      )
-                                                                    : thread.title}
-                                                                </span>
-                                                              }
-                                                            />
-                                                            <TooltipPopup
-                                                              side="top"
-                                                              className="max-w-80 whitespace-normal leading-tight"
-                                                            >
-                                                              {type === "planning"
-                                                                ? workflowThreadDisplayTitle(
-                                                                    workflow,
-                                                                    thread.title,
-                                                                  )
-                                                                : thread.title}
-                                                            </TooltipPopup>
-                                                          </Tooltip>
-                                                        </div>
-                                                        <ThreadRowTrailingMeta
-                                                          thread={thread}
-                                                          lastInteractionAt={
-                                                            thread.lastInteractionAt
-                                                          }
-                                                          terminalStatus={terminalStatus}
-                                                          isHighlighted={isActive || isSelected}
-                                                        />
-                                                      </SidebarMenuSubButton>
-                                                    </SidebarMenuSubItem>
-                                                  )}
-                                                </ThreadSelectionState>
-                                              );
-                                            })}
-                                          </SidebarMenuSub>
-                                        ) : null}
-                                      </SidebarMenuSubItem>
-                                    );
-                                  })}
-                                  {visibleActiveThreads.map((thread) => {
-                                    const isDraftThread = isDraftThreadId(
-                                      thread.id,
-                                      draftThreadsByThreadId,
-                                      persistedThreadIds,
-                                    );
-                                    const isActive = routeThreadId === thread.id;
-                                    const threadStatus = resolveThreadStatusPill({
-                                      thread,
-                                      hasPendingApprovals:
-                                        pendingApprovalByThreadId.get(thread.id) === true,
-                                      hasPendingUserInput:
-                                        pendingUserInputByThreadId.get(thread.id) === true,
-                                    });
-                                    const prStatus = prStatusIndicator(
-                                      prByThreadId.get(thread.id) ?? null,
-                                    );
-                                    const terminalStatus = terminalStatusFromRunningIds(
-                                      selectThreadTerminalState(terminalStateByThreadId, thread.id)
-                                        .runningTerminalIds,
-                                    );
-
-                                    return (
-                                      <ThreadSelectionState
-                                        key={thread.id}
-                                        threadId={thread.id}
-                                        enabled={!isDraftThread}
-                                      >
-                                        {(isSelected) => {
-                                          const isHighlighted = isActive || isSelected;
-                                          return (
-                                            <SidebarMenuSubItem
-                                              className="group/thread-row w-full"
-                                              onDragOver={(event) => {
-                                                if (event.dataTransfer.types.includes("Files")) {
-                                                  event.preventDefault();
-                                                  event.stopPropagation();
-                                                  event.dataTransfer.dropEffect = "copy";
-                                                }
-                                              }}
-                                              onDrop={(event) => attachDropToThread(event, thread)}
-                                              data-thread-item
-                                            >
-                                              <SidebarMenuSubButton
-                                                render={<div role="button" tabIndex={0} />}
-                                                size="sm"
-                                                isActive={isActive}
-                                                data-testid={`thread-row-${thread.id}`}
-                                                className={resolveThreadRowClassName({
-                                                  isActive,
-                                                  isSelected,
-                                                })}
-                                                onClick={(event) => {
-                                                  handleThreadClick(
-                                                    event,
-                                                    thread.id,
-                                                    orderedProjectThreadIds,
-                                                    { isDraft: isDraftThread },
-                                                  );
-                                                }}
-                                                onDoubleClick={(event) => {
-                                                  handleThreadRowDoubleClick(event, thread, {
-                                                    isDraft: isDraftThread,
-                                                  });
-                                                }}
-                                                onKeyDown={(event) => {
-                                                  if (event.key !== "Enter" && event.key !== " ") {
-                                                    return;
-                                                  }
-                                                  event.preventDefault();
-                                                  if (
-                                                    useThreadSelectionStore
-                                                      .getState()
-                                                      .hasSelection() ||
-                                                    isDraftThread
-                                                  ) {
-                                                    clearSelection();
-                                                  }
-                                                  if (!isDraftThread) {
-                                                    setSelectionAnchor(thread.id);
-                                                  }
-                                                  void navigate({
-                                                    to: "/$threadId",
-                                                    params: { threadId: thread.id },
-                                                  });
-                                                }}
-                                                onContextMenu={(event) => {
-                                                  event.preventDefault();
-                                                  const selectionState =
-                                                    useThreadSelectionStore.getState();
-                                                  if (isDraftThread) {
-                                                    if (selectionState.hasSelection()) {
-                                                      clearSelection();
-                                                    }
-                                                    return;
-                                                  }
-                                                  if (
-                                                    selectionState.selectedThreadIds.has(thread.id)
-                                                  ) {
-                                                    void handleMultiSelectContextMenu({
-                                                      x: event.clientX,
-                                                      y: event.clientY,
-                                                    });
-                                                  } else {
-                                                    if (selectionState.hasSelection()) {
-                                                      clearSelection();
-                                                    }
-                                                    void handleThreadContextMenu(thread.id, {
-                                                      x: event.clientX,
-                                                      y: event.clientY,
-                                                    });
-                                                  }
-                                                }}
-                                              >
-                                                <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                                  {prStatus && (
-                                                    <Tooltip>
-                                                      <TooltipTrigger
-                                                        render={
-                                                          <button
-                                                            type="button"
-                                                            aria-label={prStatus.tooltip}
-                                                            className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-                                                            onClick={(event) => {
-                                                              openPrLink(event, prStatus.url);
-                                                            }}
-                                                          >
-                                                            <GitPullRequestIcon className="size-3" />
-                                                          </button>
-                                                        }
-                                                      />
-                                                      <TooltipPopup side="top">
-                                                        {prStatus.tooltip}
-                                                      </TooltipPopup>
-                                                    </Tooltip>
-                                                  )}
-                                                  {threadStatus ? (
-                                                    <ThreadStatusPillBadge
-                                                      pill={threadStatus}
-                                                      hideLabelBelowMd
-                                                    />
-                                                  ) : null}
-                                                  {thread.pinnedAt != null ? (
-                                                    <PinnedThreadDragHandle threadId={thread.id} />
-                                                  ) : null}
-                                                  <ThreadQueueCountBadge threadId={thread.id} />
-                                                  {!isDraftThread &&
-                                                  renamingThreadId === thread.id ? (
-                                                    <InlineTitleEditor
-                                                      initialValue={thread.title}
-                                                      onCommit={(nextValue) => {
-                                                        void commitRename(thread.id, nextValue);
-                                                      }}
-                                                      onCancel={cancelRename}
-                                                    />
-                                                  ) : (
-                                                    <SidebarThreadTitle thread={thread} />
-                                                  )}
-                                                </div>
-                                                <ThreadRowTrailingMeta
-                                                  thread={thread}
-                                                  lastInteractionAt={thread.lastInteractionAt}
-                                                  terminalStatus={terminalStatus}
-                                                  isHighlighted={isHighlighted}
-                                                  showDraftIndicator={!isDraftThread}
-                                                  action={
-                                                    !isDraftThread
-                                                      ? {
-                                                          label: "Archive",
-                                                          ariaLabel: `Archive ${thread.title}`,
-                                                          onClick: () => {
-                                                            void archiveThread(thread.id, true);
-                                                          },
-                                                        }
-                                                      : undefined
-                                                  }
-                                                />
-                                              </SidebarMenuSubButton>
-                                            </SidebarMenuSubItem>
-                                          );
-                                        }}
-                                      </ThreadSelectionState>
-                                    );
-                                  })}
-
-                                  {hasHiddenActiveThreads && !activeExpanded && (
-                                    <SidebarMenuSubItem className="w-full">
-                                      <SidebarMenuSubButton
-                                        render={<button type="button" />}
-                                        data-thread-selection-safe
-                                        size="sm"
-                                        className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-                                        onClick={() => {
-                                          expandThreadListForProject(project.id, "active");
-                                        }}
-                                      >
-                                        <span>Show more</span>
-                                      </SidebarMenuSubButton>
-                                    </SidebarMenuSubItem>
-                                  )}
-                                  {hasHiddenActiveThreads && activeExpanded && (
-                                    <SidebarMenuSubItem className="w-full">
-                                      <SidebarMenuSubButton
-                                        render={<button type="button" />}
-                                        data-thread-selection-safe
-                                        size="sm"
-                                        className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-                                        onClick={() => {
-                                          collapseThreadListForProject(project.id, "active");
-                                        }}
-                                      >
-                                        <span>Show less</span>
-                                      </SidebarMenuSubButton>
-                                    </SidebarMenuSubItem>
-                                  )}
-
-                                  {snoozedThreads.length > 0 ? (
-                                    <SidebarMenuSubItem className="w-full">
-                                      <SidebarMenuSubButton
-                                        render={<button type="button" />}
-                                        data-thread-selection-safe
-                                        aria-expanded={!snoozedSectionCollapsed}
-                                        size="sm"
-                                        className="h-6 w-full translate-x-0 justify-start gap-1 px-2 text-left text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/45 hover:bg-accent hover:text-muted-foreground/70"
-                                        onClick={() => toggleSnoozedSectionForProject(project.id)}
-                                      >
-                                        <ChevronRightIcon
-                                          className={`size-3 shrink-0 transition-transform duration-150 ${
-                                            snoozedSectionCollapsed ? "" : "rotate-90"
-                                          }`}
-                                        />
-                                        <span>Snoozed ({snoozedThreads.length})</span>
-                                      </SidebarMenuSubButton>
-                                    </SidebarMenuSubItem>
-                                  ) : null}
-
-                                  {!snoozedSectionCollapsed
-                                    ? snoozedThreads.map((thread) => {
-                                        const isActive = routeThreadId === thread.id;
-                                        return (
-                                          <SidebarMenuSubItem
-                                            key={`snoozed:${thread.id}`}
-                                            className="group/thread-row w-full"
-                                            onDragOver={(event) => {
-                                              if (event.dataTransfer.types.includes("Files")) {
-                                                event.preventDefault();
-                                                event.stopPropagation();
-                                                event.dataTransfer.dropEffect = "copy";
-                                              }
-                                            }}
-                                            onDrop={(event) => attachDropToThread(event, thread)}
-                                            data-thread-item
-                                          >
-                                            <SidebarMenuSubButton
-                                              render={<div role="button" tabIndex={0} />}
-                                              size="sm"
-                                              isActive={isActive}
-                                              className={resolveThreadRowClassName({
-                                                isActive,
-                                                isSelected: false,
-                                              })}
-                                              onClick={(event) => {
-                                                handleThreadClick(
-                                                  event,
-                                                  thread.id,
-                                                  orderedProjectThreadIds,
-                                                );
-                                              }}
-                                              onContextMenu={(event) => {
-                                                event.preventDefault();
-                                                void handleThreadContextMenu(thread.id, {
-                                                  x: event.clientX,
-                                                  y: event.clientY,
-                                                });
-                                              }}
-                                            >
-                                              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                                <MoonIcon className="size-3 shrink-0 text-muted-foreground/70" />
-                                                <SidebarThreadTitle thread={thread} />
-                                              </div>
-                                              <ThreadRowTrailingMeta
-                                                thread={thread}
-                                                lastInteractionAt={thread.lastInteractionAt}
-                                                terminalStatus={null}
-                                                isHighlighted={isActive}
-                                              />
-                                            </SidebarMenuSubButton>
-                                          </SidebarMenuSubItem>
-                                        );
-                                      })
-                                    : null}
-
-                                  {archivedSidebarItems.length > 0 ? (
-                                    <SidebarMenuSubItem className="w-full">
-                                      <SidebarMenuSubButton
-                                        render={<button type="button" />}
-                                        data-thread-selection-safe
-                                        aria-expanded={!archivedSectionCollapsed}
-                                        size="sm"
-                                        className="h-6 w-full translate-x-0 justify-start gap-1 px-2 text-left text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/45 hover:bg-accent hover:text-muted-foreground/70"
-                                        onClick={() => {
-                                          toggleArchivedSectionForProject(project.id);
-                                        }}
-                                      >
-                                        <ChevronRightIcon
-                                          className={`size-3 shrink-0 transition-transform duration-150 ${
-                                            archivedSectionCollapsed ? "" : "rotate-90"
-                                          }`}
-                                        />
-                                        <span>Archived</span>
-                                      </SidebarMenuSubButton>
-                                    </SidebarMenuSubItem>
-                                  ) : null}
-
-                                  {!archivedSectionCollapsed &&
-                                    visibleArchivedItems.map((item) => {
-                                      if (item.kind === "workflow") {
-                                        const workflowRoute = workflowRouteForType(item.type);
-                                        const WorkflowIcon =
-                                          workflowDisplayType(item.type, item.workflow) ===
-                                          "document"
-                                            ? FileTextIcon
-                                            : item.type === "investigation"
-                                              ? SearchIcon
-                                              : RocketIcon;
-                                        const isActive = isWorkflowRouteActive(
-                                          pathname,
-                                          item.workflow.id,
-                                          item.type,
-                                        );
-
-                                        return (
-                                          <SidebarMenuSubItem
-                                            key={item.key}
-                                            className="group/archived-workflow-row w-full"
-                                          >
-                                            <SidebarMenuSubButton
-                                              render={<div role="button" tabIndex={0} />}
-                                              size="sm"
-                                              isActive={isActive}
-                                              className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left select-none hover:bg-accent hover:text-foreground focus-visible:ring-0 ${
-                                                isActive
-                                                  ? "bg-accent/85 text-foreground font-medium dark:bg-accent/55"
-                                                  : "text-muted-foreground"
-                                              }`}
-                                              onClick={() => {
-                                                void navigate({
-                                                  to: workflowRoute,
-                                                  params: { workflowId: item.workflow.id },
-                                                });
-                                              }}
-                                              onKeyDown={(event) => {
-                                                if (event.key !== "Enter" && event.key !== " ") {
-                                                  return;
-                                                }
-                                                event.preventDefault();
-                                                void navigate({
-                                                  to: workflowRoute,
-                                                  params: { workflowId: item.workflow.id },
-                                                });
-                                              }}
-                                            >
-                                              <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                                <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                                                <span
-                                                  className={cn(
-                                                    "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
-                                                    WORKFLOW_TYPE_BADGE_CLASS[
-                                                      workflowDisplayType(item.type, item.workflow)
-                                                    ],
-                                                  )}
-                                                >
-                                                  {workflowTypeLabel(item.type, item.workflow)}
-                                                </span>
-                                                <span className="min-w-0 flex-1 truncate text-xs">
-                                                  {item.workflow.title}
-                                                </span>
-                                              </div>
-                                              <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                                                <div className="shrink-0 text-right">
-                                                  <span
-                                                    className={`block text-[10px] group-hover/archived-workflow-row:hidden group-focus-within/archived-workflow-row:hidden ${
-                                                      isActive
-                                                        ? "text-foreground/65"
-                                                        : "text-muted-foreground/40"
-                                                    }`}
-                                                  >
-                                                    {formatRelativeTimeLabel(
-                                                      item.workflow.updatedAt,
-                                                    )}
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    aria-label={`Unarchive ${item.workflow.title}`}
-                                                    className={`hidden whitespace-nowrap rounded-sm px-1.5 py-0.5 text-[10px] font-medium hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/archived-workflow-row:inline-flex group-focus-within/archived-workflow-row:inline-flex ${
-                                                      isActive
-                                                        ? "text-foreground/70"
-                                                        : "text-muted-foreground/70"
-                                                    }`}
-                                                    onMouseDown={(event) => {
-                                                      event.stopPropagation();
-                                                    }}
-                                                    onClick={(event) => {
-                                                      event.preventDefault();
-                                                      event.stopPropagation();
-                                                      void unarchiveWorkflow(
-                                                        item.workflow.id,
-                                                        item.type,
-                                                      );
-                                                    }}
-                                                    onKeyDown={(event) => {
-                                                      event.stopPropagation();
-                                                    }}
-                                                  >
-                                                    Unarchive
-                                                  </button>
-                                                </div>
-                                              </div>
-                                            </SidebarMenuSubButton>
-                                          </SidebarMenuSubItem>
-                                        );
-                                      }
-
-                                      const thread = item.thread;
-                                      const isActive = routeThreadId === thread.id;
-                                      const threadStatus = resolveThreadStatusPill({
-                                        thread,
-                                        hasPendingApprovals:
-                                          pendingApprovalByThreadId.get(thread.id) === true,
-                                        hasPendingUserInput:
-                                          pendingUserInputByThreadId.get(thread.id) === true,
-                                      });
-                                      const prStatus = prStatusIndicator(
-                                        prByThreadId.get(thread.id) ?? null,
-                                      );
-                                      const terminalStatus = terminalStatusFromRunningIds(
-                                        selectThreadTerminalState(
-                                          terminalStateByThreadId,
-                                          thread.id,
-                                        ).runningTerminalIds,
-                                      );
-
-                                      return (
-                                        <ThreadSelectionState key={item.key} threadId={thread.id}>
-                                          {(isSelected) => {
-                                            const isHighlighted = isActive || isSelected;
-                                            return (
-                                              <SidebarMenuSubItem
-                                                className="group/thread-row w-full"
-                                                onDragOver={(event) => {
-                                                  if (event.dataTransfer.types.includes("Files")) {
-                                                    event.preventDefault();
-                                                    event.stopPropagation();
-                                                    event.dataTransfer.dropEffect = "copy";
-                                                  }
-                                                }}
-                                                onDrop={(event) =>
-                                                  attachDropToThread(event, thread)
-                                                }
-                                                data-thread-item
-                                              >
-                                                <SidebarMenuSubButton
-                                                  render={<div role="button" tabIndex={0} />}
-                                                  size="sm"
-                                                  isActive={isActive}
-                                                  data-testid={`thread-row-${thread.id}`}
-                                                  className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left select-none hover:bg-accent hover:text-foreground focus-visible:ring-0 ${
-                                                    isSelected
-                                                      ? "bg-primary/15 text-foreground dark:bg-primary/10"
-                                                      : isActive
-                                                        ? "bg-accent/85 text-foreground font-medium dark:bg-accent/55"
-                                                        : "text-muted-foreground"
-                                                  }`}
-                                                  onClick={(event) => {
-                                                    handleThreadClick(
-                                                      event,
-                                                      thread.id,
-                                                      orderedProjectThreadIds,
-                                                    );
-                                                  }}
-                                                  onDoubleClick={(event) => {
-                                                    handleThreadRowDoubleClick(event, thread);
-                                                  }}
-                                                  onKeyDown={(event) => {
-                                                    if (
-                                                      event.key !== "Enter" &&
-                                                      event.key !== " "
-                                                    ) {
-                                                      return;
-                                                    }
-                                                    event.preventDefault();
-                                                    if (
-                                                      useThreadSelectionStore
-                                                        .getState()
-                                                        .hasSelection()
-                                                    ) {
-                                                      clearSelection();
-                                                    }
-                                                    setSelectionAnchor(thread.id);
-                                                    void navigate({
-                                                      to: "/$threadId",
-                                                      params: { threadId: thread.id },
-                                                    });
-                                                  }}
-                                                  onContextMenu={(event) => {
-                                                    event.preventDefault();
-                                                    const selectionState =
-                                                      useThreadSelectionStore.getState();
-                                                    if (
-                                                      selectionState.selectedThreadIds.has(
-                                                        thread.id,
-                                                      )
-                                                    ) {
-                                                      void handleMultiSelectContextMenu({
-                                                        x: event.clientX,
-                                                        y: event.clientY,
-                                                      });
-                                                    } else {
-                                                      if (selectionState.hasSelection()) {
-                                                        clearSelection();
-                                                      }
-                                                      void handleThreadContextMenu(thread.id, {
-                                                        x: event.clientX,
-                                                        y: event.clientY,
-                                                      });
-                                                    }
-                                                  }}
-                                                >
-                                                  <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                                    {prStatus && (
-                                                      <Tooltip>
-                                                        <TooltipTrigger
-                                                          render={
-                                                            <button
-                                                              type="button"
-                                                              aria-label={prStatus.tooltip}
-                                                              className={`inline-flex items-center justify-center ${prStatus.colorClass} cursor-pointer rounded-sm outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
-                                                              onClick={(event) => {
-                                                                openPrLink(event, prStatus.url);
-                                                              }}
-                                                            >
-                                                              <GitPullRequestIcon className="size-3" />
-                                                            </button>
-                                                          }
-                                                        />
-                                                        <TooltipPopup side="top">
-                                                          {prStatus.tooltip}
-                                                        </TooltipPopup>
-                                                      </Tooltip>
-                                                    )}
-                                                    {threadStatus ? (
-                                                      <ThreadStatusPillBadge
-                                                        pill={threadStatus}
-                                                        hideLabelBelowMd
-                                                      />
-                                                    ) : null}
-                                                    {renamingThreadId === thread.id ? (
-                                                      <InlineTitleEditor
-                                                        initialValue={thread.title}
-                                                        onCommit={(nextValue) => {
-                                                          void commitRename(thread.id, nextValue);
-                                                        }}
-                                                        onCancel={cancelRename}
-                                                      />
-                                                    ) : (
-                                                      <Tooltip>
-                                                        <TooltipTrigger
-                                                          render={
-                                                            <span className="min-w-0 flex-1 truncate text-xs">
-                                                              {thread.title}
-                                                            </span>
-                                                          }
-                                                        />
-                                                        <TooltipPopup
-                                                          side="top"
-                                                          className="max-w-80 whitespace-normal leading-tight"
-                                                        >
-                                                          {thread.title}
-                                                        </TooltipPopup>
-                                                      </Tooltip>
-                                                    )}
-                                                  </div>
-                                                  <ThreadRowTrailingMeta
-                                                    thread={thread}
-                                                    lastInteractionAt={thread.lastInteractionAt}
-                                                    terminalStatus={terminalStatus}
-                                                    isHighlighted={isHighlighted}
-                                                    archived
-                                                    action={{
-                                                      label: "Unarchive",
-                                                      ariaLabel: `Unarchive ${thread.title}`,
-                                                      onClick: () => {
-                                                        void archiveThread(thread.id, false);
-                                                      },
-                                                    }}
-                                                  />
-                                                </SidebarMenuSubButton>
-                                              </SidebarMenuSubItem>
-                                            );
-                                          }}
-                                        </ThreadSelectionState>
-                                      );
-                                    })}
-
-                                  {!archivedSectionCollapsed &&
-                                    hasHiddenArchivedItems &&
-                                    !archivedExpanded && (
-                                      <SidebarMenuSubItem className="w-full">
-                                        <SidebarMenuSubButton
-                                          render={<button type="button" />}
-                                          data-thread-selection-safe
-                                          size="sm"
-                                          className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-                                          onClick={() => {
-                                            expandThreadListForProject(project.id, "archived");
-                                          }}
-                                        >
-                                          <span>Show more</span>
-                                        </SidebarMenuSubButton>
-                                      </SidebarMenuSubItem>
-                                    )}
-                                  {!archivedSectionCollapsed &&
-                                    hasHiddenArchivedItems &&
-                                    archivedExpanded && (
-                                      <SidebarMenuSubItem className="w-full">
-                                        <SidebarMenuSubButton
-                                          render={<button type="button" />}
-                                          data-thread-selection-safe
-                                          size="sm"
-                                          className="h-6 w-full translate-x-0 justify-start px-2 text-left text-[10px] text-muted-foreground/60 hover:bg-accent hover:text-muted-foreground/80"
-                                          onClick={() => {
-                                            collapseThreadListForProject(project.id, "archived");
-                                          }}
-                                        >
-                                          <span>Show less</span>
-                                        </SidebarMenuSubButton>
-                                      </SidebarMenuSubItem>
-                                    )}
-                                </SidebarMenuSub>
-                              </SortableContext>
-                            </DndContext>
-                          </CollapsibleContent>
-                        </Collapsible>
+                    <SidebarProjectItem
+                      key={project.id}
+                      project={project}
+                      sidebarLists={sidebarLists}
+                      freezeSnapshot={sidebarHoverFreezeSnapshot}
+                      threadPreviewLimit={threadPreviewLimit}
+                      activeExpanded={expandedThreadListsByProject.has(
+                        threadBucketExpansionKey(project.id, "active"),
                       )}
-                    </SortableProjectItem>
+                      archivedExpanded={expandedThreadListsByProject.has(
+                        threadBucketExpansionKey(project.id, "archived"),
+                      )}
+                      archivedSectionCollapsed={collapsedArchivedSectionsByProject.has(project.id)}
+                      snoozedSectionCollapsed={collapsedSnoozedSectionsByProject.has(project.id)}
+                      draftThreadsByThreadId={draftThreadsByThreadId}
+                      persistedThreadIds={persistedThreadIds}
+                      routeThreadId={routeThreadId}
+                      pathname={pathname}
+                      isRenamingProject={renamingProjectId === project.id}
+                      expandWorkflowThreadsByDefault={appSettings.expandWorkflowThreadsByDefault}
+                      workflowExpandedById={workflowExpandedById}
+                      newThreadShortcutLabel={newThreadShortcutLabel}
+                      workflowShortcutLabel={workflowShortcutLabel}
+                      dndSensors={projectDnDSensors}
+                      collisionDetection={projectCollisionDetection}
+                      indicatorsForThread={indicatorsForThread}
+                      threadActions={threadActions}
+                      projectActions={projectActions}
+                    />
                   );
                 })}
               </SortableContext>
             </SidebarMenu>
           </DndContext>
 
-          {!startupReady && projects.length === 0 && !shouldShowProjectPathEntry ? (
+          {!startupReady && projects.length === 0 && !addProject.showPathEntry ? (
             <StartupSidebarSkeleton />
-          ) : startupReady && projects.length === 0 && !shouldShowProjectPathEntry ? (
-            <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
-              No projects yet
+          ) : startupReady && projects.length === 0 && !addProject.showPathEntry ? (
+            <div className="mx-1 mt-2 flex flex-col items-center gap-2 rounded-xl border border-dashed border-border px-3 py-5 text-center">
+              <p className="text-ui text-muted-foreground">No projects yet</p>
+              <Button size="sm" variant="outline" onClick={addProject.handleStartAddProject}>
+                <PlusIcon className="size-4" />
+                Add a project
+              </Button>
             </div>
           ) : null}
         </SidebarGroup>
@@ -3595,35 +1159,21 @@ export default function Sidebar() {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      {workflowDialogProjectId ? (
-        <WorkflowCreateDialog
-          open
-          projectId={workflowDialogProjectId}
-          onOpenChange={(open) => {
-            if (!open) {
-              closeWorkflowCreateDialog();
-            }
-          }}
-          onWorkflowCreated={handleWorkflowCreated}
-        />
-      ) : null}
       <div className="pb-safe-add">
         <SidebarFooter className="p-2">
           <SidebarMenu>
-            <SidebarMenuItem>
+            <SidebarMenuItem className="flex items-center gap-1">
               {isOnSettings || isOnUsage ? (
                 <SidebarMenuButton
-                  size="sm"
-                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                  className={SIDEBAR_NAV_ROW_CLASS_NAME}
                   onClick={() => window.history.back()}
                 >
-                  <ArrowLeftIcon className="size-3.5" />
-                  <span className="text-xs">Back</span>
+                  <ArrowLeftIcon className="size-4" />
+                  <span>Back</span>
                 </SidebarMenuButton>
               ) : (
                 <SidebarMenuButton
-                  size="sm"
-                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                  className={SIDEBAR_NAV_ROW_CLASS_NAME}
                   onClick={() =>
                     void navigate({
                       to: "/settings",
@@ -3631,10 +1181,30 @@ export default function Sidebar() {
                     })
                   }
                 >
-                  <SettingsIcon className="size-3.5" />
-                  <span className="text-xs">Settings</span>
+                  <SettingsIcon className="size-4" />
+                  <span>Settings</span>
                 </SidebarMenuButton>
               )}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label="Keyboard shortcuts"
+                      className="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                      onClick={() => useShortcutsDialogStore.getState().setOpen(true)}
+                    />
+                  }
+                >
+                  <KeyboardIcon className="size-4" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">
+                  Keyboard shortcuts
+                  {shortcutsShortcutLabel ? (
+                    <span className="ml-1.5 text-muted-foreground">{shortcutsShortcutLabel}</span>
+                  ) : null}
+                </TooltipPopup>
+              </Tooltip>
             </SidebarMenuItem>
           </SidebarMenu>
         </SidebarFooter>
