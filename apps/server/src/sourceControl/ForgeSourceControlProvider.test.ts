@@ -460,9 +460,11 @@ it("Azure removes reviewers excluded from the replacement set", async () => {
     {},
   ]);
   await Effect.runPromise(provider.setReviewers({ ref, reviewers: ["new"] }));
-  expect(calls[1]?.url).toContain("/reviewers/old");
-  expect(calls[1]?.init.method).toBe("DELETE");
-  expect(JSON.parse(String(calls[2]?.init.body))).toEqual([{ id: "new", vote: 0 }]);
+  expect(calls[1]?.url).toContain("/reviewers/new");
+  expect(calls[1]?.init.method).toBe("PUT");
+  expect(JSON.parse(String(calls[1]?.init.body))).toEqual({ id: "new", vote: 0 });
+  expect(calls[2]?.url).toContain("/reviewers/old");
+  expect(calls[2]?.init.method).toBe("DELETE");
 });
 
 it("matches quoted native UTF8 filenames and ignores header-like hunk contents", async () => {

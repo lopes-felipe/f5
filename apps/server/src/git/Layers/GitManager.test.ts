@@ -508,6 +508,7 @@ function forgeAccountFixture(): ForgeAccountsShape {
     generation: "1",
   };
   return {
+    removeAccount: () => Effect.void,
     listAccounts: () => Effect.succeed([a]),
     saveAccount: () => Effect.succeed(a),
     getToken: () => Effect.succeed("token"),
@@ -528,6 +529,7 @@ it("preserves profile GitHub behavior when the account service has no managed ho
   const { manager, github } = await makeManager({
     forgeAccounts: {
       ...fixture,
+      removeAccount: () => Effect.void,
       listAccounts: () => Effect.succeed([]),
       resolveAccount: () =>
         Effect.die("An empty account service must not resolve managed credentials"),

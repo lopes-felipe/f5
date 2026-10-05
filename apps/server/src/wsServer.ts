@@ -3797,6 +3797,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case PR_HUB_WS_METHODS.listAccounts:
         if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
         return yield* forgeAccounts.value.listAccounts();
+      case PR_HUB_WS_METHODS.removeAccount:
+        if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
+        return yield* forgeAccounts.value.removeAccount(request.body.accountId);
       case PR_HUB_WS_METHODS.saveAccount:
         if (Option.isNone(forgeAccounts)) throw new Error("Forge accounts are unavailable.");
         return yield* forgeAccounts.value.saveAccount(stripRequestTag(request.body));

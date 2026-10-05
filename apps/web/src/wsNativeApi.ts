@@ -706,6 +706,7 @@ export function createWsNativeApi(): NativeApi {
     prHub: {
       listAccounts: () => transport.request(PR_HUB_WS_METHODS.listAccounts, {}),
       saveAccount: (input) => transport.request(PR_HUB_WS_METHODS.saveAccount, input),
+      removeAccount: (input) => transport.request(PR_HUB_WS_METHODS.removeAccount, input),
       listAccountRouting: () => transport.request(PR_HUB_WS_METHODS.listAccountRouting, {}),
       setAccountRouting: (input) => transport.request(PR_HUB_WS_METHODS.setAccountRouting, input),
       peek: (input) => transport.request(PR_HUB_WS_METHODS.peek, input),
