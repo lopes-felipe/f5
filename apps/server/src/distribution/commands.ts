@@ -6,7 +6,11 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { version } from "../../package.json" with { type: "json" };
-import { cliTarget, RELEASE_MANIFEST_URL } from "@t3tools/shared/cliRelease";
+import {
+  cliTarget,
+  compareCliReleaseVersions,
+  RELEASE_MANIFEST_URL,
+} from "@t3tools/shared/cliRelease";
 import {
   acquireInstallLock,
   fetchRelease,
@@ -62,6 +66,18 @@ export async function installLauncher(root: string, selectedVersion: string): Pr
     info.target !== cliTarget()
   )
     throw new Error("Installed launcher is incompatible.");
+  const replacement = path.join(destination, `launcher.${process.pid}.tmp`);
+  // Services always start the current version's supervisor and its matching private Node.
+  const bootstrap = `const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
+const args=process.argv.slice(2);
+if(args[0]==='--preflight'){console.log(JSON.stringify({launcherProtocol:1,target:process.platform+'-'+process.arch}));}
+else {const root=args[0],current=JSON.parse(fs.readFileSync(path.join(root,'current.json'),'utf8'));
+if(!/^\\d+\\.\\d+\\.\\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(current.version))throw Error('Invalid installation');
+const dir=path.join(root,'versions',current.version),child=cp.spawn(path.join(dir,'runtime',process.platform==='win32'?'node.exe':'node'),[path.join(dir,'launcher.cjs'),...args],{stdio:['inherit','inherit','inherit','ipc'],env:{...process.env,F5_LAUNCHER_SUPERVISOR:'1'}});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));child.on('error',()=>{process.exitCode=1});child.on('exit',(code)=>{process.exitCode=code??1});}
+`;
+  await fs.writeFile(replacement, bootstrap, { mode: 0o600 });
+  await fs.rename(replacement, launcher);
   const bin = path.join(root, "bin");
   await fs.mkdir(bin, { recursive: true });
   // The entry resolves the current immutable version on each invocation; no PATH Node is needed.
@@ -153,6 +169,13 @@ export async function runDistributionCommand(args: readonly string[]): Promise<b
     const releaseLock = await acquireInstallLock(root);
     try {
       const release = await fetchRelease(readOption("--manifest", RELEASE_MANIFEST_URL));
+      if (
+        command === "update" &&
+        compareCliReleaseVersions(release.version, (await readInstalled(root)).version) <= 0
+      ) {
+        console.log("F5 is already up to date; no archive downloaded.");
+        return true;
+      }
       const selected = await stageRelease(root, release, (message) => console.log(message));
       await installLauncher(root, selected);
       if (command === "install") {

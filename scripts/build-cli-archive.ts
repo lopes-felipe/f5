@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
 // Standalone packaging uses only build-host tools; none are required after installation.
+import ts from "typescript";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
@@ -123,11 +124,35 @@ export async function buildCliArchive(options: {
       path.join(temporary, "launcher/launcherEntry.cjs"),
       path.join(stage, "launcher.cjs"),
     );
-    const dependencies = selectCliRuntimeExternalDependencies(serverPackage.dependencies);
+    const sourceLock = ts.parseConfigFileTextToJson(
+      "bun.lock",
+      await fs.readFile(path.join(repo, "bun.lock"), "utf8"),
+    ).config as { packages: Record<string, [string, ...unknown[]]> };
+    const pinned = (name: string): string => {
+      const entry = sourceLock.packages[name]?.[0];
+      if (!entry?.startsWith(`${name}@`))
+        throw new Error(`Missing pinned native dependency: ${name}`);
+      return entry.slice(name.length + 1);
+    };
+    const dependencies = Object.fromEntries(
+      Object.keys(selectCliRuntimeExternalDependencies(serverPackage.dependencies)).map((name) => [
+        name,
+        pinned(name),
+      ]),
+    );
+    const overrides = Object.fromEntries(
+      Object.keys(sourceLock.packages)
+        .filter(
+          (name) =>
+            (!name.includes("/") || (name.startsWith("@") && name.split("/").length === 2)) &&
+            !sourceLock.packages[name]![0].includes("@workspace:") &&
+            !sourceLock.packages[name]![0].includes("@https:"),
+        )
+        .map((name) => [name, pinned(name)]),
+    );
     // fff's optional platform binary is explicit, so installer settings cannot silently omit it.
     const fffPlatform = target.startsWith("linux-") ? `${target}-gnu` : target;
-    dependencies[`@ff-labs/fff-bin-${fffPlatform}`] =
-      serverPackage.dependencies["@ff-labs/fff-node"];
+    dependencies[`@ff-labs/fff-bin-${fffPlatform}`] = pinned("@ff-labs/fff-node");
     await fs.writeFile(
       path.join(stage, "package.json"),
       JSON.stringify({
@@ -135,6 +160,7 @@ export async function buildCliArchive(options: {
         version,
         private: true,
         dependencies,
+        overrides,
         trustedDependencies: ["node-pty"],
       }),
     );
@@ -148,7 +174,20 @@ export async function buildCliArchive(options: {
         launcherProtocol: 1,
       }),
     );
-    run("bun", ["install", "--production", "--linker", "hoisted"], stage);
+    // Resolve without executing package scripts, then verify every version and integrity
+    // against the repository lock before installing the immutable dependency closure.
+    run("bun", ["install", "--lockfile-only", "--ignore-scripts"], stage);
+    const runtimeLock = ts.parseConfigFileTextToJson(
+      "bun.lock",
+      await fs.readFile(path.join(stage, "bun.lock"), "utf8"),
+    ).config as typeof sourceLock;
+    const approved = new Set(
+      Object.values(sourceLock.packages).map((entry) => JSON.stringify([entry[0], entry.at(-1)])),
+    );
+    for (const entry of Object.values(runtimeLock.packages))
+      if (!approved.has(JSON.stringify([entry[0], entry.at(-1)])))
+        throw new Error(`Native dependency is absent from the repository lock: ${entry[0]}`);
+    run("bun", ["install", "--production", "--frozen-lockfile", "--linker", "hoisted"], stage);
     if (process.platform !== "win32") {
       for (const helper of [
         "build/Release/spawn-helper",

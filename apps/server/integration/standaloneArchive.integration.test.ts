@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { atomicJson } from "../src/distribution/files";
+import { cliTarget } from "@t3tools/shared/cliRelease";
 import { afterEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import { createReadStream } from "node:fs";
@@ -70,6 +73,56 @@ it.skipIf(!archive || !manifest)(
       });
       await child.stop();
       child = undefined;
+      await atomicJson(path.join(root, "current.json"), {
+        schemaVersion: 1,
+        version: release.version,
+        target: cliTarget(),
+      });
+      const supervisor = spawn(
+        path.join(root, "launcher-v1", process.platform === "win32" ? "node.exe" : "node"),
+        [
+          path.join(root, "launcher-v1", "launcher.cjs"),
+          root,
+          state,
+          "--port",
+          String(port),
+          "--host",
+          "127.0.0.1",
+        ],
+        { stdio: "inherit", env: process.env },
+      );
+      try {
+        await expect
+          .poll(
+            async () => {
+              try {
+                return (
+                  await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
+                    signal: AbortSignal.timeout(1000),
+                  })
+                ).ok;
+              } catch {
+                return false;
+              }
+            },
+            { timeout: 30_000 },
+          )
+          .toBe(true);
+        // Corrupt update metadata must not take down the healthy service.
+        await fs.writeFile(path.join(root, "pending.json"), "{");
+        await expect
+          .poll(
+            async () =>
+              (await fs.readdir(root)).some((file) => file.startsWith("rejected-request-")),
+            { timeout: 5000 },
+          )
+          .toBe(true);
+        expect((await fetch(`http://127.0.0.1:${port}/api/bootstrap`)).ok).toBe(true);
+      } finally {
+        const exited = new Promise<void>((resolve) => supervisor.once("exit", () => resolve()));
+        supervisor.kill("SIGTERM");
+        await exited;
+      }
       console.log(`Real archive staging/activation smoke passed. Isolated artifacts: ${root}`);
     } finally {
       await child?.stop();

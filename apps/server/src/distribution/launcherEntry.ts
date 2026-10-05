@@ -2,6 +2,7 @@
 import * as path from "node:path";
 import { runLauncher } from "./launcher";
 import { cliTarget } from "@t3tools/shared/cliRelease";
+if (process.env.F5_LAUNCHER_SUPERVISOR === "1") process.once("disconnect", () => process.exit(1));
 const args = process.argv.slice(2);
 if (args[0] === "--preflight")
   console.log(JSON.stringify({ launcherProtocol: 1, target: cliTarget() }));

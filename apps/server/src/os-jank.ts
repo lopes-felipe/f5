@@ -18,9 +18,7 @@ export async function fixPath(): Promise<void> {
     const shell = process.env.SHELL ?? "/bin/zsh";
     const result = readPathFromLoginShell(shell);
     if (result) {
-      process.env.PATH = process.env.F5_STANDALONE_DIR
-        ? `${PathNode.join(process.env.F5_STANDALONE_DIR, "runtime")}${PathNode.delimiter}${result}`
-        : result;
+      process.env.PATH = result;
     }
   } catch {
     // Silently ignore — keep default PATH

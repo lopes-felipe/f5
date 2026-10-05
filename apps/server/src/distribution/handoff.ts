@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { atomicJson, copyDurable, exists, readJson, syncDirectory } from "./files";
+import { atomicJson, copyDurable, exclusiveJson, exists, readJson, syncDirectory } from "./files";
 import { readInstalled, runtimePaths, preflightRuntime } from "./installation";
 import { cliTarget, versionToken, compareCliReleaseVersions } from "@t3tools/shared/cliRelease";
 export interface UpdateRequest {
@@ -33,6 +33,7 @@ export async function readUpdateOutcome(root: string): Promise<UpdateOutcome | u
   return { id: updateId(value.id), outcome: value.outcome, version: versionToken(value.version) };
 }
 interface Journal {
+  database: string;
   schemaVersion: 1;
   id: string;
   previous: string;
@@ -62,6 +63,9 @@ function parseJournal(value: unknown): Journal {
   if (
     !value ||
     typeof value !== "object" ||
+    !("database" in value) ||
+    typeof value.database !== "string" ||
+    !path.isAbsolute(value.database) ||
     !("previous" in value) ||
     !("phase" in value) ||
     !["snapshotting", "trial", "committed", "restoring"].includes(String(value.phase))
@@ -69,6 +73,7 @@ function parseJournal(value: unknown): Journal {
     throw new Error("Invalid update journal.");
   return {
     ...request,
+    database: value.database,
     previous: versionToken(value.previous),
     phase: value.phase as Journal["phase"],
   };
@@ -90,15 +95,7 @@ export async function requestUpdate(root: string, version: string): Promise<Upda
     id: randomUUID(),
     version: versionToken(version),
   };
-  // Exclusive creation prevents two independent clients replacing each other's request.
-  const handle = await fs.open(path.join(root, "pending.json"), "wx", 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(request));
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await syncDirectory(root);
+  await exclusiveJson(path.join(root, "pending.json"), request);
   return request;
 }
 export async function snapshotDatabase(database: string, backup: string): Promise<void> {
@@ -142,6 +139,11 @@ export async function recoverHandoff(
   const file = path.join(root, "handoff.json");
   if (!(await exists(file))) return undefined;
   const journal = parseJournal(await readJson(file));
+  database = await canonicalDatabase(database);
+  if (journal.database !== database)
+    throw new Error(
+      "Update journal belongs to another database; restart with its original --state-dir. No database was modified.",
+    );
   if (journal.phase === "committed") {
     await atomicJson(path.join(root, "current.json"), {
       schemaVersion: 1,
@@ -177,6 +179,41 @@ export async function recoverHandoff(
   await fs.unlink(file);
   return outcome;
 }
+async function canonicalDatabase(database: string): Promise<string> {
+  const absolute = path.resolve(database);
+  try {
+    return await fs.realpath(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return path.join(await fs.realpath(path.dirname(absolute)), path.basename(absolute));
+  }
+}
+export async function cleanupCommitted(root: string): Promise<void> {
+  await fs.rm(path.join(root, "pending.json"), { force: true });
+  await fs.unlink(path.join(root, "handoff.json"));
+  await syncDirectory(root);
+  const directory = path.join(root, "db-backup");
+  const entries = await fs.readdir(directory).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  const completed = await Promise.all(
+    entries
+      .filter((id) => /^[a-f0-9-]{36}$/.test(id))
+      .map(async (id) => {
+        const marker = path.join(directory, id, "complete.json");
+        return await fs.stat(marker).then(
+          (stat) => ({ id, at: stat.mtimeMs }),
+          () => undefined,
+        );
+      }),
+  );
+  const older = completed
+    .filter((entry) => entry !== undefined)
+    .sort((a, b) => b.at - a.at)
+    .slice(3);
+  for (const entry of older) await fs.rm(path.join(directory, entry.id), { recursive: true });
+}
 export interface TrialChild {
   prepared: Promise<void>;
   activated: Promise<void>;
@@ -195,12 +232,25 @@ export async function performHandoff(
   request: UpdateRequest,
   deps: HandoffDependencies,
 ): Promise<UpdateOutcome> {
+  database = await canonicalDatabase(database);
   const current = await readInstalled(root);
   if (compareCliReleaseVersions(request.version, current.version) <= 0)
     throw new Error("Update is not newer than the active runtime.");
   await deps.preflight(request.version); // Never stop a healthy child for an unusable launcher.
   const file = path.join(root, "handoff.json");
-  let journal: Journal = { ...request, previous: current.version, phase: "snapshotting" };
+  let journal: Journal = { ...request, database, previous: current.version, phase: "snapshotting" };
+  let required = 8 * 1024 * 1024;
+  for (const suffix of suffixes)
+    required += await fs.stat(database + suffix).then(
+      (stat) => stat.size,
+      (error) => {
+        if (error.code === "ENOENT") return 0;
+        throw error;
+      },
+    );
+  const disk = await fs.statfs(root);
+  if (disk.bavail * disk.bsize < required * 1.25)
+    throw new Error("Insufficient free space for a recoverable database snapshot.");
   await deps.stopOld();
   await atomicJson(file, journal);
   let child: TrialChild | undefined;
@@ -211,8 +261,9 @@ export async function performHandoff(
     child = deps.trial(request.version, request.id);
     await child.prepared;
     // Publish the decision durably before releasing the child activation gate.
-    journal = { ...journal, phase: "committed" };
-    await atomicJson(file, journal);
+    const committed: Journal = { ...journal, phase: "committed" };
+    await atomicJson(file, committed);
+    journal = committed;
     await atomicJson(path.join(root, "current.json"), {
       schemaVersion: 1,
       version: request.version,
@@ -226,10 +277,16 @@ export async function performHandoff(
     await atomicJson(path.join(root, "outcome.json"), outcome);
     await child.activate();
     await child.activated;
-    await fs.rm(path.join(root, "pending.json"), { force: true });
-    await fs.unlink(file);
+    // Cleanup failure must never restore a database after activation.
+    await cleanupCommitted(root).catch((error) =>
+      console.error(`Committed update cleanup will retry on restart: ${String(error)}`),
+    );
     return outcome;
   } catch (error) {
+    if (journal.phase === "committed")
+      throw new Error(
+        `Update was durably committed; preserving the new database for roll-forward recovery: ${error instanceof Error ? error.message : "activation failed"}`,
+      );
     // A live trial must never share the database with restoration or the old child.
     if (journal.phase !== "snapshotting") {
       journal = { ...journal, phase: "restoring" };
@@ -291,54 +348,57 @@ export function managedChild(
     },
   );
   const waitFor = (type: string) =>
-    deadline(
-      new Promise<void>((resolve, reject) => {
-        const message = (value: unknown) => {
-          if (
-            value &&
-            typeof value === "object" &&
-            "type" in value &&
-            value.type === type &&
-            "id" in value &&
-            value.id === (update?.id ?? "")
-          ) {
-            cleanup();
-            resolve();
-          }
-        };
-        const ended = () => {
+    new Promise<void>((resolve, reject) => {
+      const message = (value: unknown) => {
+        if (
+          value &&
+          typeof value === "object" &&
+          "type" in value &&
+          value.type === type &&
+          "id" in value &&
+          value.id === (update?.id ?? "")
+        ) {
           cleanup();
-          reject(new Error("Server exited before completing startup."));
-        };
-        const failed = () => {
-          cleanup();
-          reject(new Error("Could not start server executable."));
-        };
-        const cleanup = () => {
-          child.off("message", message);
-          child.off("exit", ended);
-          child.off("error", failed);
-        };
-        child.on("message", message);
-        child.once("exit", ended);
-        child.once("error", failed);
-      }),
-      120_000,
-    );
-  const prepared = trial ? waitFor("prepared") : Promise.resolve();
-  const activated = waitFor("active");
+          resolve();
+        }
+      };
+      const ended = () => {
+        cleanup();
+        reject(new Error("Server exited before completing startup."));
+      };
+      const failed = () => {
+        cleanup();
+        reject(new Error("Could not start server executable."));
+      };
+      const cleanup = () => {
+        child.off("message", message);
+        child.off("exit", ended);
+        child.off("error", failed);
+      };
+      child.on("message", message);
+      child.once("exit", ended);
+      child.once("error", failed);
+    });
+  const prepared = trial ? deadline(waitFor("prepared"), 120_000) : Promise.resolve();
+  const activeSignal = waitFor("active");
+  let activated = activeSignal;
   // Both are installed before the process can emit; prevent unhandled rejection while awaiting prepared.
   void activated.catch(() => {});
   return {
     process: child,
     prepared,
-    activated,
-    activate: () =>
-      new Promise<void>((resolve, reject) =>
+    get activated() {
+      return activated;
+    },
+    activate: () => {
+      activated = deadline(activeSignal, 120_000);
+      void activated.catch(() => {});
+      return new Promise<void>((resolve, reject) =>
         child.send({ type: "activate", id: update?.id ?? "" }, (error) =>
           error ? reject(error) : resolve(),
         ),
-      ),
+      );
+    },
     async stop() {
       if (child.exitCode !== null || child.signalCode !== null) return;
       await new Promise<void>((resolve, reject) => {

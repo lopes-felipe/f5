@@ -28,6 +28,7 @@ const systemdQuote = (text: string) => {
 export function serviceDefinition(
   platform: string,
   command: readonly string[],
+  logsDirectory?: string,
 ): { name: string; contents: string } {
   if (command.some((item) => /[\r\n\0]/.test(item))) throw new Error("Invalid service arguments.");
   if (platform === "linux")
@@ -38,19 +39,23 @@ export function serviceDefinition(
   if (platform === "darwin")
     return {
       name: "com.f5.server.plist",
-      contents: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.f5.server</string><key>ProgramArguments</key><array>${command.map((item) => `<string>${xml(item)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer></dict></plist>\n`,
+      contents: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>com.f5.server</string><key>ProgramArguments</key><array>${command.map((item) => `<string>${xml(item)}</string>`).join("")}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>5</integer>${logsDirectory ? `<key>StandardOutPath</key><string>${xml(path.join(logsDirectory, "server.log"))}</string><key>StandardErrorPath</key><string>${xml(path.join(logsDirectory, "server-error.log"))}</string>` : ""}</dict></plist>\n`,
     };
   throw new Error(
     "Windows supports f5 serve in the foreground and the F5 desktop app. Service installation is available on Linux and macOS.",
   );
 }
 export async function manageService(action: string, root: string, stateDir: string): Promise<void> {
-  const definition = serviceDefinition(process.platform, [
-    path.join(root, "launcher-v1", process.platform === "win32" ? "node.exe" : "node"),
-    path.join(root, "launcher-v1", "launcher.cjs"),
-    root,
-    stateDir,
-  ]);
+  const definition = serviceDefinition(
+    process.platform,
+    [
+      path.join(root, "launcher-v1", process.platform === "win32" ? "node.exe" : "node"),
+      path.join(root, "launcher-v1", "launcher.cjs"),
+      root,
+      stateDir,
+    ],
+    path.join(stateDir, "logs"),
+  );
   const directory =
     process.platform === "linux"
       ? path.join(os.homedir(), ".config", "systemd", "user")
@@ -68,6 +73,7 @@ export async function manageService(action: string, root: string, stateDir: stri
   if (action === "install") {
     // Never replace an unrelated service definition silently.
     await fs.mkdir(directory, { recursive: true });
+    await fs.mkdir(path.join(stateDir, "logs"), { recursive: true, mode: 0o700 });
     const handle = await fs.open(file, "wx", 0o600).catch(() => {
       throw new Error(
         `Service already exists at ${file}. Use f5 service start/status, or uninstall it first.`,
@@ -89,13 +95,27 @@ export async function manageService(action: string, root: string, stateDir: stri
       await execute("systemctl", ["--user", "daemon-reload"]);
     } else await execute("systemctl", ["--user", action, "f5.service"]);
   } else {
+    const loaded = await exec("launchctl", ["print", `${domain}/com.f5.server`], {
+      timeout: 30_000,
+      maxBuffer: 1024 * 1024,
+    }).then(
+      () => true,
+      (error) => {
+        if (error.code === 113 || /Could not find service/i.test(String(error.stderr)))
+          return false;
+        throw error;
+      },
+    );
     if (action === "uninstall") {
-      await execute("launchctl", ["bootout", domain, file]);
+      if (loaded) await execute("launchctl", ["bootout", domain, file]);
       await fs.unlink(file);
-    } else if (action === "stop") await execute("launchctl", ["bootout", domain, file]);
-    else if (action === "start") await execute("launchctl", ["bootstrap", domain, file]);
-    else if (action === "restart")
-      await execute("launchctl", ["kickstart", "-k", `${domain}/com.f5.server`]);
-    else await execute("launchctl", ["print", `${domain}/com.f5.server`]);
+    } else if (action === "stop") {
+      if (loaded) await execute("launchctl", ["bootout", domain, file]);
+    } else if (action === "start") {
+      if (!loaded) await execute("launchctl", ["bootstrap", domain, file]);
+    } else if (action === "restart") {
+      if (loaded) await execute("launchctl", ["kickstart", "-k", `${domain}/com.f5.server`]);
+      else await execute("launchctl", ["bootstrap", domain, file]);
+    } else await execute("launchctl", ["print", `${domain}/com.f5.server`]);
   }
 }

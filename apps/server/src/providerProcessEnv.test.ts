@@ -154,3 +154,16 @@ it.each([true, false])(
     }
   },
 );
+
+it("removes standalone launcher state from inherited and overridden provider environments", () => {
+  const values = {
+    PATH: "/user/node",
+    F5_STANDALONE: "1",
+    F5_STANDALONE_DIR: "/installation",
+    F5_LAUNCHER_CHILD: "1",
+    F5_LAUNCHER_DATABASE: "/db",
+    F5_UPDATE_TRIAL: "1",
+    F5_UPDATE_ID: "update",
+  };
+  expect(buildProviderChildProcessEnv(values, values)).toEqual({ PATH: "/user/node" });
+});

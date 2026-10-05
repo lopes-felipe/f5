@@ -5,11 +5,14 @@ import { appendGitConfigPairs, profileSessionGitConfigPairs } from "./git/gitCon
 import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
-const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_"] as const;
+const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
 
 function isBlockedProviderEnvKey(key: string): boolean {
   const normalizedKey = key.toUpperCase();
-  return BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix));
+  return (
+    ["F5_STANDALONE", "F5_STANDALONE_DIR", "F5_INSTALL_ROOT"].includes(normalizedKey) ||
+    BLOCKED_PROVIDER_ENV_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
+  );
 }
 
 /**
@@ -40,6 +43,7 @@ export function buildProviderChildProcessEnv(
       for (const inherited of Object.keys(env))
         if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
     }
+    if (/^F5_(?:LAUNCHER_|UPDATE_|STANDALONE(?:_DIR)?$|INSTALL_ROOT$)/i.test(key)) continue;
     if (value === undefined) {
       delete env[key];
       continue;

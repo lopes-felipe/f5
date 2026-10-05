@@ -27,7 +27,6 @@ const RuntimeLayer = Layer.empty.pipe(
 watchLauncher();
 if (process.env.F5_STANDALONE === "1") {
   process.env.F5_STANDALONE_DIR = NodePath.dirname(process.execPath);
-  process.env.PATH = `${NodePath.join(process.env.F5_STANDALONE_DIR, "runtime")}${NodePath.delimiter}${process.env.PATH ?? ""}`;
 }
 void runDistributionCommand(process.argv.slice(2))
   .then((handled) => {

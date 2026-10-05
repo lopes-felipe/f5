@@ -52,3 +52,14 @@ it("blocks recovery while the orphaned child is still alive", async () => {
   await expect(acquireLauncherLease(root)).rejects.toThrow("still alive");
   await expect(fs.access(path.join(root, "launcher.json"))).resolves.toBeUndefined();
 });
+
+it("does not mistake a reused launcher PID with a different birth identity for the old supervisor", async () => {
+  await atomicJson(path.join(root, "launcher.json"), {
+    pid: process.pid,
+    birth: "different-process-birth",
+    token: "old",
+    child: null,
+  });
+  const lease = await acquireLauncherLease(root);
+  await lease.release();
+});

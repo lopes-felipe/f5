@@ -2,8 +2,10 @@
 // @effect-diagnostics globalTimers:off
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { atomicJson, exists, readJson } from "./files";
+import { atomicJson, exclusiveJson, exists, readJson } from "./files";
 import { readInstalled, preflightRuntime } from "./installation";
 import {
   managedChild,
@@ -21,11 +23,50 @@ const alive = (pid: number) => {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
+const exec = promisify(execFile);
+async function processBirth(pid: number): Promise<string> {
+  if (process.platform === "linux") {
+    const [stat, boot] = await Promise.all([
+      fs.readFile(`/proc/${pid}/stat`, "utf8"),
+      fs.readFile("/proc/sys/kernel/random/boot_id", "utf8"),
+    ]);
+    return `${boot.trim()}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
+  }
+  const result =
+    process.platform === "win32"
+      ? await exec(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+          ],
+          { timeout: 5000, maxBuffer: 4096 },
+        )
+      : await exec("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+          timeout: 5000,
+          maxBuffer: 4096,
+        });
+  if (!result.stdout.trim()) throw new Error("Process identity is unavailable.");
+  return result.stdout.trim();
+}
+async function sameProcess(pid: number, birth?: string): Promise<boolean> {
+  if (!alive(pid)) return false;
+  if (!birth) return true; // Old leases fail closed; never guess whether a live PID is the server.
+  try {
+    return (await processBirth(pid)) === birth;
+  } catch {
+    return alive(pid);
+  }
+}
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 interface Lease {
   pid: number;
   token: string;
   child: number | null;
+  birth?: string;
+  childBirth?: string;
 }
 function parseLease(value: unknown): Lease {
   if (
@@ -44,7 +85,15 @@ function parseLease(value: unknown): Lease {
     )
   )
     throw new Error("Invalid launcher lease; refusing to run a second server.");
-  return { pid: value.pid, token: value.token, child: value.child };
+  return {
+    pid: value.pid,
+    token: value.token,
+    child: value.child,
+    ...("birth" in value && typeof value.birth === "string" ? { birth: value.birth } : {}),
+    ...("childBirth" in value && typeof value.childBirth === "string"
+      ? { childBirth: value.childBirth }
+      : {}),
+  };
 }
 export async function acquireLauncherLease(
   root: string,
@@ -62,12 +111,19 @@ export async function acquireLauncherLease(
     try {
       if (await exists(file)) {
         const lease = parseLease(await readJson(file));
-        if (alive(lease.pid)) throw new Error("An F5 launcher is already running.");
-        for (let attempt = 0; lease.child && alive(lease.child) && attempt < 30; attempt++)
-          await delay(100);
-        if (lease.child && alive(lease.child))
+        if (await sameProcess(lease.pid, lease.birth))
           throw new Error(
-            "The previous server child is still alive; database recovery is blocked.",
+            "An F5 launcher is already running, or its saved PID was reused. Verify the process before manually removing launcher.json.",
+          );
+        for (
+          let attempt = 0;
+          lease.child && (await sameProcess(lease.child, lease.childBirth)) && attempt < 30;
+          attempt++
+        )
+          await delay(100);
+        if (lease.child && (await sameProcess(lease.child, lease.childBirth)))
+          throw new Error(
+            "The previous server child is still alive, or its PID was reused; database recovery is blocked. Verify the process before manually removing launcher.json.",
           );
         await fs.unlink(file);
       }
@@ -75,19 +131,20 @@ export async function acquireLauncherLease(
       await fs.unlink(recovery);
     }
   }
-  const lease: Lease = { pid: process.pid, token: randomUUID(), child: null };
-  const handle = await fs.open(file, "wx", 0o600).catch(() => {
+  const lease: Lease = {
+    pid: process.pid,
+    birth: await processBirth(process.pid),
+    token: randomUUID(),
+    child: null,
+  };
+  await exclusiveJson(file, lease).catch(() => {
     throw new Error("An F5 launcher is already starting.");
   });
-  try {
-    await handle.writeFile(JSON.stringify(lease));
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
   return {
     async child(pid) {
       lease.child = pid;
+      if (pid) lease.childBirth = await processBirth(pid);
+      else delete lease.childBirth;
       await atomicJson(file, lease);
     },
     async release() {
@@ -105,8 +162,13 @@ export async function runLauncher(
   const lease = await acquireLauncherLease(root);
   let child: ReturnType<typeof managedChild> | undefined;
   let stopping = false;
+  let signalStop: () => void = () => {};
+  const stopped = new Promise<void>((resolve) => {
+    signalStop = resolve;
+  });
   const stop = () => {
     stopping = true;
+    signalStop();
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
@@ -115,14 +177,26 @@ export async function runLauncher(
     const start = async (version: string, outcome?: UpdateOutcome) => {
       child = managedChild(root, version, stateDir, args, outcome);
       await lease.child(child.process.pid ?? null);
-      await child.activated;
+      await Promise.race([child.activated, stopped]);
     };
     const version = (await readInstalled(root)).version;
     const outcome = recovered ?? (await readUpdateOutcome(root));
     await start(version, outcome?.version === version ? outcome : undefined);
     while (!stopping) {
       if (await exists(path.join(root, "pending.json"))) {
-        const request = parseRequest(await readJson(path.join(root, "pending.json")));
+        let request;
+        try {
+          request = parseRequest(await readJson(path.join(root, "pending.json")));
+        } catch (error) {
+          await fs.rename(
+            path.join(root, "pending.json"),
+            path.join(root, `rejected-request-${randomUUID()}.json`),
+          );
+          console.error(
+            `Rejected malformed update request; healthy server kept running: ${String(error)}`,
+          );
+          continue;
+        }
         try {
           await performHandoff(root, path.join(stateDir, "state.sqlite"), request, {
             stopOld: async () => {
@@ -142,7 +216,14 @@ export async function runLauncher(
               // The lease update must complete before any later recovery can restore the database.
               const recorded = lease.child(child.process.pid ?? null);
               const trial = child;
-              return { ...trial, prepared: recorded.then(() => trial.prepared) };
+              return {
+                get activated() {
+                  return trial.activated;
+                },
+                activate: () => trial.activate(),
+                stop: () => trial.stop(),
+                prepared: recorded.then(() => trial.prepared),
+              };
             },
             restart: start,
           });

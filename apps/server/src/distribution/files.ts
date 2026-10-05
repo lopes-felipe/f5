@@ -49,3 +49,21 @@ export async function copyDurable(source: string, destination: string): Promise<
     await handle.close();
   }
 }
+
+/** Publish fully synced metadata without exposing an empty file or replacing another writer. */
+export async function exclusiveJson(file: string, value: unknown): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  const handle = await fs.open(temporary, "wx", 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(value) + "\n");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.link(temporary, file);
+    await syncDirectory(path.dirname(file));
+  } finally {
+    await fs.unlink(temporary);
+  }
+}

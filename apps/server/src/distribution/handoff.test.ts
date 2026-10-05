@@ -9,7 +9,7 @@ import { cliTarget } from "@t3tools/shared/cliRelease";
 import { performHandoff, recoverHandoff, snapshotDatabase } from "./handoff";
 let root: string, database: string;
 beforeEach(async () => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-handoff-test-"));
+  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "f5-handoff-test-")));
   database = path.join(root, "state.sqlite");
   await atomicJson(path.join(root, "current.json"), {
     schemaVersion: 1,
@@ -117,7 +117,12 @@ describe("staged server update", () => {
       await snapshotDatabase(database, path.join(root, "db-backup", update.id));
       await fs.writeFile(database, "trial");
       await fs.writeFile(database + "-wal", "trial-wal");
-      await atomicJson(path.join(root, "handoff.json"), { ...update, previous: "1.0.0", phase });
+      await atomicJson(path.join(root, "handoff.json"), {
+        ...update,
+        database,
+        previous: "1.0.0",
+        phase,
+      });
       const result = await recoverHandoff(root, database);
       expect(result).toMatchObject({ id: update.id, outcome: "rolled-back", version: "1.0.0" });
       expect(await fs.readFile(database, "utf8")).toBe("old");
@@ -130,6 +135,7 @@ describe("staged server update", () => {
     await fs.writeFile(database, "migrated");
     await atomicJson(path.join(root, "handoff.json"), {
       ...update,
+      database,
       previous: "1.0.0",
       phase: "committed",
     });
@@ -145,6 +151,7 @@ describe("staged server update", () => {
     await fs.writeFile(database, "trial");
     await atomicJson(path.join(root, "handoff.json"), {
       ...update,
+      database,
       previous: "1.0.0",
       phase: "trial",
     });
@@ -166,4 +173,76 @@ it("retains a correlated outcome across later launcher restarts", async () => {
   await atomicJson(path.join(root, "outcome.json"), outcome);
   expect(await recoverHandoff(root, database)).toBeUndefined();
   expect(await readUpdateOutcome(root)).toEqual(outcome);
+});
+
+it("refuses recovery into a different populated state directory", async () => {
+  const update = request();
+  await fs.writeFile(database, "original A");
+  await snapshotDatabase(database, path.join(root, "db-backup", update.id));
+  await fs.writeFile(database, "trial A");
+  const other = path.join(root, "other.sqlite");
+  await fs.writeFile(other, "original B");
+  await atomicJson(path.join(root, "handoff.json"), {
+    ...update,
+    database,
+    previous: "1.0.0",
+    phase: "trial",
+  });
+  await expect(recoverHandoff(root, other)).rejects.toThrow("another database");
+  expect(await fs.readFile(other, "utf8")).toBe("original B");
+  expect(await fs.readFile(database, "utf8")).toBe("trial A");
+  await recoverHandoff(root, database);
+  expect(await fs.readFile(database, "utf8")).toBe("original A");
+});
+
+it("never restores post-activation writes when committed journal cleanup fails", async () => {
+  const { vi } = await import("vitest");
+  await fs.writeFile(database, "old");
+  const update = request(),
+    restart = vi.fn();
+  // An unexpected pending directory makes request cleanup fail after activation.
+  await fs.mkdir(path.join(root, "pending.json"));
+  const result = await performHandoff(root, database, update, {
+    preflight: async () => {},
+    stopOld: async () => {},
+    restart,
+    trial: () => ({
+      prepared: Promise.resolve(),
+      activated: Promise.resolve(),
+      stop: vi.fn(),
+      activate: async () => {
+        await fs.writeFile(database, "new accepted data");
+      },
+    }),
+  });
+  expect(result.outcome).toBe("committed");
+  expect(restart).not.toHaveBeenCalled();
+  expect(await fs.readFile(database, "utf8")).toBe("new accepted data");
+  expect(await readJson(path.join(root, "handoff.json"))).toMatchObject({ phase: "committed" });
+});
+
+it("rolls forward consistently after an activation failure following durable commit", async () => {
+  const { vi } = await import("vitest");
+  await fs.writeFile(database, "old");
+  const update = request(),
+    restart = vi.fn();
+  await expect(
+    performHandoff(root, database, update, {
+      preflight: async () => {},
+      stopOld: async () => {},
+      restart,
+      trial: () => ({
+        prepared: Promise.resolve(),
+        activated: Promise.resolve(),
+        stop: vi.fn(),
+        activate: async () => {
+          await fs.writeFile(database, "new data");
+          throw new Error("IPC lost");
+        },
+      }),
+    }),
+  ).rejects.toThrow("durably committed");
+  expect(restart).not.toHaveBeenCalled();
+  expect((await recoverHandoff(root, database))?.outcome).toBe("committed");
+  expect(await fs.readFile(database, "utf8")).toBe("new data");
 });
