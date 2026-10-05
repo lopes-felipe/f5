@@ -1067,6 +1067,7 @@ export const PR_HUB_WS_METHODS = {
   removeAccount: "prHub.removeAccount",
   listAccountRouting: "prHub.listAccountRouting",
   setAccountRouting: "prHub.setAccountRouting",
+  removeAccountRouting: "prHub.removeAccountRouting",
   peek: "prHub.peek",
   getStack: "prHub.getStack",
   getViewedFiles: "prHub.getViewedFiles",
