@@ -85,7 +85,7 @@ export function WorktreeCleanupRulesEditor(props: {
   const { rules, disabled } = props;
   return (
     <div className="space-y-1">
-      <label className="flex items-center justify-between gap-4 py-2">
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
         <span>
           Remove idle worktrees after
           <span className="block text-xs text-muted-foreground">
@@ -100,7 +100,7 @@ export function WorktreeCleanupRulesEditor(props: {
         />
       </label>
       {RULE_TOGGLES.map((toggle) => (
-        <label key={toggle.key} className="flex items-center justify-between gap-4 py-2">
+        <label key={toggle.key} className="flex items-center justify-between gap-4 py-2 text-sm">
           <span>
             {toggle.label}
             <span className="block text-xs text-muted-foreground">{toggle.description}</span>

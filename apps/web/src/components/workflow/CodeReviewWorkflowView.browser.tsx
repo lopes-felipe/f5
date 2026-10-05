@@ -6,6 +6,7 @@ import {
   ThreadId,
   type CodeReviewWorkflow,
 } from "@t3tools/contracts";
+import type { AnchorHTMLAttributes } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -20,6 +21,9 @@ const nativeApiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../nativeApi", () => ({
+  ensureNativeApi: () => {
+    throw new Error("Native API not available in this test");
+  },
   readNativeApi: () =>
     nativeApiMocks.connected
       ? {
@@ -34,12 +38,25 @@ vi.mock("../../nativeApi", () => ({
 vi.mock("@tanstack/react-router", async () => {
   const actual =
     await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
-  return { ...actual, useNavigate: () => vi.fn() };
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+    // Step cards link to their threads; no router is mounted here.
+    Link: ({
+      to: _to,
+      params: _params,
+      children,
+      ...rest
+    }: AnchorHTMLAttributes<HTMLAnchorElement> & { to?: unknown; params?: unknown }) => (
+      <a href="#" {...rest}>
+        {children}
+      </a>
+    ),
+  };
 });
 
 vi.mock("../../lib/orchestrationReactQuery", () => ({ useThreadDetail: () => undefined }));
 vi.mock("./WorkflowRunInspector", () => ({ WorkflowRunInspector: () => null }));
-vi.mock("./WorkflowTimelinePhaseList", () => ({ WorkflowTimelinePhaseList: () => null }));
 
 import { CodeReviewWorkflowView } from "./CodeReviewWorkflowView";
 

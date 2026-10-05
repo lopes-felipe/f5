@@ -265,6 +265,8 @@ export function formatKeybindingCommandLabel(
       return "Paste as text without folding";
     case "commandPalette.toggle":
       return "Toggle command palette";
+    case "help.shortcuts":
+      return "Show keyboard shortcuts";
     default: {
       const _exhaustive: never = staticCommand;
       return _exhaustive;

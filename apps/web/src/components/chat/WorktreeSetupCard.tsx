@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 
 export interface WorktreeSetupCardProps {
   readonly snapshot: WorktreeSetupSnapshot;
@@ -27,6 +28,7 @@ export interface WorktreeSetupCardProps {
   readonly onCancel: (() => void) | null;
   readonly onRetry: (() => void) | null;
   readonly onWorkLocally: (() => void) | null;
+  readonly variant?: ComposerPanelVariant | undefined;
 }
 
 function formatElapsed(ms: number): string {
@@ -173,7 +175,7 @@ function OutputTail({ lines, failed }: { lines: ReadonlyArray<string>; failed: b
   return (
     <pre
       className={cn(
-        "ml-5 overflow-hidden rounded-md border px-2 py-1 font-mono text-[11px] leading-relaxed select-text",
+        "ml-5 overflow-hidden rounded-md border px-2 py-1 font-mono text-2xs leading-relaxed select-text",
         failed
           ? "border-destructive/20 text-destructive-foreground"
           : "border-border text-muted-foreground",
@@ -203,7 +205,11 @@ export function WorktreeSetupCard(props: WorktreeSetupCardProps) {
   return (
     <section
       aria-label="Worktree setup"
-      className="mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border/70 bg-card/95 px-3 py-2 shadow-sm"
+      className={
+        props.variant === "tray"
+          ? COMPOSER_TRAY_PANEL_CLASS_NAME
+          : "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-3 py-2 shadow-sm"
+      }
       data-worktree-setup-phase={snapshot.phase}
       data-worktree-setup-collapsed={collapsed || undefined}
     >

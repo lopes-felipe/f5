@@ -64,8 +64,10 @@ describe("appearance settings", () => {
       chatFontSize: 16,
       monoFontFamily: "JetBrains Mono",
       terminalFontSize: 13,
+      chatContentWidth: "wide",
     });
 
+    expect(style.getPropertyValue("--chat-content-max-width")).toBe("72rem");
     expect(style.fontSize).toBe("1.125em");
     expect(style.getPropertyValue("--font-sans")).toBe(`"Inter", ${DEFAULT_UI_FONT_STACK}`);
     expect(style.getPropertyValue("--font-mono")).toBe(
@@ -74,5 +76,15 @@ describe("appearance settings", () => {
     expect(style.getPropertyValue("--f5-chat-font-family")).toBe('"Roboto", var(--font-sans)');
     expect(style.getPropertyValue("--f5-chat-font-size")).toBe("16px");
     expect(style.getPropertyValue("--diffs-font-family")).toContain("JetBrains Mono");
+  });
+
+  it("falls back to the comfortable chat width for unknown values", () => {
+    expect(normalizeAppearanceSettings({}).chatContentWidth).toBe("comfortable");
+    expect(
+      normalizeAppearanceSettings({ chatContentWidth: "huge" as never }).chatContentWidth,
+    ).toBe("comfortable");
+    expect(normalizeAppearanceSettings({ chatContentWidth: "narrow" }).chatContentWidth).toBe(
+      "narrow",
+    );
   });
 });

@@ -1,12 +1,40 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SETTINGS_CATEGORIES,
+  SETTINGS_CATEGORY_GROUPS,
+  SETTINGS_CATEGORY_ICONS,
   SETTINGS_ITEM_DESCRIPTORS,
   filterSettingsItems,
   getSettingsItemDescriptor,
   resolveSettingsCategoryFromSearch,
   resolveSettingsNavigationSearch,
 } from "./settingsCategories";
+
+describe("settings navigation groups", () => {
+  it("lists every category exactly once, in category order", () => {
+    expect(SETTINGS_CATEGORY_GROUPS.flatMap((group) => group.categories)).toEqual([
+      ...SETTINGS_CATEGORIES,
+    ]);
+  });
+
+  it("groups App, Interface, Agents, Data, then About on its own", () => {
+    expect(SETTINGS_CATEGORY_GROUPS.map((group) => group.label)).toEqual([
+      "App",
+      "Interface",
+      "Agents",
+      "Data",
+      null,
+    ]);
+    expect(SETTINGS_CATEGORY_GROUPS.at(-1)?.categories).toEqual(["about"]);
+  });
+
+  it("has an icon for every category", () => {
+    for (const category of SETTINGS_CATEGORIES) {
+      expect(SETTINGS_CATEGORY_ICONS[category]).toBeDefined();
+    }
+  });
+});
 
 describe("settings item descriptors", () => {
   it("uses unique IDs and known categories", () => {

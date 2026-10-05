@@ -35,7 +35,7 @@ export function PrTrackForm({ onTracked }: { onTracked: (pr: TrackedPullRequest)
           value={url}
           onChange={(event) => setUrl(event.target.value)}
           placeholder="Track a PR by its GitHub URL"
-          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm"
+          className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 font-mono text-sm placeholder:font-sans"
           disabled={busy}
         />
         <Button type="submit" size="sm" variant="outline" disabled={busy || !url.trim()}>

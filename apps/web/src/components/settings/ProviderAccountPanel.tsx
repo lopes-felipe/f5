@@ -215,7 +215,7 @@ export function ProviderAccountPanel({
           <ExternalLinkIcon />
           <AlertTitle>Finish signing in</AlertTitle>
           <AlertDescription>
-            <span className="break-all font-mono text-[11px]">{url}</span>
+            <span className="break-all font-mono text-2xs">{url}</span>
           </AlertDescription>
           <AlertAction>
             <Button size="xs" render={<a href={url} target="_blank" rel="noreferrer" />}>
@@ -246,7 +246,7 @@ export function ProviderAccountPanel({
                 />
                 Setup output
                 {!outputOpen && outputLines > 0 ? (
-                  <span className="text-[11px] tabular-nums opacity-70">({outputLines} lines)</span>
+                  <span className="text-2xs tabular-nums opacity-70">({outputLines} lines)</span>
                 ) : null}
               </button>
             }
@@ -284,9 +284,7 @@ export function ProviderAccountPanel({
               Send
             </Button>
           </div>
-          <span className="text-[11px] text-muted-foreground">
-            Sent to the CLI followed by Enter.
-          </span>
+          <span className="text-2xs text-muted-foreground">Sent to the CLI followed by Enter.</span>
         </form>
       ) : null}
 

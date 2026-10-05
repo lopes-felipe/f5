@@ -49,7 +49,7 @@ export function QuotaMeter(props: {
           style={{ width: `${remainingPercent ?? 0}%` }}
         />
       </div>
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-2xs text-muted-foreground">
         {reset}
         {remainingMinutes !== null && Number.isFinite(remainingMinutes)
           ? ` · ${Math.floor(remainingMinutes / 60)}h ${remainingMinutes % 60}m remaining`

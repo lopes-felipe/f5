@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { ComposerTray } from "./composer/ComposerTray";
 import { NextTurnQueuePanel } from "./NextTurnQueuePanel";
 import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 
@@ -70,6 +71,68 @@ describe("NextTurnQueuePanel", () => {
     await expect.element(page.getByText("Run the queued follow-up")).toBeInTheDocument();
     await expect.element(page.getByText("Up next")).toBeInTheDocument();
     await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+  });
+
+  it("keeps the composer on screen with a full 20-item queue in the tray", async () => {
+    const threadId = ThreadId.makeUnsafe("queue-thread-full");
+    useNextTurnQueueStore.getState().applySnapshot({
+      threadId,
+      revision: 1,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: Array.from({ length: 20 }, (_, index) => ({
+        itemId: CommandId.makeUnsafe(`queue-item-${index}`),
+        threadId,
+        submissionId: CommandId.makeUnsafe(`submission-${index}`),
+        position: index,
+        status: "queued" as const,
+        command: {
+          type: "thread.turn.start" as const,
+          commandId: CommandId.makeUnsafe(`command-${index}`),
+          threadId,
+          message: {
+            messageId: MessageId.makeUnsafe(`message-${index}`),
+            role: "user" as const,
+            text: `Queued follow-up number ${index + 1}`,
+            attachments: [],
+          },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdAt: "2026-08-07T12:00:00.000Z",
+        },
+        attemptCount: 0,
+        notBefore: null,
+        dispatchStartedAt: null,
+        lastErrorCode: null,
+        lastErrorDetail: null,
+        createdAt: "2026-08-07T12:00:00.000Z",
+        updatedAt: "2026-08-07T12:00:00.000Z",
+      })),
+    });
+    active = await render(
+      <div style={{ height: 700, display: "flex", flexDirection: "column" }}>
+        <div style={{ flex: 1, minHeight: 0 }} />
+        <ComposerTray>
+          <NextTurnQueuePanel variant="tray" threadId={threadId} />
+        </ComposerTray>
+        <div data-testid="composer-stub" style={{ height: 140, flexShrink: 0 }} />
+      </div>,
+    );
+
+    await expect.element(page.getByText("Next turns (20)")).toBeInTheDocument();
+    const stub = document.querySelector<HTMLElement>('[data-testid="composer-stub"]')!;
+    const container = stub.parentElement!;
+    expect(stub.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      container.getBoundingClientRect().bottom + 1,
+    );
+    expect(
+      document.querySelector<HTMLElement>('[data-slot="composer-tray"]')!.getBoundingClientRect()
+        .height,
+    ).toBeLessThan(700 - 140);
   });
 
   it("requires explicit recovery for an ambiguous provider delivery", async () => {

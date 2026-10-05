@@ -115,7 +115,7 @@ const ThreadCyclePickerRow = memo(function ThreadCyclePickerRow({
         {isCurrentItem ? (
           <span
             data-slot="thread-cycle-picker-current-marker"
-            className="rounded-full border border-border/70 px-1.5 py-0.5 text-[10px] font-medium tracking-[0.14em] text-muted-foreground uppercase"
+            className="rounded-full border border-border/70 px-1.5 py-0.5 text-2xs font-medium tracking-wider text-muted-foreground uppercase"
           >
             Current
           </span>
@@ -189,17 +189,17 @@ export default function ThreadCyclePicker({
             <KbdGroup className="items-center gap-1.5">
               <Kbd>{modifierLabel}</Kbd>
               <Kbd>Tab</Kbd>
-              <span className="text-muted-foreground/80">Next</span>
+              <span className="text-muted-foreground">Next</span>
             </KbdGroup>
             <KbdGroup className="items-center gap-1.5">
               <Kbd>{modifierLabel}</Kbd>
               <Kbd>Shift</Kbd>
               <Kbd>Tab</Kbd>
-              <span className="text-muted-foreground/80">Previous</span>
+              <span className="text-muted-foreground">Previous</span>
             </KbdGroup>
             <KbdGroup className="items-center gap-1.5">
               <Kbd>Esc</Kbd>
-              <span className="text-muted-foreground/80">Cancel</span>
+              <span className="text-muted-foreground">Cancel</span>
             </KbdGroup>
           </div>
         </CommandFooter>

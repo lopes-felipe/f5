@@ -109,9 +109,12 @@ export default function BranchToolbar({
   if (!activeThreadId || !activeProject) return null;
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-5 pb-3 pt-1">
+    <div
+      data-slot="branch-toolbar"
+      className="mx-auto flex h-7 w-full max-w-(--chat-content-max-width) shrink-0 items-center justify-between gap-2 px-1 text-2xs text-muted-foreground"
+    >
       {envLocked || activeWorktreePath ? (
-        <span className="inline-flex items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">
+        <span className="inline-flex items-center gap-1 px-2 text-2xs text-muted-foreground">
           {activeWorktreePath ? (
             <>
               <GitForkIcon className="size-3" />
@@ -134,7 +137,7 @@ export default function BranchToolbar({
             data-composer-control="envMode"
             variant="ghost"
             size="xs"
-            className="font-medium"
+            className="h-6 min-h-6 text-2xs font-normal text-muted-foreground hover:text-foreground sm:h-6 sm:min-h-6"
           >
             {effectiveEnvMode === "worktree" ? (
               <GitForkIcon className="size-3" />

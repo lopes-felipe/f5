@@ -9,6 +9,8 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
   AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
 } from "../ui/alert-dialog";
 
 export function ResetCreditButton(props: {
@@ -67,23 +69,25 @@ export function ResetCreditButton(props: {
         }}
       >
         <AlertDialogPopup>
-          <AlertDialogTitle>Use a reset credit?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This redeems one credit for {props.accountName} to reset {props.windowName}.
-          </AlertDialogDescription>
-          {error && (
-            <p role="alert" className="my-2 text-sm">
-              {error}
-            </p>
-          )}
-          <div className="mt-4 flex justify-end gap-2">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Use a reset credit?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This redeems one credit for {props.accountName} to reset {props.windowName}.
+            </AlertDialogDescription>
+            {error && (
+              <p role="alert" className="text-sm text-destructive-foreground">
+                {error}
+              </p>
+            )}
+          </AlertDialogHeader>
+          <AlertDialogFooter>
             <Button variant="outline" disabled={pending} onClick={() => setOpen(false)}>
               Cancel
             </Button>
             <Button disabled={pending} onClick={() => void redeem()}>
               {pending ? "Redeeming…" : "Confirm redemption"}
             </Button>
-          </div>
+          </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
     </>

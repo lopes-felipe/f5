@@ -520,7 +520,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const diffPresentationControls = (
     <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
       {renderableFiles.length > 0 ? (
-        <span className="whitespace-nowrap px-1 text-[10px] text-muted-foreground/70">
+        <span className="whitespace-nowrap px-1 text-2xs text-muted-foreground">
           {renderableFiles.length} {renderableFiles.length === 1 ? "file" : "files"}
           {hasNonZeroStat(aggregateDiffStat) ? (
             <>
@@ -586,7 +586,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
 
   const headerRow = isExactFileChangeMode ? (
     <>
-      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
+      <div className="min-w-0 flex-1 px-1 text-2xs text-muted-foreground [-webkit-app-region:no-drag]">
         <span className="truncate">
           {exactFileChangeQuery.data?.fileChange?.title ?? "File change diff"}
         </span>
@@ -595,7 +595,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     </>
   ) : isReviewScope ? (
     <>
-      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
+      <div className="min-w-0 flex-1 px-1 text-2xs text-muted-foreground [-webkit-app-region:no-drag]">
         {selectedReviewScope === "working-tree" ? "Working tree changes" : "Branch changes"}
       </div>
       {scopeControls}
@@ -616,7 +616,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
             "absolute left-0 top-1/2 z-20 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
             canScrollTurnStripLeft
               ? "border-border/70 hover:border-border hover:text-foreground"
-              : "cursor-not-allowed border-border/40 text-muted-foreground/40",
+              : "cursor-not-allowed border-border/40 text-muted-foreground",
           )}
           onClick={() => scrollTurnStripBy(-180)}
           disabled={!canScrollTurnStripLeft}
@@ -630,7 +630,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
             "absolute right-0 top-1/2 z-20 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-md border bg-background/90 text-muted-foreground transition-colors",
             canScrollTurnStripRight
               ? "border-border/70 hover:border-border hover:text-foreground"
-              : "cursor-not-allowed border-border/40 text-muted-foreground/40",
+              : "cursor-not-allowed border-border/40 text-muted-foreground",
           )}
           onClick={() => scrollTurnStripBy(180)}
           disabled={!canScrollTurnStripRight}
@@ -654,10 +654,10 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                 "rounded-md border px-2 py-1 text-left transition-colors",
                 selectedTurnId === null
                   ? "border-border bg-accent text-accent-foreground"
-                  : "border-border/70 bg-background/70 text-muted-foreground/80 hover:border-border hover:text-foreground/80",
+                  : "border-border/70 bg-background/70 text-muted-foreground hover:border-border hover:text-foreground",
               )}
             >
-              <div className="text-[10px] leading-tight font-medium">All turns</div>
+              <div className="text-2xs leading-tight font-medium">All turns</div>
             </div>
           </button>
           {orderedTurnDiffSummaries.map((summary) => (
@@ -674,17 +674,17 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   "rounded-md border px-2 py-1 text-left transition-colors",
                   summary.turnId === selectedTurn?.turnId
                     ? "border-border bg-accent text-accent-foreground"
-                    : "border-border/70 bg-background/70 text-muted-foreground/80 hover:border-border hover:text-foreground/80",
+                    : "border-border/70 bg-background/70 text-muted-foreground hover:border-border hover:text-foreground",
                 )}
               >
                 <div className="flex items-center gap-1">
-                  <span className="text-[10px] leading-tight font-medium">
+                  <span className="text-2xs leading-tight font-medium">
                     Turn{" "}
                     {summary.checkpointTurnCount ??
                       inferredCheckpointTurnCountByTurnId[summary.turnId] ??
                       "?"}
                   </span>
-                  <span className="text-[9px] leading-tight opacity-70">
+                  <span className="text-2xs leading-tight opacity-70">
                     {formatShortTimestamp(summary.completedAt, settings.timestampFormat)}
                   </span>
                 </div>
@@ -724,7 +724,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         />
       ) : null}
       {!activeThread ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           {isExactFileChangeMode
             ? "Select a thread to inspect file-change diffs."
             : "Select a thread to inspect turn diffs."}
@@ -732,11 +732,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       ) : !isExactFileChangeMode && !isReviewScope && !activeThread.detailsLoaded ? (
         <DiffPanelLoadingState label="Loading thread diff context..." />
       ) : !isExactFileChangeMode && !isGitRepo ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
       ) : !isExactFileChangeMode && !isReviewScope && orderedTurnDiffSummaries.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           No completed turns yet.
         </div>
       ) : (
@@ -747,11 +747,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
           >
             {patchLoadError && !renderablePatch && (
               <div className="px-3">
-                <p className="mb-2 text-[11px] text-red-500/80">{patchLoadError}</p>
+                <p className="mb-2 text-2xs text-destructive-foreground/80">{patchLoadError}</p>
               </div>
             )}
             {reviewDiffResult?.kind === "success" && reviewDiffResult.truncated ? (
-              <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+              <div className="border-b border-warning/20 bg-warning/5 px-3 py-2 text-2xs text-warning-foreground">
                 {reviewDiffResult.truncationReason ?? "Diff preview was truncated."}
               </div>
             ) : null}
@@ -765,7 +765,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   }
                 />
               ) : (
-                <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground/70">
+                <div className="flex h-full items-center justify-center px-3 py-2 text-xs text-muted-foreground">
                   <p>
                     {isExactFileChangeMode && exactFileChangeQuery.data?.fileChange === null
                       ? "No file-change transcript found."
@@ -871,8 +871,8 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
             ) : (
               <div className="h-full overflow-auto p-2">
                 <div className="space-y-2">
-                  <p className="text-[11px] text-muted-foreground/75">{renderablePatch.reason}</p>
-                  <pre className="max-h-[72vh] overflow-auto rounded-md border border-border/70 bg-background/70 p-3 font-mono text-[11px] leading-relaxed text-muted-foreground/90">
+                  <p className="text-2xs text-muted-foreground">{renderablePatch.reason}</p>
+                  <pre className="max-h-[72vh] overflow-auto rounded-md border border-border/70 bg-background/70 p-3 font-mono text-2xs leading-relaxed text-muted-foreground">
                     {renderablePatch.text}
                   </pre>
                 </div>

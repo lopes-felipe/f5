@@ -1,19 +1,32 @@
 import { terminalClipboardAction, terminalRightClickPastes } from "../terminalClipboard";
 import { useProfileState } from "../profileState";
 import { FitAddon } from "@xterm/addon-fit";
-import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  Plus,
+  SquareSplitHorizontal,
+  TerminalSquare,
+  Trash2,
+  XIcon,
+} from "lucide-react";
 import { type ThreadId } from "@t3tools/contracts";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
-import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
+import { ScrollArea } from "~/components/ui/scroll-area";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { cn } from "~/lib/utils";
 import { type TerminalContextSelection } from "~/lib/terminalContext";
 import { openInPreferredEditor } from "../editorPreferences";
 import { useFileNavigation } from "../fileNavigationContext";
@@ -199,6 +212,23 @@ export function resolveTerminalSelectionActionPosition(options: {
     x: Math.max(8, Math.min(preferredX, Math.max(viewportWidth - 8, 8))),
     y: Math.max(8, Math.min(preferredY, Math.max(viewportHeight - 8, 8))),
   };
+}
+
+/** Roving focus in the terminal tab strip: wraps at both ends; null for other keys. */
+export function terminalTabIndexForKey(key: string, index: number, count: number): number | null {
+  if (count <= 0) return null;
+  switch (key) {
+    case "ArrowRight":
+      return (index + 1) % count;
+    case "ArrowLeft":
+      return (index - 1 + count) % count;
+    case "Home":
+      return 0;
+    case "End":
+      return count - 1;
+    default:
+      return null;
+  }
 }
 
 export function terminalSelectionActionDelayForClickCount(clickCount: number): number {
@@ -796,9 +826,7 @@ function TerminalViewport({
       window.cancelAnimationFrame(frame);
     };
   }, [drawerHeight, resizeEpoch, terminalId, threadId]);
-  return (
-    <div ref={containerRef} className="relative h-full w-full overflow-hidden rounded-[4px]" />
-  );
+  return <div ref={containerRef} className="relative h-full w-full overflow-hidden rounded" />;
 }
 
 interface ThreadTerminalDrawerProps {
@@ -820,36 +848,83 @@ interface ThreadTerminalDrawerProps {
   onCloseTerminal: (terminalId: string) => void;
   onHeightChange: (height: number) => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  /** Hides the drawer without closing its terminals. */
+  onHideTerminal?: (() => void) | undefined;
+  hideShortcutLabel?: string | undefined;
   resolvedTheme: "light" | "dark";
   themePaletteRevision: string;
 }
 
 interface TerminalActionButtonProps {
   label: string;
-  className: string;
+  disabled?: boolean | undefined;
   onClick: () => void;
   children: ReactNode;
 }
 
-function TerminalActionButton({ label, className, onClick, children }: TerminalActionButtonProps) {
+function TerminalActionButton({
+  label,
+  disabled = false,
+  onClick,
+  children,
+}: TerminalActionButtonProps) {
   return (
-    <Popover>
-      <PopoverTrigger
-        openOnHover
-        render={<button type="button" className={className} onClick={onClick} aria-label={label} />}
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label={label}
+            aria-disabled={disabled || undefined}
+            className={cn(
+              "text-muted-foreground hover:text-foreground",
+              disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
+            )}
+            onClick={disabled ? undefined : onClick}
+          />
+        }
       >
         {children}
-      </PopoverTrigger>
-      <PopoverPopup
-        tooltipStyle
-        side="bottom"
-        sideOffset={6}
-        align="center"
-        className="pointer-events-none select-none"
+      </TooltipTrigger>
+      <TooltipPopup side="bottom">{label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function TerminalDrawerActions(props: {
+  splitLabel: string;
+  splitDisabled: boolean;
+  onSplit: () => void;
+  newLabel: string;
+  onNew: () => void;
+  closeLabel: string;
+  onClose: () => void;
+  hideLabel: string;
+  onHide: (() => void) | undefined;
+}) {
+  return (
+    <>
+      <TerminalActionButton
+        label={props.splitLabel}
+        disabled={props.splitDisabled}
+        onClick={props.onSplit}
       >
-        {label}
-      </PopoverPopup>
-    </Popover>
+        <SquareSplitHorizontal className="size-4" />
+      </TerminalActionButton>
+      <TerminalActionButton label={props.newLabel} onClick={props.onNew}>
+        <Plus className="size-4" />
+      </TerminalActionButton>
+      <TerminalActionButton label={props.closeLabel} onClick={props.onClose}>
+        <Trash2 className="size-4" />
+      </TerminalActionButton>
+      {props.onHide ? (
+        <TerminalActionButton label={props.hideLabel} onClick={props.onHide}>
+          <ChevronDownIcon className="size-4" />
+        </TerminalActionButton>
+      ) : null}
+    </>
   );
 }
 
@@ -872,6 +947,8 @@ export default function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
   onAddTerminalContext,
+  onHideTerminal,
+  hideShortcutLabel,
   resolvedTheme,
   themePaletteRevision,
 }: ThreadTerminalDrawerProps) {
@@ -976,11 +1053,33 @@ export default function ThreadTerminalDrawer({
   const visibleTerminalIds = resolvedTerminalGroups[resolvedActiveGroupIndex]?.terminalIds ?? [
     resolvedActiveTerminalId,
   ];
-  const hasTerminalSidebar = normalizedTerminalIds.length > 1;
+  const hasTerminalTabs = normalizedTerminalIds.length > 1;
+  const terminalTabIdPrefix = useId();
+  const terminalTabId = (terminalId: string) => `${terminalTabIdPrefix}-tab-${terminalId}`;
+  const terminalPanelId = `${terminalTabIdPrefix}-panel`;
+  // Tabs pattern with manual activation: arrows, Home and End move focus;
+  // Enter or Space (the button's click) activates, which focuses the
+  // terminal. Delete closes the focused tab, standing in for its close
+  // button, which is pointer-only.
+  const onTerminalTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    terminalId: string,
+  ) => {
+    const orderedIds = resolvedTerminalGroups.flatMap((group) => group.terminalIds);
+    const index = orderedIds.indexOf(terminalId);
+    if (index < 0) return;
+    if (event.key === "Delete") {
+      event.preventDefault();
+      onCloseTerminal(terminalId);
+      return;
+    }
+    const nextIndex = terminalTabIndexForKey(event.key, index, orderedIds.length);
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextId = orderedIds[nextIndex];
+    if (nextId) document.getElementById(terminalTabId(nextId))?.focus();
+  };
   const isSplitView = visibleTerminalIds.length > 1;
-  const showGroupHeaders =
-    resolvedTerminalGroups.length > 1 ||
-    resolvedTerminalGroups.some((terminalGroup) => terminalGroup.terminalIds.length > 1);
   const hasReachedSplitLimit = visibleTerminalIds.length >= MAX_TERMINALS_PER_GROUP;
   const terminalLabelById = useMemo(
     () =>
@@ -1000,6 +1099,9 @@ export default function ThreadTerminalDrawer({
   const closeTerminalActionLabel = closeShortcutLabel
     ? `Close Terminal (${closeShortcutLabel})`
     : "Close Terminal";
+  const hideTerminalActionLabel = hideShortcutLabel
+    ? `Hide terminal (${hideShortcutLabel})`
+    : "Hide terminal";
   const onSplitTerminalAction = useCallback(() => {
     if (hasReachedSplitLimit) return;
     onSplitTerminal();
@@ -1102,58 +1204,159 @@ export default function ThreadTerminalDrawer({
   return (
     <aside
       aria-label={profileName ? `Terminal - ${profileName}` : "Terminal"}
-      className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border/80 bg-background"
+      className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border bg-background"
       style={{ height: `${drawerHeight}px` }}
     >
+      {/* 6px hit area, 1px visual line on hover/drag. */}
       <div
-        className="absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"
+        aria-hidden="true"
+        className="group/resize absolute inset-x-0 top-0 z-20 h-1.5 cursor-row-resize"
         onPointerDown={handleResizePointerDown}
         onPointerMove={handleResizePointerMove}
         onPointerUp={handleResizePointerEnd}
         onPointerCancel={handleResizePointerEnd}
-      />
+      >
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px transition-colors duration-(--duration-fast) group-hover/resize:bg-ring group-active/resize:bg-ring" />
+      </div>
 
-      {profileName && (
-        <span className="pointer-events-none absolute left-2 top-1 z-20 rounded bg-background/80 px-1 text-[10px] text-muted-foreground">
-          {profileName}
-        </span>
-      )}
-      {!hasTerminalSidebar && (
-        <div className="pointer-events-none absolute right-2 top-2 z-20">
-          <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background/70">
-            <TerminalActionButton
-              className={`p-1 text-foreground/90 transition-colors ${
-                hasReachedSplitLimit
-                  ? "cursor-not-allowed opacity-45 hover:bg-transparent"
-                  : "hover:bg-accent"
-              }`}
-              onClick={onSplitTerminalAction}
-              label={splitTerminalActionLabel}
+      {hasTerminalTabs ? (
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border ps-1.5 pe-0.5">
+          {profileName ? (
+            <Badge variant="outline" size="sm" className="shrink-0">
+              {profileName}
+            </Badge>
+          ) : null}
+          <ScrollArea scrollFade className="min-w-0 flex-1 rounded-none">
+            <div
+              role="tablist"
+              aria-label="Terminals"
+              className="flex h-8 w-max items-center gap-1"
             >
-              <SquareSplitHorizontal className="size-3.25" />
-            </TerminalActionButton>
-            <div className="h-4 w-px bg-border/80" />
-            <TerminalActionButton
-              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
-              onClick={onNewTerminalAction}
-              label={newTerminalActionLabel}
-            >
-              <Plus className="size-3.25" />
-            </TerminalActionButton>
-            <div className="h-4 w-px bg-border/80" />
-            <TerminalActionButton
-              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
-              onClick={() => onCloseTerminal(resolvedActiveTerminalId)}
-              label={closeTerminalActionLabel}
-            >
-              <Trash2 className="size-3.25" />
-            </TerminalActionButton>
+              {resolvedTerminalGroups.map((terminalGroup) => (
+                <div
+                  key={terminalGroup.id}
+                  role="presentation"
+                  className={cn(
+                    "flex items-center gap-0.5",
+                    terminalGroup.terminalIds.length > 1 &&
+                      "rounded-md p-0.5 ring-1 ring-border ring-inset",
+                  )}
+                >
+                  {terminalGroup.terminalIds.map((terminalId) => {
+                    const isActive = terminalId === resolvedActiveTerminalId;
+                    const label = terminalLabelById.get(terminalId) ?? "Terminal";
+                    const closeTerminalLabel = `Close ${label}${
+                      isActive && closeShortcutLabel ? ` (${closeShortcutLabel})` : ""
+                    }`;
+                    return (
+                      <div
+                        key={terminalId}
+                        role="presentation"
+                        className={cn(
+                          "group/tab flex h-6 shrink-0 items-center gap-0.5 rounded-md ps-2 pe-0.5 text-ui",
+                          isActive
+                            ? "bg-accent text-foreground"
+                            : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                        )}
+                      >
+                        <button
+                          type="button"
+                          role="tab"
+                          id={terminalTabId(terminalId)}
+                          aria-selected={isActive}
+                          aria-controls={terminalPanelId}
+                          tabIndex={isActive ? 0 : -1}
+                          className="flex min-w-0 items-center gap-1.5 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          onClick={() => onActiveTerminalChange(terminalId)}
+                          onKeyDown={(event) => onTerminalTabKeyDown(event, terminalId)}
+                        >
+                          <TerminalSquare aria-hidden="true" className="size-3.5 shrink-0" />
+                          <span className="truncate">{label}</span>
+                        </button>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                aria-label={closeTerminalLabel}
+                                // Out of the tab order: Delete on the tab, the
+                                // Close action and the close shortcut cover it.
+                                tabIndex={-1}
+                                className={cn(
+                                  "inline-flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-0 outline-none hover:bg-background/70 hover:text-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover/tab:opacity-100 pointer-coarse:opacity-100",
+                                  isActive && "opacity-100",
+                                )}
+                                onClick={() => onCloseTerminal(terminalId)}
+                              />
+                            }
+                          >
+                            <XIcon className="size-3.5" />
+                          </TooltipTrigger>
+                          <TooltipPopup side="bottom">{closeTerminalLabel}</TooltipPopup>
+                        </Tooltip>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+          <div className="flex shrink-0 items-center">
+            <TerminalDrawerActions
+              splitLabel={splitTerminalActionLabel}
+              splitDisabled={hasReachedSplitLimit}
+              onSplit={onSplitTerminalAction}
+              newLabel={newTerminalActionLabel}
+              onNew={onNewTerminalAction}
+              closeLabel={closeTerminalActionLabel}
+              onClose={() => onCloseTerminal(resolvedActiveTerminalId)}
+              hideLabel={hideTerminalActionLabel}
+              onHide={onHideTerminal}
+            />
+          </div>
+        </div>
+      ) : (
+        // One terminal: the same strip without tabs, so the profile badge and
+        // actions never sit on top of the terminal's first lines.
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border ps-1.5 pe-0.5">
+          {profileName ? (
+            <Badge variant="outline" size="sm" className="shrink-0">
+              {profileName}
+            </Badge>
+          ) : null}
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 px-1 text-ui text-muted-foreground">
+            <TerminalSquare aria-hidden="true" className="size-3.5 shrink-0" />
+            <span className="truncate">
+              {terminalLabelById.get(resolvedActiveTerminalId) ?? "Terminal"}
+            </span>
+          </span>
+          <div className="flex shrink-0 items-center">
+            <TerminalDrawerActions
+              splitLabel={splitTerminalActionLabel}
+              splitDisabled={hasReachedSplitLimit}
+              onSplit={onSplitTerminalAction}
+              newLabel={newTerminalActionLabel}
+              onNew={onNewTerminalAction}
+              closeLabel={closeTerminalActionLabel}
+              onClose={() => onCloseTerminal(resolvedActiveTerminalId)}
+              hideLabel={hideTerminalActionLabel}
+              onHide={onHideTerminal}
+            />
           </div>
         </div>
       )}
 
-      <div className="min-h-0 w-full flex-1">
-        <div className={`flex h-full min-h-0 ${hasTerminalSidebar ? "gap-1.5" : ""}`}>
+      <div
+        className="min-h-0 w-full flex-1"
+        {...(hasTerminalTabs
+          ? {
+              id: terminalPanelId,
+              role: "tabpanel",
+              "aria-labelledby": terminalTabId(resolvedActiveTerminalId),
+            }
+          : {})}
+      >
+        <div className="flex h-full min-h-0">
           <div className="min-w-0 flex-1">
             {isSplitView ? (
               <div
@@ -1219,131 +1422,6 @@ export default function ThreadTerminalDrawer({
               </div>
             )}
           </div>
-
-          {hasTerminalSidebar && (
-            <aside className="flex w-36 min-w-36 flex-col border border-border/70 bg-muted/10">
-              <div className="flex h-[22px] items-stretch justify-end border-b border-border/70">
-                <div className="inline-flex h-full items-stretch">
-                  <TerminalActionButton
-                    className={`inline-flex h-full items-center px-1 text-foreground/90 transition-colors ${
-                      hasReachedSplitLimit
-                        ? "cursor-not-allowed opacity-45 hover:bg-transparent"
-                        : "hover:bg-accent/70"
-                    }`}
-                    onClick={onSplitTerminalAction}
-                    label={splitTerminalActionLabel}
-                  >
-                    <SquareSplitHorizontal className="size-3.25" />
-                  </TerminalActionButton>
-                  <TerminalActionButton
-                    className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
-                    onClick={onNewTerminalAction}
-                    label={newTerminalActionLabel}
-                  >
-                    <Plus className="size-3.25" />
-                  </TerminalActionButton>
-                  <TerminalActionButton
-                    className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
-                    onClick={() => onCloseTerminal(resolvedActiveTerminalId)}
-                    label={closeTerminalActionLabel}
-                  >
-                    <Trash2 className="size-3.25" />
-                  </TerminalActionButton>
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto px-1 py-1">
-                {resolvedTerminalGroups.map((terminalGroup, groupIndex) => {
-                  const isGroupActive =
-                    terminalGroup.terminalIds.includes(resolvedActiveTerminalId);
-                  const groupActiveTerminalId = isGroupActive
-                    ? resolvedActiveTerminalId
-                    : (terminalGroup.terminalIds[0] ?? resolvedActiveTerminalId);
-
-                  return (
-                    <div key={terminalGroup.id} className="pb-0.5">
-                      {showGroupHeaders && (
-                        <button
-                          type="button"
-                          className={`flex w-full items-center rounded px-1 py-0.5 text-[10px] uppercase tracking-[0.08em] ${
-                            isGroupActive
-                              ? "bg-accent/70 text-foreground"
-                              : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                          }`}
-                          onClick={() => onActiveTerminalChange(groupActiveTerminalId)}
-                        >
-                          {terminalGroup.terminalIds.length > 1
-                            ? `Split ${groupIndex + 1}`
-                            : `Terminal ${groupIndex + 1}`}
-                        </button>
-                      )}
-
-                      <div
-                        className={showGroupHeaders ? "ml-1 border-l border-border/60 pl-1.5" : ""}
-                      >
-                        {terminalGroup.terminalIds.map((terminalId) => {
-                          const isActive = terminalId === resolvedActiveTerminalId;
-                          const closeTerminalLabel = `Close ${
-                            terminalLabelById.get(terminalId) ?? "terminal"
-                          }${isActive && closeShortcutLabel ? ` (${closeShortcutLabel})` : ""}`;
-                          return (
-                            <div
-                              key={terminalId}
-                              className={`group flex items-center gap-1 rounded px-1 py-0.5 text-[11px] ${
-                                isActive
-                                  ? "bg-accent text-foreground"
-                                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                              }`}
-                            >
-                              {showGroupHeaders && (
-                                <span className="text-[10px] text-muted-foreground/80">└</span>
-                              )}
-                              <button
-                                type="button"
-                                className="flex min-w-0 flex-1 items-center gap-1 text-left"
-                                onClick={() => onActiveTerminalChange(terminalId)}
-                              >
-                                <TerminalSquare className="size-3 shrink-0" />
-                                <span className="truncate">
-                                  {terminalLabelById.get(terminalId) ?? "Terminal"}
-                                </span>
-                              </button>
-                              {normalizedTerminalIds.length > 1 && (
-                                <Popover>
-                                  <PopoverTrigger
-                                    openOnHover
-                                    render={
-                                      <button
-                                        type="button"
-                                        className="inline-flex size-3.5 items-center justify-center rounded text-xs font-medium leading-none text-muted-foreground opacity-0 transition hover:bg-accent hover:text-foreground group-hover:opacity-100"
-                                        onClick={() => onCloseTerminal(terminalId)}
-                                        aria-label={closeTerminalLabel}
-                                      />
-                                    }
-                                  >
-                                    <XIcon className="size-2.5" />
-                                  </PopoverTrigger>
-                                  <PopoverPopup
-                                    tooltipStyle
-                                    side="bottom"
-                                    sideOffset={6}
-                                    align="center"
-                                    className="pointer-events-none select-none"
-                                  >
-                                    {closeTerminalLabel}
-                                  </PopoverPopup>
-                                </Popover>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </aside>
-          )}
         </div>
       </div>
     </aside>

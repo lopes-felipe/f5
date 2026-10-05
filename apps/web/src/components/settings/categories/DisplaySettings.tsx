@@ -73,7 +73,7 @@ export function DisplaySettings() {
   const defaultDisplaySettings = parsePersistedAppSettings(null);
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section className="rounded-xl border border-border bg-card p-5">
       <div className="mb-4">
         <h2 className="text-sm font-medium text-foreground">Responses</h2>
         <p className="mt-1 text-xs text-muted-foreground">
@@ -119,7 +119,7 @@ export function DisplaySettings() {
             </SelectPopup>
           </Select>
         </label>
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">Stream assistant messages</p>
             <p className="text-xs text-muted-foreground">
@@ -137,7 +137,7 @@ export function DisplaySettings() {
           />
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">Open file links in code panel</p>
             <p className="text-xs text-muted-foreground">
@@ -155,7 +155,7 @@ export function DisplaySettings() {
           />
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">Wrap long code and table lines</p>
             <p className="text-xs text-muted-foreground">
@@ -169,7 +169,7 @@ export function DisplaySettings() {
           />
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">File tree entry limit</p>
             <p className="text-xs text-muted-foreground">
@@ -211,7 +211,7 @@ export function DisplaySettings() {
             </p>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Detail level</p>
               <p className="text-xs text-muted-foreground">
@@ -240,7 +240,7 @@ export function DisplaySettings() {
             </Select>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Category</p>
               <p className="text-xs text-muted-foreground">
@@ -270,7 +270,7 @@ export function DisplaySettings() {
         </div>
 
         <DisplayProfileSelector settings={settings} updateSettings={updateSettings}>
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">
                 Auto-expand workflows in sidebar
@@ -290,7 +290,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Show command output in thread</p>
               <p className="text-xs text-muted-foreground">
@@ -309,7 +309,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Auto-expand command output</p>
               <p className="text-xs text-muted-foreground">
@@ -331,7 +331,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Show MCP tool call details</p>
               <p className="text-xs text-muted-foreground">
@@ -350,7 +350,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Auto-expand MCP cards</p>
               <p className="text-xs text-muted-foreground">
@@ -372,7 +372,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Auto-expand reasoning</p>
               <p className="text-xs text-muted-foreground">
@@ -390,7 +390,26 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
+            <div>
+              <p className="text-sm font-medium text-foreground">Collapse finished work logs</p>
+              <p className="text-xs text-muted-foreground">
+                Fold a turn&apos;s tool calls into a one-line summary once you send the next
+                message. The latest turn always stays open.
+              </p>
+            </div>
+            <Switch
+              checked={settings.collapseCompletedWorkLogs}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  collapseCompletedWorkLogs: Boolean(checked),
+                })
+              }
+              aria-label="Collapse finished work logs"
+            />
+          </div>
+
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Show file diffs inline</p>
               <p className="text-xs text-muted-foreground">
@@ -409,7 +428,7 @@ export function DisplaySettings() {
             />
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Runtime warnings</p>
               <p className="text-xs text-muted-foreground">
@@ -442,7 +461,7 @@ export function DisplaySettings() {
             </Select>
           </div>
 
-          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
             <div>
               <p className="text-sm font-medium text-foreground">Show provider metadata</p>
               <p className="text-xs text-muted-foreground">
@@ -461,7 +480,7 @@ export function DisplaySettings() {
           </div>
         </DisplayProfileSelector>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
           <div>
             <p className="text-sm font-medium text-foreground">Sidebar thread preview count</p>
             <p className="text-xs text-muted-foreground">

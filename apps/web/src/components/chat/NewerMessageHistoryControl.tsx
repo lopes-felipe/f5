@@ -44,7 +44,7 @@ export function NewerMessageHistoryControl({ threadId }: { readonly threadId: Th
   };
 
   return (
-    <div className="mx-auto mb-4 flex w-full max-w-3xl items-center justify-between gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm backdrop-blur-sm">
+    <div className="mx-auto mb-4 flex w-full max-w-(--chat-content-max-width) items-center justify-between gap-3 rounded-2xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm backdrop-blur-sm">
       <p className="text-sm text-muted-foreground">
         {stage === "error"
           ? "The gap to newer messages could not be loaded."

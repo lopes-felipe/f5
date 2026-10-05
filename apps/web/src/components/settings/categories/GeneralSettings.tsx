@@ -34,6 +34,29 @@ const SEND_SHORTCUT_LABELS = {
   "mod-enter-multiline": "Command/Ctrl+Enter for multiline prompts",
 } as const;
 
+const RUNTIME_MODE_LABELS = {
+  "full-access": "Full access",
+  "approval-required": "Ask for approval",
+  "auto-accept-edits": "Accept edits",
+  auto: "Auto",
+} as const;
+type RuntimeModeOption = keyof typeof RUNTIME_MODE_LABELS;
+const RUNTIME_MODE_OPTIONS = Object.keys(RUNTIME_MODE_LABELS) as RuntimeModeOption[];
+const isRuntimeModeOption = (value: unknown): value is RuntimeModeOption =>
+  typeof value === "string" && value in RUNTIME_MODE_LABELS;
+
+const WORKTREE_SUBMODULES_LABELS = {
+  none: "None",
+  shallow: "Top level",
+  recursive: "Recursive",
+} as const;
+type WorktreeSubmodulesOption = keyof typeof WORKTREE_SUBMODULES_LABELS;
+const WORKTREE_SUBMODULES_OPTIONS = Object.keys(
+  WORKTREE_SUBMODULES_LABELS,
+) as WorktreeSubmodulesOption[];
+const isWorktreeSubmodulesOption = (value: unknown): value is WorktreeSubmodulesOption =>
+  typeof value === "string" && value in WORKTREE_SUBMODULES_LABELS;
+
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
@@ -57,82 +80,106 @@ export function GeneralSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5 space-y-3">
-        <label className="block">
-          Default permissions
-          <select
-            aria-label="Default permissions"
-            value={settings.defaultRuntimeMode}
-            onChange={(e) =>
-              void updateSettings({
-                defaultRuntimeMode: e.target.value as typeof settings.defaultRuntimeMode,
-              })
-            }
-          >
-            <option value="full-access">Full access</option>
-            <option value="approval-required">Ask for approval</option>
-            <option value="auto-accept-edits">Accept edits</option>
-            <option value="auto">Auto</option>
-          </select>
-        </label>
-        <label className="block">
-          Worktree submodules
-          <select
-            aria-label="Worktree submodules"
-            value={settings.worktreeSubmodules}
-            onChange={(e) =>
-              void updateSettings({
-                worktreeSubmodules: e.target.value as typeof settings.worktreeSubmodules,
-              })
-            }
-          >
-            <option value="none">None</option>
-            <option value="shallow">Top level</option>
-            <option value="recursive">Recursive</option>
-          </select>
-        </label>
-        {(settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
-          settings.worktreeSubmodules !== defaults.worktreeSubmodules) && (
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() =>
-              updateSettings({
-                defaultRuntimeMode: defaults.defaultRuntimeMode,
-                worktreeSubmodules: defaults.worktreeSubmodules,
-              })
-            }
-          >
-            Restore default
-          </Button>
-        )}
-      </section>
+      <SettingsCard
+        title="New threads"
+        description="Defaults for new threads. Existing threads keep their own."
+        actions={
+          settings.defaultRuntimeMode !== defaults.defaultRuntimeMode ||
+          settings.worktreeSubmodules !== defaults.worktreeSubmodules ? (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() =>
+                updateSettings({
+                  defaultRuntimeMode: defaults.defaultRuntimeMode,
+                  worktreeSubmodules: defaults.worktreeSubmodules,
+                })
+              }
+            >
+              Restore defaults
+            </Button>
+          ) : null
+        }
+      >
+        <SettingsRow
+          title="Default permissions"
+          description="What agents may do without asking first."
+          control={
+            <Select
+              value={settings.defaultRuntimeMode}
+              onValueChange={(value) => {
+                if (isRuntimeModeOption(value)) updateSettings({ defaultRuntimeMode: value });
+              }}
+            >
+              <SelectTrigger className="w-56" aria-label="Default permissions">
+                <SelectValue>{RUNTIME_MODE_LABELS[settings.defaultRuntimeMode]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {RUNTIME_MODE_OPTIONS.map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {RUNTIME_MODE_LABELS[mode]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+        <SettingsRow
+          title="Worktree submodules"
+          description="Which git submodules a new worktree checks out."
+          control={
+            <Select
+              value={settings.worktreeSubmodules}
+              onValueChange={(value) => {
+                if (isWorktreeSubmodulesOption(value))
+                  updateSettings({ worktreeSubmodules: value });
+              }}
+            >
+              <SelectTrigger className="w-56" aria-label="Worktree submodules">
+                <SelectValue>{WORKTREE_SUBMODULES_LABELS[settings.worktreeSubmodules]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {WORKTREE_SUBMODULES_OPTIONS.map((mode) => (
+                  <SelectItem key={mode} value={mode}>
+                    {WORKTREE_SUBMODULES_LABELS[mode]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+      </SettingsCard>
       {typeof window !== "undefined" && window.desktopBridge && (
-        <section className="rounded-2xl border border-border bg-card p-5">
-          <h2 className="text-sm font-medium">Quit shortcut</h2>
-          <Select
-            value={settings.quitShortcutMode}
-            onValueChange={(value) => {
-              if (value === "hold" || value === "double-click" || value === "direct")
-                updateSettings({ quitShortcutMode: value });
-            }}
-          >
-            <SelectTrigger aria-label="Quit shortcut">
-              <SelectValue>
-                {settings.quitShortcutMode === "hold"
-                  ? "Hold or press twice"
-                  : settings.quitShortcutMode === "double-click"
-                    ? "Press twice"
-                    : "Quit immediately"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectPopup>
-              <SelectItem value="hold">Hold or press twice</SelectItem>
-              <SelectItem value="double-click">Press twice</SelectItem>
-              <SelectItem value="direct">Quit immediately</SelectItem>
-            </SelectPopup>
-          </Select>
-        </section>
+        <SettingsCard title="Desktop">
+          <SettingsRow
+            title="Quit shortcut"
+            description="How the quit shortcut confirms before closing the app."
+            control={
+              <Select
+                value={settings.quitShortcutMode}
+                onValueChange={(value) => {
+                  if (value === "hold" || value === "double-click" || value === "direct")
+                    updateSettings({ quitShortcutMode: value });
+                }}
+              >
+                <SelectTrigger className="w-56" aria-label="Quit shortcut">
+                  <SelectValue>
+                    {settings.quitShortcutMode === "hold"
+                      ? "Hold or press twice"
+                      : settings.quitShortcutMode === "double-click"
+                        ? "Press twice"
+                        : "Quit immediately"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  <SelectItem value="hold">Hold or press twice</SelectItem>
+                  <SelectItem value="double-click">Press twice</SelectItem>
+                  <SelectItem value="direct">Quit immediately</SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </SettingsCard>
       )}
 
       <SettingsCard

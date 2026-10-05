@@ -66,7 +66,7 @@ export function ProfilePortField({
         <div className="flex flex-wrap items-center gap-2">
           <Input
             id={`profile-${profile.id}-port`}
-            className="w-32"
+            className="w-32 font-mono"
             inputMode="numeric"
             value={draft}
             disabled={disabled || pending}
@@ -103,12 +103,12 @@ export function ProfilePortField({
         <span
           id={`profile-${profile.id}-port-error`}
           role="alert"
-          className="text-[11px] text-destructive"
+          className="text-2xs text-destructive"
         >
           {message}
         </span>
       ) : (
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-2xs text-muted-foreground">
           Restart this profile for the new port to take effect. The current port is retired and
           cannot be reused.
         </span>

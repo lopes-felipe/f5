@@ -29,7 +29,7 @@ export function ThreadWorktreeIndicator(props: {
           />
         }
       >
-        <FolderGit2Icon className="size-3 text-muted-foreground/55" />
+        <FolderGit2Icon className="size-3.5 text-faint-foreground" />
       </TooltipTrigger>
       <TooltipPopup side="top">{label}</TooltipPopup>
     </Tooltip>

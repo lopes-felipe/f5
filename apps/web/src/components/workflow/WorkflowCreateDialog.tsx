@@ -20,8 +20,6 @@ import {
   useState,
 } from "react";
 import type {
-  ClaudeCodeEffort,
-  CodexReasoningEffort,
   ModelSlug,
   ProjectId,
   ProviderKind,
@@ -32,10 +30,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   getDefaultModel,
-  getDefaultReasoningEffort,
   getReasoningEffortOptions,
-  normalizeClaudeModelOptions,
-  normalizeCodexModelOptions,
   normalizeModelSlug,
   resolveCodexReasoningEffortForModel,
   resolveReasoningEffortForProvider,
@@ -67,7 +62,9 @@ import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../Compos
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import {
+  WORKFLOW_TYPE_DESCRIPTION,
   WORKFLOW_TYPE_DIALOG_LABEL,
+  WORKFLOW_TYPE_ICON,
   WORKFLOW_TYPE_ORDER,
   WORKFLOW_TYPE_TOGGLE_CLASS,
   type WorkflowTypeValue,
@@ -90,10 +87,8 @@ import {
   resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
 } from "../ChatView.logic";
-import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { VscodeEntryIcon } from "../chat/VscodeEntryIcon";
+import { FileChip } from "../chat/FileChip";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import {
   Dialog,
   DialogDescription,
@@ -104,7 +99,6 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Kbd } from "../ui/kbd";
-import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { toastManager } from "../ui/toast";
 import {
@@ -115,212 +109,21 @@ import {
   readFileTreeDragMention,
   workspaceIdentityForRoot,
 } from "../fileTreeDragMention";
-import { ChevronDownIcon, XIcon } from "lucide-react";
+import { SectionLabel } from "../ui/section-label";
+import { SlotRow } from "./SlotRow";
+import {
+  WORKFLOW_OPTION_INPUT_CLASS_NAME,
+  WorkflowOptionCheckbox,
+  WorkflowOptionField,
+  WorkflowOptions,
+} from "./WorkflowOptions";
 
-const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
-  ultra: "Ultra",
-  max: "Max",
-  xhigh: "Extra High",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
+const WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS: Record<WorkflowTypeValue, string> = {
+  planning: "data-pressed:border-info/50",
+  codeReview: "data-pressed:border-success/50",
+  investigation: "data-pressed:border-warning/50",
+  document: "data-pressed:border-attention/50",
 };
-
-const CLAUDE_REASONING_LABELS: Record<Exclude<ClaudeCodeEffort, "ultrathink">, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-};
-
-function WorkflowReasoningPicker(props: {
-  provider: ProviderKind;
-  model: string;
-  modelOptions: ProviderModelOptions | undefined;
-  onChange: (modelOptions: ProviderModelOptions | undefined) => void;
-}) {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-
-  if (props.provider === "codex") {
-    const options = getReasoningEffortOptions("codex", props.model);
-    const defaultEffort = getDefaultReasoningEffort("codex", props.model);
-    const selectedEffort = resolveCodexReasoningEffortForModel(
-      props.model,
-      props.modelOptions?.codex?.reasoningEffort,
-    );
-    return (
-      <Menu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
-        <MenuTrigger
-          render={
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
-            />
-          }
-        >
-          <span>{CODEX_REASONING_LABELS[selectedEffort]}</span>
-          <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
-        </MenuTrigger>
-        <MenuPopup align="start">
-          <MenuGroup>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Reasoning</div>
-            <MenuRadioGroup
-              value={selectedEffort}
-              onValueChange={(value) => {
-                const nextEffort = options.find((option) => option === value);
-                if (!nextEffort) return;
-                props.onChange({
-                  ...props.modelOptions,
-                  codex: normalizeCodexModelOptions(props.model, {
-                    ...props.modelOptions?.codex,
-                    reasoningEffort: nextEffort,
-                  }),
-                });
-                setIsMenuOpen(false);
-              }}
-            >
-              {options.map((option) => (
-                <MenuRadioItem key={option} value={option}>
-                  {CODEX_REASONING_LABELS[option]}
-                  {option === defaultEffort ? " (default)" : ""}
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
-          </MenuGroup>
-        </MenuPopup>
-      </Menu>
-    );
-  }
-
-  if (props.provider !== "claudeAgent") {
-    return null;
-  }
-
-  const options = getReasoningEffortOptions("claudeAgent", props.model).filter(
-    (option): option is Exclude<ClaudeCodeEffort, "ultrathink"> => option !== "ultrathink",
-  );
-  const supportsThinking = supportsClaudeThinkingToggle(props.model);
-  const supportsFast = supportsClaudeFastMode(props.model);
-  const defaultEffort = getDefaultReasoningEffort("claudeAgent", props.model);
-  const fallbackEffort = options.includes(defaultEffort as Exclude<ClaudeCodeEffort, "ultrathink">)
-    ? (defaultEffort as Exclude<ClaudeCodeEffort, "ultrathink">)
-    : options[0]!;
-  const resolvedEffort = resolveReasoningEffortForProvider(
-    "claudeAgent",
-    props.modelOptions?.claudeAgent?.effort,
-  );
-  const selectedEffort: Exclude<ClaudeCodeEffort, "ultrathink"> =
-    resolvedEffort && resolvedEffort !== "ultrathink" && options.includes(resolvedEffort)
-      ? resolvedEffort
-      : fallbackEffort;
-  const thinkingEnabled = supportsThinking
-    ? (props.modelOptions?.claudeAgent?.thinking ?? true)
-    : null;
-  const fastModeEnabled = supportsFast && props.modelOptions?.claudeAgent?.fastMode === true;
-  const triggerLabel =
-    options.length > 0
-      ? CLAUDE_REASONING_LABELS[selectedEffort]
-      : thinkingEnabled !== null
-        ? `Thinking ${thinkingEnabled ? "On" : "Off"}`
-        : fastModeEnabled
-          ? "Fast"
-          : null;
-  if (triggerLabel === null) {
-    return null;
-  }
-
-  return (
-    <Menu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
-      <MenuTrigger
-        render={
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="shrink-0 px-2 text-muted-foreground/70 hover:text-foreground/80"
-          />
-        }
-      >
-        <span>{triggerLabel}</span>
-        <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
-      </MenuTrigger>
-      <MenuPopup align="start">
-        {options.length > 0 ? (
-          <MenuGroup>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Reasoning</div>
-            <MenuRadioGroup
-              value={selectedEffort}
-              onValueChange={(value) => {
-                const nextEffort = options.find((option) => option === value);
-                if (!nextEffort) return;
-                props.onChange({
-                  ...props.modelOptions,
-                  claudeAgent: normalizeClaudeModelOptions(props.model, {
-                    ...props.modelOptions?.claudeAgent,
-                    effort: nextEffort,
-                  }),
-                });
-                setIsMenuOpen(false);
-              }}
-            >
-              {options.map((option) => (
-                <MenuRadioItem key={option} value={option}>
-                  {CLAUDE_REASONING_LABELS[option]}
-                  {option === defaultEffort ? " (default)" : ""}
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
-          </MenuGroup>
-        ) : null}
-        {thinkingEnabled !== null ? (
-          <MenuGroup>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Thinking</div>
-            <MenuRadioGroup
-              value={thinkingEnabled ? "on" : "off"}
-              onValueChange={(value) => {
-                props.onChange({
-                  ...props.modelOptions,
-                  claudeAgent: normalizeClaudeModelOptions(props.model, {
-                    ...props.modelOptions?.claudeAgent,
-                    thinking: value === "on",
-                  }),
-                });
-                setIsMenuOpen(false);
-              }}
-            >
-              <MenuRadioItem value="on">On (default)</MenuRadioItem>
-              <MenuRadioItem value="off">Off</MenuRadioItem>
-            </MenuRadioGroup>
-          </MenuGroup>
-        ) : null}
-        {supportsFast ? (
-          <MenuGroup>
-            <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Fast Mode</div>
-            <MenuRadioGroup
-              value={fastModeEnabled ? "on" : "off"}
-              onValueChange={(value) => {
-                props.onChange({
-                  ...props.modelOptions,
-                  claudeAgent: normalizeClaudeModelOptions(props.model, {
-                    ...props.modelOptions?.claudeAgent,
-                    fastMode: value === "on",
-                  }),
-                });
-                setIsMenuOpen(false);
-              }}
-            >
-              <MenuRadioItem value="off">Off</MenuRadioItem>
-              <MenuRadioItem value="on">On</MenuRadioItem>
-            </MenuRadioGroup>
-          </MenuGroup>
-        ) : null}
-      </MenuPopup>
-    </Menu>
-  );
-}
 
 export function normalizeWorkflowSlotModelOptions(
   provider: ProviderKind,
@@ -415,37 +218,6 @@ interface WorkflowCreateDialogProps {
   projectId: ProjectId;
   onOpenChange: (open: boolean) => void;
   onWorkflowCreated?: (workflowId: string) => void;
-}
-
-export function ProviderFields(props: {
-  label: string;
-  provider: ProviderKind;
-  model: ModelSlug;
-  modelOptions: ProviderModelOptions | undefined;
-  modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
-  onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
-  onModelOptionsChange: (modelOptions: ProviderModelOptions | undefined) => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <label className="block text-sm font-medium text-foreground">{props.label}</label>
-      <div className="flex h-10 items-center rounded-md border border-input bg-background px-2">
-        <ProviderModelPicker
-          provider={props.provider}
-          model={props.model}
-          lockedProvider={null}
-          modelOptionsByProvider={props.modelOptionsByProvider}
-          onProviderModelChange={props.onProviderModelChange}
-        />
-        <WorkflowReasoningPicker
-          provider={props.provider}
-          model={props.model}
-          modelOptions={props.modelOptions}
-          onChange={props.onModelOptionsChange}
-        />
-      </div>
-    </div>
-  );
 }
 
 export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
@@ -597,6 +369,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       },
       merge: { provider: mergeProvider, model: mergeSelection },
     });
+  // Resolved like the other slots so the picker shows what gets submitted.
+  const readerSelection = resolveWorkflowModelSelection(
+    effectiveReaderSlot.provider,
+    effectiveReaderSlot.model,
+  );
   const sameDocumentAuthors =
     workflowType === "document" &&
     branchAProvider === branchBProvider &&
@@ -999,10 +776,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ? {
                   reader: buildSlot(
                     effectiveReaderSlot.provider,
-                    resolveWorkflowModelSelection(
-                      effectiveReaderSlot.provider,
-                      effectiveReaderSlot.model,
-                    ),
+                    readerSelection,
                     effectiveReaderSlot.modelOptions,
                   ),
                 }
@@ -1082,9 +856,24 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     void onSubmit();
   };
 
+  // What the collapsed Options row is currently set to.
+  const optionsSummary = [
+    (workflowType === "planning" || workflowType === "document") && selfReviewEnabled
+      ? "Own-model review"
+      : null,
+    workflowType === "investigation" && investigationSelfReviewEnabled ? "Own-model review" : null,
+    workflowType === "planning" ? `${plansDirectory.trim() || "plans"}/` : null,
+    (workflowType === "codeReview" || workflowType === "investigation") && reviewBranch.trim()
+      ? `vs ${reviewBranch.trim()}`
+      : null,
+    maxCostUsd.trim() ? `Limit $${maxCostUsd.trim()}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogPopup className="max-w-2xl" onKeyDownCapture={onDialogKeyDown}>
+      <DialogPopup className="max-w-4xl" onKeyDownCapture={onDialogKeyDown}>
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
@@ -1092,392 +881,395 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             will be generated from your prompt.
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel className="space-y-4">
-          <ToggleGroup
-            variant="outline"
-            className="grid w-full grid-cols-4"
-            aria-label="Workflow type"
-            value={[workflowType]}
-            onKeyDown={onWorkflowTypeKeyDown}
-            onValueChange={(value) => {
-              const next = value[0];
-              if (WORKFLOW_TYPE_ORDER.includes(next as WorkflowTypeValue)) {
-                setWorkflowType(next as WorkflowTypeValue);
-              }
-            }}
-          >
-            {WORKFLOW_TYPE_ORDER.map((type) => (
-              <Toggle
-                key={type}
-                value={type}
-                className={cn("w-full justify-center", WORKFLOW_TYPE_TOGGLE_CLASS[type])}
+        <DialogPanel>
+          <div className="grid gap-x-6 gap-y-5 md:grid-cols-[minmax(0,1fr)_minmax(0,28rem)]">
+            <div className="flex min-w-0 flex-col gap-4">
+              <ToggleGroup
+                className="grid w-full grid-cols-2 gap-2"
+                aria-label="Workflow type"
+                value={[workflowType]}
+                onKeyDown={onWorkflowTypeKeyDown}
+                onValueChange={(value) => {
+                  const next = value[0];
+                  if (WORKFLOW_TYPE_ORDER.includes(next as WorkflowTypeValue)) {
+                    setWorkflowType(next as WorkflowTypeValue);
+                  }
+                }}
               >
-                {WORKFLOW_TYPE_DIALOG_LABEL[type]}
-              </Toggle>
-            ))}
-          </ToggleGroup>
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-foreground">
-              {workflowType === "document"
-                ? "Brief"
-                : workflowType === "planning"
-                  ? "Requirement"
-                  : workflowType === "investigation"
-                    ? "Problem to investigate"
-                    : "Review instructions"}
-            </label>
-            <div
-              className={`space-y-3 rounded-md border bg-background px-3 py-2 ${
-                isDragOverPrompt ? "border-primary/70 ring-2 ring-primary/15" : "border-input"
-              }`}
-              onPaste={onPromptPaste}
-              onDragEnter={onPromptDragEnter}
-              onDragOver={onPromptDragOver}
-              onDragLeave={onPromptDragLeave}
-              onDrop={onPromptDrop}
-              onDragEnterCapture={onPromptFileMentionDragEnterCapture}
-              onDragOverCapture={onPromptFileMentionDragOverCapture}
-              onDragLeaveCapture={onPromptFileMentionDragLeaveCapture}
-              onDropCapture={onPromptFileMentionDropCapture}
-            >
-              {attachedFilePaths.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
-                  {attachedFilePaths.map((filePath) => {
-                    const displayPath = relativePathForDisplay(filePath, project?.cwd);
-                    return (
+                {WORKFLOW_TYPE_ORDER.map((type) => {
+                  const TypeIcon = WORKFLOW_TYPE_ICON[type];
+                  return (
+                    <Toggle
+                      key={type}
+                      value={type}
+                      // The card's description is extra context; the name stays the type.
+                      aria-label={WORKFLOW_TYPE_DIALOG_LABEL[type]}
+                      aria-describedby={`workflow-type-description-${type}`}
+                      className={cn(
+                        // `sm:` too: the toggle's default size pins `sm:h-8`.
+                        "h-auto w-full flex-col items-start justify-start gap-1 whitespace-normal rounded-xl border-border p-3 text-start sm:h-auto",
+                        WORKFLOW_TYPE_TOGGLE_CLASS[type],
+                        WORKFLOW_TYPE_CARD_PRESSED_BORDER_CLASS[type],
+                      )}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium">
+                        {/* Follows the card's text colour, tinted only while selected. */}
+                        <TypeIcon aria-hidden="true" className="size-4" />
+                        {WORKFLOW_TYPE_DIALOG_LABEL[type]}
+                      </span>
                       <span
-                        key={filePath}
-                        className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-1 text-[12px] text-foreground"
-                        title={displayPath}
+                        id={`workflow-type-description-${type}`}
+                        className="line-clamp-2 text-2xs font-normal text-muted-foreground"
                       >
-                        <VscodeEntryIcon
-                          pathValue={filePath}
-                          kind="file"
-                          theme={resolvedTheme}
-                          className="size-3.5"
-                        />
-                        <span className="max-w-[200px] truncate">
-                          {basenameOfPath(displayPath)}
-                        </span>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          onClick={() => removeAttachedFilePath(filePath)}
-                          disabled={submitting}
-                          aria-label={`Remove ${displayPath}`}
-                        >
-                          <XIcon className="size-3" />
-                        </Button>
+                        {WORKFLOW_TYPE_DESCRIPTION[type]}
                       </span>
-                    );
-                  })}
-                </div>
-              ) : null}
-              <ComposerPromptEditor
-                ref={promptEditorRef}
-                className="min-h-32 text-sm"
-                value={requirementPrompt}
-                mentions={requirementDraft.mentions}
-                cursor={requirementDraft.cursor}
-                terminalContexts={[]}
-                disabled={submitting}
-                onRemoveTerminalContext={() => {}}
-                onPaste={() => {}}
-                onChange={(text, cursor, _expanded, _adjacent, _contexts, mentions) =>
-                  setRequirementDraft({ text, cursor, mentions })
-                }
-                placeholder={
-                  workflowType === "document"
-                    ? documentProfile.placeholder
-                    : workflowType === "planning"
-                      ? "Describe the feature or requirement to plan."
-                      : workflowType === "investigation"
-                        ? "Describe the problem, symptoms, suspected regression, or evidence to investigate."
-                        : "Describe what the reviewers should inspect and how they should review it."
-                }
-              />
-            </div>
-          </div>
-          {workflowType === "document" ? (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">
-                {submittedBriefLength.toLocaleString()} / 24,000
-              </p>
-              <label className="block text-sm font-medium">
-                Document type
-                <Select
-                  value={documentType}
-                  onValueChange={(value) => {
-                    if (value) setDocumentType(value as WorkflowDocumentType);
-                  }}
-                >
-                  <SelectTrigger aria-label="Document type">
-                    <SelectValue>{documentProfile.label}</SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup align="start">
-                    {WORKFLOW_DOCUMENT_TYPE_ORDER.map((type) => (
-                      <SelectItem key={type} value={type}>
-                        {WORKFLOW_DOCUMENT_PROFILES[type].label}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-              </label>
-              <p className="text-sm text-muted-foreground">{documentProfile.description}</p>
-              <p className="text-xs text-muted-foreground">
-                Sections:{" "}
-                {documentProfile.sections.map((section) => section.heading).join(" · ") ||
-                  "As specified in the brief"}
-              </p>
-              {sameDocumentAuthors ? (
-                <p role="alert" className="text-sm text-destructive">
-                  Document workflows need two different author models.
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          <ProviderFields
-            label={
-              workflowType === "planning" || workflowType === "document"
-                ? "Author A"
-                : workflowType === "investigation"
-                  ? "Investigator A"
-                  : "Reviewer A"
-            }
-            provider={branchAProvider}
-            model={branchASelection}
-            modelOptions={branchAModelOptions}
-            modelOptionsByProvider={modelOptionsByProvider}
-            onProviderModelChange={(provider, model) => {
-              setBranchAProvider(provider);
-              setBranchAModel(model);
-              setBranchAModelOptions(undefined);
-              useModelPreferencesStore.getState().setLastWorkflowProvider("branchA", provider);
-              recordModelSelection(provider, model, undefined);
-            }}
-            onModelOptionsChange={(modelOptions) => {
-              setBranchAModelOptions(modelOptions);
-              recordModelSelection(
-                branchAProvider,
-                branchASelection,
-                normalizeWorkflowSlotModelOptions(branchAProvider, branchASelection, modelOptions),
-              );
-            }}
-          />
-          <ProviderFields
-            label={
-              workflowType === "planning" || workflowType === "document"
-                ? "Author B"
-                : workflowType === "investigation"
-                  ? "Investigator B"
-                  : "Reviewer B"
-            }
-            provider={branchBProvider}
-            model={branchBSelection}
-            modelOptions={branchBModelOptions}
-            modelOptionsByProvider={modelOptionsByProvider}
-            onProviderModelChange={(provider, model) => {
-              setBranchBProvider(provider);
-              setBranchBModel(model);
-              setBranchBModelOptions(undefined);
-              useModelPreferencesStore.getState().setLastWorkflowProvider("branchB", provider);
-              recordModelSelection(provider, model, undefined);
-            }}
-            onModelOptionsChange={(modelOptions) => {
-              setBranchBModelOptions(modelOptions);
-              recordModelSelection(
-                branchBProvider,
-                branchBSelection,
-                normalizeWorkflowSlotModelOptions(branchBProvider, branchBSelection, modelOptions),
-              );
-            }}
-          />
-          <ProviderFields
-            label={
-              workflowType === "document"
-                ? "Merge model"
-                : workflowType === "planning"
-                  ? "Merge"
-                  : workflowType === "investigation"
-                    ? "Synthesis"
-                    : "Consolidation"
-            }
-            provider={mergeProvider}
-            model={mergeSelection}
-            modelOptions={mergeModelOptions}
-            modelOptionsByProvider={modelOptionsByProvider}
-            onProviderModelChange={(provider, model) => {
-              setMergeProvider(provider);
-              setMergeModel(model);
-              setMergeModelOptions(undefined);
-              useModelPreferencesStore.getState().setLastWorkflowProvider("merge", provider);
-              recordModelSelection(provider, model, undefined);
-            }}
-            onModelOptionsChange={(modelOptions) => {
-              setMergeModelOptions(modelOptions);
-              recordModelSelection(
-                mergeProvider,
-                mergeSelection,
-                normalizeWorkflowSlotModelOptions(mergeProvider, mergeSelection, modelOptions),
-              );
-            }}
-          />
-          {workflowType === "planning" || workflowType === "document" ? (
-            <>
-              <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
-                <label className="flex items-start gap-3">
-                  <Checkbox
-                    checked={selfReviewEnabled}
-                    onCheckedChange={(checked) => setSelfReviewEnabled(checked === true)}
-                  />
-                  <span className="space-y-1">
-                    <span className="block text-sm font-medium text-foreground">
-                      Own-model review
-                    </span>
-                    <span className="block text-sm text-muted-foreground">
-                      Alongside cross-review, each author reviews its own{" "}
-                      {workflowType === "document" ? "draft" : "plan"} in a separate clean chat.
-                    </span>
-                  </span>
-                </label>
-              </div>
-              {workflowType === "planning" ? (
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-foreground">
-                    Plans directory
-                  </label>
-                  <input
-                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    value={plansDirectory}
-                    onChange={(event) => setPlansDirectory(event.target.value)}
-                  />
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <>
+                    </Toggle>
+                  );
+                })}
+              </ToggleGroup>
               <div className="space-y-2">
-                <label className="block text-sm font-medium text-foreground">
-                  {workflowType === "investigation"
-                    ? "Compare against branch (optional)"
-                    : "Compare against branch"}
+                <label className="block text-ui font-medium text-foreground">
+                  {workflowType === "document"
+                    ? "Brief"
+                    : workflowType === "planning"
+                      ? "Requirement"
+                      : workflowType === "investigation"
+                        ? "Problem to investigate"
+                        : "Review instructions"}
                 </label>
-                <input
-                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                  value={reviewBranch}
-                  onChange={(event) => setReviewBranch(event.target.value)}
-                  placeholder="main"
-                />
-              </div>
-              {workflowType === "investigation" ? (
-                <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
-                  <label className="flex items-start gap-3">
-                    <Checkbox
-                      checked={investigationSelfReviewEnabled}
-                      onCheckedChange={(checked) =>
-                        setInvestigationSelfReviewEnabled(checked === true)
-                      }
-                    />
-                    <span className="space-y-1">
-                      <span className="block text-sm font-medium text-foreground">
-                        Own-model review
-                      </span>
-                      <span className="block text-sm text-muted-foreground">
-                        After investigation, each model audits its own RCA in a separate clean chat.
-                      </span>
-                    </span>
-                  </label>
-                </div>
-              ) : null}
-            </>
-          )}
-          {workflowType === "document" ? (
-            <div className="space-y-3 rounded-md border border-input p-3">
-              <label className="flex items-start gap-3">
-                <Checkbox
-                  checked={readerReviewEnabled}
-                  onCheckedChange={(checked) => setReaderReviewEnabled(checked === true)}
-                />
-                <span>
-                  <span className="block text-sm font-medium">
-                    Reader review of the final document
-                  </span>
-                  <span className="block text-sm text-muted-foreground">
-                    After merging, a simulated reader from the target audience reads the document
-                    and reports where they got lost. The merge model then polishes the document to
-                    address it.
-                  </span>
-                </span>
-              </label>
-              {readerReviewEnabled ? (
-                <>
-                  <label className="block text-sm font-medium">
-                    Reader persona (optional)
-                    <textarea
-                      aria-label="Reader persona (optional)"
-                      maxLength={500}
-                      value={readerPersona}
-                      onChange={(event) => setReaderPersona(event.target.value)}
-                      placeholder={documentProfile.readerPersona}
-                      className="mt-2 min-h-20 w-full rounded-md border border-input bg-background p-2 text-sm"
-                    />
-                  </label>
-                  <p className="text-xs text-muted-foreground">{readerPersona.length} / 500</p>
-                  <ProviderFields
-                    label="Reader model"
-                    provider={effectiveReaderSlot.provider}
-                    model={effectiveReaderSlot.model as ModelSlug}
-                    modelOptions={effectiveReaderSlot.modelOptions}
-                    modelOptionsByProvider={modelOptionsByProvider}
-                    onProviderModelChange={(provider, model) => setReaderSlot({ provider, model })}
-                    onModelOptionsChange={(modelOptions) =>
-                      setReaderSlot({
-                        ...effectiveReaderSlot,
-                        ...(modelOptions ? { modelOptions } : { modelOptions: undefined }),
-                      })
+                <div
+                  className={cn(
+                    "space-y-3 rounded-lg border bg-background px-3 py-2 transition-colors",
+                    isDragOverPrompt
+                      ? "border-primary/70 ring-2 ring-primary/15"
+                      : "border-input focus-within:border-ring/60",
+                  )}
+                  onPaste={onPromptPaste}
+                  onDragEnter={onPromptDragEnter}
+                  onDragOver={onPromptDragOver}
+                  onDragLeave={onPromptDragLeave}
+                  onDrop={onPromptDrop}
+                  onDragEnterCapture={onPromptFileMentionDragEnterCapture}
+                  onDragOverCapture={onPromptFileMentionDragOverCapture}
+                  onDragLeaveCapture={onPromptFileMentionDragLeaveCapture}
+                  onDropCapture={onPromptFileMentionDropCapture}
+                >
+                  {attachedFilePaths.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {attachedFilePaths.map((filePath) => {
+                        const displayPath = relativePathForDisplay(filePath, project?.cwd);
+                        return (
+                          <FileChip
+                            key={filePath}
+                            path={filePath}
+                            label={basenameOfPath(displayPath)}
+                            title={displayPath}
+                            theme={resolvedTheme}
+                            className="max-w-60"
+                            onRemove={() => removeAttachedFilePath(filePath)}
+                            removeDisabled={submitting}
+                            removeLabel={`Remove ${displayPath}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  <ComposerPromptEditor
+                    ref={promptEditorRef}
+                    className="min-h-32 text-sm"
+                    value={requirementPrompt}
+                    mentions={requirementDraft.mentions}
+                    cursor={requirementDraft.cursor}
+                    terminalContexts={[]}
+                    disabled={submitting}
+                    onRemoveTerminalContext={() => {}}
+                    onPaste={() => {}}
+                    onChange={(text, cursor, _expanded, _adjacent, _contexts, mentions) =>
+                      setRequirementDraft({ text, cursor, mentions })
+                    }
+                    placeholder={
+                      workflowType === "document"
+                        ? documentProfile.placeholder
+                        : workflowType === "planning"
+                          ? "Describe the feature or requirement to plan."
+                          : workflowType === "investigation"
+                            ? "Describe the problem, symptoms, suspected regression, or evidence to investigate."
+                            : "Describe what the reviewers should inspect and how they should review it."
                     }
                   />
-                  {effectiveReaderSlot.provider === mergeProvider &&
-                  effectiveReaderSlot.model === mergeSelection ? (
-                    <p className="text-xs text-muted-foreground">
-                      The reader is the model that writes the final document; a different model
-                      usually catches more gaps.
+                </div>
+              </div>
+              {workflowType === "document" ? (
+                <div className="space-y-2">
+                  <p className="text-2xs text-muted-foreground tabular-nums">
+                    {submittedBriefLength.toLocaleString()} / 24,000
+                  </p>
+                  <label className="block text-ui font-medium">
+                    Document type
+                    <Select
+                      value={documentType}
+                      onValueChange={(value) => {
+                        if (value) setDocumentType(value as WorkflowDocumentType);
+                      }}
+                    >
+                      <SelectTrigger aria-label="Document type">
+                        <SelectValue>{documentProfile.label}</SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup align="start">
+                        {WORKFLOW_DOCUMENT_TYPE_ORDER.map((type) => (
+                          <SelectItem key={type} value={type}>
+                            {WORKFLOW_DOCUMENT_PROFILES[type].label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  </label>
+                  <p className="text-ui text-muted-foreground">{documentProfile.description}</p>
+                  <p className="text-2xs text-muted-foreground">
+                    Sections:{" "}
+                    {documentProfile.sections.map((section) => section.heading).join(" · ") ||
+                      "As specified in the brief"}
+                  </p>
+                  {sameDocumentAuthors ? (
+                    <p role="alert" className="text-ui text-destructive-foreground">
+                      Document workflows need two different author models.
                     </p>
                   ) : null}
-                </>
+                </div>
               ) : null}
             </div>
-          ) : null}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium text-foreground">
-              Run cost limit in USD (optional)
-            </label>
-            <input
-              type="number"
-              min="0.01"
-              step="0.01"
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-              value={maxCostUsd}
-              onChange={(event) => setMaxCostUsd(event.target.value)}
-              placeholder="No limit"
-            />
-            <p className="text-xs text-muted-foreground">
-              F5 checks the limit before launching each subsequent workflow node.
-            </p>
+            <div className="flex min-w-0 flex-col gap-4">
+              <section aria-label="Models" className="flex flex-col gap-2">
+                <SectionLabel as="h3">Models</SectionLabel>
+                <SlotRow
+                  label={
+                    workflowType === "planning" || workflowType === "document"
+                      ? "Author A"
+                      : workflowType === "investigation"
+                        ? "Investigator A"
+                        : "Reviewer A"
+                  }
+                  provider={branchAProvider}
+                  model={branchASelection}
+                  modelOptions={branchAModelOptions}
+                  modelOptionsByProvider={modelOptionsByProvider}
+                  onProviderModelChange={(provider, model) => {
+                    setBranchAProvider(provider);
+                    setBranchAModel(model);
+                    setBranchAModelOptions(undefined);
+                    useModelPreferencesStore
+                      .getState()
+                      .setLastWorkflowProvider("branchA", provider);
+                    recordModelSelection(provider, model, undefined);
+                  }}
+                  onModelOptionsChange={(modelOptions) => {
+                    setBranchAModelOptions(modelOptions);
+                    recordModelSelection(
+                      branchAProvider,
+                      branchASelection,
+                      normalizeWorkflowSlotModelOptions(
+                        branchAProvider,
+                        branchASelection,
+                        modelOptions,
+                      ),
+                    );
+                  }}
+                />
+                <SlotRow
+                  label={
+                    workflowType === "planning" || workflowType === "document"
+                      ? "Author B"
+                      : workflowType === "investigation"
+                        ? "Investigator B"
+                        : "Reviewer B"
+                  }
+                  provider={branchBProvider}
+                  model={branchBSelection}
+                  modelOptions={branchBModelOptions}
+                  modelOptionsByProvider={modelOptionsByProvider}
+                  onProviderModelChange={(provider, model) => {
+                    setBranchBProvider(provider);
+                    setBranchBModel(model);
+                    setBranchBModelOptions(undefined);
+                    useModelPreferencesStore
+                      .getState()
+                      .setLastWorkflowProvider("branchB", provider);
+                    recordModelSelection(provider, model, undefined);
+                  }}
+                  onModelOptionsChange={(modelOptions) => {
+                    setBranchBModelOptions(modelOptions);
+                    recordModelSelection(
+                      branchBProvider,
+                      branchBSelection,
+                      normalizeWorkflowSlotModelOptions(
+                        branchBProvider,
+                        branchBSelection,
+                        modelOptions,
+                      ),
+                    );
+                  }}
+                />
+                <SlotRow
+                  label={
+                    workflowType === "document"
+                      ? "Merge model"
+                      : workflowType === "planning"
+                        ? "Merge"
+                        : workflowType === "investigation"
+                          ? "Synthesis"
+                          : "Consolidation"
+                  }
+                  provider={mergeProvider}
+                  model={mergeSelection}
+                  modelOptions={mergeModelOptions}
+                  modelOptionsByProvider={modelOptionsByProvider}
+                  onProviderModelChange={(provider, model) => {
+                    setMergeProvider(provider);
+                    setMergeModel(model);
+                    setMergeModelOptions(undefined);
+                    useModelPreferencesStore.getState().setLastWorkflowProvider("merge", provider);
+                    recordModelSelection(provider, model, undefined);
+                  }}
+                  onModelOptionsChange={(modelOptions) => {
+                    setMergeModelOptions(modelOptions);
+                    recordModelSelection(
+                      mergeProvider,
+                      mergeSelection,
+                      normalizeWorkflowSlotModelOptions(
+                        mergeProvider,
+                        mergeSelection,
+                        modelOptions,
+                      ),
+                    );
+                  }}
+                />
+              </section>
+              {workflowType === "document" ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
+                  <WorkflowOptionCheckbox
+                    checked={readerReviewEnabled}
+                    onCheckedChange={setReaderReviewEnabled}
+                    label="Reader review of the final document"
+                    description="After merging, a simulated reader from the target audience reads the document and reports where they got lost. The merge model then polishes the document to address it."
+                  />
+                  {readerReviewEnabled ? (
+                    <>
+                      <label className="block text-ui font-medium">
+                        Reader persona (optional)
+                        <textarea
+                          aria-label="Reader persona (optional)"
+                          maxLength={500}
+                          value={readerPersona}
+                          onChange={(event) => setReaderPersona(event.target.value)}
+                          placeholder={documentProfile.readerPersona}
+                          className="mt-1.5 min-h-20 w-full rounded-lg border border-input bg-background p-2 text-sm font-normal outline-none transition-colors focus-visible:border-ring/60"
+                        />
+                      </label>
+                      <p className="text-2xs text-muted-foreground tabular-nums">
+                        {readerPersona.length} / 500
+                      </p>
+                      <SlotRow
+                        label="Reader model"
+                        provider={effectiveReaderSlot.provider}
+                        model={readerSelection}
+                        modelOptions={effectiveReaderSlot.modelOptions}
+                        modelOptionsByProvider={modelOptionsByProvider}
+                        onProviderModelChange={(provider, model) =>
+                          setReaderSlot({ provider, model })
+                        }
+                        onModelOptionsChange={(modelOptions) =>
+                          setReaderSlot({
+                            ...effectiveReaderSlot,
+                            ...(modelOptions ? { modelOptions } : { modelOptions: undefined }),
+                          })
+                        }
+                      />
+                      {effectiveReaderSlot.provider === mergeProvider &&
+                      readerSelection === mergeSelection ? (
+                        <p className="text-2xs text-muted-foreground">
+                          The reader is the model that writes the final document; a different model
+                          usually catches more gaps.
+                        </p>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              <WorkflowOptions summary={optionsSummary}>
+                {workflowType === "planning" || workflowType === "document" ? (
+                  <WorkflowOptionCheckbox
+                    checked={selfReviewEnabled}
+                    onCheckedChange={setSelfReviewEnabled}
+                    label="Own-model review"
+                    description={`Alongside cross-review, each author reviews its own ${
+                      workflowType === "document" ? "draft" : "plan"
+                    } in a separate clean chat.`}
+                  />
+                ) : null}
+                {workflowType === "planning" ? (
+                  <WorkflowOptionField label="Plans directory">
+                    <input
+                      className={cn(WORKFLOW_OPTION_INPUT_CLASS_NAME, "font-mono")}
+                      value={plansDirectory}
+                      onChange={(event) => setPlansDirectory(event.target.value)}
+                    />
+                  </WorkflowOptionField>
+                ) : null}
+                {workflowType === "codeReview" || workflowType === "investigation" ? (
+                  <WorkflowOptionField
+                    label={
+                      workflowType === "investigation"
+                        ? "Compare against branch (optional)"
+                        : "Compare against branch"
+                    }
+                  >
+                    <input
+                      className={cn(WORKFLOW_OPTION_INPUT_CLASS_NAME, "font-mono")}
+                      value={reviewBranch}
+                      onChange={(event) => setReviewBranch(event.target.value)}
+                      placeholder="main"
+                    />
+                  </WorkflowOptionField>
+                ) : null}
+                {workflowType === "investigation" ? (
+                  <WorkflowOptionCheckbox
+                    checked={investigationSelfReviewEnabled}
+                    onCheckedChange={setInvestigationSelfReviewEnabled}
+                    label="Own-model review"
+                    description="After investigation, each model audits its own RCA in a separate clean chat."
+                  />
+                ) : null}
+                <WorkflowOptionField
+                  label="Run cost limit in USD (optional)"
+                  hint="F5 checks the limit before launching each subsequent workflow node."
+                >
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    className={WORKFLOW_OPTION_INPUT_CLASS_NAME}
+                    value={maxCostUsd}
+                    onChange={(event) => setMaxCostUsd(event.target.value)}
+                    placeholder="No limit"
+                  />
+                </WorkflowOptionField>
+              </WorkflowOptions>
+              {sameInvestigationInvestigatorModel ? (
+                <p className="text-ui text-destructive-foreground">
+                  Investigation workflows require two different investigator models.
+                </p>
+              ) : null}
+              {!validMaxCostUsd ? (
+                <p className="text-ui text-destructive-foreground">
+                  Cost limit must be greater than zero.
+                </p>
+              ) : null}
+              <p className="text-2xs text-muted-foreground">
+                Workflow titles are generated automatically using the thread title model.
+              </p>
+              {error ? <p className="text-ui text-destructive-foreground">{error}</p> : null}
+            </div>
           </div>
-          {sameInvestigationInvestigatorModel ? (
-            <p className="text-sm text-red-500">
-              Investigation workflows require two different investigator models.
-            </p>
-          ) : null}
-          {!validMaxCostUsd ? (
-            <p className="text-sm text-red-500">Cost limit must be greater than zero.</p>
-          ) : null}
-          <p className="text-sm text-muted-foreground">
-            Workflow titles are generated automatically using the thread title model.
-          </p>
-          {error ? <p className="text-sm text-red-500">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={() => props.onOpenChange(false)}>

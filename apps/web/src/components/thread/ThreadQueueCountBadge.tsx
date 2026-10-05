@@ -1,13 +1,24 @@
 import type { ThreadId } from "@t3tools/contracts";
+import { ListOrderedIcon, PauseIcon } from "lucide-react";
 
 import { useNextTurnQueueBadge, useNextTurnQueueCount } from "../../nextTurnQueueStore";
 import { cn } from "../../lib/utils";
+import { Badge } from "../ui/badge";
 
+/**
+ * Queued-turn count for a thread. Not a live region: it appears in lists
+ * (sidebar, Home) where many rows change at once.
+ *
+ * `compact` (narrow rows such as the sidebar) shows an icon and the count so
+ * the thread title keeps its room; the full wording stays in the label.
+ */
 export function ThreadQueueCountBadge({
   threadId,
+  compact = false,
   className,
 }: {
   readonly threadId: ThreadId;
+  readonly compact?: boolean;
   readonly className?: string | undefined;
 }) {
   const count = useNextTurnQueueCount(threadId);
@@ -15,20 +26,26 @@ export function ThreadQueueCountBadge({
 
   if (badge === "none") return null;
 
+  const label = badge === "paused" ? `${count} queued turns, paused` : `${count} queued turns`;
+  const Icon = badge === "paused" ? PauseIcon : ListOrderedIcon;
   return (
-    <span
-      role="status"
-      aria-label={badge === "paused" ? `${count} queued turns, paused` : `${count} queued turns`}
-      title={badge === "paused" ? `${count} queued turns · paused` : `${count} queued turns`}
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full border px-1.5 py-px font-mono text-[10px] tabular-nums",
-        badge === "paused"
-          ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-          : "border-border/60 bg-muted/60 text-muted-foreground",
-        className,
-      )}
+    <Badge
+      variant={badge === "paused" ? "warning" : "secondary"}
+      size="sm"
+      aria-label={label}
+      title={label}
+      className={cn("shrink-0 rounded-full px-1.5 tabular-nums", compact && "gap-0.5", className)}
     >
-      {count} queued{badge === "paused" ? " · paused" : ""}
-    </span>
+      {compact ? (
+        <>
+          <Icon aria-hidden="true" className="size-3" />
+          {count}
+        </>
+      ) : (
+        <>
+          {count} queued{badge === "paused" ? " · paused" : ""}
+        </>
+      )}
+    </Badge>
   );
 }

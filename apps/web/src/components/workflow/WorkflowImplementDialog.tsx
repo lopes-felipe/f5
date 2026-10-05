@@ -26,7 +26,6 @@ import {
   resolveComposerPickerModel,
 } from "../ChatView.logic";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import {
   Combobox,
   ComboboxEmpty,
@@ -45,7 +44,9 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
-import { ProviderFields, normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { SlotRow } from "./SlotRow";
+import { WorkflowOptionCheckbox, WorkflowOptionField, WorkflowOptions } from "./WorkflowOptions";
 import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
 
 function getSingleProviderModelOptions(
@@ -140,7 +141,7 @@ function BaseBranchPicker(props: {
       <ComboboxPopup align="start" side="bottom" className="w-80">
         <div className="border-b p-1">
           <ComboboxInput
-            className="[&_input]:font-sans rounded-md"
+            className="rounded-md"
             inputClassName="ring-0"
             placeholder="Search branches..."
             showTrigger={false}
@@ -325,8 +326,8 @@ export function WorkflowImplementDialog(props: {
             Pick the model and runtime settings for the implementation thread.
           </DialogDescription>
         </DialogHeader>
-        <DialogPanel className="space-y-4">
-          <ProviderFields
+        <DialogPanel className="flex flex-col gap-4">
+          <SlotRow
             label="Implementation model"
             provider={provider}
             model={selection}
@@ -347,55 +348,11 @@ export function WorkflowImplementDialog(props: {
               );
             }}
           />
-          <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
-            <label
-              className="block text-sm font-medium text-foreground"
-              htmlFor="workflow-runtime-mode"
-            >
-              Access mode
-            </label>
-            <select
-              id="workflow-runtime-mode"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-              value={runtimeMode}
-              onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
-            >
-              {RUNTIME_MODE_VALUES.map((mode) => (
-                <option
-                  key={mode}
-                  value={mode}
-                  disabled={!runtimeModeCapabilities(provider).has(mode)}
-                >
-                  {RUNTIME_MODE_PRESENTATION[mode].label}
-                </option>
-              ))}
-            </select>
-            <p className="text-sm text-muted-foreground">
-              {RUNTIME_MODE_PRESENTATION[runtimeMode].description}
-            </p>
-          </div>
-          <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
-            <label className="flex items-start gap-3">
-              <Checkbox
-                checked={codeReviewEnabled}
-                onCheckedChange={(checked) => setCodeReviewEnabled(checked === true)}
-              />
-              <span className="space-y-1">
-                <span className="block text-sm font-medium text-foreground">
-                  Code review after implementation
-                </span>
-                <span className="block text-sm text-muted-foreground">
-                  After implementation completes, both planning models review the code before
-                  feedback is applied.
-                </span>
-              </span>
-            </label>
-          </div>
           <div
-            className="flex flex-wrap items-center gap-2"
+            className="flex flex-wrap items-center gap-x-3 gap-y-2"
             data-testid="workflow-implement-env-mode"
           >
-            <span className="text-sm font-medium text-foreground">Environment</span>
+            <span className="w-28 shrink-0 text-ui text-muted-foreground">Environment</span>
             <div className="flex gap-1">
               <Button
                 type="button"
@@ -429,12 +386,48 @@ export function WorkflowImplementDialog(props: {
               </div>
             ) : null}
             {envMode === "worktree" && needsBaseBranch ? (
-              <p className="w-full text-xs text-muted-foreground">
+              <p className="w-full text-2xs text-muted-foreground">
                 Select a base branch before sending.
               </p>
             ) : null}
           </div>
-          {error ? <p className="text-sm text-red-500">{error}</p> : null}
+          <WorkflowOptions
+            summary={[
+              RUNTIME_MODE_PRESENTATION[runtimeMode].label,
+              codeReviewEnabled ? "Code review" : null,
+            ]
+              .filter((part): part is string => part !== null)
+              .join(" · ")}
+          >
+            <WorkflowOptionField
+              label="Access mode"
+              hint={RUNTIME_MODE_PRESENTATION[runtimeMode].description}
+            >
+              <select
+                id="workflow-runtime-mode"
+                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm outline-none transition-colors focus-visible:border-ring/60"
+                value={runtimeMode}
+                onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
+              >
+                {RUNTIME_MODE_VALUES.map((mode) => (
+                  <option
+                    key={mode}
+                    value={mode}
+                    disabled={!runtimeModeCapabilities(provider).has(mode)}
+                  >
+                    {RUNTIME_MODE_PRESENTATION[mode].label}
+                  </option>
+                ))}
+              </select>
+            </WorkflowOptionField>
+            <WorkflowOptionCheckbox
+              checked={codeReviewEnabled}
+              onCheckedChange={setCodeReviewEnabled}
+              label="Code review after implementation"
+              description="After implementation completes, both planning models review the code before feedback is applied."
+            />
+          </WorkflowOptions>
+          {error ? <p className="text-ui text-destructive-foreground">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
           <Button variant="outline" onClick={() => props.onOpenChange(false)}>

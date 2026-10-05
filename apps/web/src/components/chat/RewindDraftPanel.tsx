@@ -22,6 +22,7 @@ import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
 import { describeRewindDraft, type RewindDraftTone } from "./rewindDraftCopy";
+import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 
 const DISCARD_UNDO_MS = 6000;
 const PREVIEW_CLAMP_CHARACTERS = 240;
@@ -46,6 +47,7 @@ export interface RewindDraftPanelProps {
    */
   provisional?: LandedRewind | undefined;
   onFocusComposer?: (() => void) | undefined;
+  variant?: ComposerPanelVariant | undefined;
 }
 
 export function RewindDraftPanel({
@@ -53,6 +55,7 @@ export function RewindDraftPanel({
   draft,
   provisional,
   onFocusComposer,
+  variant = "standalone",
 }: RewindDraftPanelProps) {
   // A ref, not state: two fast clicks land in the same render, before any
   // state update could disable the buttons.
@@ -265,11 +268,20 @@ export function RewindDraftPanel({
   return (
     <section
       className={cn(
-        "mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border/70 bg-card/95 px-3 py-2.5 text-sm shadow-sm",
+        variant === "tray"
+          ? cn(
+              COMPOSER_TRAY_PANEL_CLASS_NAME,
+              "text-sm",
+              copy.tone === "error" && "bg-destructive/4",
+              copy.tone === "warning" && "bg-warning/4",
+            )
+          : cn(
+              "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-3 py-2.5 text-sm shadow-sm",
+              copy.tone === "error" && "border-destructive/30",
+              copy.tone === "warning" && "border-warning/40",
+            ),
         "transition-[opacity,translate] duration-200 ease-out motion-reduce:transition-none",
         entered ? "translate-y-0 opacity-100" : "translate-y-1 opacity-0",
-        copy.tone === "error" && "border-destructive/30",
-        copy.tone === "warning" && "border-warning/40",
       )}
       aria-label={copy.title}
       data-slot="rewind-draft-panel"

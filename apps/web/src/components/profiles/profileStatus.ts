@@ -10,7 +10,7 @@ type BadgeVariant = "success" | "warning" | "error" | "secondary" | "outline";
  * `settings/providerStatus.ts`.
  *
  * Only design tokens are referenced here — never literal palette classes such
- * as `text-amber-600` — because `themePalette.ts` rewrites the token custom
+ * as `text-warning-foreground` — because `themePalette.ts` rewrites the token custom
  * properties at runtime for user themes.
  */
 export const PROFILE_STATUS_STYLES = {

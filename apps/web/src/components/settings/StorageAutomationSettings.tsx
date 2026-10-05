@@ -93,7 +93,7 @@ export function StorageAutomationSettings() {
 
   return (
     <section
-      className="space-y-4 rounded-2xl border border-border bg-card p-5"
+      className="space-y-4 rounded-xl border border-border bg-card p-5"
       data-settings-search-target="storage.automation"
     >
       <div>
@@ -106,7 +106,7 @@ export function StorageAutomationSettings() {
         </p>
       </div>
 
-      <label className="flex items-center justify-between gap-4 py-2">
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
         <span>Automatic storage cleanup</span>
         <Switch
           aria-label="Automatic storage cleanup"
@@ -124,7 +124,7 @@ export function StorageAutomationSettings() {
           disabled={rulesDisabled}
           onChange={(worktree) => saveCleanup({ worktree })}
         />
-        <label className="flex items-center justify-between gap-4 py-2">
+        <label className="flex items-center justify-between gap-4 py-2 text-sm">
           <span>
             Delete provider logs after
             <span className="block text-xs text-muted-foreground">
@@ -140,7 +140,7 @@ export function StorageAutomationSettings() {
         </label>
       </fieldset>
 
-      <label className="flex items-center justify-between gap-4 py-2">
+      <label className="flex items-center justify-between gap-4 py-2 text-sm">
         <span>
           Keep preview screenshots and recordings for
           <span className="block text-xs text-muted-foreground">
@@ -156,7 +156,7 @@ export function StorageAutomationSettings() {
       </label>
 
       <label
-        className="flex items-center justify-between gap-4 border-t border-border pt-4"
+        className="flex items-center justify-between gap-4 border-t border-border pt-4 text-sm"
         data-settings-search-target="storage.auto-pull"
       >
         <span>

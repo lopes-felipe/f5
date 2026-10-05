@@ -53,9 +53,9 @@ export function ProfileRemoveDialog({
           <p className="mt-1 text-sm font-medium wrap-anywhere">{profile?.name}</p>
           <AlertDialogDescription>
             Its accounts, projects, and chat history move to{" "}
-            <code className="rounded bg-muted/60 px-1 py-0.5 text-[11px]">.trash</code> — nothing is
+            <code className="rounded bg-muted/60 px-1 py-0.5 text-2xs">.trash</code> — nothing is
             deleted immediately. Git worktrees stay registered until you run{" "}
-            <code className="rounded bg-muted/60 px-1 py-0.5 text-[11px]">git worktree prune</code>.
+            <code className="rounded bg-muted/60 px-1 py-0.5 text-2xs">git worktree prune</code>.
             Port {profile?.port} is retired and will not be reused.
           </AlertDialogDescription>
         </AlertDialogHeader>

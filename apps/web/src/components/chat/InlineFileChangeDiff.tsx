@@ -160,11 +160,11 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
 
   const content = (() => {
     if (diffUnavailable) {
-      return <p className="px-3 py-2 text-[11px] text-muted-foreground/65">Diff unavailable</p>;
+      return <p className="px-3 py-2 text-2xs text-muted-foreground">Diff unavailable</p>;
     }
 
     if (checkpointDiffQuery.isLoading && !checkpointDiffData?.diff) {
-      return <p className="px-3 py-2 text-[11px] text-muted-foreground/65">Loading diff...</p>;
+      return <p className="px-3 py-2 text-2xs text-muted-foreground">Loading diff...</p>;
     }
 
     if (
@@ -173,7 +173,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
       renderablePatch.kind === "raw" ||
       matchedFiles.length === 0
     ) {
-      return <p className="px-3 py-2 text-[11px] text-muted-foreground/65">Diff unavailable</p>;
+      return <p className="px-3 py-2 text-2xs text-muted-foreground">Diff unavailable</p>;
     }
 
     return (
@@ -197,14 +197,14 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
                   title={displayPath}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-muted-foreground/55">
+                    <span className="text-muted-foreground">
                       <ChevronRightIcon className="size-3" />
                     </span>
-                    <span className="truncate font-mono text-[11px] text-foreground/85">
+                    <span className="truncate font-mono text-2xs text-foreground">
                       {displayPath}
                     </span>
                     {hasCounts ? (
-                      <span className="shrink-0 text-[10px] text-muted-foreground/65">
+                      <span className="shrink-0 text-2xs text-muted-foreground">
                         +{summaryFile.additions} / -{summaryFile.deletions}
                       </span>
                     ) : null}

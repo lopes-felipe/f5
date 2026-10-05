@@ -1496,6 +1496,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           <Input
             nativeInput
             size="sm"
+            className="font-mono"
             value={urlInput}
             onChange={(event) => setUrlInput(event.currentTarget.value)}
             placeholder="localhost:5173"
@@ -1655,7 +1656,11 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           {viewportLinked ? <LinkIcon /> : <UnlinkIcon />}
         </Button>
         {desktopPreview?.setMuted && activeSession ? (
-          <button
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="text-muted-foreground"
             aria-label="Toggle tab mute"
             onClick={() => {
               const value = !(
@@ -1668,11 +1673,12 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             {(mutedTabs[activeSession.tabId] ?? previewSettings.previewDefaults.muted)
               ? "Unmute"
               : "Mute"}
-          </button>
+          </Button>
         ) : null}
         {desktopPreview?.setZoom && activeSession ? (
           <select
             aria-label="Tab zoom"
+            className="h-7 rounded-md border border-input bg-background px-1.5 text-2xs text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
             value={String(
               zoomTabs[activeSession.tabId] ?? previewSettings.previewDefaults.zoomFactor,
             )}
@@ -1690,7 +1696,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             ))}
           </select>
         ) : null}
-        <span className="min-w-20 text-[11px] tabular-nums text-muted-foreground">
+        <span className="min-w-20 text-2xs tabular-nums text-muted-foreground">
           {activeViewport ? `${activeViewport.width} × ${activeViewport.height}` : "Fit panel"}
         </span>
         <Select

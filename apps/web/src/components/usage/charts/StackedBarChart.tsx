@@ -69,7 +69,7 @@ export function StackedBarChart({
             </div>
             <span
               className={cn(
-                "mt-1 h-4 max-w-full truncate text-[9px] text-muted-foreground",
+                "mt-1 h-4 max-w-full truncate text-2xs text-muted-foreground",
                 !(
                   buckets.length <= 24 ||
                   index === 0 ||

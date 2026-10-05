@@ -170,7 +170,7 @@ function GithubCliLogins({
               </li>
             ))}
           </ul>
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-2xs text-muted-foreground">
             Copies the current token into this profile. Later changes to your terminal gh login,
             such as a logout or account switch, don&apos;t affect F5. Use this button again to
             update.
@@ -237,7 +237,7 @@ export function GithubAccountPanel() {
           </p>
         ) : null}
 
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-foreground">
               {connected ? `@${connection.login}` : "Not connected"}
@@ -443,7 +443,7 @@ export function GithubAccountPanel() {
                 Verify and save token
               </Button>
             </div>
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-2xs text-muted-foreground">
               Needs the <code>repo</code>, <code>read:org</code>, and <code>notifications</code>{" "}
               scopes.{" "}
               {tokenUrl ? (

@@ -7,6 +7,16 @@ export function composerRequiresSendModifier(
   return shortcut === "mod-enter" || (shortcut === "mod-enter-multiline" && /[\r\n]/.test(prompt));
 }
 
+/** Key label for the send tooltip, following the user's send shortcut setting. */
+export function composerSendShortcutLabel(
+  shortcut: AppSettings["sendShortcut"],
+  prompt: string,
+  isMac: boolean,
+): string {
+  if (!composerRequiresSendModifier(shortcut, prompt)) return "Enter";
+  return isMac ? "⌘Enter" : "Ctrl+Enter";
+}
+
 export function shouldSubmitComposer(input: {
   shortcut: AppSettings["sendShortcut"];
   prompt: string;

@@ -9,6 +9,7 @@ import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3
 import { memo, useState } from "react";
 import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { Button } from "../ui/button";
+import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { getProviderModelCapabilities } from "../../providerModels";
 import {
@@ -112,13 +113,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
     >
       <MenuTrigger
         data-composer-control="effort"
-        render={
-          <Button
-            size="sm"
-            variant="ghost"
-            className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-          />
-        }
+        render={<Button size="sm" variant="ghost" className={COMPOSER_CHIP_CLASS_NAME} />}
       >
         <span>{trigger.label}</span>
         {trigger.fastModeEnabled ? (

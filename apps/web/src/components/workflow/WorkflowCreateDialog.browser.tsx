@@ -133,11 +133,8 @@ vi.mock("../../env", () => ({
   isElectron: true,
 }));
 
-import {
-  ProviderFields,
-  WorkflowCreateDialog,
-  normalizeWorkflowSlotModelOptions,
-} from "./WorkflowCreateDialog";
+import { SlotRow } from "./SlotRow";
+import { WorkflowCreateDialog, normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
 
 const desktopBridgePathByFileName = new Map<string, string>();
 
@@ -409,7 +406,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
     const screen = await render(
-      <ProviderFields
+      <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-5-codex"
@@ -455,7 +452,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
     const screen = await render(
-      <ProviderFields
+      <SlotRow
         label="Branch A"
         provider="codex"
         model="gpt-6-astra"
@@ -494,7 +491,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.append(host);
     const onModelOptionsChange = vi.fn();
     const screen = await render(
-      <ProviderFields
+      <SlotRow
         label="Branch A"
         provider="claudeAgent"
         model="claude-opus-4-7"
@@ -926,6 +923,41 @@ describe("WorkflowCreateDialog", () => {
       host.remove();
     }
   });
+  it("shows workflow types as described cards and keeps secondary settings in Options", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const feature = page.getByRole("button", { name: "Feature", exact: true }).element();
+      const descriptionId = feature.getAttribute("aria-describedby");
+      expect(descriptionId).toBe("workflow-type-description-planning");
+      expect(document.getElementById(descriptionId!)?.textContent).toContain(
+        "Two models draft competing plans",
+      );
+      expect(
+        document.querySelectorAll('[data-slot="workflow-slot-row"]').length,
+      ).toBeGreaterThanOrEqual(3);
+
+      // Collapsed by default, with a summary of the current choices.
+      expect(document.body.textContent).not.toContain("Plans directory");
+      const options = page.getByRole("button", { name: /^Options/ });
+      expect(options.element().textContent).toContain("Own-model review");
+      expect(options.element().textContent).toContain("plans/");
+      await options.click();
+      await expect.element(page.getByText("Plans directory", { exact: true })).toBeVisible();
+      await expect
+        .element(page.getByText("Run cost limit in USD (optional)", { exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("renders keyboard-navigable workflow type toggles with distinct hue classes", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -941,9 +973,9 @@ describe("WorkflowCreateDialog", () => {
       const documentToggle = page.getByRole("button", { name: "Document" }).element();
 
       expect(feature.getAttribute("aria-pressed")).toBe("true");
-      expect(feature.className).toContain("data-pressed:bg-sky-500/15");
-      expect(codeReview.className).toContain("data-pressed:bg-emerald-500/15");
-      expect(investigation.className).toContain("data-pressed:bg-amber-500/15");
+      expect(feature.className).toContain("data-pressed:bg-info/10");
+      expect(codeReview.className).toContain("data-pressed:bg-success/10");
+      expect(investigation.className).toContain("data-pressed:bg-warning/10");
 
       await page.getByRole("button", { name: "Feature" }).click();
       await userEvent.keyboard("{ArrowRight}");
@@ -1253,7 +1285,9 @@ describe("WorkflowCreateDialog", () => {
     try {
       await page.getByRole("button", { name: "Investigation" }).click();
       await page.getByTestId("composer-editor").fill("Investigate checkout timeouts");
-      await page.getByText("Own-model review").click();
+      // Own-model review lives in the collapsed Options section.
+      await page.getByRole("button", { name: /^Options/ }).click();
+      await page.getByText("Own-model review", { exact: true }).click();
 
       await vi.waitFor(() => {
         expect(createWorkflowButton().disabled).toBe(false);

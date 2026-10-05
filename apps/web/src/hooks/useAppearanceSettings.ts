@@ -12,6 +12,7 @@ export function useAppearanceSettings(): AppearanceSettings {
   return useMemo(
     () => normalizeAppearanceSettings(settings),
     [
+      settings.chatContentWidth,
       settings.chatFontFamily,
       settings.chatFontSize,
       settings.monoFontFamily,

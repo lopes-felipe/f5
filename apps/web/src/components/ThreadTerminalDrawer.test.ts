@@ -7,7 +7,25 @@ import {
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalSelectionMouseUp,
   terminalSelectionActionDelayForClickCount,
+  terminalTabIndexForKey,
 } from "./ThreadTerminalDrawer";
+
+describe("terminal tab keyboard navigation", () => {
+  it("moves with the arrows, wrapping at both ends", () => {
+    expect(terminalTabIndexForKey("ArrowRight", 0, 3)).toBe(1);
+    expect(terminalTabIndexForKey("ArrowRight", 2, 3)).toBe(0);
+    expect(terminalTabIndexForKey("ArrowLeft", 0, 3)).toBe(2);
+    expect(terminalTabIndexForKey("ArrowLeft", 2, 3)).toBe(1);
+  });
+
+  it("jumps with Home and End and ignores other keys", () => {
+    expect(terminalTabIndexForKey("Home", 2, 3)).toBe(0);
+    expect(terminalTabIndexForKey("End", 0, 3)).toBe(2);
+    expect(terminalTabIndexForKey("Enter", 1, 3)).toBeNull();
+    expect(terminalTabIndexForKey("ArrowDown", 1, 3)).toBeNull();
+    expect(terminalTabIndexForKey("ArrowRight", 0, 0)).toBeNull();
+  });
+});
 
 describe("terminal font appearance", () => {
   it("updates xterm options and refits without recreating the terminal", () => {

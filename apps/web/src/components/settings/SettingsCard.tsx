@@ -24,7 +24,7 @@ export function SettingsCard({
 }) {
   return (
     <section
-      className={cn("rounded-2xl border border-border bg-card p-5", className)}
+      className={cn("rounded-xl border border-border bg-card p-5", className)}
       data-settings-search-target={searchTarget}
     >
       <div
@@ -34,8 +34,8 @@ export function SettingsCard({
         )}
       >
         <div className="min-w-0">
-          <h2 className="text-sm font-medium text-foreground">{title}</h2>
-          {description ? <p className="mt-1 text-xs text-muted-foreground">{description}</p> : null}
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+          {description ? <p className="mt-1 text-ui text-muted-foreground">{description}</p> : null}
         </div>
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
@@ -45,8 +45,9 @@ export function SettingsCard({
 }
 
 /**
- * Standard settings row: bordered row with a title, optional description and a
- * right-aligned control (switch, select, button). Stack rows with `space-y-3`.
+ * Standard settings row: a title, optional description and a right-aligned
+ * control (switch, select, button), separated from the next row by a hairline
+ * divider rather than its own box.
  */
 export function SettingsRow({
   title,
@@ -62,13 +63,13 @@ export function SettingsRow({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2",
+        "flex items-center justify-between gap-4 border-b border-border py-2 last:border-b-0",
         className,
       )}
     >
       <div className="min-w-0">
         <p className="text-sm font-medium text-foreground">{title}</p>
-        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+        {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
       </div>
       <div className="shrink-0">{control}</div>
     </div>

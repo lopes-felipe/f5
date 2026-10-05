@@ -149,3 +149,19 @@ describe("investigationWorkflowView.logic", () => {
     expect(canRetrySynthesis(workflow)).toBe(true);
   });
 });
+
+describe("deriveInvestigationTimelinePhases modelSlot", () => {
+  it("carries investigator and synthesis slots, with none for the reviews", () => {
+    const workflow = makeWorkflow({ selfReviewEnabled: true });
+    const phases = deriveInvestigationTimelinePhases(workflow);
+    const byId = new Map(phases.map((phase) => [phase.id, phase] as const));
+
+    expect(byId.get("investigation")!.steps.map((step) => step.modelSlot)).toEqual([
+      workflow.investigatorA.slot,
+      workflow.investigatorB.slot,
+    ]);
+    expect(byId.get("cross-review")!.steps.every((step) => step.modelSlot === null)).toBe(true);
+    expect(byId.get("own-model-review")!.steps.every((step) => step.modelSlot === null)).toBe(true);
+    expect(byId.get("synthesis")!.steps[0]!.modelSlot).toEqual(workflow.synthesis.slot);
+  });
+});

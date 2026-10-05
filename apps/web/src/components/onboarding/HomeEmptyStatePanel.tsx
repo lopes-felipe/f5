@@ -28,33 +28,19 @@ import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { HomeMissionControl } from "../home/HomeMissionControl";
+import { Kbd } from "../ui/kbd";
+import { SectionLabel } from "../ui/section-label";
 import { Skeleton } from "../ui/skeleton";
 import { HarnessValidationPanel } from "./HarnessValidationPanel";
 
-type AccentToken = "blue" | "emerald" | "amber" | "violet";
+type AccentToken = "info" | "success" | "warning" | "attention";
 
 // Static class strings so Tailwind's JIT can detect them at build time.
-const ACCENT_CLASSES: Record<AccentToken, { chipBg: string; icon: string; hoverShadow: string }> = {
-  amber: {
-    chipBg: "bg-amber-500/10",
-    hoverShadow: "hover:shadow-amber-500/20",
-    icon: "text-amber-400",
-  },
-  blue: {
-    chipBg: "bg-blue-500/10",
-    hoverShadow: "hover:shadow-blue-500/20",
-    icon: "text-blue-400",
-  },
-  emerald: {
-    chipBg: "bg-emerald-500/10",
-    hoverShadow: "hover:shadow-emerald-500/20",
-    icon: "text-emerald-400",
-  },
-  violet: {
-    chipBg: "bg-violet-500/10",
-    hoverShadow: "hover:shadow-violet-500/20",
-    icon: "text-violet-400",
-  },
+const ACCENT_CLASSES: Record<AccentToken, { chipBg: string; icon: string }> = {
+  attention: { chipBg: "bg-attention/10", icon: "text-attention-foreground" },
+  info: { chipBg: "bg-info/10", icon: "text-info-foreground" },
+  success: { chipBg: "bg-success/10", icon: "text-success-foreground" },
+  warning: { chipBg: "bg-warning/10", icon: "text-warning-foreground" },
 };
 
 interface OnboardingFeature {
@@ -66,25 +52,25 @@ interface OnboardingFeature {
 
 const ONBOARDING_FEATURES: readonly OnboardingFeature[] = [
   {
-    accent: "blue",
+    accent: "info",
     description: "Run two agents in parallel to draft plans, cross-review, and merge.",
     icon: GitBranchIcon,
     title: "Planning workflows",
   },
   {
-    accent: "emerald",
+    accent: "success",
     description: "Independent review agents plus a consolidator produce one actionable summary.",
     icon: ShieldCheckIcon,
     title: "Automated code review",
   },
   {
-    accent: "amber",
+    accent: "warning",
     description: "Attach external tools via stdio, SSE, or HTTP with per-project OAuth.",
     icon: PlugIcon,
     title: "MCP tool integration",
   },
   {
-    accent: "violet",
+    accent: "attention",
     description: "Run implementation phases in isolated git worktrees to avoid conflicts.",
     icon: GitForkIcon,
     title: "Worktree isolation",
@@ -127,29 +113,13 @@ interface PanelShellProps {
 
 function PanelShell({ body, footer, subtitle }: PanelShellProps) {
   return (
-    <section className="relative mx-auto flex w-full max-w-3xl flex-col gap-8 overflow-hidden px-6 py-8 motion-safe:animate-in motion-safe:fade-in-50 motion-safe:duration-300">
-      {/* Decorative background orbs */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-24 -right-16 -z-10 h-72 w-72 rounded-full bg-primary/20 blur-3xl"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -bottom-24 -left-20 -z-10 h-56 w-56 rounded-full bg-violet-500/20 blur-3xl"
-      />
-
-      <header className="flex flex-col items-start gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-2 motion-safe:duration-300">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background/50 px-3 py-1 text-xs font-medium text-muted-foreground">
-          <SparklesIcon className="size-3.5 text-primary" />
-          Get started
-        </span>
-        <h1 className="font-heading text-4xl font-semibold leading-tight tracking-tight md:text-5xl">
-          Welcome to{" "}
-          <span className="bg-gradient-to-br from-primary via-primary/80 to-violet-400 bg-clip-text text-transparent">
-            {APP_BASE_NAME}
-          </span>
+    <section className="mx-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-10 motion-safe:animate-in motion-safe:fade-in-50 motion-safe:duration-300">
+      <header className="flex flex-col items-start gap-2">
+        <SectionLabel as="span">Get started</SectionLabel>
+        <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
+          Welcome to {APP_BASE_NAME}
         </h1>
-        <p className="max-w-xl text-base text-muted-foreground">{subtitle}</p>
+        <p className="max-w-xl text-sm text-muted-foreground">{subtitle}</p>
       </header>
       {body}
       {footer}
@@ -177,28 +147,28 @@ function DisplayProfileCard({
       type="button"
       aria-pressed={selected}
       className={cn(
-        "relative rounded-xl border border-border bg-background/50 p-4 text-left transition-all duration-200",
-        "hover:border-primary/60 hover:bg-accent/60",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        selected ? "border-primary bg-primary/5 ring-2 ring-primary" : null,
+        "relative rounded-xl border border-border bg-card p-4 text-left transition-colors duration-(--duration-fast)",
+        "hover:bg-accent/60",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        selected ? "border-primary bg-accent/40 ring-1 ring-primary" : null,
       )}
       onClick={onClick}
     >
       {selected ? (
         <CheckCircle2Icon
           aria-hidden="true"
-          className="absolute top-3 right-3 size-5 text-primary"
+          className="absolute top-3 right-3 size-4 text-primary"
         />
       ) : null}
 
-      <div className="mb-3 flex min-h-[72px] flex-col justify-center gap-1.5 rounded-md bg-background/40 p-3">
+      <div className="mb-3 flex min-h-18 flex-col justify-center gap-1.5 rounded-md bg-muted/40 p-3">
         {PROFILE_PREVIEW_BARS[name]}
       </div>
 
       <div className="flex items-center justify-between gap-2">
         <span className="text-sm font-medium text-foreground">{label}</span>
         {showRecommended ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
+          <span className="inline-flex h-5 items-center gap-1 rounded-full bg-muted px-2 text-2xs font-medium text-muted-foreground">
             <SparklesIcon className="size-3" />
             Recommended
           </span>
@@ -212,35 +182,33 @@ function DisplayProfileCard({
 function HomeStartupSkeleton() {
   return (
     <section
-      className="relative mx-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-8"
+      className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-6 py-10"
       role="status"
       aria-live="polite"
       aria-label="Loading workspace"
       data-testid="home-startup-skeleton"
     >
       <span className="sr-only">Loading workspace</span>
-      <header aria-hidden="true" className="flex flex-col items-start gap-3">
-        <Skeleton className="h-7 w-28 rounded-full" />
-        <div className="space-y-3">
-          <Skeleton className="h-10 w-[min(28rem,78vw)] rounded-md md:h-12" />
-          <Skeleton className="h-10 w-[min(20rem,62vw)] rounded-md md:h-12" />
+      {/* Mirrors the dashboard: greeting, quick-start card, then rows. */}
+      <div aria-hidden="true" className="flex flex-col gap-4">
+        <Skeleton className="h-9 w-[min(18rem,70vw)] rounded-md" />
+        <div className="rounded-xl border border-border bg-card p-4">
+          <Skeleton className="h-4 w-[min(16rem,60vw)] rounded-full" />
+          <div className="mt-12 flex items-center gap-2">
+            <Skeleton className="h-7 w-28 rounded-md" />
+            <Skeleton className="h-7 w-24 rounded-md" />
+            <Skeleton className="ms-auto h-7 w-16 rounded-md" />
+          </div>
         </div>
-        <div className="space-y-2">
-          <Skeleton className="h-4 w-[min(34rem,78vw)] rounded-full" />
-          <Skeleton className="h-4 w-[min(24rem,65vw)] rounded-full" />
-        </div>
-      </header>
-      <div aria-hidden="true" className="grid gap-3 sm:grid-cols-2">
+      </div>
+      <div aria-hidden="true" className="flex flex-col gap-1.5">
+        <Skeleton className="h-3 w-20 rounded-full" />
         {[0, 1, 2, 3].map((index) => (
-          <div key={index} className="rounded-lg border border-border bg-background/50 p-5">
-            <div className="mb-4 flex items-center gap-3">
-              <Skeleton className="size-9 rounded-md" />
-              <Skeleton className="h-4 w-32 rounded-full" />
-            </div>
-            <div className="space-y-2">
-              <Skeleton className="h-3 w-full rounded-full" />
-              <Skeleton className="h-3 w-9/12 rounded-full" />
-            </div>
+          <div key={index} className="flex h-10 items-center gap-3 px-2.5">
+            <Skeleton className="size-4 rounded-sm" />
+            <Skeleton className="h-3 w-20 rounded-full" />
+            <Skeleton className="h-3.5 w-[min(20rem,45vw)] rounded-full" />
+            <Skeleton className="ms-auto h-3 w-10 rounded-full" />
           </div>
         ))}
       </div>
@@ -266,7 +234,7 @@ export function HomeEmptyStatePanel() {
       <PanelShell
         subtitle="Add a project to get started."
         body={
-          <div className="min-h-[320px] rounded-2xl border border-border bg-background/50 p-6">
+          <div className="rounded-xl border border-border bg-card p-5">
             <p className="text-sm text-muted-foreground">
               Connect a workspace to create threads, run agents, and keep work isolated per project.
             </p>
@@ -291,27 +259,20 @@ export function HomeEmptyStatePanel() {
       body={
         <div className="space-y-8">
           {/* Feature grid */}
-          <div className="grid gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500 motion-safe:delay-100 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             {ONBOARDING_FEATURES.map(({ accent, description, icon: Icon, title }) => {
               const accentClasses = ACCENT_CLASSES[accent];
               return (
-                <div
-                  key={title}
-                  className={cn(
-                    "group rounded-2xl border border-border bg-gradient-to-b from-background/60 to-background/30 p-5 transition-all duration-200",
-                    "hover:-translate-y-0.5 hover:border-foreground/30 hover:shadow-lg",
-                    accentClasses.hoverShadow,
-                  )}
-                >
+                <div key={title} className="rounded-xl border border-border bg-card p-4">
                   <div
                     className={cn(
-                      "grid size-10 place-items-center rounded-lg",
+                      "grid size-8 place-items-center rounded-lg",
                       accentClasses.chipBg,
                     )}
                   >
-                    <Icon className={cn("size-5", accentClasses.icon)} />
+                    <Icon className={cn("size-4", accentClasses.icon)} />
                   </div>
-                  <h2 className="mt-4 text-sm font-medium text-foreground">{title}</h2>
+                  <h2 className="mt-3 text-sm font-medium text-foreground">{title}</h2>
                   <p className="mt-1 text-sm text-muted-foreground">{description}</p>
                 </div>
               );
@@ -321,9 +282,9 @@ export function HomeEmptyStatePanel() {
           <HarnessValidationPanel />
 
           {/* Display profile */}
-          <div className="border-t border-border/60 pt-6 motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:delay-200 motion-safe:duration-500">
-            <div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              <Settings2Icon className="size-4" />
+          <div className="border-t border-border pt-6">
+            <div className="mb-1 flex items-center gap-2 text-2xs font-medium text-muted-foreground">
+              <Settings2Icon className="size-3.5" />
               <span>Display profile</span>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -352,7 +313,7 @@ export function HomeEmptyStatePanel() {
 
             {showProfileOverwriteWarning ? (
               <p className="mt-3 flex items-start gap-2 text-sm text-muted-foreground">
-                <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-amber-400" />
+                <AlertCircleIcon className="mt-0.5 size-4 shrink-0 text-warning-foreground" />
                 <span>{DISPLAY_PROFILE_CUSTOM_WARNING}</span>
               </p>
             ) : null}
@@ -360,20 +321,16 @@ export function HomeEmptyStatePanel() {
         </div>
       }
       footer={
-        <div className="space-y-4 motion-safe:animate-in motion-safe:fade-in motion-safe:delay-300 motion-safe:duration-500">
+        <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-3">
-            <Button size="lg" onClick={openAddProject} className="shadow-lg shadow-primary/25">
+            <Button size="lg" onClick={openAddProject}>
               Add your first project
               <ArrowRightIcon className="size-4" />
             </Button>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/40 pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
             <p className="text-sm text-muted-foreground">
-              Tip: press{" "}
-              <kbd className="rounded border border-border bg-background/60 px-1.5 py-0.5 font-mono text-xs text-foreground">
-                ⌘K
-              </kbd>{" "}
-              anywhere to search commands.
+              Tip: press <Kbd>⌘K</Kbd> anywhere to search commands.
             </p>
             <label className="flex items-center gap-3 text-sm text-muted-foreground">
               <Checkbox

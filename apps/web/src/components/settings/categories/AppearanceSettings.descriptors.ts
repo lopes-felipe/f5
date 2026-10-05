@@ -18,6 +18,14 @@ export const APPEARANCE_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Color theme library"]',
   },
   {
+    id: "appearance.chat-width",
+    category: "appearance",
+    label: "Conversation width",
+    description: "Set the maximum width of messages and the composer.",
+    keywords: ["width", "column", "layout", "narrow", "wide", "readability"],
+    targetSelector: '[aria-label="Conversation width"]',
+  },
+  {
     id: "appearance.ui-font",
     category: "appearance",
     label: "Interface font",

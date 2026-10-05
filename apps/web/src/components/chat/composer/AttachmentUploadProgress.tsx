@@ -48,10 +48,7 @@ export function AttachmentUploadProgress({
   }, [metadata?.uploadId, metadata?.uploadThreadId, threadId]);
   if (expired)
     return (
-      <div
-        role="alert"
-        className="absolute bottom-0 left-0 right-0 bg-background/95 p-1 text-[10px]"
-      >
+      <div role="alert" className="absolute bottom-0 left-0 right-0 bg-background/95 p-1 text-2xs">
         Upload expired. Remove and re-attach this file.
       </div>
     );
@@ -72,7 +69,7 @@ export function AttachmentUploadProgress({
   };
   return (
     <div
-      className="absolute bottom-0 left-0 right-0 bg-background/95 p-1 text-[10px]"
+      className="absolute bottom-0 left-0 right-0 bg-background/95 p-1 text-2xs"
       aria-live="polite"
     >
       {state.status === "failed" ? (

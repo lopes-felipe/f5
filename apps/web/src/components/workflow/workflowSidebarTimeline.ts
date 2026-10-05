@@ -1,11 +1,12 @@
 import { isDocumentWorkflow, documentReaderPassPhase } from "@t3tools/shared/documentWorkflow";
-import type { PlanningWorkflow } from "@t3tools/contracts";
+import type { PlanningWorkflow, ThreadId } from "@t3tools/contracts";
 import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
-import type {
-  WorkflowTimelinePhase as TimelinePhase,
-  WorkflowTimelinePhaseState as PhaseState,
-  WorkflowTimelineStep as TimelineStep,
-  WorkflowTimelineStepState as StepState,
+import {
+  threadLabelsFromPhases,
+  type WorkflowTimelinePhase as TimelinePhase,
+  type WorkflowTimelinePhaseState as PhaseState,
+  type WorkflowTimelineStep as TimelineStep,
+  type WorkflowTimelineStepState as StepState,
 } from "./workflowTimelineTypes";
 
 // ---------------------------------------------------------------------------
@@ -83,12 +84,14 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
         label: "Branch A",
         threadId: workflow.branchA.authorThreadId,
         state: branchStepState(workflow.branchA),
+        modelSlot: workflow.branchA.authorSlot,
       },
       {
         key: "author-b",
         label: "Branch B",
         threadId: workflow.branchB.authorThreadId,
         state: branchStepState(workflow.branchB),
+        modelSlot: workflow.branchB.authorSlot,
       },
     ],
   };
@@ -167,6 +170,7 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
         label: `Review ${review.branch} ${slotLabel}`,
         threadId: review.threadId,
         state: stepState,
+        modelSlot: null,
       };
     });
 
@@ -174,15 +178,22 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
   }
 
   // Placeholders
+  const placeholder = (key: string, label: string): TimelineStep => ({
+    key,
+    label,
+    threadId: null,
+    state: "pending",
+    modelSlot: null,
+  });
   const steps: TimelineStep[] = [
-    { key: "review-cross-a", label: "Review A Cross", threadId: null, state: "pending" },
-    { key: "review-cross-b", label: "Review B Cross", threadId: null, state: "pending" },
+    placeholder("review-cross-a", "Review A Cross"),
+    placeholder("review-cross-b", "Review B Cross"),
   ];
 
   if (workflow.selfReviewEnabled) {
     steps.push(
-      { key: "review-self-a", label: "Review A Self", threadId: null, state: "pending" },
-      { key: "review-self-b", label: "Review B Self", threadId: null, state: "pending" },
+      placeholder("review-self-a", "Review A Self"),
+      placeholder("review-self-b", "Review B Self"),
     );
   }
 
@@ -235,12 +246,14 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
         label: "Branch A",
         threadId: workflow.branchA.authorThreadId,
         state: branchRevisionStepState(workflow.branchA),
+        modelSlot: workflow.branchA.authorSlot,
       },
       {
         key: "revision-b",
         label: "Branch B",
         threadId: workflow.branchB.authorThreadId,
         state: branchRevisionStepState(workflow.branchB),
+        modelSlot: workflow.branchB.authorSlot,
       },
     ],
   };
@@ -275,6 +288,7 @@ function deriveMergePhase(workflow: PlanningWorkflow): TimelinePhase {
         label: "Merge",
         threadId: workflow.merge.threadId,
         state,
+        modelSlot: workflow.merge.mergeSlot,
       },
     ],
   };
@@ -306,6 +320,7 @@ function deriveImplementationPhase(workflow: PlanningWorkflow): TimelinePhase {
       label: "Implementation",
       threadId: impl?.threadId ?? null,
       state,
+      modelSlot: impl?.implementationSlot ?? null,
     },
   ];
 
@@ -366,6 +381,7 @@ function deriveCodeReviewPhase(workflow: PlanningWorkflow): TimelinePhase {
       label: `Code Review ${String.fromCharCode(65 + index)}`,
       threadId: review.threadId,
       state: stepState,
+      modelSlot: review.reviewerSlot,
     };
   });
 
@@ -410,6 +426,7 @@ function deriveApplyReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
         label: "Apply Reviews",
         threadId: impl?.threadId ?? null,
         state,
+        modelSlot: impl?.implementationSlot ?? null,
       },
     ],
   };
@@ -449,6 +466,7 @@ export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[
             key: "reader-review",
             label: "Reader review",
             threadId: pass?.readerThreadId ?? null,
+            modelSlot: workflow.readerSlot ?? null,
             state:
               pass?.status === "skipped"
                 ? "skipped"
@@ -464,6 +482,7 @@ export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[
             key: "polish",
             label: "Polish",
             threadId: workflow.merge.threadId,
+            modelSlot: workflow.merge.mergeSlot,
             state:
               pass?.status === "skipped"
                 ? "skipped"
@@ -489,4 +508,11 @@ export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[
     deriveCodeReviewPhase(workflow),
     deriveApplyReviewsPhase(workflow),
   ];
+}
+
+/** Role label per thread ("Branch A", "Review A Cross", "Merge", "Reader review"...). */
+export function deriveWorkflowThreadLabels(
+  workflow: PlanningWorkflow,
+): ReadonlyMap<ThreadId, string> {
+  return threadLabelsFromPhases(deriveTimelinePhases(workflow));
 }

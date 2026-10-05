@@ -688,6 +688,11 @@ describe("formatShortcutLabel", () => {
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "MacIntel"), "⌘+");
     assert.strictEqual(formatShortcutLabel(modShortcut("+"), "Linux"), "Ctrl++");
   });
+
+  it("abbreviates page keys", () => {
+    assert.strictEqual(formatShortcutLabel(modShortcut("pageup"), "MacIntel"), "⌘PgUp");
+    assert.strictEqual(formatShortcutLabel(modShortcut("pagedown"), "Linux"), "Ctrl+PgDn");
+  });
 });
 
 describe("isTerminalClearShortcut", () => {
@@ -847,6 +852,27 @@ describe("Phase 3 shortcut contexts", () => {
         context: { isElectron: false },
       }),
       command,
+    );
+  });
+  it("maps mod+/ to the shortcuts reference unless the terminal has focus", () => {
+    const slash = event({ key: "/", ctrlKey: true });
+    assert.equal(
+      resolveShortcutCommand(slash, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: false },
+      }),
+      "help.shortcuts",
+    );
+    assert.notEqual(
+      resolveShortcutCommand(slash, DEFAULT_RESOLVED_KEYBINDINGS, {
+        platform: "Linux",
+        context: { terminalFocus: true },
+      }),
+      "help.shortcuts",
+    );
+    assert.equal(
+      shortcutLabelForCommand(DEFAULT_RESOLVED_KEYBINDINGS, "help.shortcuts", "MacIntel"),
+      "⌘/",
     );
   });
   it("only maps undo with a visible toast outside editable elements", () => {

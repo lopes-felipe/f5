@@ -21,8 +21,8 @@ export function ProfileAccountsSection({ profile }: { readonly profile: ProfileS
         <h2 className="text-sm font-medium text-foreground">Accounts</h2>
         <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
           Sign in to the CLIs this profile uses. Credentials are stored inside{" "}
-          <code className="rounded bg-muted/60 px-1 py-0.5 text-[10px]">{profile.stateDir}</code>{" "}
-          and are not shared with other profiles.
+          <code className="rounded bg-muted/60 px-1 py-0.5 text-2xs">{profile.stateDir}</code> and
+          are not shared with other profiles.
         </p>
       </div>
       <div>

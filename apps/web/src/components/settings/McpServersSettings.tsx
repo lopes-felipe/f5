@@ -1039,7 +1039,7 @@ function McpServerRow(props: {
 
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
-            <span className="text-[11px] text-muted-foreground">Enabled</span>
+            <span className="text-2xs text-muted-foreground">Enabled</span>
             <Switch
               checked={props.server.enabled !== false}
               onCheckedChange={(checked) => props.onToggleEnabled(Boolean(checked))}
@@ -1403,7 +1403,7 @@ export function McpServersSettings(props: {
 
   return (
     <section
-      className="rounded-2xl border border-border bg-card p-5"
+      className="rounded-xl border border-border bg-card p-5"
       data-settings-search-target="integrations.mcp"
     >
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1746,6 +1746,7 @@ export function McpServersSettings(props: {
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-foreground">Command</span>
                     <Input
+                      className="font-mono"
                       value={draft.command}
                       onChange={(event) => {
                         setDraft((current) => ({ ...current, command: event.target.value }));
@@ -1762,7 +1763,7 @@ export function McpServersSettings(props: {
                         setDraft((current) => ({ ...current, args: event.target.value }));
                         setFormError(null);
                       }}
-                      className="min-h-20"
+                      className="min-h-20 font-mono"
                       placeholder="@modelcontextprotocol/server-filesystem&#10;/path/to/project"
                     />
                     <span className="text-xs text-muted-foreground">One argument per line.</span>
@@ -1776,7 +1777,7 @@ export function McpServersSettings(props: {
                           setDraft((current) => ({ ...current, env: event.target.value }));
                           setFormError(null);
                         }}
-                        className="min-h-24"
+                        className="min-h-24 font-mono"
                         placeholder="API_KEY=secret"
                       />
                       <span className="text-xs text-muted-foreground">Use KEY=value per line.</span>
@@ -1784,6 +1785,7 @@ export function McpServersSettings(props: {
                     <label className="space-y-1">
                       <span className="text-xs font-medium text-foreground">Working directory</span>
                       <Input
+                        className="font-mono"
                         value={draft.cwd}
                         onChange={(event) => {
                           setDraft((current) => ({ ...current, cwd: event.target.value }));
@@ -1799,6 +1801,7 @@ export function McpServersSettings(props: {
                   <label className="space-y-1">
                     <span className="text-xs font-medium text-foreground">URL</span>
                     <Input
+                      className="font-mono"
                       value={draft.url}
                       onChange={(event) => {
                         setDraft((current) => ({ ...current, url: event.target.value }));
@@ -1815,7 +1818,7 @@ export function McpServersSettings(props: {
                         setDraft((current) => ({ ...current, headers: event.target.value }));
                         setFormError(null);
                       }}
-                      className="min-h-24"
+                      className="min-h-24 font-mono"
                       placeholder="Authorization=Bearer ..."
                     />
                     <span className="text-xs text-muted-foreground">Use KEY=value per line.</span>
@@ -1843,6 +1846,7 @@ export function McpServersSettings(props: {
                           Bearer token env var
                         </span>
                         <Input
+                          className="font-mono"
                           value={draft.bearerTokenEnvVar}
                           onChange={(event) =>
                             setDraft((current) => ({
@@ -1856,6 +1860,7 @@ export function McpServersSettings(props: {
                       <label className="space-y-1">
                         <span className="text-xs font-medium text-foreground">OAuth client ID</span>
                         <Input
+                          className="font-mono"
                           value={draft.oauthClientId}
                           onChange={(event) =>
                             setDraft((current) => ({
@@ -1874,6 +1879,7 @@ export function McpServersSettings(props: {
                           OAuth callback port
                         </span>
                         <Input
+                          className="font-mono"
                           value={draft.oauthCallbackPort}
                           onChange={(event) =>
                             setDraft((current) => ({
@@ -1947,7 +1953,7 @@ export function McpServersSettings(props: {
                       </label>
                     </div>
 
-                    <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                    <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
                       <div>
                         <p className="text-xs font-medium text-foreground">Parallel tool calls</p>
                         <p className="text-xs text-muted-foreground">

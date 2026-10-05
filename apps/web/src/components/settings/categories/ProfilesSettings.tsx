@@ -188,7 +188,7 @@ export function ProfilesSettings() {
 
       {metadataRoot || active ? (
         <section
-          className="rounded-2xl border border-border bg-card p-5"
+          className="rounded-xl border border-border bg-card p-5"
           data-settings-search-target="profiles.storage"
         >
           <div className="mb-4">
@@ -199,20 +199,20 @@ export function ProfilesSettings() {
           </div>
           <div className="space-y-3">
             {metadataRoot ? (
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+              <div className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">Removed profiles</p>
-                  <p className="break-all font-mono text-[11px] text-muted-foreground">
+                  <p className="break-all font-mono text-2xs text-muted-foreground">
                     {metadataRoot}/.trash
                   </p>
                 </div>
               </div>
             ) : null}
             {active ? (
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+              <div className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-foreground">This profile's data</p>
-                  <p className="break-all font-mono text-[11px] text-muted-foreground">
+                  <p className="break-all font-mono text-2xs text-muted-foreground">
                     {active.stateDir}
                   </p>
                 </div>

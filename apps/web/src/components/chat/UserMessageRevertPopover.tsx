@@ -183,7 +183,7 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
             </Button>
             <Button type="button" size="xs" data-revert-confirm="" onClick={confirm}>
               Revert
-              <Kbd className="h-4 min-w-4 bg-primary-foreground/15 text-[10px] text-primary-foreground">
+              <Kbd className="h-4 min-w-4 bg-primary-foreground/15 text-2xs text-primary-foreground">
                 ↵
               </Kbd>
             </Button>

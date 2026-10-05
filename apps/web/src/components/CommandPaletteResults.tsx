@@ -93,9 +93,7 @@ function CommandPaletteResultRow(props: {
               <ThreadStatusPillBadge pill={props.item.statusPill} hideLabelBelowMd />
             ) : null}
           </span>
-          <span className="truncate text-muted-foreground/70 text-xs">
-            {props.item.description}
-          </span>
+          <span className="truncate text-muted-foreground text-xs">{props.item.description}</span>
         </span>
       ) : (
         <span className="flex min-w-0 items-center gap-1.5 truncate text-sm text-foreground">
@@ -106,13 +104,13 @@ function CommandPaletteResultRow(props: {
         </span>
       )}
       {props.item.timestamp ? (
-        <span className="min-w-12 shrink-0 text-right text-[10px] tabular-nums text-muted-foreground/70">
+        <span className="min-w-12 shrink-0 text-right text-2xs tabular-nums text-muted-foreground">
           {props.item.timestamp}
         </span>
       ) : null}
       {shortcutLabel ? <CommandShortcut>{shortcutLabel}</CommandShortcut> : null}
       {props.item.kind === "submenu" ? (
-        <ChevronRightIcon className="ml-auto size-4 shrink-0 text-muted-foreground/50" />
+        <ChevronRightIcon className="ml-auto size-4 shrink-0 text-muted-foreground" />
       ) : null}
     </CommandItem>
   );

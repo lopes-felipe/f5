@@ -6,18 +6,18 @@ import { cn } from "~/lib/utils";
 const TASK_STATUS_META = {
   pending: {
     label: "Pending",
-    accentClass: "border-amber-500/30 bg-amber-500/6 text-amber-700 dark:text-amber-300",
-    dotClass: "bg-amber-500/80",
+    accentClass: "border-warning/30 bg-warning/6 text-warning-foreground",
+    dotClass: "bg-warning/80",
   },
   in_progress: {
     label: "In progress",
-    accentClass: "border-sky-500/30 bg-sky-500/8 text-sky-700 dark:text-sky-300",
-    dotClass: "bg-sky-500",
+    accentClass: "border-info/30 bg-info/8 text-info-foreground",
+    dotClass: "bg-info",
   },
   completed: {
     label: "Completed",
-    accentClass: "border-emerald-500/30 bg-emerald-500/8 text-emerald-700 dark:text-emerald-300",
-    dotClass: "bg-emerald-500",
+    accentClass: "border-success/30 bg-success/8 text-success-foreground",
+    dotClass: "bg-success",
   },
 } as const satisfies Record<
   ThreadTaskItem["status"],
@@ -101,7 +101,7 @@ export function ThreadTasksPanel(input: {
                       </p>
                     ) : null}
                   </div>
-                  <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 font-medium text-[11px] uppercase tracking-[0.08em]">
+                  <span className="shrink-0 rounded-full border border-current/15 px-2 py-0.5 font-medium text-2xs uppercase tracking-wider">
                     {meta.label}
                   </span>
                 </div>

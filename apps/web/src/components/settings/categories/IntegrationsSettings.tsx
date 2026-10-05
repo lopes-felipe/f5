@@ -40,10 +40,10 @@ export function IntegrationsSettings() {
         }
       >
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+          <div className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0">
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium text-foreground">Config file path</p>
-              <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              <p className="mt-1 break-all font-mono text-2xs text-muted-foreground">
                 {keybindingsConfigPath ?? "Resolving keybindings path..."}
               </p>
             </div>
@@ -64,7 +64,7 @@ export function IntegrationsSettings() {
           <KeybindingEditor />
           {keybindingConflicts.length > 0 ? (
             <div
-              className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-3"
+              className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-3"
               data-keybinding-conflicts="true"
             >
               <p className="text-xs font-medium text-foreground">Conflicting shortcuts</p>

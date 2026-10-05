@@ -115,9 +115,9 @@ export function ProfileCreateDialog({
                 onChange={(event) => setName(event.target.value)}
               />
               {showNameError ? (
-                <span className="text-[11px] text-destructive">{nameError}</span>
+                <span className="text-2xs text-destructive">{nameError}</span>
               ) : (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-2xs text-muted-foreground">
                   Launch command preview:{" "}
                   <code className="rounded bg-muted/60 px-1 py-0.5">
                     t3 --profile {trimmed.length === 0 ? "…" : slug}
@@ -137,9 +137,7 @@ export function ProfileCreateDialog({
               }}
             />
 
-            <p className="text-[11px] text-muted-foreground">
-              A free port is assigned automatically.
-            </p>
+            <p className="text-2xs text-muted-foreground">A free port is assigned automatically.</p>
           </form>
 
           {error ? (

@@ -35,6 +35,7 @@ export function DisplayProfileSelector({
 }: DisplayProfileSelectorProps) {
   const {
     alwaysExpandAgentCommandTranscripts,
+    collapseCompletedWorkLogs,
     expandMcpToolCallCardsByDefault,
     expandMcpToolCalls,
     expandWorkflowThreadsByDefault,
@@ -48,6 +49,7 @@ export function DisplayProfileSelector({
     () =>
       pickDisplayProfileValues({
         alwaysExpandAgentCommandTranscripts,
+        collapseCompletedWorkLogs,
         expandMcpToolCallCardsByDefault,
         expandMcpToolCalls,
         expandWorkflowThreadsByDefault,
@@ -59,6 +61,7 @@ export function DisplayProfileSelector({
       }),
     [
       alwaysExpandAgentCommandTranscripts,
+      collapseCompletedWorkLogs,
       expandMcpToolCallCardsByDefault,
       expandMcpToolCalls,
       expandWorkflowThreadsByDefault,

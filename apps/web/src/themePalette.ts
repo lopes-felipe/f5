@@ -1,10 +1,21 @@
-import { formatHex, formatHex8, parse, wcagContrast } from "culori";
+import {
+  converter,
+  formatCss,
+  formatHex,
+  formatHex8,
+  interpolate,
+  parse,
+  wcagContrast,
+} from "culori";
 
 export const THEME_DEFINITION_VERSION = 1 as const;
 export const DEFAULT_THEME_ID = "f5-black";
+/** The palette `f5-black` used before the Graphite redesign. */
+export const CLASSIC_BLACK_THEME_ID = "f5-black-classic";
 export const MAX_CUSTOM_THEMES = 20;
 export const MAX_THEME_DEFINITION_BYTES = 64 * 1024;
 export const MIN_BODY_TEXT_CONTRAST = 4.5;
+export const MIN_DECORATIVE_CONTRAST = 3;
 
 export const THEME_TOKEN_NAMES = [
   "background",
@@ -34,8 +45,22 @@ export const THEME_TOKEN_NAMES = [
   "warning-foreground",
 ] as const;
 
+/**
+ * Tokens computed from every theme after overrides merge. They are not
+ * user-overridable, so custom and imported VS Code themes always get them.
+ */
+export const DERIVED_THEME_TOKEN_NAMES = [
+  "faint-foreground",
+  "attention",
+  "attention-foreground",
+  "chrome",
+] as const;
+
 export type ThemeTokenName = (typeof THEME_TOKEN_NAMES)[number];
+export type DerivedThemeTokenName = (typeof DERIVED_THEME_TOKEN_NAMES)[number];
 export type ThemeTokens = Readonly<Record<ThemeTokenName, string>>;
+export type DerivedThemeTokens = Readonly<Record<DerivedThemeTokenName, string>>;
+export type ResolvedThemeTokens = ThemeTokens & DerivedThemeTokens;
 export type ThemeVariant = "light" | "dark";
 
 export interface ThemeParameters {
@@ -58,8 +83,8 @@ export interface ThemeDefinitionV1 {
 export interface ThemePalette {
   readonly id: string;
   readonly name: string;
-  readonly light: ThemeTokens;
-  readonly dark: ThemeTokens;
+  readonly light: ResolvedThemeTokens;
+  readonly dark: ResolvedThemeTokens;
   readonly builtin: boolean;
   readonly definition?: ThemeDefinitionV1;
 }
@@ -94,6 +119,10 @@ function oklch(lightness: number, chroma: number, hue: number): string {
   )})`;
 }
 
+function semanticChromaFor(chroma: number): number {
+  return Math.max(0.13, Math.min(chroma, 0.22));
+}
+
 export function normalizeThemeParameters(value: ThemeParameters): ThemeParameters {
   return {
     baseHue: round(((value.baseHue % 360) + 360) % 360, 2),
@@ -110,7 +139,7 @@ export function generateThemeTokens(
   const surfaceChroma = Math.min(chroma * 0.08, 0.018);
   const subtleChroma = Math.min(chroma * 0.18, 0.038);
   const foregroundChroma = Math.min(chroma * 0.14, 0.03);
-  const semanticChroma = Math.max(0.13, Math.min(chroma, 0.22));
+  const semanticChroma = semanticChromaFor(chroma);
 
   if (variant === "light") {
     const foregroundLightness = clamp(0.27 - (contrast - 1) * 0.18, 0.18, 0.32);
@@ -131,7 +160,8 @@ export function generateThemeTokens(
       accent: oklch(0.94, subtleChroma * 1.15, hue),
       "accent-foreground": oklch(foregroundLightness, foregroundChroma, hue),
       destructive: oklch(0.59, semanticChroma, 27),
-      "destructive-foreground": oklch(0.12, semanticChroma * 0.15, 27),
+      // Coloured text on neutral surfaces; on-fill pairs use white text.
+      "destructive-foreground": oklch(0.45, semanticChroma, 27),
       border: oklch(0.885, subtleChroma * 0.65, hue),
       input: oklch(0.84, subtleChroma * 0.8, hue),
       ring: oklch(0.52, chroma, hue),
@@ -162,7 +192,7 @@ export function generateThemeTokens(
     accent: oklch(0.27, subtleChroma * 1.2, hue),
     "accent-foreground": oklch(foregroundLightness, foregroundChroma, hue),
     destructive: oklch(0.68, semanticChroma, 27),
-    "destructive-foreground": oklch(0.16, semanticChroma * 0.2, 27),
+    "destructive-foreground": oklch(0.78, semanticChroma * 0.7, 27),
     border: oklch(0.305, subtleChroma * 0.8, hue),
     input: oklch(0.35, subtleChroma, hue),
     ring: oklch(0.7, chroma * 0.88, hue),
@@ -173,6 +203,98 @@ export function generateThemeTokens(
     warning: oklch(0.78, semanticChroma, 75),
     "warning-foreground": oklch(0.82, semanticChroma * 0.65, 75),
   };
+}
+
+const FAINT_FOREGROUND_MAX_BLEND = 0.6;
+const CHROME_LIGHTNESS_DELTA: Record<ThemeVariant, number> = { light: 0.05, dark: 0.037 };
+const toOklch = converter("oklch");
+
+function safeContrast(foreground: string, background: string): number {
+  const value = wcagContrast(foreground, background);
+  return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * `faint-foreground`: blend `muted-foreground` toward `background` in oklab and
+ * keep the largest blend (capped at 0.6) that still holds 3:1 against the
+ * background, card and accent surfaces. Non-text use only (icons, separators).
+ */
+function deriveFaintForeground(
+  tokens: Pick<ThemeTokens, "muted-foreground" | "background" | "card" | "accent">,
+): string {
+  const surfaces = [tokens.background, tokens.card, tokens.accent];
+  let mix: ((t: number) => unknown) | null = null;
+  try {
+    mix = interpolate([tokens["muted-foreground"], tokens.background], "oklab");
+  } catch {
+    return tokens["muted-foreground"];
+  }
+  const colorAt = (t: number) => formatCss(mix!(t) as Parameters<typeof formatCss>[0]) ?? "";
+  const passes = (t: number) => {
+    const candidate = colorAt(t);
+    return (
+      candidate !== "" &&
+      surfaces.every((surface) => safeContrast(candidate, surface) >= MIN_DECORATIVE_CONTRAST)
+    );
+  };
+  if (!passes(0)) return tokens["muted-foreground"];
+  if (passes(FAINT_FOREGROUND_MAX_BLEND)) return colorAt(FAINT_FOREGROUND_MAX_BLEND);
+  let low = 0;
+  let high = FAINT_FOREGROUND_MAX_BLEND;
+  for (let step = 0; step < 18; step += 1) {
+    const middle = (low + high) / 2;
+    if (passes(middle)) low = middle;
+    else high = middle;
+  }
+  return colorAt(low);
+}
+
+function deriveChrome(background: string, variant: ThemeVariant): string {
+  const parsed = toOklch(parse(background));
+  if (!parsed) return background;
+  return oklch(parsed.l - CHROME_LIGHTNESS_DELTA[variant], parsed.c ?? 0, parsed.h ?? 0);
+}
+
+/**
+ * Derived tokens for a merged (generated + overridden) token set. Exported for
+ * tests; `paletteFromDefinition` is the only production caller.
+ */
+export function deriveThemeTokens(
+  parameters: ThemeParameters,
+  variant: ThemeVariant,
+  merged: ThemeTokens,
+): DerivedThemeTokens {
+  const semanticChroma = semanticChromaFor(normalizeThemeParameters(parameters).chroma);
+  return {
+    "faint-foreground": deriveFaintForeground(merged),
+    attention:
+      variant === "light" ? oklch(0.58, semanticChroma, 300) : oklch(0.72, semanticChroma, 300),
+    "attention-foreground":
+      variant === "light"
+        ? oklch(0.42, semanticChroma, 300)
+        : oklch(0.8, semanticChroma * 0.7, 300),
+    chrome: deriveChrome(merged.background, variant),
+  };
+}
+
+function resolveVariantTokens(
+  definition: ThemeDefinitionV1,
+  variant: ThemeVariant,
+): ResolvedThemeTokens {
+  const generated = generateThemeTokens(definition.parameters, variant);
+  const overridden: ThemeTokens = { ...generated, ...definition.overrides?.[variant] };
+  // `destructive-foreground` used to mean text on a red fill and now means red
+  // text on ordinary surfaces. Themes written for the old meaning override it
+  // with a near-white or near-black colour; fall back to the generated value
+  // when the override is unreadable on the theme's background.
+  const keepDestructiveOverride =
+    definition.overrides?.[variant]?.["destructive-foreground"] === undefined ||
+    wcagContrast(overridden["destructive-foreground"], overridden.background) >=
+      MIN_BODY_TEXT_CONTRAST;
+  const merged: ThemeTokens = keepDestructiveOverride
+    ? overridden
+    : { ...overridden, "destructive-foreground": generated["destructive-foreground"] };
+  return { ...merged, ...deriveThemeTokens(definition.parameters, variant, merged) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -303,14 +425,8 @@ function paletteFromDefinition(definition: ThemeDefinitionV1, builtin: boolean):
   return {
     id: definition.id,
     name: definition.name,
-    light: {
-      ...generateThemeTokens(definition.parameters, "light"),
-      ...definition.overrides?.light,
-    },
-    dark: {
-      ...generateThemeTokens(definition.parameters, "dark"),
-      ...definition.overrides?.dark,
-    },
+    light: resolveVariantTokens(definition, "light"),
+    dark: resolveVariantTokens(definition, "dark"),
     builtin,
     definition,
   };
@@ -320,7 +436,57 @@ const BUILTIN_THEME_DEFINITIONS: readonly ThemeDefinitionV1[] = [
   {
     version: THEME_DEFINITION_VERSION,
     id: DEFAULT_THEME_ID,
-    name: "F5 Black",
+    // Graphite + Cobalt (docs/design/direction.md). The id predates the
+    // redesign and stays so stored settings keep pointing at the default.
+    name: "F5 Graphite",
+    parameters: normalizeThemeParameters({ baseHue: 262, chroma: 0.16, contrast: 1 }),
+    overrides: {
+      light: {
+        background: "oklch(0.993 0.0015 260)",
+        foreground: "oklch(0.21 0.008 260)",
+        card: "oklch(1 0 0)",
+        "card-foreground": "oklch(0.21 0.008 260)",
+        popover: "oklch(1 0 0)",
+        "popover-foreground": "oklch(0.21 0.008 260)",
+        primary: "oklch(0.52 0.2 262)",
+        "primary-foreground": "oklch(0.99 0 0)",
+        secondary: "oklch(0.962 0.004 260)",
+        "secondary-foreground": "oklch(0.21 0.008 260)",
+        muted: "oklch(0.965 0.003 260)",
+        "muted-foreground": "oklch(0.5 0.012 260)",
+        accent: "oklch(0.948 0.005 260)",
+        "accent-foreground": "oklch(0.21 0.008 260)",
+        border: "oklch(0.905 0.005 260)",
+        input: "oklch(0.865 0.007 260)",
+        ring: "oklch(0.56 0.2 262)",
+      },
+      dark: {
+        background: "oklch(0.192 0.006 260)",
+        foreground: "oklch(0.95 0.003 260)",
+        card: "oklch(0.222 0.007 260)",
+        "card-foreground": "oklch(0.95 0.003 260)",
+        popover: "oklch(0.25 0.008 260)",
+        "popover-foreground": "oklch(0.95 0.003 260)",
+        primary: "oklch(0.56 0.2 262)",
+        "primary-foreground": "oklch(0.99 0 0)",
+        secondary: "oklch(0.255 0.007 260)",
+        "secondary-foreground": "oklch(0.95 0.003 260)",
+        muted: "oklch(0.24 0.006 260)",
+        "muted-foreground": "oklch(0.69 0.01 260)",
+        accent: "oklch(0.275 0.008 260)",
+        "accent-foreground": "oklch(0.95 0.003 260)",
+        border: "oklch(0.295 0.008 260)",
+        input: "oklch(0.34 0.01 260)",
+        ring: "oklch(0.68 0.17 262)",
+      },
+    },
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    // The pre-redesign default palette, kept under its own id for anyone who
+    // prefers it. The derived chrome/faint/attention tokens still apply.
+    id: CLASSIC_BLACK_THEME_ID,
+    name: "F5 Black (classic)",
     parameters: normalizeThemeParameters({ baseHue: 264, chroma: 0.185, contrast: 1 }),
     overrides: {
       dark: {
@@ -333,7 +499,9 @@ const BUILTIN_THEME_DEFINITIONS: readonly ThemeDefinitionV1[] = [
         secondary: "#202020",
         "secondary-foreground": "#f5f5f5",
         muted: "#202020",
-        "muted-foreground": "#7d7d7d",
+        // Was #7d7d7d (3.96:1 on hover); the nearest grey that meets AA on
+        // background, cards and hover.
+        "muted-foreground": "#878787",
         accent: "#202020",
         "accent-foreground": "#f5f5f5",
         border: "#252525",
@@ -406,34 +574,54 @@ export function applyThemePalette(
   for (const token of THEME_TOKEN_NAMES) {
     root.style.setProperty(`--${token}`, tokens[token]);
   }
+  for (const token of DERIVED_THEME_TOKEN_NAMES) {
+    root.style.setProperty(`--${token}`, tokens[token]);
+  }
   root.dataset.themeId = palette.id;
   root.style.colorScheme = variant;
 }
 
 export function themePaletteRevision(palette: ThemePalette, variant: ThemeVariant): string {
-  return `${palette.id}:${variant}:${THEME_TOKEN_NAMES.map((token) => palette[variant][token]).join(
-    ";",
-  )}`;
+  return `${palette.id}:${variant}:${[...THEME_TOKEN_NAMES, ...DERIVED_THEME_TOKEN_NAMES]
+    .map((token) => palette[variant][token])
+    .join(";")}`;
 }
 
 export function bodyTextContrast(palette: ThemePalette, variant: ThemeVariant): number {
   return wcagContrast(palette[variant].foreground, palette[variant].background);
 }
 
+type ContrastPair = readonly [
+  label: string,
+  foreground: keyof ResolvedThemeTokens,
+  background: keyof ResolvedThemeTokens,
+  minimum: number,
+];
+
+const CONTRAST_PAIRS: ReadonlyArray<ContrastPair> = [
+  ["body text", "foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["primary button", "primary-foreground", "primary", MIN_BODY_TEXT_CONTRAST],
+  ["destructive text", "destructive-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["secondary text", "muted-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["secondary text on cards", "muted-foreground", "card", MIN_BODY_TEXT_CONTRAST],
+  ["secondary text on hover", "muted-foreground", "accent", MIN_BODY_TEXT_CONTRAST],
+  ["info text", "info-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["success text", "success-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["warning text", "warning-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["attention text", "attention-foreground", "background", MIN_BODY_TEXT_CONTRAST],
+  ["decorative icons", "faint-foreground", "background", MIN_DECORATIVE_CONTRAST],
+];
+
 export function getThemeContrastWarnings(palette: ThemePalette): readonly string[] {
   const warnings: string[] = [];
   for (const variant of ["light", "dark"] as const) {
-    for (const [label, foreground, background] of [
-      ["body text", "foreground", "background"],
-      ["primary button", "primary-foreground", "primary"],
-      ["destructive button", "destructive-foreground", "destructive"],
-    ] as const) {
+    for (const [label, foreground, background, minimum] of CONTRAST_PAIRS) {
       const contrast = wcagContrast(palette[variant][foreground], palette[variant][background]);
-      if (!Number.isFinite(contrast) || contrast < MIN_BODY_TEXT_CONTRAST) {
+      if (!Number.isFinite(contrast) || contrast < minimum) {
         warnings.push(
           `${variant === "light" ? "Light" : "Dark"} ${label} contrast is ${contrast.toFixed(
             2,
-          )}:1; WCAG AA requires ${MIN_BODY_TEXT_CONTRAST}:1.`,
+          )}:1; WCAG AA requires ${minimum}:1.`,
         );
       }
     }

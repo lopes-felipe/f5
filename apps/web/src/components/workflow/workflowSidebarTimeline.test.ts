@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PlanningWorkflowId, ProjectId, ThreadId, type PlanningWorkflow } from "@t3tools/contracts";
 
-import { deriveTimelinePhases } from "./workflowSidebarTimeline";
+import { deriveTimelinePhases, deriveWorkflowThreadLabels } from "./workflowSidebarTimeline";
+import { overallStateFromPhases } from "./workflowTimelineTypes";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -883,5 +884,94 @@ describe("deriveTimelinePhases", () => {
 
     // Reviews exist but aren't all completed → active, not pending
     expect(phases[REVIEWS]!.state).toBe("active");
+  });
+});
+
+describe("deriveTimelinePhases modelSlot", () => {
+  it("carries each step's configured model slot", () => {
+    const codex = { provider: "codex" as const, model: "gpt-5-codex" };
+    const claude = { provider: "claudeAgent" as const, model: "claude-sonnet-4-5" };
+    const workflow = makeWorkflow({
+      implementation: {
+        implementationSlot: claude,
+        threadId: ThreadId.makeUnsafe("impl-thread"),
+        implementationTurnId: "impl-turn",
+        revisionTurnId: null,
+        codeReviewEnabled: true,
+        codeReviews: [
+          {
+            reviewerLabel: "Reviewer",
+            reviewerSlot: codex,
+            threadId: ThreadId.makeUnsafe("code-review-a"),
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+        status: "code_reviews_requested",
+        error: null,
+        retryCount: 0,
+        lastRetryAt: null,
+        updatedAt: NOW,
+      },
+    });
+    const phases = deriveTimelinePhases(workflow);
+
+    expect(phases[AUTHORING]!.steps.map((step) => step.modelSlot)).toEqual([codex, claude]);
+    expect(phases[REVISION]!.steps.map((step) => step.modelSlot)).toEqual([codex, claude]);
+    // Plan reviews do not record a slot of their own.
+    expect(phases[REVIEWS]!.steps.every((step) => step.modelSlot === null)).toBe(true);
+    expect(phases[MERGE]!.steps[0]!.modelSlot).toEqual(codex);
+    expect(phases[IMPLEMENTATION]!.steps[0]!.modelSlot).toEqual(claude);
+    expect(phases[CODE_REVIEW]!.steps[0]!.modelSlot).toEqual(codex);
+    expect(phases[APPLY_REVIEWS]!.steps[0]!.modelSlot).toEqual(claude);
+  });
+
+  it("has no implementation slot before implementation starts", () => {
+    const phases = deriveTimelinePhases(makeWorkflow());
+    expect(phases[IMPLEMENTATION]!.steps[0]!.modelSlot).toBeNull();
+    expect(phases[APPLY_REVIEWS]!.steps[0]!.modelSlot).toBeNull();
+  });
+});
+
+describe("deriveWorkflowThreadLabels", () => {
+  it("labels each thread with the first step that references it", () => {
+    const workflow = withMerge(makeWorkflow(), { threadId: ThreadId.makeUnsafe("merge") });
+    const labels = deriveWorkflowThreadLabels(workflow);
+
+    // Branch threads appear in authoring and revision; the first label wins.
+    expect(labels.get(ThreadId.makeUnsafe("author-a"))).toBe("Branch A");
+    expect(labels.get(ThreadId.makeUnsafe("author-b"))).toBe("Branch B");
+    expect(labels.get(ThreadId.makeUnsafe("merge"))).toBe("Merge");
+    expect(labels.has(ThreadId.makeUnsafe("unknown"))).toBe(false);
+  });
+});
+
+describe("overallStateFromPhases", () => {
+  it("prefers errors, then active phases, then all-completed", () => {
+    expect(
+      overallStateFromPhases([
+        { id: "a", label: "A", state: "completed", steps: [] },
+        { id: "b", label: "B", state: "error", steps: [] },
+        { id: "c", label: "C", state: "active", steps: [] },
+      ]),
+    ).toBe("error");
+    expect(
+      overallStateFromPhases([
+        { id: "a", label: "A", state: "completed", steps: [] },
+        { id: "b", label: "B", state: "active", steps: [] },
+      ]),
+    ).toBe("active");
+    expect(
+      overallStateFromPhases([
+        { id: "a", label: "A", state: "completed", steps: [] },
+        { id: "b", label: "B", state: "skipped", steps: [] },
+      ]),
+    ).toBe("completed");
+    expect(overallStateFromPhases([{ id: "a", label: "A", state: "pending", steps: [] }])).toBe(
+      "pending",
+    );
   });
 });

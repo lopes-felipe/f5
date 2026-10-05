@@ -77,7 +77,7 @@ function CheckedInProjectConfigSummary({ projectId }: { readonly projectId: Proj
         </p>
       ) : null}
       {diagnostics.length > 0 ? (
-        <ul className="space-y-1 text-amber-700 dark:text-amber-300">
+        <ul className="space-y-1 text-warning-foreground">
           {diagnostics.map((diagnostic, index) => (
             <li key={`${diagnostic.field}:${index}`}>
               <span className="font-medium">{diagnostic.field}:</span> {diagnostic.message}
@@ -134,7 +134,7 @@ export function ProjectsSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Project context</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -171,14 +171,14 @@ export function ProjectsSettings() {
               </SelectPopup>
             </Select>
             {selectedProjectUnavailable ? (
-              <span className="block rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+              <span className="block rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning-foreground">
                 This project is unavailable or was deleted. Choose another project before editing
                 project-scoped settings.
               </span>
             ) : null}
           </label>
         ) : selectedProjectUnavailable ? (
-          <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          <p className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning-foreground">
             This project is unavailable or was deleted. Open another project before editing
             project-scoped settings.
           </p>
@@ -189,7 +189,7 @@ export function ProjectsSettings() {
         )}
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Project defaults and icon</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -442,7 +442,7 @@ export function ProjectsSettings() {
         )}
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Add project</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -458,6 +458,7 @@ export function ProjectsSettings() {
             <span className="text-xs font-medium text-foreground">Base directory</span>
             <Input
               id="add-project-base-directory"
+              className="font-mono"
               value={settings.addProjectBaseDirectory}
               onChange={(event) => updateSettings({ addProjectBaseDirectory: event.target.value })}
               placeholder="~/projects"
@@ -480,7 +481,7 @@ export function ProjectsSettings() {
       </section>
 
       <section
-        className="rounded-2xl border border-border bg-card p-5"
+        className="rounded-xl border border-border bg-card p-5"
         data-settings-search-target="projects.memory"
       >
         <div className="mb-4">

@@ -916,3 +916,79 @@ it("migrates legacy notification choices without enabling sounds or badges", () 
   ).toBe("off");
   expect(parsePersistedAppSettings(null).quitShortcutMode).toBe("hold");
 });
+
+describe("collapseCompletedWorkLogs", () => {
+  it("defaults on and follows the display presets", () => {
+    expect(parsePersistedAppSettings(null).collapseCompletedWorkLogs).toBe(true);
+    expect(DISPLAY_PROFILE_PRESETS.minimal.collapseCompletedWorkLogs).toBe(true);
+    expect(DISPLAY_PROFILE_PRESETS.balanced.collapseCompletedWorkLogs).toBe(true);
+    expect(DISPLAY_PROFILE_PRESETS.detailed.collapseCompletedWorkLogs).toBe(false);
+  });
+
+  it("keeps pre-upgrade Detailed users on Detailed", () => {
+    const { collapseCompletedWorkLogs: _omitted, ...legacyDetailed } =
+      DISPLAY_PROFILE_PRESETS.detailed;
+    const migrated = parsePersistedAppSettings(JSON.stringify(legacyDetailed));
+    expect(migrated.collapseCompletedWorkLogs).toBe(false);
+    expect(getDisplayProfile(migrated)).toBe("detailed");
+  });
+
+  it("resets a pre-upgrade DM Sans font choice to the default once", () => {
+    const legacy = parsePersistedAppSettings(
+      JSON.stringify({ uiFontFamily: "DM Sans", chatFontFamily: "DM Sans Variable" }),
+    );
+    expect(legacy.uiFontFamily).toBe("");
+    expect(legacy.chatFontFamily).toBe("");
+
+    const current = parsePersistedAppSettings(
+      JSON.stringify({ uiFontFamily: "DM Sans", collapseCompletedWorkLogs: true }),
+    );
+    expect(current.uiFontFamily).toBe("DM Sans");
+  });
+
+  it("keeps sparse pre-upgrade Detailed payloads on Detailed", () => {
+    // Older payloads omit keys added later; the decoder fills them with defaults.
+    const defaults = parsePersistedAppSettings(null);
+    const sparse: Record<string, unknown> = { ...DISPLAY_PROFILE_PRESETS.detailed };
+    delete sparse.collapseCompletedWorkLogs;
+    const omitted = DISPLAY_PROFILE_KEYS.filter(
+      (key) =>
+        key !== "collapseCompletedWorkLogs" &&
+        defaults[key] === DISPLAY_PROFILE_PRESETS.detailed[key],
+    );
+    expect(omitted.length).toBeGreaterThan(0);
+    for (const key of omitted) delete sparse[key];
+
+    const migrated = parsePersistedAppSettings(JSON.stringify(sparse));
+    expect(migrated.collapseCompletedWorkLogs).toBe(false);
+    expect(getDisplayProfile(migrated)).toBe("detailed");
+  });
+
+  it("leaves other pre-upgrade users on the new default", () => {
+    const { collapseCompletedWorkLogs: _omitted, ...legacyMinimal } =
+      DISPLAY_PROFILE_PRESETS.minimal;
+    const migrated = parsePersistedAppSettings(JSON.stringify(legacyMinimal));
+    expect(migrated.collapseCompletedWorkLogs).toBe(true);
+    expect(getDisplayProfile(migrated)).toBe("minimal");
+  });
+
+  it("respects an explicit stored value", () => {
+    expect(
+      parsePersistedAppSettings(
+        JSON.stringify({ ...DISPLAY_PROFILE_PRESETS.detailed, collapseCompletedWorkLogs: true }),
+      ).collapseCompletedWorkLogs,
+    ).toBe(true);
+  });
+});
+
+describe("chatContentWidth", () => {
+  it("defaults to comfortable and rejects unknown values", () => {
+    expect(parsePersistedAppSettings(null).chatContentWidth).toBe("comfortable");
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ chatContentWidth: "wide" })).chatContentWidth,
+    ).toBe("wide");
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ chatContentWidth: "huge" })).chatContentWidth,
+    ).toBe("comfortable");
+  });
+});

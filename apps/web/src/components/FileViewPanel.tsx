@@ -415,7 +415,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
             {filePath ? fileNameFromPath(filePath) : "File viewer"}
           </p>
           {positionBadge ? (
-            <span className="shrink-0 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            <span className="shrink-0 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
               {positionBadge}
             </span>
           ) : null}
@@ -441,7 +441,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           </Button>
         )}
         {fileQuery.data?.truncated ? (
-          <span className="rounded-md border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300">
+          <span className="rounded-md border border-warning/30 bg-warning/10 px-1.5 py-0.5 text-2xs font-medium text-warning-foreground">
             Read-only preview
           </span>
         ) : null}
@@ -488,7 +488,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   return (
     <DiffPanelShell mode={mode} header={header}>
       {!filePath ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           Select a file to inspect.
         </div>
       ) : !canDisplayFileInPanel ? (
@@ -550,17 +550,17 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
           </div>
         </div>
       ) : !fileQuery.data ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           File contents are unavailable.
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col p-2">
           {fileQuery.data.truncated ? (
-            <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-800 dark:text-amber-200">
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground">
               <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0" />
               <div className="min-w-0">
                 <p className="font-medium">Large file preview</p>
-                <p className="mt-0.5 text-amber-800/80 dark:text-amber-200/80">
+                <p className="mt-0.5 text-warning-foreground/80">
                   Showing the first {fileQuery.data.contents.length.toLocaleString()} characters of{" "}
                   {fileQuery.data.byteLength.toLocaleString()} bytes. Editing is disabled.
                 </p>

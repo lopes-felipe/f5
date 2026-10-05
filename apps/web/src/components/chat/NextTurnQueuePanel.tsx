@@ -38,6 +38,7 @@ import {
   moveItemInOrder,
 } from "./NextTurnQueuePanel.logic";
 import { NextTurnQueueRow } from "./NextTurnQueueRow";
+import { COMPOSER_TRAY_PANEL_CLASS_NAME, type ComposerPanelVariant } from "./composer/ComposerTray";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Failed to update the queued turn.";
@@ -61,7 +62,9 @@ export function NextTurnQueuePanel({
   runtimeSlashCommands,
   projectSkills,
   turnSteering = false,
+  variant = "standalone",
 }: {
+  readonly variant?: ComposerPanelVariant;
   readonly threadId: ThreadId;
   readonly turnSteering?: boolean | undefined;
   readonly provider?: ProviderKind | null;
@@ -197,7 +200,7 @@ export function NextTurnQueuePanel({
 
   if (!snapshot && state.syncError) {
     return (
-      <section className="mx-auto mb-2 w-full max-w-3xl rounded-xl border p-3 text-sm">
+      <section className="mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border p-3 text-sm">
         Couldn&apos;t load the queue.{" "}
         <Button size="xs" variant="link" onClick={() => void load()}>
           Retry
@@ -247,7 +250,11 @@ export function NextTurnQueuePanel({
     <section
       id="next-turn-queue-panel"
       tabIndex={-1}
-      className="mx-auto mb-2 w-full max-w-3xl rounded-xl border border-border/70 bg-card/95 px-2.5 py-2 shadow-sm"
+      className={
+        variant === "tray"
+          ? `${COMPOSER_TRAY_PANEL_CLASS_NAME} outline-none`
+          : "mx-auto mb-2 w-full max-w-(--chat-content-max-width) rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm"
+      }
       aria-label="Queued turns"
     >
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
@@ -265,7 +272,7 @@ export function NextTurnQueuePanel({
             </span>
           ) : null}
           {snapshot.paused ? (
-            <span className="rounded bg-warning/20 px-1.5 py-0.5 text-[10px]">PAUSED</span>
+            <span className="rounded bg-warning/20 px-1.5 py-0.5 text-2xs">PAUSED</span>
           ) : null}
         </div>
         <div className="flex items-center gap-1">

@@ -22,6 +22,7 @@ import { Input } from "../ui/input";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
 import { ModelPickerSidebarRail, type ModelPickerSidebarRailItem } from "./ModelPickerSidebar";
 import {
   getDisplayModelName,
@@ -355,8 +356,9 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
             variant={props.triggerVariant ?? "ghost"}
             data-chat-provider-model-picker="true"
             className={cn(
-              "min-w-0 justify-start overflow-hidden whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 [&_svg]:mx-0",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+              COMPOSER_CHIP_CLASS_NAME,
+              "min-w-0 justify-start overflow-hidden [&_svg]:mx-0",
+              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -443,10 +445,10 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div className="border-b px-3 py-2">
                 <div className="relative">
-                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground/50" />
+                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     ref={searchRef}
-                    className="pl-8 font-sans shadow-none"
+                    className="pl-8 shadow-none"
                     size="sm"
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
@@ -487,7 +489,7 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                         role="group"
                         aria-label={`${group.company} models`}
                       >
-                        <div className="sticky top-0 z-10 flex items-center gap-2 bg-popover/95 px-3 py-1.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase backdrop-blur-sm">
+                        <div className="sticky top-0 z-10 flex items-center gap-2 bg-popover/95 px-3 py-1.5 text-2xs font-semibold tracking-wider text-muted-foreground uppercase backdrop-blur-sm">
                           <span>{group.company}</span>
                           <span className="font-normal tabular-nums opacity-60">
                             {group.items.length}
@@ -518,7 +520,8 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                 <StarIcon
                                   className={cn(
                                     "size-3.5",
-                                    isFavorite && "fill-current text-yellow-500 opacity-100",
+                                    isFavorite &&
+                                      "fill-current text-warning-foreground opacity-100",
                                   )}
                                 />
                               </button>
@@ -542,18 +545,18 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
                                   <span className="flex items-center gap-2 text-xs font-medium">
                                     <span className="truncate">{getDisplayModelName(item)}</span>
                                     {isFanOutSelected(item) ? (
-                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-[10px] uppercase text-primary">
+                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
                                         Selected
                                       </span>
                                     ) : fanOutCount <= 1 &&
                                       item.instance.instanceId === activeInstanceId &&
                                       item.slug === props.model ? (
-                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-[10px] uppercase text-primary">
+                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
                                         Active
                                       </span>
                                     ) : null}
                                   </span>
-                                  <span className="block truncate text-[11px] text-muted-foreground">
+                                  <span className="block truncate text-2xs text-muted-foreground">
                                     {item.instance.displayName} · {item.slug}
                                     {reason ? ` · ${reason}` : ""}
                                   </span>

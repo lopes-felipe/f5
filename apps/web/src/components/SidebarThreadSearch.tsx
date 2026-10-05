@@ -85,8 +85,8 @@ export function SidebarThreadSearchInput(props: {
   };
 
   return (
-    <div className="flex h-8 items-center gap-1 rounded-md px-2 text-muted-foreground/70 transition-colors focus-within:bg-accent focus-within:text-foreground hover:bg-accent hover:text-foreground">
-      <SearchIcon className="size-3.5 shrink-0" />
+    <div className="flex h-8 items-center gap-2 rounded-lg px-2 text-muted-foreground transition-colors focus-within:bg-accent focus-within:text-foreground hover:bg-accent/60 hover:text-foreground">
+      <SearchIcon aria-hidden="true" className="size-4 shrink-0" />
       <input
         ref={inputRef}
         id={SIDEBAR_SEARCH_INPUT_ID}
@@ -100,7 +100,7 @@ export function SidebarThreadSearchInput(props: {
         aria-expanded={props.query.trim().length > 0}
         placeholder="Search"
         autoComplete="off"
-        className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
+        className="min-w-0 flex-1 bg-transparent text-ui text-foreground outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
         onChange={(event) => props.onQueryChange(event.target.value)}
         onKeyDown={handleKeyDown}
       />
@@ -108,28 +108,26 @@ export function SidebarThreadSearchInput(props: {
         <button
           type="button"
           aria-label="Clear sidebar search"
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-background/70"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md hover:bg-background/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={() => {
             props.onQueryChange("");
             inputRef.current?.focus();
           }}
         >
-          <XIcon className="size-3" />
+          <XIcon className="size-3.5" />
         </button>
       ) : (
         <button
           type="button"
           aria-label="Open full search"
           data-testid="command-palette-trigger"
-          className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           onClick={props.onOpenCommandPalette}
         >
           {props.commandPaletteShortcutLabel ? (
-            <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
-              {props.commandPaletteShortcutLabel}
-            </Kbd>
+            <Kbd>{props.commandPaletteShortcutLabel}</Kbd>
           ) : (
-            <span className="px-1 text-[10px]">More</span>
+            <span className="px-1 text-2xs">More</span>
           )}
         </button>
       )}
@@ -168,15 +166,11 @@ function SearchResultButton(props: {
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs text-foreground">{props.title}</span>
         {props.description ? (
-          <span className="block truncate text-[10px] text-muted-foreground/70">
-            {props.description}
-          </span>
+          <span className="block truncate text-2xs text-muted-foreground">{props.description}</span>
         ) : null}
       </span>
       {props.timestamp ? (
-        <span className="shrink-0 pt-0.5 text-[10px] text-muted-foreground/45">
-          {props.timestamp}
-        </span>
+        <span className="shrink-0 pt-0.5 text-2xs text-muted-foreground">{props.timestamp}</span>
       ) : null}
     </button>
   );
@@ -275,10 +269,8 @@ export function SidebarThreadSearchResults(props: {
       {localItems.length > 0 ? (
         <section aria-label="Matching threads">
           <div className="mb-1 flex items-center justify-between px-2">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-              Threads
-            </span>
-            <span className="text-[10px] text-muted-foreground/45">{localItems.length}</span>
+            <span className="text-2xs font-medium text-muted-foreground">Threads</span>
+            <span className="text-2xs text-muted-foreground">{localItems.length}</span>
           </div>
           <div className="space-y-0.5">
             {localItems.map((item) => (
@@ -300,13 +292,11 @@ export function SidebarThreadSearchResults(props: {
       {globalResults.length > 0 || isSearchingConversations ? (
         <section aria-label="Matching conversation content" className="mt-3">
           <div className="mb-1 flex items-center justify-between px-2">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
-              Conversations
-            </span>
+            <span className="text-2xs font-medium text-muted-foreground">Conversations</span>
             {isSearchingConversations ? (
-              <LoaderCircleIcon className="size-3 animate-spin text-muted-foreground/50" />
+              <LoaderCircleIcon className="size-3.5 animate-spin text-faint-foreground" />
             ) : (
-              <span className="text-[10px] text-muted-foreground/45">{globalResults.length}</span>
+              <span className="text-2xs text-muted-foreground">{globalResults.length}</span>
             )}
           </div>
           <div className="space-y-0.5">
@@ -335,7 +325,7 @@ export function SidebarThreadSearchResults(props: {
       ) : null}
 
       {!hasResults && !isSearchingConversations ? (
-        <div className="px-3 py-8 text-center text-xs text-muted-foreground/60">
+        <div className="px-3 py-8 text-center text-xs text-muted-foreground">
           {parsedImmediateQuery.text.length === 1
             ? "Type one more character to search conversation content."
             : "No matching threads or conversations."}

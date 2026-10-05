@@ -84,10 +84,10 @@ const CHANGE_REQUEST_STATE_PRESENTATION: Record<
   ChangeRequest["state"],
   { label: string; className: string }
 > = {
-  draft: { label: "Draft", className: "text-amber-600 dark:text-amber-300" },
-  open: { label: "Open", className: "text-emerald-600 dark:text-emerald-300" },
-  closed: { label: "Closed", className: "text-zinc-500 dark:text-zinc-400" },
-  merged: { label: "Merged", className: "text-violet-600 dark:text-violet-300" },
+  draft: { label: "Draft", className: "text-warning-foreground" },
+  open: { label: "Open", className: "text-success-foreground" },
+  closed: { label: "Closed", className: "text-muted-foreground" },
+  merged: { label: "Merged", className: "text-attention-foreground" },
   unknown: { label: "Change request", className: "text-muted-foreground" },
 };
 
@@ -423,7 +423,7 @@ export function BranchToolbarBranchSelector({
       >
         <div className="flex w-full items-center justify-between gap-2">
           <MiddleTruncate text={itemValue} />
-          {badge && <span className="shrink-0 text-[10px] text-muted-foreground/45">{badge}</span>}
+          {badge && <span className="shrink-0 text-2xs text-muted-foreground">{badge}</span>}
         </div>
       </ComboboxItem>
     );
@@ -491,16 +491,16 @@ export function BranchToolbarBranchSelector({
       >
         <ComboboxTrigger
           render={<Button data-composer-control="branch" variant="ghost" size="xs" />}
-          className="text-muted-foreground/70 hover:text-foreground/80"
+          className="h-6 font-mono text-2xs font-normal text-muted-foreground hover:text-foreground sm:h-6"
           disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
         >
-          <MiddleTruncate className="max-w-[240px]" text={triggerLabel} />
+          <MiddleTruncate className="max-w-60" text={triggerLabel} />
           <ChevronDownIcon />
         </ComboboxTrigger>
         <ComboboxPopup align="end" side="top" className="w-80">
           <div className="border-b p-1">
             <ComboboxInput
-              className="[&_input]:font-sans rounded-md"
+              className="rounded-md"
               inputClassName="ring-0"
               placeholder="Search branches..."
               showTrigger={false}

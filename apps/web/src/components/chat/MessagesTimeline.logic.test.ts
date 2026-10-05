@@ -4,7 +4,10 @@ import {
   computeMessageDurationStart,
   deriveTimelineTurnRailItems,
   deriveCodexCollaborationResponseRows,
+  findLastUserMessageRowIndex,
   findNearestMinimapMarkerIndex,
+  summarizeWorkGroup,
+  type WorkEntryClassificationSource,
   normalizeCompactToolLabel,
   resolveActiveTurnRailIndex,
   resolveCodexCollaborationHeading,
@@ -358,5 +361,77 @@ describe("Codex collaboration presentation", () => {
         ],
       ).map((state) => state.threadId),
     ).toEqual(["b", "a"]);
+  });
+});
+
+function workEntry(
+  overrides: Partial<WorkEntryClassificationSource> = {},
+): WorkEntryClassificationSource {
+  return { label: "Tool call", tone: "tool", ...overrides } as WorkEntryClassificationSource;
+}
+
+describe("summarizeWorkGroup", () => {
+  it("counts edited and read files and commands in a fixed order", () => {
+    expect(
+      summarizeWorkGroup([
+        workEntry({ command: "bun run lint", itemType: "command_execution" }),
+        workEntry({ requestKind: "file-read", readPaths: ["a.ts", "b.ts"] }),
+        workEntry({ fileChangeId: "fc-1" as never, changedFiles: ["a.ts", "b.ts"] }),
+        workEntry({ requestKind: "file-read" }),
+        workEntry({ command: "bun fmt", itemType: "command_execution" }),
+      ]),
+    ).toBe("Edited 2 files · Read 3 files · Ran 2 commands");
+  });
+
+  it("uses singular nouns for single counts", () => {
+    expect(
+      summarizeWorkGroup([
+        workEntry({ requestKind: "file-change" }),
+        workEntry({ subagentType: "explore" }),
+        workEntry({ tone: "error", label: "Failed" }),
+      ]),
+    ).toBe("Edited 1 file · 1 agent · 1 error");
+  });
+
+  it("names at most four buckets and counts the rest as more", () => {
+    expect(
+      summarizeWorkGroup([
+        workEntry({ requestKind: "file-change" }),
+        workEntry({ requestKind: "file-read" }),
+        workEntry({ searchSummary: "foo in src" }),
+        workEntry({ command: "ls", itemType: "command_execution" }),
+        workEntry({ subagentType: "explore" }),
+        workEntry({ label: "Fetch" }),
+      ]),
+    ).toBe("Edited 1 file · Read 1 file · 1 search · Ran 1 command · 2 more");
+  });
+
+  it("falls back to a step count when nothing is classifiable", () => {
+    expect(summarizeWorkGroup([workEntry({ tone: "info" }), workEntry({ tone: "thinking" })])).toBe(
+      "2 steps",
+    );
+  });
+});
+
+describe("findLastUserMessageRowIndex", () => {
+  it("returns the newest user message row", () => {
+    expect(
+      findLastUserMessageRowIndex([
+        { kind: "message", message: { role: "user" } },
+        { kind: "work" },
+        { kind: "message", message: { role: "assistant" } },
+        { kind: "message", message: { role: "user" } },
+        { kind: "work" },
+      ]),
+    ).toBe(3);
+  });
+
+  it("returns -1 without a user message", () => {
+    expect(
+      findLastUserMessageRowIndex([
+        { kind: "work" },
+        { kind: "message", message: { role: "assistant" } },
+      ]),
+    ).toBe(-1);
   });
 });

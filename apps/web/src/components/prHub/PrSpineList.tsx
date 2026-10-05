@@ -38,7 +38,7 @@ const PrSpineRow = forwardRef<
         <span
           className={cn(
             "truncate text-sm leading-snug",
-            pr.notificationPending ? "font-semibold text-foreground" : "text-foreground/90",
+            pr.notificationPending ? "font-semibold text-foreground" : "text-foreground",
           )}
         >
           {pr.title}

@@ -18,28 +18,21 @@ export const PendingSendRecoveryBanner = memo(function PendingSendRecoveryBanner
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-3 pt-3 sm:px-5">
-      <Alert variant="warning">
-        <CircleAlertIcon />
-        <AlertTitle>Send status could not be confirmed</AlertTitle>
-        <AlertDescription>
-          The connection dropped before this send was confirmed. Retry the original send or restore
-          the draft.
-        </AlertDescription>
-        <AlertAction>
-          <Button size="sm" className="rounded-full px-3" onClick={onRetrySend}>
-            Retry send
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="rounded-full px-3"
-            onClick={onRestoreDraft}
-          >
-            Restore draft
-          </Button>
-        </AlertAction>
-      </Alert>
-    </div>
+    <Alert variant="warning">
+      <CircleAlertIcon />
+      <AlertTitle>Send status could not be confirmed</AlertTitle>
+      <AlertDescription>
+        The connection dropped before this send was confirmed. Retry the original send or restore
+        the draft.
+      </AlertDescription>
+      <AlertAction>
+        <Button size="sm" onClick={onRetrySend}>
+          Retry send
+        </Button>
+        <Button size="sm" variant="outline" onClick={onRestoreDraft}>
+          Restore draft
+        </Button>
+      </AlertAction>
+    </Alert>
   );
 });

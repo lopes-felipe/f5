@@ -166,7 +166,7 @@ function CodexAccountUsageSection(props: {
       {summary ? (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-2xs text-muted-foreground">
               Account tokens ·{" "}
               {props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`}
             </p>
@@ -175,19 +175,19 @@ function CodexAccountUsageSection(props: {
             </p>
           </div>
           <div>
-            <p className="text-[11px] text-muted-foreground">Lifetime tokens</p>
+            <p className="text-2xs text-muted-foreground">Lifetime tokens</p>
             <p className="mt-0.5 text-lg font-semibold tabular-nums">
               {compactDecimalCount(summary.lifetimeTokens)}
             </p>
           </div>
           <div>
-            <p className="text-[11px] text-muted-foreground">Peak daily tokens</p>
+            <p className="text-2xs text-muted-foreground">Peak daily tokens</p>
             <p className="mt-0.5 text-lg font-semibold tabular-nums">
               {compactDecimalCount(summary.peakDailyTokens)}
             </p>
           </div>
           <div>
-            <p className="text-[11px] text-muted-foreground">Current usage streak</p>
+            <p className="text-2xs text-muted-foreground">Current usage streak</p>
             <p className="mt-0.5 text-lg font-semibold tabular-nums">
               {summary.currentStreakDays === null
                 ? "Unavailable"
@@ -204,7 +204,7 @@ function CodexAccountUsageSection(props: {
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
                 {limit.planType ? (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
                     {limit.planType}
                   </span>
                 ) : null}
@@ -219,7 +219,7 @@ function CodexAccountUsageSection(props: {
                 />
               ) : null}
               {limit.credits?.hasCredits ? (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-2xs text-muted-foreground">
                   Credits: {limit.credits.unlimited ? "Unlimited" : (limit.credits.balance ?? "—")}
                 </p>
               ) : null}
@@ -289,7 +289,7 @@ function MetricCard(props: {
         <div className="mt-2 text-2xl font-semibold tracking-tight text-foreground">
           {props.value}
         </div>
-        <p className="mt-1 text-[11px] text-muted-foreground">{props.detail}</p>
+        <p className="mt-1 text-2xs text-muted-foreground">{props.detail}</p>
       </CardPanel>
     </Card>
   );
@@ -696,12 +696,12 @@ export function UsageDashboardView(props: {
       summary.coverage.costUnreportedTurnCount > 0 ? (
         <section
           aria-label="Usage coverage"
-          className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-4"
+          className="rounded-xl border border-warning/25 bg-warning/5 p-4"
         >
           <div className="flex items-start gap-2">
             <AlertTriangleIcon
               aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+              className="mt-0.5 size-4 shrink-0 text-warning-foreground"
             />
             <div className="text-xs leading-relaxed">
               <p className="font-medium text-foreground">Coverage and provider reporting</p>

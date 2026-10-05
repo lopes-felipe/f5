@@ -366,7 +366,7 @@ export function ProvidersSettings() {
               here and in the picker until their CLI/auth probe passes.
             </p>
             {lastCheckedAt ? (
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-2xs text-muted-foreground">
                 Last checked: <code>{lastCheckedAt}</code>
               </p>
             ) : null}
@@ -498,7 +498,7 @@ export function ProvidersSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -511,6 +511,7 @@ export function ProvidersSettings() {
             <span className="text-xs font-medium text-foreground">Codex binary path</span>
             <Input
               id="codex-binary-path"
+              className="font-mono"
               value={settings.codexBinaryPath}
               onChange={(event) => updateSettings({ codexBinaryPath: event.target.value })}
               placeholder="codex"
@@ -525,6 +526,7 @@ export function ProvidersSettings() {
             <span className="text-xs font-medium text-foreground">CODEX_HOME path</span>
             <Input
               id="codex-home-path"
+              className="font-mono"
               value={settings.codexHomePath}
               onChange={(event) => updateSettings({ codexHomePath: event.target.value })}
               placeholder="/Users/you/.codex"
@@ -538,7 +540,7 @@ export function ProvidersSettings() {
           <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0 flex-1">
               <p>Binary source</p>
-              <p className="mt-1 break-all font-mono text-[11px] text-foreground">
+              <p className="mt-1 break-all font-mono text-2xs text-foreground">
                 {settings.codexBinaryPath || "PATH"}
               </p>
             </div>
@@ -554,7 +556,7 @@ export function ProvidersSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Claude Code</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -567,6 +569,7 @@ export function ProvidersSettings() {
             <span className="text-xs font-medium text-foreground">Claude binary path</span>
             <Input
               id="claude-binary-path"
+              className="font-mono"
               value={settings.claudeBinaryPath}
               onChange={(event) => updateSettings({ claudeBinaryPath: event.target.value })}
               placeholder="claude"
@@ -582,6 +585,7 @@ export function ProvidersSettings() {
             <span className="text-xs font-medium text-foreground">Additional CLI args</span>
             <Input
               id="claude-launch-args"
+              className="font-mono"
               value={settings.claudeLaunchArgs}
               onChange={(event) => updateSettings({ claudeLaunchArgs: event.target.value })}
               placeholder="--verbose --debug --some-flag=value"
@@ -631,7 +635,7 @@ export function ProvidersSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Models</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -663,13 +667,13 @@ export function ProvidersSettings() {
                 {favoriteModelRows.map((favorite) => (
                   <div
                     key={`${favorite.providerKind}:${favorite.modelId}`}
-                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                    className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0"
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs font-medium text-foreground">
                         {favorite.label}
                       </p>
-                      <p className="truncate text-[11px] text-muted-foreground">
+                      <p className="truncate text-2xs text-muted-foreground">
                         {favorite.providerLabel} · {favorite.modelId}
                       </p>
                     </div>
@@ -826,7 +830,7 @@ export function ProvidersSettings() {
                         {customModels.map((slug) => (
                           <div
                             key={`${provider}:${slug}`}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                            className="flex items-center justify-between gap-3 border-b border-border py-2 last:border-b-0"
                           >
                             <code className="min-w-0 flex-1 truncate text-xs text-foreground">
                               {slug}
@@ -854,7 +858,7 @@ export function ProvidersSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section className="rounded-xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Git</h2>
           <p className="mt-1 text-xs text-muted-foreground">

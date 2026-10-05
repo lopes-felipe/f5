@@ -459,7 +459,7 @@ export default function FileBrowserPanel({
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3">
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{projectName}</p>
-          <p className="truncate text-[10px] leading-none text-muted-foreground/80">
+          <p className="truncate text-2xs leading-none text-muted-foreground">
             {workspaceUnavailable
               ? "Unavailable"
               : entriesQuery.isFetching && entries.length === 0
@@ -471,7 +471,7 @@ export default function FileBrowserPanel({
             {entriesQuery.data?.truncated ? " · partial" : ""}
           </p>
         </div>
-        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        <label className="flex items-center gap-1 text-2xs text-muted-foreground">
           <input
             type="checkbox"
             checked={includeIgnored}
@@ -492,7 +492,7 @@ export default function FileBrowserPanel({
 
       <div className="border-b border-border/50 p-2">
         <div className="relative">
-          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground/70" />
+          <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             size="sm"
             type="search"
@@ -508,7 +508,7 @@ export default function FileBrowserPanel({
       </div>
 
       {workspaceUnavailable ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           Workspace files are unavailable for this thread.
         </div>
       ) : !searchMode && entriesQuery.isError ? (
@@ -528,10 +528,10 @@ export default function FileBrowserPanel({
               </div>
             ) : null}
             {searchLoading ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground/70">Searching...</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">Searching...</div>
             ) : null}
             {!searchErrorVisible && !searchLoading && searchEntries.length === 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground/70">No matching files.</div>
+              <div className="px-3 py-2 text-xs text-muted-foreground">No matching files.</div>
             ) : null}
             {searchEntries.map((entry, index) => {
               const isDirectory = entry.kind === "directory";
@@ -554,14 +554,14 @@ export default function FileBrowserPanel({
                   onClick={() => handleSearchEntryAction(entry)}
                 >
                   {isDirectory ? (
-                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   ) : (
-                    <FileIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                    <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   )}
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-foreground">{label}</span>
                     {showPath ? (
-                      <span className="block truncate text-[10px] leading-3 text-muted-foreground/75">
+                      <span className="block truncate text-2xs leading-3 text-muted-foreground">
                         {entry.path}
                       </span>
                     ) : null}
@@ -570,14 +570,14 @@ export default function FileBrowserPanel({
               );
             })}
             {searchResultsMatchInput && searchEntriesQuery.data?.truncated ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground/70">
+              <div className="px-3 py-2 text-xs text-muted-foreground">
                 More matches available. Refine your search.
               </div>
             ) : null}
           </div>
         </ScrollArea>
       ) : visibleRows.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground">
           No workspace files found.
         </div>
       ) : (
@@ -638,9 +638,9 @@ export default function FileBrowserPanel({
                     <span className="size-3.5 shrink-0" />
                   )}
                   {isDirectory ? (
-                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   ) : (
-                    <FileIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                    <FileIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   )}
                   <span className="truncate">{label}</span>
                 </button>
@@ -657,7 +657,7 @@ export default function FileBrowserPanel({
               </Button>
             ) : null}
             {hiddenVisibleRowCount > 0 ? (
-              <div className="px-3 py-2 text-xs text-muted-foreground/70">
+              <div className="px-3 py-2 text-xs text-muted-foreground">
                 <Button
                   variant="ghost"
                   size="xs"

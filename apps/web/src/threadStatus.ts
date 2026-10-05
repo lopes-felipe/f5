@@ -57,40 +57,40 @@ export interface ResolveThreadStatusInput {
   hasPendingUserInput: boolean;
 }
 
+/**
+ * Semantic status colours (F3). Plan-ready shares `warning` with pending
+ * approval and is told apart by its icon; awaiting input uses `attention`.
+ */
 const THREAD_STATUS_PILL_BY_STATUS: Record<Exclude<ThreadStatus, "none">, ThreadStatusPill> = {
   "pending-approval": {
     label: "Pending Approval",
-    colorClass: "text-amber-600 dark:text-amber-300/90",
-    dotClass: "bg-amber-500 dark:bg-amber-300/90",
-    chipClass:
-      "bg-amber-500/10 text-amber-700 ring-1 ring-amber-500/20 dark:bg-amber-400/10 dark:text-amber-200 dark:ring-amber-300/20",
+    colorClass: "text-warning-foreground",
+    dotClass: "bg-warning",
+    chipClass: "bg-warning/10 text-warning-foreground ring-1 ring-warning/20",
     icon: CircleAlertIcon,
     pulse: false,
   },
   "awaiting-input": {
     label: "Awaiting Input",
-    colorClass: "text-indigo-600 dark:text-indigo-300/90",
-    dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
-    chipClass:
-      "bg-indigo-500/10 text-indigo-700 ring-1 ring-indigo-500/20 dark:bg-indigo-400/10 dark:text-indigo-200 dark:ring-indigo-300/20",
+    colorClass: "text-attention-foreground",
+    dotClass: "bg-attention",
+    chipClass: "bg-attention/10 text-attention-foreground ring-1 ring-attention/20",
     icon: MessageCircleIcon,
     pulse: false,
   },
   working: {
     label: "Working",
-    colorClass: "text-sky-600 dark:text-sky-300/80",
-    dotClass: "bg-sky-500 dark:bg-sky-300/80",
-    chipClass:
-      "bg-sky-500/10 text-sky-700 ring-1 ring-sky-500/20 dark:bg-sky-400/10 dark:text-sky-200 dark:ring-sky-300/20",
+    colorClass: "text-info-foreground",
+    dotClass: "bg-info",
+    chipClass: "bg-info/10 text-info-foreground ring-1 ring-info/20",
     icon: PlayIcon,
     pulse: true,
   },
   connecting: {
     label: "Connecting",
-    colorClass: "text-sky-600 dark:text-sky-300/80",
-    dotClass: "bg-sky-500 dark:bg-sky-300/80",
-    chipClass:
-      "bg-sky-500/10 text-sky-700 ring-1 ring-sky-500/20 dark:bg-sky-400/10 dark:text-sky-200 dark:ring-sky-300/20",
+    colorClass: "text-info-foreground",
+    dotClass: "bg-info",
+    chipClass: "bg-info/10 text-info-foreground ring-1 ring-info/20",
     icon: LoaderIcon,
     pulse: true,
   },
@@ -104,10 +104,9 @@ const THREAD_STATUS_PILL_BY_STATUS: Record<Exclude<ThreadStatus, "none">, Thread
   },
   completed: {
     label: "Completed",
-    colorClass: "text-emerald-600 dark:text-emerald-300/90",
-    dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-    chipClass:
-      "bg-emerald-500/10 text-emerald-700 ring-1 ring-emerald-500/20 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-300/20",
+    colorClass: "text-success-foreground",
+    dotClass: "bg-success",
+    chipClass: "bg-success/10 text-success-foreground ring-1 ring-success/20",
     icon: CheckIcon,
     pulse: false,
   },
@@ -184,9 +183,12 @@ export function threadStatusLabel(status: ThreadStatus): ThreadStatusLabel {
   return status === "none" ? null : THREAD_STATUS_PILL_BY_STATUS[status].label;
 }
 
-export function resolveThreadStatusPill(input: ResolveThreadStatusInput): ThreadStatusPill | null {
-  const status = resolveThreadStatus(input);
+export function pillForStatus(status: ThreadStatus): ThreadStatusPill | null {
   return status === "none" ? null : THREAD_STATUS_PILL_BY_STATUS[status];
+}
+
+export function resolveThreadStatusPill(input: ResolveThreadStatusInput): ThreadStatusPill | null {
+  return pillForStatus(resolveThreadStatus(input));
 }
 
 export function threadStatusIcon(status: ThreadStatus) {

@@ -356,6 +356,7 @@ export function KeybindingEditor() {
               <span className="text-xs font-medium text-foreground">Shortcut</span>
               <Input
                 size="sm"
+                className="font-mono"
                 value={draftRule.key}
                 onChange={(event) =>
                   setDraftRule((current) =>
@@ -365,7 +366,7 @@ export function KeybindingEditor() {
                 placeholder="mod+k"
                 aria-label="Shortcut"
               />
-              <p className="text-[11px] text-muted-foreground/70">
+              <p className="text-2xs text-muted-foreground">
                 Use mod for Cmd on macOS and Ctrl elsewhere.
               </p>
             </label>
@@ -373,6 +374,7 @@ export function KeybindingEditor() {
               <span className="text-xs font-medium text-foreground">When</span>
               <Input
                 size="sm"
+                className="font-mono"
                 value={draftRule.when}
                 maxLength={MAX_KEYBINDING_WHEN_LENGTH}
                 onChange={(event) =>
@@ -438,7 +440,7 @@ export function KeybindingEditor() {
                       </Badge>
                     ) : null}
                   </div>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 truncate font-mono text-2xs text-muted-foreground">
                     {row.command}
                   </p>
                 </div>
@@ -451,8 +453,8 @@ export function KeybindingEditor() {
                 </div>
                 <p
                   className={cn(
-                    "truncate self-center font-mono text-[11px]",
-                    row.when ? "text-muted-foreground" : "text-muted-foreground/50",
+                    "truncate self-center font-mono text-2xs",
+                    row.when ? "text-muted-foreground" : "text-muted-foreground",
                   )}
                   title={row.when || "Always"}
                 >
