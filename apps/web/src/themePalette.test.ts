@@ -52,6 +52,30 @@ describe("derived theme tokens", () => {
     ).toThrow("Unknown dark theme token");
   });
 
+  it("ignores destructive-foreground overrides written for the old on-fill meaning", () => {
+    const definition = (destructiveForeground: string) =>
+      createCustomThemeDefinition({
+        id: `custom-destructive-${destructiveForeground.slice(1)}`,
+        name: "Destructive",
+        parameters: { baseHue: 200, chroma: 0.12, contrast: 1 },
+        overrides: {
+          dark: { background: "#101218", "destructive-foreground": destructiveForeground },
+        },
+      });
+    const generated = resolveThemePalette("custom-destructive-ignored", [
+      { ...definition("#000000"), id: "custom-destructive-ignored", overrides: undefined },
+    ]).dark["destructive-foreground"];
+
+    const onFill = definition("#0a0a0a");
+    const legacy = resolveThemePalette(onFill.id, [onFill]).dark;
+    expect(legacy["destructive-foreground"]).toBe(generated);
+
+    const readable = definition("#ff8080");
+    expect(resolveThemePalette(readable.id, [readable]).dark["destructive-foreground"]).toBe(
+      "#ff8080",
+    );
+  });
+
   it("keeps faint-foreground at 3:1 or better on every surface and caps the blend", () => {
     for (const palette of BUILTIN_THEME_PALETTES) {
       for (const variant of ["light", "dark"] as const) {

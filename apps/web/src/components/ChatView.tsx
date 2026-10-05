@@ -2667,7 +2667,13 @@ export default function ChatView({
         if (attempts < COMPOSER_FOCUS_REQUEST_MAX_FRAMES) {
           attempts += 1;
           frame = window.requestAnimationFrame(tryFocus);
+          return;
         }
+        // Give up, and drop the request so a later visit to this thread
+        // doesn't grab focus unexpectedly.
+        useComposerFocusRequestStore
+          .getState()
+          .clearComposerFocusRequest(composerFocusRequest.nonce);
         return;
       }
       editor.focusAtEnd();

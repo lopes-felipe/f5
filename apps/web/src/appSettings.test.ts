@@ -933,6 +933,37 @@ describe("collapseCompletedWorkLogs", () => {
     expect(getDisplayProfile(migrated)).toBe("detailed");
   });
 
+  it("resets a pre-upgrade DM Sans font choice to the default once", () => {
+    const legacy = parsePersistedAppSettings(
+      JSON.stringify({ uiFontFamily: "DM Sans", chatFontFamily: "DM Sans Variable" }),
+    );
+    expect(legacy.uiFontFamily).toBe("");
+    expect(legacy.chatFontFamily).toBe("");
+
+    const current = parsePersistedAppSettings(
+      JSON.stringify({ uiFontFamily: "DM Sans", collapseCompletedWorkLogs: true }),
+    );
+    expect(current.uiFontFamily).toBe("DM Sans");
+  });
+
+  it("keeps sparse pre-upgrade Detailed payloads on Detailed", () => {
+    // Older payloads omit keys added later; the decoder fills them with defaults.
+    const defaults = parsePersistedAppSettings(null);
+    const sparse: Record<string, unknown> = { ...DISPLAY_PROFILE_PRESETS.detailed };
+    delete sparse.collapseCompletedWorkLogs;
+    const omitted = DISPLAY_PROFILE_KEYS.filter(
+      (key) =>
+        key !== "collapseCompletedWorkLogs" &&
+        defaults[key] === DISPLAY_PROFILE_PRESETS.detailed[key],
+    );
+    expect(omitted.length).toBeGreaterThan(0);
+    for (const key of omitted) delete sparse[key];
+
+    const migrated = parsePersistedAppSettings(JSON.stringify(sparse));
+    expect(migrated.collapseCompletedWorkLogs).toBe(false);
+    expect(getDisplayProfile(migrated)).toBe("detailed");
+  });
+
   it("leaves other pre-upgrade users on the new default", () => {
     const { collapseCompletedWorkLogs: _omitted, ...legacyMinimal } =
       DISPLAY_PROFILE_PRESETS.minimal;

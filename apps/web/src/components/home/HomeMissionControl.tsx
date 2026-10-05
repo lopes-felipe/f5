@@ -25,6 +25,7 @@ import { getMostRecentProject, sortProjectsByActivity } from "../../lib/threadOr
 import {
   bucketThreadsByAttention,
   selectStandaloneThreadsByActivity,
+  selectVisibleWorkflowThreads,
 } from "../../lib/threadAttentionBuckets";
 import { cn, isMacPlatform } from "../../lib/utils";
 import { useStore } from "../../store";
@@ -54,7 +55,6 @@ interface MissionControlBuckets {
   attention: Thread[];
   working: Thread[];
   recent: Thread[];
-  attentionOverflow: number;
   workingOverflow: number;
 }
 
@@ -62,24 +62,59 @@ function bucketThreads(
   sortedThreads: ReadonlyArray<Thread>,
   statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
   pausedQueueThreadIds: ReadonlySet<ThreadId>,
+  workflowThreads: ReadonlyArray<Thread>,
 ): MissionControlBuckets {
   const {
-    attention: attentionAll,
+    attention,
     working: workingAll,
     remaining,
-  } = bucketThreadsByAttention(sortedThreads, statusByThreadId, pausedQueueThreadIds);
+  } = bucketThreadsByAttention(
+    sortedThreads,
+    statusByThreadId,
+    pausedQueueThreadIds,
+    workflowThreads,
+  );
 
-  const attention = attentionAll.slice(0, ATTENTION_LIMIT);
   const working = workingAll.slice(0, WORKING_LIMIT);
-  // `recent` is the full remaining list; the UI decides how many to show so
-  // "Show more" can surface the real total.
+  // `attention` and `recent` are full lists; the UI decides how many to show
+  // so "Show more" can surface the real total.
   return {
     attention,
     working,
     recent: remaining,
-    attentionOverflow: Math.max(0, attentionAll.length - attention.length),
     workingOverflow: Math.max(0, workingAll.length - working.length),
   };
+}
+
+/** "Show more +N" / "Show less" under a capped list. */
+function ShowMoreToggle(props: {
+  readonly expanded: boolean;
+  readonly hiddenCount: number;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <div className="flex justify-center pt-1">
+      <button
+        type="button"
+        onClick={props.onToggle}
+        aria-expanded={props.expanded}
+        className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-2xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {props.hiddenCount > 0 ? (
+          <>
+            Show more
+            <span className="tabular-nums">+{props.hiddenCount}</span>
+            <ChevronDownIcon className="size-3.5" aria-hidden="true" />
+          </>
+        ) : (
+          <>
+            Show less
+            <ChevronDownIcon className="size-3.5 rotate-180" aria-hidden="true" />
+          </>
+        )}
+      </button>
+    </div>
+  );
 }
 
 export function resolveGreeting(hour = new Date().getHours()): string {
@@ -262,6 +297,7 @@ export function HomeMissionControl() {
   const [projectFilter, setProjectFilter] = useState<ProjectId | "all">("all");
   const [statusFilter, setStatusFilter] = useState<RecentStatusFilter>("all");
   const [isRecentExpanded, setIsRecentExpanded] = useState(false);
+  const [isAttentionExpanded, setIsAttentionExpanded] = useState(false);
   // Sampled once on mount so "Back after X" stays stable during one visit.
   const [smartResume, setSmartResume] = useState<{ awayMs: number } | null>(null);
   const [smartResumeDismissed, setSmartResumeDismissed] = useState(false);
@@ -280,15 +316,18 @@ export function HomeMissionControl() {
     allProjectsInRecent,
     attentionReasonByThreadId,
   } = useMemo(() => {
-    // Workflow sub-threads surface through their parent workflow, not Home.
-    const sorted = selectStandaloneThreadsByActivity({
+    // Workflow sub-threads surface through their parent workflow, not Home,
+    // unless a step is blocked on the user: that one joins Needs you.
+    const workflowInput = {
       threads,
       planningWorkflows,
       codeReviewWorkflows,
       investigationWorkflows,
-    });
+    };
+    const sorted = selectStandaloneThreadsByActivity(workflowInput);
+    const workflowThreads = selectVisibleWorkflowThreads(workflowInput);
     const statusById = new Map<ThreadId, ThreadStatus>();
-    for (const thread of sorted) {
+    for (const thread of [...sorted, ...workflowThreads]) {
       statusById.set(thread.id, resolveThreadStatusForThread(thread));
     }
     const projectMap = new Map<ProjectId, Project>();
@@ -296,7 +335,7 @@ export function HomeMissionControl() {
       projectMap.set(project.id, project);
     }
     const reasonByThreadId = new Map<ThreadId, string>();
-    for (const thread of sorted) {
+    for (const thread of [...sorted, ...workflowThreads]) {
       const status = statusById.get(thread.id) ?? "none";
       const tag = resolveAttentionReasonTag(status, thread.lastInteractionAt);
       if (pausedQueueThreadIds.has(thread.id))
@@ -337,7 +376,7 @@ export function HomeMissionControl() {
     ).slice(0, QUICK_JUMP_PROJECT_LIMIT);
 
     return {
-      buckets: bucketThreads(sorted, statusById, pausedQueueThreadIds),
+      buckets: bucketThreads(sorted, statusById, pausedQueueThreadIds, workflowThreads),
       statusByThreadId: statusById,
       projectsById: projectMap,
       mostRecentProject: getMostRecentProject(
@@ -397,6 +436,11 @@ export function HomeMissionControl() {
   const recentLimit = isRecentExpanded
     ? RECENT_THREADS_EXPANDED_LIMIT
     : RECENT_THREADS_DEFAULT_LIMIT;
+  const visibleAttention = isAttentionExpanded
+    ? buckets.attention
+    : buckets.attention.slice(0, ATTENTION_LIMIT);
+  const hiddenAttentionCount = buckets.attention.length - visibleAttention.length;
+
   const recentTruncated = filteredRecent.slice(0, recentLimit);
   const hasMoreRecent = filteredRecent.length > recentTruncated.length;
 
@@ -602,13 +646,9 @@ export function HomeMissionControl() {
         ) : null}
 
         {buckets.attention.length > 0 ? (
-          <Section
-            label="Needs you"
-            count={buckets.attention.length}
-            overflow={buckets.attentionOverflow}
-          >
+          <Section label="Needs you" count={buckets.attention.length}>
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              {buckets.attention.map((thread) => (
+              {visibleAttention.map((thread) => (
                 <HomeAttentionCard
                   key={thread.id}
                   thread={thread}
@@ -620,6 +660,13 @@ export function HomeMissionControl() {
                 />
               ))}
             </div>
+            {hiddenAttentionCount > 0 || isAttentionExpanded ? (
+              <ShowMoreToggle
+                expanded={isAttentionExpanded}
+                hiddenCount={hiddenAttentionCount}
+                onToggle={() => setIsAttentionExpanded((prev) => !prev)}
+              />
+            ) : null}
           </Section>
         ) : totalVisibleThreads > 0 ? (
           <Section label="Needs you" count={0}>
@@ -698,29 +745,11 @@ export function HomeMissionControl() {
                     </div>
                   ))}
                   {hasMoreRecent || isRecentExpanded ? (
-                    <div className="flex justify-center pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setIsRecentExpanded((prev) => !prev)}
-                        aria-expanded={isRecentExpanded}
-                        className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-2xs font-medium text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                      >
-                        {hasMoreRecent ? (
-                          <>
-                            Show more
-                            <span className="tabular-nums">
-                              +{filteredRecent.length - recentTruncated.length}
-                            </span>
-                            <ChevronDownIcon className="size-3.5" aria-hidden="true" />
-                          </>
-                        ) : (
-                          <>
-                            Show less
-                            <ChevronDownIcon className="size-3.5 rotate-180" aria-hidden="true" />
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    <ShowMoreToggle
+                      expanded={isRecentExpanded}
+                      hiddenCount={filteredRecent.length - recentTruncated.length}
+                      onToggle={() => setIsRecentExpanded((prev) => !prev)}
+                    />
                   ) : null}
                 </>
               )}

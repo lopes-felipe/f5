@@ -298,6 +298,29 @@ describe("HomeMissionControl", () => {
     }
   });
 
+  it("shows the full Needs you count and expands past the first eight cards", async () => {
+    const approvals = Array.from({ length: 10 }, (_, index) =>
+      makeThread(PROJECT_A.id, `thread-approval-${index}`, {
+        title: `Approval ${index}`,
+        activities: APPROVAL_THREAD.activities,
+      }),
+    );
+    const view = await renderHome(approvals);
+    try {
+      const cards = () => document.querySelectorAll('[data-slot="home-attention-card"]').length;
+      const needsYou = page.getByRole("region", { name: "Needs you" });
+      await vi.waitFor(() => expect(cards()).toBe(8));
+      await expect.element(needsYou.getByRole("heading", { level: 2 })).toHaveTextContent("10");
+
+      await needsYou.getByRole("button", { name: /Show more/ }).click();
+      await vi.waitFor(() => expect(cards()).toBe(10));
+      await needsYou.getByRole("button", { name: /Show less/ }).click();
+      await vi.waitFor(() => expect(cards()).toBe(8));
+    } finally {
+      await view.cleanup();
+    }
+  });
+
   it("moves focus through cards and rows with j and k", async () => {
     const view = await renderHome([APPROVAL_THREAD, WORKING_THREAD, IDLE_THREAD]);
     try {

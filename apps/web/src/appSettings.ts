@@ -631,10 +631,28 @@ function migrateCollapseCompletedWorkLogs(parsed: PersistedAppSettingsValue): bo
     return parsed.collapseCompletedWorkLogs;
   }
   const detailed = buildDisplayProfilePresets(DEFAULT_APP_SETTINGS).detailed;
+  // Compare after defaults: older payloads omit keys that were added later, and
+  // the decoder fills those with their defaults.
+  const effective = { ...DEFAULT_APP_SETTINGS, ...parsed };
   const wasDetailed = DISPLAY_PROFILE_KEYS.every(
-    (key) => key === "collapseCompletedWorkLogs" || parsed[key] === detailed[key],
+    (key) => key === "collapseCompletedWorkLogs" || effective[key] === detailed[key],
   );
   return wasDetailed ? false : undefined;
+}
+
+const RETIRED_BUNDLED_FONT_FAMILIES = new Set(["dm sans", "dm sans variable"]);
+
+/**
+ * DM Sans used to be the bundled default and the first curated choice. It is
+ * no longer bundled, so a saved "DM Sans" would quietly render as Inter (or
+ * whatever is installed). Settings saved before `collapseCompletedWorkLogs`
+ * existed predate the change: reset that value to the default once, and leave
+ * later explicit choices alone.
+ */
+function migrateRetiredFontFamily(parsed: PersistedAppSettingsValue, value: unknown): unknown {
+  if (parsed.collapseCompletedWorkLogs !== undefined) return value;
+  if (typeof value !== "string") return value;
+  return RETIRED_BUNDLED_FONT_FAMILIES.has(value.trim().toLowerCase()) ? "" : value;
 }
 
 function normalizeClaudeSubagentModel(value: string | null | undefined): string {
@@ -781,8 +799,12 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
-        uiFontFamily: normalizeFontFamilyPreference(migrated.uiFontFamily),
-        chatFontFamily: normalizeFontFamilyPreference(migrated.chatFontFamily),
+        uiFontFamily: normalizeFontFamilyPreference(
+          migrateRetiredFontFamily(runtimeMetadataMigrated, migrated.uiFontFamily),
+        ),
+        chatFontFamily: normalizeFontFamilyPreference(
+          migrateRetiredFontFamily(runtimeMetadataMigrated, migrated.chatFontFamily),
+        ),
         monoFontFamily: normalizeFontFamilyPreference(migrated.monoFontFamily),
         gitStatusAutoRefreshIntervalSeconds:
           migrated.gitStatusAutoRefreshIntervalSeconds ??

@@ -281,10 +281,19 @@ function resolveVariantTokens(
   definition: ThemeDefinitionV1,
   variant: ThemeVariant,
 ): ResolvedThemeTokens {
-  const merged: ThemeTokens = {
-    ...generateThemeTokens(definition.parameters, variant),
-    ...definition.overrides?.[variant],
-  };
+  const generated = generateThemeTokens(definition.parameters, variant);
+  const overridden: ThemeTokens = { ...generated, ...definition.overrides?.[variant] };
+  // `destructive-foreground` used to mean text on a red fill and now means red
+  // text on ordinary surfaces. Themes written for the old meaning override it
+  // with a near-white or near-black colour; fall back to the generated value
+  // when the override is unreadable on the theme's background.
+  const keepDestructiveOverride =
+    definition.overrides?.[variant]?.["destructive-foreground"] === undefined ||
+    wcagContrast(overridden["destructive-foreground"], overridden.background) >=
+      MIN_BODY_TEXT_CONTRAST;
+  const merged: ThemeTokens = keepDestructiveOverride
+    ? overridden
+    : { ...overridden, "destructive-foreground": generated["destructive-foreground"] };
   return { ...merged, ...deriveThemeTokens(definition.parameters, variant, merged) };
 }
 

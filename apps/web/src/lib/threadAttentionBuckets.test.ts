@@ -97,6 +97,40 @@ describe("threadAttentionBuckets", () => {
     expect(buckets.remaining.map((thread) => thread.id)).toEqual(["e"]);
   });
 
+  it("adds workflow threads to attention only when they are blocked on the user", () => {
+    const standalone = [
+      makeThread("plan", { lastInteractionAt: "2026-03-03T00:00:00.000Z" }),
+      makeThread("idle", { lastInteractionAt: "2026-03-02T00:00:00.000Z" }),
+    ];
+    const workflowThreads = [
+      makeThread("wf-approval", { lastInteractionAt: "2026-03-01T00:00:00.000Z" }),
+      makeThread("wf-question", { lastInteractionAt: "2026-03-04T00:00:00.000Z" }),
+      makeThread("wf-plan", { lastInteractionAt: "2026-03-05T00:00:00.000Z" }),
+      makeThread("wf-working", { lastInteractionAt: "2026-03-05T00:00:00.000Z" }),
+      makeThread("wf-paused", { lastInteractionAt: "2026-03-05T00:00:00.000Z" }),
+    ];
+    const statusById = new Map<ThreadId, ThreadStatus>([
+      [ThreadId.makeUnsafe("plan"), "plan-ready"],
+      [ThreadId.makeUnsafe("wf-approval"), "pending-approval"],
+      [ThreadId.makeUnsafe("wf-question"), "awaiting-input"],
+      [ThreadId.makeUnsafe("wf-plan"), "plan-ready"],
+      [ThreadId.makeUnsafe("wf-working"), "working"],
+    ]);
+    const paused = new Set([ThreadId.makeUnsafe("wf-paused")]);
+
+    const buckets = bucketThreadsByAttention(standalone, statusById, paused, workflowThreads);
+
+    expect(buckets.attention.map((thread) => thread.id)).toEqual([
+      "wf-approval",
+      "wf-question",
+      "plan",
+      "wf-paused",
+    ]);
+    // Workflow threads never land in Working or Recent; their workflow row covers them.
+    expect(buckets.working).toEqual([]);
+    expect(buckets.remaining.map((thread) => thread.id)).toEqual(["idle"]);
+  });
+
   it("selects standalone threads newest first, hiding archived and snoozed ones", () => {
     const threads = [
       makeThread("old", { lastInteractionAt: "2026-03-01T00:00:00.000Z" }),

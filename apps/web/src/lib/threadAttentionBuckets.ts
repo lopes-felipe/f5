@@ -66,17 +66,47 @@ export interface ThreadAttentionBuckets {
   readonly remaining: Thread[];
 }
 
-/** Splits recency-sorted threads into attention, working and the rest. */
+/**
+ * A workflow step blocks on the user when it asks for an approval or an answer,
+ * or its queue is paused. Plans are consumed by the workflow itself, so a
+ * plan-ready step is not waiting on the user.
+ */
+export function isWorkflowThreadBlockedOnUser(status: ThreadStatus, queuePaused: boolean): boolean {
+  return queuePaused || status === "pending-approval" || status === "awaiting-input";
+}
+
+/**
+ * Splits recency-sorted threads into attention, working and the rest.
+ * `workflowThreads` (owned by a workflow, any order) only join attention, and
+ * only when blocked on the user; otherwise they surface through their workflow.
+ */
 export function bucketThreadsByAttention(
   sortedThreads: ReadonlyArray<Thread>,
   statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
   pausedQueueThreadIds: ReadonlySet<ThreadId>,
+  workflowThreads: ReadonlyArray<Thread> = [],
 ): ThreadAttentionBuckets {
   const attention: Thread[] = [];
   const working: Thread[] = [];
   const remaining: Thread[] = [];
 
-  for (const thread of sortedThreads) {
+  const blockedWorkflowThreads = workflowThreads.filter((thread) =>
+    isWorkflowThreadBlockedOnUser(
+      statusByThreadId.get(thread.id) ?? "none",
+      pausedQueueThreadIds.has(thread.id),
+    ),
+  );
+  const ordered =
+    blockedWorkflowThreads.length > 0
+      ? sortThreadsByActivity([...sortedThreads, ...blockedWorkflowThreads])
+      : sortedThreads;
+  const workflowThreadIds = new Set(blockedWorkflowThreads.map((thread) => thread.id));
+
+  for (const thread of ordered) {
+    if (workflowThreadIds.has(thread.id)) {
+      attention.push(thread);
+      continue;
+    }
     const status = statusByThreadId.get(thread.id) ?? "none";
     if (isAttentionThread(status, pausedQueueThreadIds.has(thread.id))) {
       attention.push(thread);
@@ -137,4 +167,28 @@ export function selectStandaloneThreadsByActivity(input: {
     input.investigationWorkflows,
   ).filter((thread) => !workflowThreadIds.has(thread.id));
   return sortThreadsByActivity(visible);
+}
+
+/**
+ * Visible threads owned by an active workflow. Pass them to
+ * `bucketThreadsByAttention` so a step blocked on the user reaches Needs you.
+ */
+export function selectVisibleWorkflowThreads(input: {
+  threads: ReadonlyArray<Thread>;
+  planningWorkflows: ReadonlyArray<PlanningWorkflow>;
+  codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
+}): Thread[] {
+  const workflowThreadIds = collectWorkflowThreadIds(
+    input.planningWorkflows,
+    input.codeReviewWorkflows,
+    input.investigationWorkflows,
+  );
+  if (workflowThreadIds.size === 0) return [];
+  return getVisibleThreads(
+    input.threads,
+    input.planningWorkflows,
+    input.codeReviewWorkflows,
+    input.investigationWorkflows,
+  ).filter((thread) => workflowThreadIds.has(thread.id));
 }

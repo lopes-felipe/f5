@@ -46,6 +46,7 @@ import { useThreadStatusById } from "../hooks/useThreadStatusById";
 import {
   bucketThreadsByAttention,
   selectStandaloneThreadsByActivity,
+  selectVisibleWorkflowThreads,
 } from "../lib/threadAttentionBuckets";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { pillForStatus } from "../threadStatus";
@@ -313,27 +314,22 @@ export default function Sidebar() {
       ),
     [queueSummary],
   );
-  const liveAttentionThreads = useMemo(
-    () =>
-      bucketThreadsByAttention(
-        selectStandaloneThreadsByActivity({
-          threads,
-          planningWorkflows,
-          codeReviewWorkflows,
-          investigationWorkflows,
-        }),
-        threadStatusById,
-        pausedQueueThreadIds,
-      ).attention,
-    [
-      codeReviewWorkflows,
-      investigationWorkflows,
-      pausedQueueThreadIds,
-      planningWorkflows,
+  const liveAttentionThreads = useMemo(() => {
+    const input = { threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows };
+    return bucketThreadsByAttention(
+      selectStandaloneThreadsByActivity(input),
       threadStatusById,
-      threads,
-    ],
-  );
+      pausedQueueThreadIds,
+      selectVisibleWorkflowThreads(input),
+    ).attention;
+  }, [
+    codeReviewWorkflows,
+    investigationWorkflows,
+    pausedQueueThreadIds,
+    planningWorkflows,
+    threadStatusById,
+    threads,
+  ]);
   const projectsById = useMemo(
     () => new Map(projects.map((project) => [project.id, project] as const)),
     [projects],

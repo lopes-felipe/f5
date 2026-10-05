@@ -50,7 +50,7 @@ describe("ContextMeter", () => {
     try {
       const meter = () => document.querySelector<HTMLButtonElement>('[data-slot="context-meter"]');
       expect(meter()?.getAttribute("aria-label")).toBe(
-        "Context window occupancy for claude-sonnet-4-6",
+        "Context window occupancy for claude-sonnet-4-6: 38K / 200K (19%)",
       );
       expect(meter()?.dataset.tone).toBe("muted");
 

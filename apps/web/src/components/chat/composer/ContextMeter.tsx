@@ -60,7 +60,7 @@ export function ContextMeter(props: { tokenUsage: ComposerTokenUsage; className?
   const tone = context ? contextMeterTone(context.ratio) : "muted";
   const sourceLabel = tokenUsageSourceLabel(tokenUsage.tokenUsageSource);
   const ariaLabel = context
-    ? `Context window occupancy for ${tokenUsage.model}`
+    ? `Context window occupancy for ${tokenUsage.model}: ${context.label}`
     : "Live thinking-token estimate";
 
   return (
