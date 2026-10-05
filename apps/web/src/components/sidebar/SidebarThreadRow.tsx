@@ -136,7 +136,6 @@ export function SidebarThreadRow(props: SidebarThreadRowProps) {
             isSelected,
             isUnread: section !== "archived" && hasUnseenCompletion(thread),
           }),
-          section === "workflow" && "pl-7",
         )}
         onClick={(event) => {
           if (section === "attention") {

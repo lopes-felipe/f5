@@ -19,7 +19,11 @@ import {
 import type { ThreadStatusPill } from "../../threadStatus";
 import type { Thread } from "../../types";
 import { ModelChip } from "../chat/ModelChip";
-import { resolveThreadRowClassName, resolveWorkflowThreadListExpanded } from "../Sidebar.logic";
+import {
+  resolveThreadRowClassName,
+  resolveWorkflowThreadListExpanded,
+  SIDEBAR_TREE_LEVEL_CLASS_NAME,
+} from "../Sidebar.logic";
 import { SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { WorkflowOverallState } from "../workflow/workflowTimelineTypes";
@@ -214,7 +218,8 @@ export function SidebarWorkflowItem(props: {
         </span>
       </SidebarMenuSubButton>
       {!workflowCollapsed && workflowThreads.length > 0 ? (
-        <SidebarMenuSub className="mx-0 mt-px mb-0 w-full translate-x-0 gap-px border-l-0 px-0 py-0">
+        // Second tree level: the guide line sits under the workflow's type icon.
+        <SidebarMenuSub className={cn(SIDEBAR_TREE_LEVEL_CLASS_NAME, "mt-px")}>
           {workflowThreads.map((thread) => (
             <SidebarThreadRow
               key={thread.id}

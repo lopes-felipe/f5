@@ -18,7 +18,11 @@ import { cn } from "../../lib/utils";
 import type { Project, Thread } from "../../types";
 import { InlineTitleEditor } from "../InlineTitleEditor";
 import { ProjectIcon } from "../ProjectIcon";
-import { reconcileFrozenOrder, type SidebarThreadBucket } from "../Sidebar.logic";
+import {
+  reconcileFrozenOrder,
+  SIDEBAR_TREE_LEVEL_CLASS_NAME,
+  type SidebarThreadBucket,
+} from "../Sidebar.logic";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import {
   SidebarMenuAction,
@@ -427,7 +431,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                 items={projectPinnedSortableIds}
                 strategy={verticalListSortingStrategy}
               >
-                <SidebarMenuSub className="mx-0 my-0 w-full translate-x-0 gap-px border-l-0 px-0 py-px">
+                {/* One tree level: the guide line sits under the project's folder icon. */}
+                <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
                   {projectWorkflows.map((entry) => {
                     const meta = sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
                     return (

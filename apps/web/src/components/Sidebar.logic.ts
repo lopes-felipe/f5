@@ -175,6 +175,14 @@ export function toggleWorkflowThreadListExpansion(input: {
   };
 }
 
+/**
+ * One level of the sidebar tree (a project's threads and workflows, a
+ * workflow's threads): indented under the parent row's 16px icon, whose centre
+ * sits 16px in (8px row padding + 8px), with a hairline guide on that centre.
+ */
+export const SIDEBAR_TREE_LEVEL_CLASS_NAME =
+  "my-0 ms-4 me-0 translate-x-0 gap-px border-l border-sidebar-border ps-0 pe-0 py-px";
+
 /** 2px primary bar on the leading edge of the active row. */
 export const SIDEBAR_ACTIVE_ROW_BAR_CLASS_NAME =
   "before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full before:bg-primary";
