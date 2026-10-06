@@ -33,6 +33,13 @@ const env = process.env;
 const args = process.argv.slice(2);
 const input = fs.readFileSync(0, "utf8");
 function fail(message, code) { console.error(message); process.exit(code); }
+const schemaIndex = args.indexOf("--output-schema");
+if (schemaIndex < 0 || !args[schemaIndex + 1]) fail("missing --output-schema input", 7);
+const schema = JSON.parse(fs.readFileSync(args[schemaIndex + 1], "utf8"));
+if (schema.additionalProperties !== false) fail("output schema must disallow additional properties", 7);
+for (const key of Object.keys(schema.properties ?? {})) {
+  if (!schema.required?.includes(key)) fail("output schema must require every property: " + key, 7);
+}
 if (env.T3_FAKE_CODEX_REQUIRE_IMAGE === "1" && (!args.includes("--image") || !args[args.indexOf("--image") + 1])) fail("missing --image input", 2);
 if (env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK === "1" && !args.includes("--skip-git-repo-check")) fail("missing --skip-git-repo-check", 5);
 if (env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 3);
@@ -495,6 +502,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       {
         output: JSON.stringify({
           title: '  "Fix sidebar sizing."\nIgnored second line',
+          needsRefinement: false,
         }),
         requireSkipGitRepoCheck: true,
       },
@@ -512,11 +520,27 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     ),
   );
 
+  it.effect.each([false, true])("preserves thread title needsRefinement=%s", (needsRefinement) =>
+    withFakeCodexEnv(
+      { output: JSON.stringify({ title: "Fix sidebar sizing", needsRefinement }) },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Fix the sidebar sizing regression in the desktop layout.",
+        });
+
+        expect(generated).toEqual({ title: "Fix sidebar sizing", needsRefinement });
+      }),
+    ),
+  );
+
   it.effect("includes image attachments when generating thread titles", () =>
     withFakeCodexEnv(
       {
         output: JSON.stringify({
           title: "Fix visual regression",
+          needsRefinement: false,
         }),
         requireImage: true,
         stdinMustContain: "Attachment metadata:",
@@ -557,6 +581,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       {
         output: JSON.stringify({
           title: "Trimmed prompt title",
+          needsRefinement: false,
         }),
         stdinMustContain: "prefix",
         stdinMustNotContain: "forbidden-tail",
@@ -614,6 +639,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       {
         output: JSON.stringify({
           title: "...",
+          needsRefinement: false,
         }),
       },
       Effect.gen(function* () {

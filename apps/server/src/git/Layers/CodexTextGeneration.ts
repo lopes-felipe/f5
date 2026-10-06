@@ -548,7 +548,7 @@ export const makeCodexTextGeneration = (
           prompt: promptSections.join("\n"),
           outputSchemaJson: Schema.Struct({
             title: Schema.String,
-            needsRefinement: Schema.optional(Schema.Boolean),
+            needsRefinement: Schema.Boolean,
           }),
           ...(input.model ? { model: input.model } : {}),
           ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
