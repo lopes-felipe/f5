@@ -51,6 +51,12 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Audit Claude SDK
+        run: bun run sdk:audit
+
+      - name: Audit pinned Codex request shapes
+        run: bun run protocol:audit:requests:baseline
+
       - name: Audit Codex protocol
         run: bun run protocol:audit:baseline
 

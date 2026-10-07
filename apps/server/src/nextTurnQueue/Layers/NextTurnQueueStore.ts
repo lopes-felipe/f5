@@ -1,3 +1,7 @@
+import {
+  stampSubmissionSource,
+  readSubmissionSource,
+} from "../../provider/submissionProvenance.ts";
 import { MAX_CONSECUTIVE_AUTO_RESUMES } from "../usageLimitResume.ts";
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
@@ -756,6 +760,12 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 ${input.itemId}, ${input.command.message.messageId}, 'pending', ${at}
               )
             `;
+            if (input.submissionSource)
+              yield* stampSubmissionSource(
+                input.command.commandId,
+                input.command.threadId,
+                input.submissionSource,
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             yield* sql`
               INSERT INTO next_turn_queue (
                 item_id, thread_id, submission_id, command_id, message_id, position,
@@ -877,6 +887,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             const at = now();
             const commandId = CommandId.makeUnsafe(randomUUID());
             const messageId = MessageId.makeUnsafe(randomUUID());
+            const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            if (source)
+              yield* stampSubmissionSource(commandId, item.threadId, source).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
             const command = input.update({
               ...item.command,
               commandId,
@@ -1514,8 +1531,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
           commandId,
           message: { ...item.command.message, messageId, attachments },
         };
+        const submissionSource = yield* readSubmissionSource(
+          item.command.commandId,
+          item.threadId,
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         return yield* store
           .insertSubmission({
+            ...(submissionSource ? { submissionSource } : {}),
             submissionId,
             requestHash: `duplicate:${item.submissionId}:${submissionId}`,
             itemId: duplicateId,

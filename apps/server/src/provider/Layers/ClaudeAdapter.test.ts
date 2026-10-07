@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +30,7 @@ import { ProviderAdapterValidationError } from "../Errors.ts";
 import { clearAnthropicModelContextWindowCatalogCacheForTest } from "../modelContextWindowMetadata.ts";
 import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
 import {
+  CLAUDE_SUPPLEMENT_VERSION,
   buildClaudeAssistantInstructions,
   buildInstructionProfile,
 } from "../sharedAssistantContract.ts";
@@ -1291,6 +1293,8 @@ describe("ClaudeAdapterLive", () => {
         return;
       }
 
+      assert.deepEqual(createInput?.options.disallowedTools, ["Agent", "Task"]);
+      assert.ok(createInput?.options.hooks?.PreToolUse?.length);
       const agentPermission = yield* Effect.promise(() =>
         canUseTool(
           "Agent",
@@ -1351,7 +1355,7 @@ describe("ClaudeAdapterLive", () => {
             ],
           ),
         }).pipe(Effect.forkChild);
-        yield* Effect.yieldNow;
+        yield* Effect.promise(() => vi.waitFor(() => assert.ok(harness.getLastCreateQueryInput())));
         const request = harness.getLastCreateQueryInput();
         assert.ok(request);
         const messages = yield* Effect.promise(async () => {
@@ -1363,8 +1367,11 @@ describe("ClaudeAdapterLive", () => {
           { type: "text", text: "Ultrathink:\nSummarize" },
         ]);
         assert.equal(request.options.effort, undefined);
-        assert.deepEqual(request.options.settings, fastMode ? { fastMode: true } : undefined);
-        assert.equal(Object.hasOwn(request.options, "settings"), fastMode === true);
+        assert.deepEqual(request.options.settings, {
+          cleanupPeriodDays: 3650,
+          ...(fastMode ? { fastMode: true } : {}),
+        });
+        assert.equal(Object.hasOwn(request.options, "settings"), true);
         harness.query.emit({
           type: "assistant",
           message: { content: [{ type: "text", text: "notes" }] },
@@ -1414,11 +1421,11 @@ describe("ClaudeAdapterLive", () => {
           ],
         ),
       }).pipe(Effect.forkChild);
-      yield* Effect.yieldNow;
+      yield* Effect.promise(() => vi.waitFor(() => assert.ok(harness.getLastCreateQueryInput())));
       const queryOptions = harness.getLastCreateQueryInput()?.options;
       assert.equal(queryOptions?.model, "claude-sonnet-4-6");
       assert.equal(queryOptions?.effort, "low");
-      assert.equal(queryOptions?.settings, undefined);
+      assert.deepEqual(queryOptions?.settings, { cleanupPeriodDays: 3650 });
       assert.equal(queryOptions?.pathToClaudeCodeExecutable, process.execPath);
       assert.equal(queryOptions?.env?.HOME, "/summary-account");
       assert.equal(queryOptions?.env?.SUMMARY_ACCOUNT_TEST, "selected");
@@ -1453,7 +1460,7 @@ describe("ClaudeAdapterLive", () => {
         })
         .pipe(Effect.forkChild);
 
-      yield* Effect.yieldNow;
+      yield* Effect.promise(() => vi.waitFor(() => assert.ok(harness.getLastCreateQueryInput())));
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.pathToClaudeCodeExecutable, process.execPath);
 
@@ -1521,7 +1528,7 @@ describe("ClaudeAdapterLive", () => {
           },
         }).pipe(Effect.forkChild);
 
-        yield* Effect.yieldNow;
+        yield* Effect.promise(() => vi.waitFor(() => assert.ok(harness.getLastCreateQueryInput())));
         const createInput = harness.getLastCreateQueryInput();
         const queryOptions = createInput?.options as
           | (ClaudeQueryOptionsForTest & {
@@ -1646,7 +1653,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(session.model, "claude-opus-5");
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "high");
-      assert.deepEqual(createInput?.options.settings, { fastMode: true });
+      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650, fastMode: true });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1802,6 +1809,279 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const submissionSource of ["human", "automation", undefined] as const) {
+    it.effect(`stamps server-controlled provenance: ${submissionSource}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "hello",
+          ...(submissionSource ? { submissionSource } : {}),
+        });
+        const prompt = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+        );
+        assert.deepEqual(
+          prompt.value?.origin,
+          submissionSource === "human" ? { kind: "human" } : undefined,
+        );
+        assert.equal(typeof prompt.value?.uuid, "string");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+  }
+  it.effect("migrates a legacy resumed host contract once, acknowledging its native UUID", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const resume = "550e8400-e29b-41d4-a716-446655440000";
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        resumeCursor: { resume },
+        priorWorkSummary: "Retained fact: sentinel-321",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: RESUME_THREAD_ID,
+        input: "continue",
+        submissionSource: "human",
+      });
+      const iterator = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+      const prompt = (yield* Effect.promise(() => iterator.next())).value!;
+      assert.deepEqual(prompt.origin, { kind: "human" });
+      const text = JSON.stringify(prompt.message.content);
+      assert.ok(text.includes("# F5 host contract (session update)"));
+      assert.ok(text.includes("sentinel-321"));
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: resume,
+        user_message_uuid: prompt.uuid,
+        total_cost_usd: 0,
+        usage: {},
+        result: "done",
+      } as unknown as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          assert.equal(sessions[0]?.activeTurnId, undefined);
+          assert.equal(
+            (sessions[0]?.resumeCursor as { hostContractVersion?: string }).hostContractVersion,
+            CLAUDE_SUPPLEMENT_VERSION,
+          );
+        }),
+      );
+      assert.ok(turn.turnId);
+      yield* adapter.sendTurn({
+        threadId: RESUME_THREAD_ID,
+        input: "again",
+        submissionSource: "human",
+      });
+      const next = (yield* Effect.promise(() => iterator.next())).value!;
+      assert.equal(JSON.stringify(next.message.content).includes("session update"), false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("warns only for actionable SDK notices and clears persisted reset boundaries", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      const resume = "550e8400-e29b-41d4-a716-446655440000";
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        resumeCursor: {
+          resume,
+          resumeSessionAt: "old-assistant",
+          turnBoundaries: [{ turnId: "old", assistantUuid: "old-assistant" }],
+          approximateConversationChars: 900,
+          compactionRecommendationEmitted: true,
+        },
+      });
+      for (const notice of [
+        {
+          type: "system",
+          subtype: "permission_denied",
+          tool_name: "Write",
+          message: "Policy restriction",
+          decision_reason_type: "hook",
+          tool_use_id: "denied-1",
+          agent_id: "agent-1",
+        },
+        { type: "system", subtype: "informational", level: "notice", content: "Notice" },
+        { type: "system", subtype: "model_refusal_no_fallback", content: "Refused" },
+        { type: "system", subtype: "informational", level: "info", content: "Quiet" },
+        { type: "system", subtype: "future_notice" },
+        { type: "system", subtype: "worker_shutting_down" },
+        { type: "conversation_reset", new_conversation_id: "view-id" },
+      ])
+        harness.query.emit({
+          ...notice,
+          session_id: resume,
+          uuid: "notice-id",
+        } as unknown as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(events.some((event) => event.type === "thread.state.changed"))),
+      );
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "runtime.warning")
+          .map((event) => event.payload.message),
+        ["Write was denied: Policy restriction", "Notice", "Refused"],
+      );
+      const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+        resume: string;
+        resumeSessionAt?: string;
+        turnBoundaries: unknown[];
+        approximateConversationChars: number;
+        compactionRecommendationEmitted: boolean;
+      };
+      assert.equal(cursor.resume, resume);
+      assert.equal(cursor.resumeSessionAt, undefined);
+      assert.deepEqual(cursor.turnBoundaries, []);
+      assert.equal(cursor.approximateConversationChars, 0);
+      assert.equal(cursor.compactionRecommendationEmitted, false);
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "does not settle or price a human turn with an unrelated native continuation result",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const turn = yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "human",
+          submissionSource: "human",
+        });
+        const prompt = (yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+        )).value!;
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          uuid: "unrelated-result",
+          session_id: "native-session",
+          user_message_uuid: "unrelated-user",
+          origin: { kind: "background" },
+          is_error: false,
+          total_cost_usd: 8,
+          usage: {},
+        } as unknown as SDKMessage);
+        // Ordered barrier after the unrelated frame ensures its handler ran.
+        harness.query.emit({
+          type: "system",
+          subtype: "informational",
+          level: "notice",
+          content: "barrier",
+          uuid: "barrier",
+          session_id: "native-session",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) => event.type === "runtime.warning" && event.payload.message === "barrier",
+              ),
+            ),
+          ),
+        );
+        assert.equal((yield* adapter.listSessions())[0]!.activeTurnId, turn.turnId);
+        assert.equal(
+          events.some((event) => event.type === "turn.completed"),
+          false,
+        );
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          uuid: "owned-result",
+          session_id: "native-session",
+          user_message_uuid: prompt.uuid,
+          is_error: false,
+          total_cost_usd: 9,
+          usage: {},
+          result: "done",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.ok(events.some((event) => event.type === "turn.completed"))),
+        );
+        const completed = events.find((event) => event.type === "turn.completed");
+        assert.equal(completed?.payload.totalCostUsd, undefined);
+        yield* Fiber.interrupt(listener);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "applies transcript retention at natural start without restarting on an env change",
+    () => {
+      const environment = { ...process.env, F5_CLAUDE_CLEANUP_PERIOD_DAYS: "4200" };
+      const harness = makeHarness({ processEnvironment: environment });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.equal(
+          (harness.getLastCreateQueryInput()!.options.settings as { cleanupPeriodDays: number })
+            .cleanupPeriodDays,
+          4200,
+        );
+        environment.F5_CLAUDE_CLEANUP_PERIOD_DAYS = "7300";
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "continue" });
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        assert.equal(
+          (harness.getLastCreateQueryInput()!.options.settings as { cleanupPeriodDays: number })
+            .cleanupPeriodDays,
+          4200,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
   it.effect("appends the shared assistant contract to the Claude Code preset prompt", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1819,19 +2099,19 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      const appendSystemPrompt = (
+      const systemPrompt = (
         createInput?.options as ClaudeQueryOptions & {
-          readonly appendSystemPrompt?: unknown;
+          readonly systemPrompt?: unknown;
         }
-      )?.appendSystemPrompt;
-      assert.deepEqual(appendSystemPrompt, {
+      )?.systemPrompt;
+      assert.deepEqual(systemPrompt, {
         type: "preset",
         preset: "claude_code",
+        snapshot: false,
         append: buildClaudeAssistantInstructions({
           cwd: "/tmp/claude-project",
           projectTitle: "Claude Project",
           threadTitle: "Phase 1 port",
-          turnCount: 2,
           model: "claude-opus-4-6",
           effort: "high",
           runtimeMode: "full-access",
@@ -1859,9 +2139,9 @@ describe("ClaudeAdapterLive", () => {
       assert.ok(createQueryInput);
       const append = (
         createQueryInput.options as ClaudeQueryOptions & {
-          readonly appendSystemPrompt?: { readonly append?: string };
+          readonly systemPrompt?: { readonly append?: string };
         }
-      ).appendSystemPrompt?.append;
+      ).systemPrompt?.append;
       assert.equal(append?.includes("# Plan Mode (Conversational)"), true);
       assert.equal(append?.includes("# Collaboration Mode: Default"), false);
     }).pipe(
@@ -2237,6 +2517,7 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
+        cleanupPeriodDays: 3650,
         alwaysThinkingEnabled: false,
       });
     }).pipe(
@@ -2262,7 +2543,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
+      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2287,6 +2568,7 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.deepEqual(createInput?.options.settings, {
+        cleanupPeriodDays: 3650,
         fastMode: true,
       });
     }).pipe(
@@ -2312,7 +2594,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
+      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2336,7 +2618,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
+      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2360,7 +2642,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.settings, undefined);
+      assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650 });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4330,7 +4612,7 @@ describe("ClaudeAdapterLive", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
-        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
           Stream.runCollect,
           Effect.forkChild,
         );
@@ -4387,19 +4669,15 @@ describe("ClaudeAdapterLive", () => {
         } as unknown as SDKMessage);
 
         const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
-        assert.equal(runtimeEvents.length, 8);
+        assert.equal(runtimeEvents.length, 7);
         const retryState = runtimeEvents.find(
           (event) =>
             event.type === "session.state.changed" && event.payload.reason === "api_retry:2/5",
         );
         assert.equal(retryState?.type, "session.state.changed");
         const warnings = runtimeEvents.filter((event) => event.type === "runtime.warning");
-        assert.equal(warnings.length, 2);
+        assert.equal(warnings.length, 1);
         assert.equal(warnings[0]?.payload.message, "Claude switched to a fallback model");
-        assert.equal(
-          warnings[1]?.type === "runtime.warning" ? warnings[1].payload.message : undefined,
-          "Unhandled Claude system message subtype 'future_notice'.",
-        );
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),
@@ -6253,11 +6531,11 @@ describe("ClaudeAdapterLive", () => {
       const resumeAppendSystemPrompt = createInput
         ? (
             createInput.options as ClaudeQueryOptions & {
-              readonly appendSystemPrompt?: unknown;
+              readonly systemPrompt?: unknown;
             }
-          ).appendSystemPrompt
+          ).systemPrompt
         : undefined;
-      assert.equal(resumeAppendSystemPrompt, undefined);
+      assert.ok(resumeAppendSystemPrompt);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -6278,7 +6556,6 @@ describe("ClaudeAdapterLive", () => {
           resume,
           turnCount: 3,
         },
-        workflowExecutionProfileChanged: true,
         runtimeMode: "full-access",
       });
 
@@ -6286,11 +6563,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.resume, resume);
       const append = (
         createInput?.options as ClaudeQueryOptionsForTest & {
-          readonly appendSystemPrompt?: { readonly append?: string };
+          readonly systemPrompt?: { readonly append?: string };
         }
-      )?.appendSystemPrompt?.append;
-      assert.equal(append?.includes("# Session Execution Context Update"), true);
-      assert.equal(append?.includes("No automated workflow execution profile is active"), true);
+      )?.systemPrompt?.append;
       assert.equal(append?.includes("# Collaboration Mode: Default"), true);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -6327,10 +6602,10 @@ describe("ClaudeAdapterLive", () => {
         typeof (
           createInput?.options as
             | (ClaudeQueryOptionsForTest & {
-                appendSystemPrompt?: { append: string };
+                systemPrompt?: { append: string };
               })
             | undefined
-        )?.appendSystemPrompt?.append,
+        )?.systemPrompt?.append,
         "string",
       );
       const cursor = session.resumeCursor as Record<string, unknown>;
@@ -6781,10 +7056,10 @@ describe("ClaudeAdapterLive", () => {
         typeof (
           secondCreate?.options as
             | (ClaudeQueryOptionsForTest & {
-                appendSystemPrompt?: { append: string };
+                systemPrompt?: { append: string };
               })
             | undefined
-        )?.appendSystemPrompt?.append,
+        )?.systemPrompt?.append,
         "string",
       );
       yield* Fiber.interrupt(eventFiber);
@@ -6896,9 +7171,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(
         typeof (
           replacementInput?.options as
-            | (ClaudeQueryOptionsForTest & { appendSystemPrompt?: { append: string } })
+            | (ClaudeQueryOptionsForTest & { systemPrompt?: { append: string } })
             | undefined
-        )?.appendSystemPrompt?.append,
+        )?.systemPrompt?.append,
         "string",
       );
       yield* Fiber.interrupt(eventFiber);
@@ -6934,8 +7209,10 @@ describe("ClaudeAdapterLive", () => {
 
       yield* adapter.sendTurn({ threadId: THREAD_ID, input: "replacement", attachments: [] });
       assert.equal(
-        yield* Effect.promise(() => readFirstPromptText(harness.getCreateQueryInputs()[1])),
-        "replacement",
+        (yield* Effect.promise(() =>
+          readFirstPromptText(harness.getCreateQueryInputs()[1]),
+        ))?.endsWith("replacement"),
+        true,
       );
       harness.query.fail(new Error("late old stream failure"));
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
@@ -7072,6 +7349,7 @@ describe("ClaudeAdapterLive", () => {
       const first = yield* adapter.sendTurn({
         threadId: THREAD_ID,
         input: "first",
+        submissionSource: "human",
         attachments: [],
       });
       const rejected = yield* Effect.exit(
@@ -7081,18 +7359,20 @@ describe("ClaudeAdapterLive", () => {
       const steered = yield* adapter.steerTurn!({
         threadId: THREAD_ID,
         input: "follow up",
+        submissionSource: "human",
         attachments: [],
         expectedTurnId: first.turnId,
       });
       assert.equal(steered.turnId, first.turnId);
       assert.equal(harness.getCreateQueryInputs().length, 1);
       const prompts = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
-      assert.deepEqual((yield* Effect.promise(() => prompts.next())).value?.message.content, [
-        { type: "text", text: "first" },
-      ]);
-      assert.deepEqual((yield* Effect.promise(() => prompts.next())).value?.message.content, [
-        { type: "text", text: "follow up" },
-      ]);
+      const firstPrompt = (yield* Effect.promise(() => prompts.next())).value!;
+      assert.deepEqual(firstPrompt.origin, { kind: "human" });
+      assert.deepEqual(firstPrompt.message.content, [{ type: "text", text: "first" }]);
+      const steerPrompt = (yield* Effect.promise(() => prompts.next())).value!;
+      assert.deepEqual(steerPrompt.origin, { kind: "human" });
+      assert.notEqual(firstPrompt.uuid, steerPrompt.uuid);
+      assert.deepEqual(steerPrompt.message.content, [{ type: "text", text: "follow up" }]);
       const session = (yield* adapter.listSessions())[0]!;
       assert.equal(session.activeTurnId, first.turnId);
     }).pipe(
@@ -7624,6 +7904,7 @@ describe("ClaudeAdapterLive", () => {
         (event) => event.type === "session.configured",
       ).pipe(Stream.take(1), Stream.runCollect);
       assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+        cleanupPeriodDays: 3650,
         alwaysThinkingEnabled: false,
       });
       assert.equal(

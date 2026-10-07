@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { vi } from "vitest";
+import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import type { OrchestrationThread } from "@t3tools/contracts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { scheduleUsageLimitResumeFor } from "../usageLimitResume.ts";
@@ -84,6 +85,42 @@ const insert = (store: NextTurnQueueStoreShape, index: number, threadId: ThreadI
   });
 
 layer("NextTurnQueueStore", (it) => {
+  it.effect("persists trusted queue provenance and preserves it on duplication", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-provenance");
+      yield* seedThread(threadId);
+      const human = yield* store.insertSubmission({
+        submissionId: CommandId.makeUnsafe("human-submission"),
+        requestHash: "human",
+        itemId: CommandId.makeUnsafe("human-item"),
+        command: command(8801, threadId),
+        atHead: false,
+        submissionSource: "human",
+      });
+      assert.equal(
+        yield* readSubmissionSource(command(8801, threadId).commandId, threadId),
+        "human",
+      );
+      assert.equal(
+        yield* readSubmissionSource(
+          command(8801, threadId).commandId,
+          ThreadId.makeUnsafe("another"),
+        ),
+        undefined,
+      );
+      assert.equal(human.kind, "created");
+      if (human.kind !== "created") return;
+      const duplicate = yield* store.duplicate({ itemId: human.item.itemId });
+      assert.equal(yield* readSubmissionSource(duplicate.command.commandId, threadId), "human");
+      yield* insert(store, 8802, threadId);
+      assert.equal(
+        yield* readSubmissionSource(command(8802, threadId).commandId, threadId),
+        undefined,
+      );
+    }),
+  );
+
   it.effect("keeps migration reruns safe and concurrent recovery inserts unique", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

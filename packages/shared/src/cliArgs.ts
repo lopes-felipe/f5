@@ -81,6 +81,7 @@ const RESERVED_FLAG_NAMES: ReadonlySet<string> = new Set([
   "disallowed-tools",
   "disallowedTools",
   "permission-prompt-tool",
+  "tool-aliases",
   "cwd",
   "print",
 ]);

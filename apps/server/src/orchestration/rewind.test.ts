@@ -28,6 +28,7 @@ const harness = (
   options: {
     providerCwd?: string;
     zeroTurnClaude?: boolean;
+    forkCodex?: boolean;
     failReadback?: boolean;
     cancelDuringCapture?: boolean;
   } = {},
@@ -107,7 +108,12 @@ const harness = (
             {
               threadId,
               cwd: options.providerCwd ?? worktreePath,
-              resumeCursor: { threadId: identity },
+              resumeCursor: {
+                threadId: identity,
+                ...(options.forkCodex && rollbackCalls > 0
+                  ? { rewindSourceThreadId: "provider-session" }
+                  : {}),
+              },
             },
           ]),
         rollbackConversation: ({
@@ -135,6 +141,7 @@ const harness = (
             }
             providerTurns = providerTurns.slice(0, -numTurns);
             if (options.zeroTurnClaude) identity = "replacement-claude-session";
+            if (options.forkCodex) identity = "replacement-codex-session";
             return Effect.void;
           }),
       } as never),
@@ -265,6 +272,24 @@ layer("conversation rewind recovery", (it) => {
           assert.equal(row.identity, "replacement-claude-session");
         }),
     );
+  it.effect("recovers a validated Codex fork after failed readback", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("rewind-codex-fork", null, null, {
+        forkCodex: true,
+        failReadback: true,
+      });
+      yield* h.rewind.run(h.request);
+      yield* h.rewind.recover;
+      const sql = yield* SqlClient.SqlClient;
+      const row = (yield* sql<{
+        state: string;
+        identity: string;
+      }>`SELECT state, provider_session_id AS identity FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]!;
+      assert.equal(row.state, "completed");
+      assert.equal(row.identity, "replacement-codex-session");
+      assert.equal(h.rollbackCalls(), 1);
+    }),
+  );
   it.effect(
     "OpenCode keeps files by capturing before rollback and restoring after verified readback",
     () =>

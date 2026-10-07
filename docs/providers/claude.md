@@ -31,7 +31,7 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
-F5 pins Claude Agent SDK 0.3.280, which bundles Claude Code v2.1.280. Claude Fable 5.1
+F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
@@ -321,3 +321,63 @@ refresh feels slow.
 ### Isolated profiles
 
 Use [Profiles](../profiles.md) for independent managed Claude accounts and in-app login. Isolated profiles use the certified bundled executable and a complete home environment on Windows. The real-provider release gate includes macOS keychain separation.
+
+## Host instructions
+
+Release 0 sends F5's full host contract through the type-checked Claude Code preset
+`systemPrompt.append`, with `snapshot: false`, on every start and resume. The previous
+`appendSystemPrompt` option was ignored by the SDK. The append includes workflow policy,
+project memory, preserved transcript and post-compaction prior-work context. Threads
+compacted before this fix regain that context on their next restart. Instruction profiles
+now identify Claude supplement `v11`. Turn counters are omitted from this append so normal
+turns do not invalidate its prompt cache; date, model and effort update on relaunch.
+
+Older resumed cursors receive one delimited `# F5 host contract (session update)` block
+in their first ordinary user message. F5 records `hostContractVersion` after a native
+UUID acknowledgement, so later resumes do not repeat it. Slash commands defer that update
+until an ordinary message, preserving their native parsing. This conservative migration
+is retained because the authenticated snapshot-replacement spike could not run in the
+implementation environment: Claude returned **Not logged in**. Run
+`bun run --cwd apps/server test:claude:live` after authenticating to certify two resumes
+of a pre-existing session and native allow-rule policy enforcement.
+
+Mandatory restrictions are enforced before native permission approval: one-off generation
+has no tools; disabled sub-agents exclude Agent and the legacy Task delegation tool;
+read-only workflows use a host PreToolUse denial hook. The same evaluator also guards
+`canUseTool`. Permitting hook results do not grant approval, and project hooks remain
+loaded. Workflow-policy changes go through session restart; incompatible direct sends
+fail visibly. Human composer messages, steering and reliably attributed queued messages
+carry SDK human origin. Automation and legacy queue entries remain unattributed. Native
+message UUIDs fence unrelated background results from completing a human turn.
+
+## Transcript retention
+
+F5 defaults Claude's `cleanupPeriodDays` to **3650**. Set the server environment variable
+`F5_CLAUDE_CLEANUP_PERIOD_DAYS` to another positive integer; an explicit value in the
+instance's isolated `settings.json` wins. Zero, negative and invalid values fail startup.
+Claude's managed-policy precedence remains native. The value is applied at the next
+natural session start and is excluded from launch fingerprints, so changing it does
+not restart running sessions.
+
+StorageMaintenance and per-profile Claude config directories now retain transcripts
+for the intended lifetime of F5 threads. This consumes local disk; monitor profile
+storage. Permanent thread deletion will own native transcript cleanup in Release 2;
+that hook is not part of Release 0. Already swept transcripts cannot be recovered and
+continue using F5's prior-work summary fallback. Full alpha `sessionStore` backups are
+not enabled.
+
+## Release 0 runtime verification
+
+The pinned SDK's options and message union are checked by `bun run sdk:audit`; real SDK
+query transport probes inspect initialization and spawn arguments without model access.
+The bundled SDK uses `spawn(command, args)` with no shell, preserving extra-argument
+values as argv. `get_task_output` added in 0.3.292 belongs to the SDK control protocol,
+not the SDKMessage stream union.
+
+The [official SDK changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
+confirms agent/task/run identity and persistent-approval suppression additions in
+0.3.292, interrupted-stream fixes in 0.3.287/0.3.290, and the in-process MCP removal
+fix in 0.3.287. Release 0 preserves these identities without adopting later-release UX.
+Conversation resets clear persisted rewind boundaries and context estimates. The live
+`/clear` cumulative-cost behavior remains unverified without credentials; F5 does not
+unconditionally reset its cost baseline on reset notifications.

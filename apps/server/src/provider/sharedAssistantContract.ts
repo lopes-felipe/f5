@@ -9,7 +9,7 @@ import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v4";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v10";
+export const CLAUDE_SUPPLEMENT_VERSION = "v11";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -684,29 +684,6 @@ function buildWorkflowHostContract(
 - ${liveness}`;
 }
 
-export function buildClaudeWorkflowExecutionProfileUpdate(input: {
-  readonly interactionMode?: "default" | "plan" | undefined;
-  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile | undefined;
-}): string {
-  const workflowContract = input.workflowExecutionProfile
-    ? buildWorkflowHostContract(input.workflowExecutionProfile)
-    : `No automated workflow execution profile is active for subsequent turns. Follow the current collaboration-mode instructions and runtime permissions; any earlier workflow read-only or question-handling rules no longer apply.`;
-  const modeInstructions =
-    input.interactionMode === "plan"
-      ? CLAUDE_PLAN_MODE_INSTRUCTIONS
-      : CLAUDE_DEFAULT_MODE_INSTRUCTIONS;
-
-  // The host contract comes last so it wins on recency over plan mode's
-  // "ask many questions" guidance.
-  return `# Session Execution Context Update
-
-The workflow execution profile changed. This update replaces any earlier \`# Workflow Read-Only Host Contract\` and collaboration-mode instructions in this conversation.
-
-${modeInstructions}
-
-${workflowContract}`;
-}
-
 export function buildCodexAssistantInstructions(input: SharedInstructionInput): string {
   const modeInstructions =
     input.interactionMode === "plan"
@@ -735,6 +712,7 @@ export function buildCodexAssistantInstructions(input: SharedInstructionInput): 
 }
 
 export function buildClaudeAssistantInstructions(input: SharedInstructionInput): string {
+  const { turnCount: _turnCount, ...cacheStableInput } = input;
   const modeInstructions =
     input.interactionMode === "plan"
       ? CLAUDE_PLAN_MODE_INSTRUCTIONS
@@ -754,7 +732,9 @@ export function buildClaudeAssistantInstructions(input: SharedInstructionInput):
     .filter((section): section is string => section !== undefined)
     .join("\n\n");
   const dynamicSections = [
-    buildRuntimeContextSection(input),
+    // A per-turn counter invalidates the append cache on every resume. Date,
+    // model and effort remain useful metadata and change only on relaunch.
+    buildRuntimeContextSection(cacheStableInput),
     buildProjectMemorySection(input),
     buildResumedContextSection(input),
   ].filter((section): section is string => section !== undefined);

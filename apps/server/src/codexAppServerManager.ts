@@ -125,6 +125,7 @@ interface CodexSessionContext {
   nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
   instructionContext?: Partial<SharedInstructionInput>;
   configuredBase?: Record<string, unknown>;
+  workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   modelContextWindowCatalog: ReadonlyMap<string, number>;
   availableSkills: ReadonlyArray<SupportedSlashCommand>;
   supportedCommandsFingerprint: string;
@@ -140,6 +141,12 @@ interface CodexSessionContext {
   turnPaginationUnsupported?: boolean;
   /** Set once the CLI rejects `thread/revert` as unknown; rollback then uses `thread/rollback`. */
   revertUnsupported?: boolean;
+  rollbackUnsupported?: boolean;
+  unsettledFork?: boolean;
+  legacyHistoryThreadIds?: Set<string>;
+  pendingAdoptionThreadIds?: Set<string>;
+  forkNotifications?: JsonRpcNotification[] | undefined;
+  forkNotificationOverflow?: boolean;
   /** Set when a count-based `thread/rollback` got no response and may still apply. */
   unsettledCountRollback?: boolean;
 }
@@ -560,6 +567,41 @@ export function buildCodexThreadOpenRequestParams(input: {
   };
 }
 
+export function isCodexLegacyHistoryRevertError(error: unknown): boolean {
+  return (
+    error instanceof CodexJsonRpcError &&
+    error.method === "thread/revert" &&
+    error.message.includes("thread/revert only supports paginated threads")
+  );
+}
+
+export function selectCodexRewindStrategy(
+  flags: {
+    readonly revertUnsupported?: boolean;
+    readonly rollbackUnsupported?: boolean;
+    readonly legacyHistoryThreadIds?: ReadonlySet<string>;
+  },
+  providerThreadId: string,
+): "revert" | "rollback" | "fork" {
+  if (!flags.revertUnsupported && !flags.legacyHistoryThreadIds?.has(providerThreadId))
+    return "revert";
+  return flags.rollbackUnsupported ? "fork" : "rollback";
+}
+
+export function buildCodexThreadRevertParams(threadId: string, beforeTurnId: string) {
+  return { threadId, beforeTurnId };
+}
+
+export function buildCodexThreadForkParams(
+  input: Parameters<typeof buildCodexThreadOpenRequestParams>[0],
+  threadId: string,
+  beforeTurnId: string,
+) {
+  const { experimentalRawEvents: _rawEvents, ...overrides } =
+    buildCodexThreadOpenRequestParams(input).start;
+  return { ...overrides, threadId, beforeTurnId, excludeTurns: true };
+}
+
 export function resolveCodexModelForAccount(
   model: string | undefined,
   account: CodexAccountSnapshot,
@@ -608,6 +650,112 @@ export function normalizeCodexModelSlug(
   return normalized;
 }
 
+export function buildCodexTurnStartParams(
+  input: CodexAppServerSendTurnInput,
+  state: {
+    readonly providerThreadId: string;
+    readonly model?: string | undefined;
+    readonly account: CodexAccountSnapshot;
+    readonly instructionContext?: Partial<SharedInstructionInput> | undefined;
+    readonly resumedContextSent?: boolean | undefined;
+  },
+) {
+  const turnInput: Array<
+    | { type: "text"; text: string; text_elements: [] }
+    | { type: "image"; url: string }
+    | { type: "localImage"; path: string }
+  > = [];
+  if (input.input) {
+    turnInput.push({
+      type: "text",
+      text: input.input,
+      text_elements: [],
+    });
+  }
+  for (const attachment of input.attachments ?? []) {
+    if (attachment.type === "localImage") {
+      turnInput.push(attachment);
+    }
+    if (attachment.type === "image") {
+      turnInput.push({
+        type: "image",
+        url: attachment.url,
+      });
+    }
+  }
+  if (turnInput.length === 0) {
+    throw new Error("Turn input must include text or attachments.");
+  }
+
+  const turnStartParams: {
+    threadId: string;
+    input: Array<
+      | { type: "text"; text: string; text_elements: [] }
+      | { type: "image"; url: string }
+      | { type: "localImage"; path: string }
+    >;
+    model?: string;
+    serviceTier?: string | null;
+    effort?: string;
+    collaborationMode?: {
+      mode: "default" | "plan";
+      settings: {
+        model: string;
+        reasoning_effort: string;
+        developer_instructions: string;
+      };
+    };
+  } = {
+    threadId: state.providerThreadId,
+    input: turnInput,
+  };
+  const normalizedModel = resolveCodexModelForAccount(
+    normalizeCodexModelSlug(input.model ?? state.model),
+    state.account,
+  );
+  if (normalizedModel) {
+    turnStartParams.model = normalizedModel;
+  }
+  if (input.serviceTier !== undefined) {
+    turnStartParams.serviceTier = input.serviceTier;
+  }
+  // Persisted state and non-web callers can supply stale or invalid values;
+  // resolve them to a model-supported effort at the provider boundary.
+  const resolvedEffort =
+    input.effort !== undefined
+      ? resolveCodexReasoningEffortForModel(
+          normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+          input.effort,
+        )
+      : undefined;
+  if (resolvedEffort) {
+    turnStartParams.effort = resolvedEffort;
+  }
+  const collaborationMode = buildCodexCollaborationMode({
+    ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+    ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
+    ...(resolvedEffort !== undefined ? { effort: resolvedEffort } : {}),
+    ...(state.instructionContext !== undefined
+      ? { instructionContext: state.instructionContext }
+      : {}),
+    includeResumedContext: !state.resumedContextSent,
+  });
+  if (!turnStartParams.model) {
+    turnStartParams.model = collaborationMode.settings.model;
+  }
+  turnStartParams.collaborationMode = collaborationMode;
+
+  return turnStartParams;
+}
+
+export function buildCodexTurnSteerParams(
+  threadId: string,
+  input: ReturnType<typeof buildCodexTurnStartParams>["input"],
+  expectedTurnId: string,
+) {
+  return { threadId, input, expectedTurnId };
+}
+
 export function buildCodexInitializeParams() {
   return {
     clientInfo: {
@@ -621,7 +769,7 @@ export function buildCodexInitializeParams() {
       mcpServerOpenaiFormElicitation: false,
       // Current servers suppress this high-volume diagnostic. The adapter and
       // UI still accept starts from older servers and persisted worklogs.
-      optOutNotificationMethods: ["hook/started"],
+      optOutNotificationMethods: ["hook/started"] as string[],
     },
   } as const;
 }
@@ -950,6 +1098,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
+      context.workflowExecutionProfile = input.workflowExecutionProfile;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
@@ -1104,98 +1253,15 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
     const context = this.requireSession(input.threadId);
 
-    const turnInput: Array<
-      | { type: "text"; text: string; text_elements: [] }
-      | { type: "image"; url: string }
-      | { type: "localImage"; path: string }
-    > = [];
-    if (input.input) {
-      turnInput.push({
-        type: "text",
-        text: input.input,
-        text_elements: [],
-      });
-    }
-    for (const attachment of input.attachments ?? []) {
-      if (attachment.type === "localImage") {
-        turnInput.push(attachment);
-      }
-      if (attachment.type === "image") {
-        turnInput.push({
-          type: "image",
-          url: attachment.url,
-        });
-      }
-    }
-    if (turnInput.length === 0) {
-      throw new Error("Turn input must include text or attachments.");
-    }
-
-    const providerThreadId = readResumeThreadId({
-      threadId: context.session.threadId,
-      runtimeMode: context.session.runtimeMode,
-      resumeCursor: context.session.resumeCursor,
+    const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    if (!providerThreadId) throw new Error("Session is missing provider resume thread id.");
+    const turnStartParams = buildCodexTurnStartParams(input, {
+      providerThreadId,
+      model: context.session.model,
+      account: context.account,
+      instructionContext: context.instructionContext,
+      resumedContextSent: context.resumedContextSent,
     });
-    if (!providerThreadId) {
-      throw new Error("Session is missing provider resume thread id.");
-    }
-    const turnStartParams: {
-      threadId: string;
-      input: Array<
-        | { type: "text"; text: string; text_elements: [] }
-        | { type: "image"; url: string }
-        | { type: "localImage"; path: string }
-      >;
-      model?: string;
-      serviceTier?: string | null;
-      effort?: string;
-      collaborationMode?: {
-        mode: "default" | "plan";
-        settings: {
-          model: string;
-          reasoning_effort: string;
-          developer_instructions: string;
-        };
-      };
-    } = {
-      threadId: providerThreadId,
-      input: turnInput,
-    };
-    const normalizedModel = resolveCodexModelForAccount(
-      normalizeCodexModelSlug(input.model ?? context.session.model),
-      context.account,
-    );
-    if (normalizedModel) {
-      turnStartParams.model = normalizedModel;
-    }
-    if (input.serviceTier !== undefined) {
-      turnStartParams.serviceTier = input.serviceTier;
-    }
-    // Persisted state and non-web callers can supply stale or invalid values;
-    // resolve them to a model-supported effort at the provider boundary.
-    const resolvedEffort =
-      input.effort !== undefined
-        ? resolveCodexReasoningEffortForModel(
-            normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
-            input.effort,
-          )
-        : undefined;
-    if (resolvedEffort) {
-      turnStartParams.effort = resolvedEffort;
-    }
-    const collaborationMode = buildCodexCollaborationMode({
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
-      ...(resolvedEffort !== undefined ? { effort: resolvedEffort } : {}),
-      ...(context.instructionContext !== undefined
-        ? { instructionContext: context.instructionContext }
-        : {}),
-      includeResumedContext: !context.resumedContextSent,
-    });
-    if (!turnStartParams.model) {
-      turnStartParams.model = collaborationMode.settings.model;
-    }
-    turnStartParams.collaborationMode = collaborationMode;
 
     if (input.expectedTurnId !== undefined) {
       if (context.session.activeTurnId !== input.expectedTurnId) {
@@ -1206,11 +1272,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         );
       }
       const response = this.readObject(
-        await this.sendRequest(context, "turn/steer", {
-          threadId: providerThreadId,
-          input: turnInput,
-          expectedTurnId: input.expectedTurnId,
-        }),
+        await this.sendRequest(
+          context,
+          "turn/steer",
+          buildCodexTurnSteerParams(providerThreadId, turnStartParams.input, input.expectedTurnId),
+        ),
       );
       const id = this.readString(response, "turnId");
       if (id !== input.expectedTurnId)
@@ -1489,112 +1555,197 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   /**
-   * Drops the last `numTurns` turns from the provider thread.
-   *
-   * Current CLIs only expose `thread/revert`, which takes the id of the first
-   * dropped turn. Naming the turn makes the request absolute, so a retry can
-   * never remove more history than intended. CLIs that predate `thread/revert`
-   * fall back to the count-based `thread/rollback`.
+   * Rewind to an absolute turn boundary. Rollback was deprecated in 0.147 and
+   * removed in 0.156. Revert requires paginated history (default from 0.158);
+   * legacy threads on newer CLIs therefore need a validated fork.
    */
   async rollbackThread(
     threadId: ThreadId,
     numTurns: number,
     beforeTurnId?: string,
+    onAdoptSession?: (session: ProviderSession) => Promise<void>,
   ): Promise<CodexThreadSnapshot> {
     const context = this.requireSession(threadId);
-    const providerThreadId = readResumeThreadId({
-      threadId: context.session.threadId,
-      runtimeMode: context.session.runtimeMode,
-      resumeCursor: context.session.resumeCursor,
-    });
-    if (!providerThreadId) {
-      throw new Error("Session is missing a provider resume thread id.");
-    }
-    if (!Number.isInteger(numTurns) || numTurns < 1) {
+    const providerThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    if (!providerThreadId) throw new Error("Session is missing a provider resume thread id.");
+    if (!Number.isInteger(numTurns) || numTurns < 1)
       throw new Error("numTurns must be an integer >= 1.");
-    }
-
-    if (!context.revertUnsupported) {
-      let revertTurnId = beforeTurnId;
-      if (revertTurnId === undefined) {
-        const snapshot = await this.readThread(threadId);
-        if (numTurns > snapshot.turns.length) {
-          throw new Error(
-            `Cannot drop ${numTurns} turns from a thread with ${snapshot.turns.length} turns.`,
-          );
-        }
-        revertTurnId = snapshot.turns[snapshot.turns.length - numTurns]!.id;
-      }
-      let revertResponse: unknown;
-      let revertSupported = true;
-      try {
-        revertResponse = await this.sendRequest(context, "thread/revert", {
-          threadId: providerThreadId,
-          beforeTurnId: revertTurnId,
-        });
-      } catch (error) {
-        if (!isUnknownMethodError(error, "thread/revert")) {
-          throw error;
-        }
-        context.revertUnsupported = true;
-        revertSupported = false;
-      }
-      if (revertSupported) {
-        // The response carries thread metadata only (`turns` is always empty).
-        // Adopt a reloaded thread id, then hydrate the retained history.
-        const revertedThreadId = normalizeProviderThreadId(
-          this.readString(this.readObject(revertResponse)?.thread, "id"),
-        );
-        this.updateSession(context, {
-          status: "ready",
-          activeTurnId: undefined,
-          ...(revertedThreadId && revertedThreadId !== providerThreadId
-            ? {
-                resumeCursor: {
-                  ...this.readObject(context.session.resumeCursor),
-                  threadId: revertedThreadId,
-                },
-              }
-            : {}),
-        });
-        return this.readThread(threadId);
-      }
-    }
-
-    // `thread/rollback` drops turns by count, so it must never be sent twice for one
-    // rewind. A request that got no response may still be applied later, so this
-    // session refuses further count-based rollbacks until it is replaced.
-    if (context.unsettledCountRollback) {
+    if (context.unsettledFork)
+      throw new Error(
+        "An earlier thread/fork never answered and may have created an orphan. Restart the Codex session before retrying.",
+      );
+    if (context.unsettledCountRollback)
       throw new Error(
         "An earlier thread/rollback for this session never answered and may still apply. Restart the Codex session before retrying.",
       );
-    }
-    if (beforeTurnId !== undefined) {
+
+    let boundaryTurnId = beforeTurnId;
+    let expectedRemainingTurnIds: string[] | undefined;
+    const resolveBoundary = async () => {
       const snapshot = await this.readThread(threadId);
-      if (snapshot.turns.at(-numTurns)?.id !== beforeTurnId) {
+      if (numTurns > snapshot.turns.length) {
+        throw new Error(
+          `Cannot drop ${numTurns} turns from a thread with ${snapshot.turns.length} turns; refusing a count-based rollback.`,
+        );
+      }
+      const boundary = snapshot.turns[snapshot.turns.length - numTurns]!.id;
+      if (boundaryTurnId !== undefined && boundary !== boundaryTurnId) {
         throw new Error(
           "Thread history no longer ends with the turns to drop; refusing a count-based rollback.",
         );
       }
+      boundaryTurnId = boundary;
+      expectedRemainingTurnIds = snapshot.turns.slice(0, -numTurns).map((turn) => turn.id);
+    };
+    if (boundaryTurnId === undefined) await resolveBoundary();
+
+    if (selectCodexRewindStrategy(context, providerThreadId) === "revert") {
+      let response: unknown;
+      let succeeded = false;
+      try {
+        response = await this.sendRequest(
+          context,
+          "thread/revert",
+          buildCodexThreadRevertParams(providerThreadId, boundaryTurnId!),
+        );
+        succeeded = true;
+      } catch (error) {
+        if (isUnknownMethodError(error, "thread/revert")) context.revertUnsupported = true;
+        else if (isCodexLegacyHistoryRevertError(error)) {
+          (context.legacyHistoryThreadIds ??= new Set()).add(providerThreadId);
+        } else throw error;
+      }
+      if (succeeded) {
+        const revertedId = normalizeProviderThreadId(
+          this.readString(this.readObject(response)?.thread, "id"),
+        );
+        this.updateSession(context, {
+          status: "ready",
+          activeTurnId: undefined,
+          ...(revertedId && revertedId !== providerThreadId
+            ? {
+                resumeCursor: {
+                  ...this.readObject(context.session.resumeCursor),
+                  threadId: revertedId,
+                },
+              }
+            : {}),
+        });
+        await onAdoptSession?.(context.session);
+        return this.readThread(threadId);
+      }
     }
 
-    let response: unknown;
-    try {
-      response = await this.sendRequest(context, "thread/rollback", {
-        threadId: providerThreadId,
-        numTurns,
-      });
-    } catch (error) {
-      // A JSON-RPC error is a definite rejection. Anything else (timeout, closed
-      // transport) leaves the outcome unknown.
-      if (!(error instanceof CodexJsonRpcError)) context.unsettledCountRollback = true;
-      throw error;
+    // Resolve this even when unsupported-method flags were cached by a prior rewind.
+    if (expectedRemainingTurnIds === undefined) await resolveBoundary();
+    if (selectCodexRewindStrategy(context, providerThreadId) === "rollback") {
+      let response: unknown;
+      let succeeded = false;
+      try {
+        response = await this.sendRequest(context, "thread/rollback", {
+          threadId: providerThreadId,
+          numTurns,
+        });
+        succeeded = true;
+      } catch (error) {
+        if (isUnknownMethodError(error, "thread/rollback")) context.rollbackUnsupported = true;
+        else {
+          if (!(error instanceof CodexJsonRpcError)) context.unsettledCountRollback = true;
+          throw error;
+        }
+      }
+      if (succeeded) {
+        this.updateSession(context, { status: "ready", activeTurnId: undefined });
+        await onAdoptSession?.(context.session);
+        return this.parseThreadSnapshot("thread/rollback", response);
+      }
     }
-    this.updateSession(context, {
-      status: "ready",
-      activeTurnId: undefined,
-    });
-    return this.parseThreadSnapshot("thread/rollback", response);
+
+    const config = context.configuredBase;
+    const request = buildCodexThreadForkParams(
+      {
+        ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
+        ...(context.session.model ? { model: context.session.model } : {}),
+        ...(typeof config?.serviceTier === "string" ? { serviceTier: config.serviceTier } : {}),
+        runtimeMode: context.session.runtimeMode,
+        ...(context.workflowExecutionProfile
+          ? { workflowExecutionProfile: context.workflowExecutionProfile }
+          : {}),
+      },
+      providerThreadId,
+      boundaryTurnId!,
+    );
+    // The server chooses the fork id. Buffer foreign events until the response
+    // reveals it; registration by guessed id could route unrelated child events.
+    context.forkNotifications = [];
+    context.forkNotificationOverflow = false;
+    let forkedId: string | undefined;
+    try {
+      let response: unknown;
+      try {
+        response = await this.sendRequest(context, "thread/fork", request);
+      } catch (error) {
+        if (!(error instanceof CodexJsonRpcError)) {
+          context.unsettledFork = true;
+          await this.runPromise(
+            Effect.logWarning("Codex rewind fork response lost; possible orphan", {
+              threadId,
+              providerThreadId,
+            }),
+          );
+        }
+        throw error;
+      }
+      forkedId = normalizeProviderThreadId(
+        this.readString(this.readObject(response)?.thread, "id"),
+      );
+      if (!forkedId || forkedId === providerThreadId)
+        throw new Error("thread/fork returned an invalid fork id; refusing adoption.");
+      (context.pendingAdoptionThreadIds ??= new Set()).add(forkedId);
+      const snapshot = await this.readPaginatedThread(context, forkedId);
+      if (
+        context.forkNotificationOverflow ||
+        snapshot.turns.length !== expectedRemainingTurnIds!.length ||
+        snapshot.turns.some((turn, index) => turn.id !== expectedRemainingTurnIds![index])
+      ) {
+        throw new Error(
+          "thread/fork retained history does not match the rewind boundary; refusing adoption.",
+        );
+      }
+      const resumeCursor = {
+        ...this.readObject(context.session.resumeCursor),
+        threadId: forkedId,
+        rewindSourceThreadId: providerThreadId,
+      };
+      // Save before exposing the new identity locally. If persistence fails,
+      // recovery must not complete against an adopted but undurable cursor.
+      const { activeTurnId: _activeTurnId, ...idleSession } = context.session;
+      await onAdoptSession?.({ ...idleSession, status: "ready", resumeCursor });
+      this.updateSession(context, { status: "ready", activeTurnId: undefined, resumeCursor });
+      const notifications = context.forkNotifications;
+      context.forkNotifications = undefined;
+      for (const notification of notifications) {
+        if (readNotificationProviderThreadId(notification.params) === forkedId) {
+          this.handleServerNotification(context, notification);
+        }
+      }
+      context.legacyHistoryThreadIds?.delete(providerThreadId);
+      try {
+        await this.sendRequest(context, "thread/unsubscribe", { threadId: providerThreadId });
+      } catch (error) {
+        await this.runPromise(
+          Effect.logDebug("Codex old thread unsubscribe failed", {
+            threadId,
+            detail: String(error),
+          }),
+        );
+      }
+      return this.readThread(threadId);
+    } finally {
+      if (forkedId) context.pendingAdoptionThreadIds?.delete(forkedId);
+      context.forkNotifications = undefined;
+      context.forkNotificationOverflow = false;
+    }
   }
 
   async respondToRequest(
@@ -1972,6 +2123,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       notificationProviderThreadId !== undefined &&
       notificationProviderThreadId !== primaryProviderThreadId
     ) {
+      if (context.forkNotifications) {
+        if (context.forkNotifications.length < 512) context.forkNotifications.push(notification);
+        else context.forkNotificationOverflow = true;
+        return;
+      }
       // Codex collaboration agents share the parent app-server process, so
       // their notifications arrive on the same stdout stream. They are not
       // turns in the parent F5 thread and must not mutate its lifecycle or
@@ -2009,7 +2165,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         this.readString(this.readObject(notification.params)?.thread, "id"),
       );
       if (providerThreadId) {
-        this.updateSession(context, { resumeCursor: { threadId: providerThreadId } });
+        this.updateSession(context, {
+          resumeCursor: {
+            ...this.readObject(context.session.resumeCursor),
+            threadId: providerThreadId,
+          },
+        });
       }
       return;
     }

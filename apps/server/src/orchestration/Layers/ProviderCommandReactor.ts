@@ -1,3 +1,4 @@
+import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readProjectSettings } from "../../project/projectSettings";
 import { isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
@@ -659,7 +660,6 @@ const make = Effect.gen(function* () {
       const startProviderSession = (input?: {
         readonly resumeCursor?: unknown;
         readonly provider?: ProviderKind;
-        readonly workflowExecutionProfileChanged?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
 
@@ -694,9 +694,6 @@ const make = Effect.gen(function* () {
                 ? { providerOptions: effectiveStartConfig.providerOptions }
                 : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-            ...(input?.workflowExecutionProfileChanged
-              ? { workflowExecutionProfileChanged: true }
-              : {}),
             runtimeMode: desiredRuntimeMode,
           });
         }).pipe(Effect.withSpan("provider.start-session"));
@@ -880,9 +877,6 @@ const make = Effect.gen(function* () {
         const restartedSession = yield* startProviderSession({
           ...(resumeCursor !== undefined ? { resumeCursor } : {}),
           ...(options?.provider !== undefined ? { provider: options.provider } : {}),
-          ...(shouldRestartForWorkflowExecutionProfileChange
-            ? { workflowExecutionProfileChanged: true }
-            : {}),
         });
         yield* Effect.logInfo("provider command reactor restarted provider session", {
           threadId,
@@ -948,9 +942,6 @@ const make = Effect.gen(function* () {
         ...(resumeCursorForStoppedSession !== undefined
           ? { resumeCursor: resumeCursorForStoppedSession }
           : {}),
-        ...(!persistedWorkflowExecutionProfileMatches && resumeCursorForStoppedSession !== undefined
-          ? { workflowExecutionProfileChanged: true }
-          : {}),
       });
       yield* bindSessionToThread(startedSession);
       yield* recordEffectiveStartConfig();
@@ -981,6 +972,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly deliveryId?: CommandId;
     readonly messageText: string;
+    readonly submissionSource?: "human" | "automation";
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
     readonly model?: string;
@@ -1090,6 +1082,7 @@ const make = Effect.gen(function* () {
 
     return yield* providerService.sendTurn({
       threadId: input.threadId,
+      ...(input.submissionSource ? { submissionSource: input.submissionSource } : {}),
       ...(input.deliveryId !== undefined ? { deliveryId: input.deliveryId } : {}),
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
@@ -1399,10 +1392,17 @@ const make = Effect.gen(function* () {
       });
     }
 
+    const submissionSource =
+      event.commandId && Option.isSome(sqlOption)
+        ? yield* readSubmissionSource(event.commandId, thread.id).pipe(
+            Effect.provideService(SqlClient.SqlClient, sqlOption.value),
+          )
+        : undefined;
     if (event.type === "thread.turn-steer-requested") {
       return yield* providerService.sendTurn({
         threadId: thread.id,
         ...(event.commandId ? { deliveryId: event.commandId } : {}),
+        ...(submissionSource ? { submissionSource } : {}),
         expectedTurnId: event.payload.expectedTurnId,
         input: message.text,
         attachments: message.attachments ?? [],
@@ -1433,6 +1433,7 @@ const make = Effect.gen(function* () {
       worktreePath: thread.worktreePath,
       messageId: message.id,
       messageText: message.text,
+      ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     }).pipe(Effect.forkScoped);
 
@@ -1464,6 +1465,7 @@ const make = Effect.gen(function* () {
       threadId: event.payload.threadId,
       ...(event.commandId !== null ? { deliveryId: event.commandId } : {}),
       messageText: message.text,
+      ...(submissionSource ? { submissionSource } : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),

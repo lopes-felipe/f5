@@ -255,6 +255,10 @@
     "./hostRuntime": {
       "types": "./src/hostRuntime.ts",
       "import": "./src/hostRuntime.ts"
+    },
+    "./claudeSdkManifest": {
+      "types": "./src/claudeSdkManifest.ts",
+      "import": "./src/claudeSdkManifest.ts"
     }
   },
   "scripts": {
