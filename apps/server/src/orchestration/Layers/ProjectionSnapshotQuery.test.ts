@@ -405,6 +405,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             activeTurnId: asTurnId("turn-1"),
             lastError: "provider disconnected",
             lastErrorId: "error-1",
+            usageLimit: null,
             lastErrorOccurredAt: "2026-02-24T00:00:06.500Z",
             lastErrorRetryability: null,
             estimatedContextTokens: 42_000,

@@ -1,6 +1,7 @@
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
-import { claudeLimitState } from "../usageLimitMessages.ts";
+import type { RuntimeUsageLimit } from "@t3tools/contracts";
+import { claudeLimitState, usageLimitFromWindows } from "../usageLimitMessages.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -183,7 +184,7 @@ interface ClaudeTurnState {
   readonly capturedProposedPlanKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
   authenticationFailureMessage?: string;
-  rejectedUsageLimits?: Map<string, string>;
+  rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   announcedUsageLimits?: Set<string>;
   interruptRequested: boolean;
   /**
@@ -274,6 +275,7 @@ interface ClaudeRuntimeWarningOptions {
 }
 
 interface ClaudeSessionContext {
+  rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   readonly startInput: ProviderSessionStartInput;
   readonly turnBoundaries: Array<{ turnId: string; assistantUuid: string }>;
   session: ProviderSession;
@@ -2545,12 +2547,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const emitRuntimeError = (
       context: ClaudeSessionContext,
       message: string,
-      cause?: unknown,
+      options?: { detail?: unknown; usageLimit?: RuntimeUsageLimit },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (cause !== undefined) {
-          void cause;
-        }
         const turnState = context.turnState;
         const stamp = yield* makeEventStamp(context.session.threadId);
         yield* offerRuntimeEvent({
@@ -2563,7 +2562,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           payload: {
             message,
             class: "provider_error",
-            ...(cause !== undefined ? { detail: cause } : {}),
+            ...(options?.detail !== undefined ? { detail: options.detail } : {}),
+            ...(options?.usageLimit ? { usageLimit: options.usageLimit } : {}),
           },
           providerRefs: nativeProviderRefs(context),
         });
@@ -2935,6 +2935,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       status: ProviderRuntimeTurnStatus,
       errorMessage?: string,
       result?: SDKResultMessage,
+      options?: { usageLimit?: RuntimeUsageLimit },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const turnState = context.turnState;
@@ -2960,6 +2961,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Close admission before publishing the terminal event: its consumers
         // may immediately try to dispatch a queued prompt.
         if (status !== "completed") context.retiring = true;
+        else context.rejectedUsageLimits?.clear();
         reduceClaudeTurnLifecycle(context.lifecycle, { type: "turn-boundary" });
         if (context.settlementWatchdog) {
           yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
@@ -3077,6 +3079,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(modelUsage ? { modelUsage } : {}),
             ...turnCost,
             ...(errorMessage ? { errorMessage } : {}),
+            ...(options?.usageLimit ? { usageLimit: options.usageLimit } : {}),
           },
           providerRefs: nativeProviderRefs(context),
         });
@@ -3724,9 +3727,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (!context.turnState) {
           if (turnStatusFromResult(message) === "failed") {
             recordClaudeResult(context.lifecycle, message);
+            const originalError = resultUserFacingError(message);
+            const rejected = [...(context.rejectedUsageLimits?.values() ?? [])].filter(
+              (limit) => limit.resettable,
+            );
+            const usageLimit =
+              rejected.length > 0 &&
+              (!originalError || /usage.?limit|rate.?limit/i.test(originalError)) &&
+              !/authentication|unauthorized/i.test(originalError ?? "")
+                ? usageLimitFromWindows(rejected.map((limit) => limit.structuredWindow))
+                : undefined;
             yield* emitRuntimeError(
               context,
-              resultUserFacingError(message) ?? "Claude runtime failed outside an active turn.",
+              originalError ??
+                rejected[0]?.message ??
+                "Claude runtime failed outside an active turn.",
+              usageLimit ? { usageLimit } : undefined,
             );
             yield* stopSessionInternal(context, { interruptStreamFiber: false });
           }
@@ -3735,7 +3751,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const hint =
           context.turnState?.authenticationFailureMessage ??
-          [...(context.turnState?.rejectedUsageLimits?.values() ?? [])][0];
+          [...(context.rejectedUsageLimits?.values() ?? [])][0]?.message;
         const status = turnStatusFromResult(message);
         const originalError = resultUserFacingError(message);
         const errorMessage =
@@ -3745,6 +3761,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError))
             ? [originalError, hint].filter(Boolean).join(" ")
             : originalError;
+        const rejectedWindows = [...(context.rejectedUsageLimits?.values() ?? [])]
+          .filter((limit) => limit.resettable)
+          .map((limit) => limit.structuredWindow);
+        const usageLimit =
+          status === "failed" &&
+          !context.turnState.authenticationFailureMessage &&
+          !/authentication|unauthorized/i.test(originalError ?? "") &&
+          hint &&
+          (!originalError ||
+            /usage.?limit|rate.?limit|authentication|unauthorized/i.test(originalError)) &&
+          rejectedWindows.length > 0
+            ? usageLimitFromWindows(rejectedWindows)
+            : undefined;
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;
@@ -3760,7 +3789,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* invalidateClaudeResumeState(context, "resume-session-not-found");
             resumeRejected = true;
           }
-          yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+          yield* emitRuntimeError(
+            context,
+            errorMessage ?? "Claude turn failed.",
+            usageLimit ? { usageLimit } : undefined,
+          );
         }
 
         if (status === "completed" && !context.turnState.interruptRequested) {
@@ -3785,7 +3818,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }
         }
         if (status !== "completed") recordClaudeResult(context.lifecycle, message);
-        yield* completeTurn(context, status, errorMessage, message);
+        yield* completeTurn(
+          context,
+          status,
+          errorMessage,
+          message,
+          usageLimit ? { usageLimit } : undefined,
+        );
         if (resumeRejected || status !== "completed") {
           // Results/idle trailers have no reliable turn attribution. Retire the
           // failed process before another prompt can be admitted.
@@ -4172,14 +4211,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (message.type === "rate_limit_event") {
           const info = message.rate_limit_info;
           const turn = context.turnState;
-          if (info && turn) {
+          if (info) {
             const limit = claudeLimitState(info as unknown as Record<string, unknown>);
-            turn.rejectedUsageLimits ??= new Map();
-            turn.announcedUsageLimits ??= new Set();
+            context.rejectedUsageLimits ??= new Map();
+            if (turn) turn.announcedUsageLimits ??= new Set();
             if (limit.blocked) {
-              turn.rejectedUsageLimits.set(limit.window, limit.message);
-              if (!turn.announcedUsageLimits.has(limit.key)) {
-                turn.announcedUsageLimits.add(limit.key);
+              context.rejectedUsageLimits.set(limit.window, limit);
+              if (turn && !turn.announcedUsageLimits!.has(limit.key)) {
+                turn.announcedUsageLimits!.add(limit.key);
                 yield* emitRuntimeWarning(context, limit.message, {
                   detail: { rateLimitType: limit.window },
                 });
@@ -4189,7 +4228,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               info.status === "allowed_warning" ||
               info.status === "rejected"
             ) {
-              turn.rejectedUsageLimits.delete(limit.window);
+              context.rejectedUsageLimits.delete(limit.window);
             }
           }
           yield* offerRuntimeEvent({
@@ -4346,7 +4385,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ) {
               yield* invalidateClaudeResumeState(context, "resume-session-not-found");
             }
-            yield* emitRuntimeError(context, message, Cause.pretty(exit.cause));
+            yield* emitRuntimeError(context, message, { detail: Cause.pretty(exit.cause) });
             yield* completeTurn(context, "failed", message);
           }
         } else if (context.turnState) {
@@ -4430,7 +4469,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         try {
           context.query.close();
         } catch (cause) {
-          yield* emitRuntimeError(context, "Failed to close Claude runtime query.", cause);
+          yield* emitRuntimeError(context, "Failed to close Claude runtime query.", {
+            detail: cause,
+          });
         }
 
         yield* resolvePendingInteractions(context);

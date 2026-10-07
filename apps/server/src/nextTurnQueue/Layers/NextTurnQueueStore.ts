@@ -1,3 +1,4 @@
+import { MAX_CONSECUTIVE_AUTO_RESUMES } from "../usageLimitResume.ts";
 import { randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 
@@ -48,6 +49,7 @@ interface QueueRow {
   readonly status: string;
   readonly attemptCount: number;
   readonly notBefore: string | null;
+  readonly scheduleReason: "usage_limit_reset" | null;
   readonly dispatchStartedAt: string | null;
   readonly commandJson: string;
   readonly lastErrorCode: string | null;
@@ -145,6 +147,7 @@ function decodeRow(row: QueueRow): NextTurnQueueItem {
     command,
     attemptCount: row.attemptCount,
     notBefore: row.notBefore,
+    scheduleReason: row.scheduleReason,
     dispatchStartedAt: row.dispatchStartedAt,
     lastErrorCode: row.lastErrorCode,
     lastErrorDetail: row.lastErrorDetail,
@@ -170,6 +173,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
          status,
          attempt_count AS attemptCount,
          not_before AS notBefore,
+         schedule_reason AS scheduleReason,
          dispatch_started_at AS dispatchStartedAt,
          command_json AS commandJson,
          last_error_code AS lastErrorCode,
@@ -404,7 +408,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     );
 
   const rejectAcceptedMutation = (item: NextTurnQueueItem) =>
-    item.command.presentation === "continuation"
+    item.command.presentation === "continuation" && item.scheduleReason !== "usage_limit_reset"
       ? Effect.fail(
           new NextTurnQueueItemAlreadyRanError({
             message: "Restart continuations are managed by recovery.",
@@ -467,6 +471,156 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     ),
 
     getItem: (itemId) => readItem(itemId).pipe(Effect.mapError(normalizeError)),
+    getUsageResumeContext: (itemId) =>
+      sql<{
+        limitKey: string;
+        providerInstanceId: string;
+        source: "manual" | "auto";
+        fingerprint: string | null;
+      }>`SELECT q.schedule_limit_key AS "limitKey", q.schedule_provider_instance_id AS "providerInstanceId", q.schedule_provider_fingerprint AS fingerprint, l.source FROM next_turn_queue q JOIN usage_limit_resumes l ON l.thread_id=q.thread_id AND l.limit_key=q.schedule_limit_key WHERE q.item_id=${itemId} AND q.deleted_at IS NULL`.pipe(
+        Effect.map((rows) => rows[0] ?? null),
+        Effect.mapError(normalizeError),
+      ),
+    getUsageResumeLedger: (threadId) =>
+      sql<
+        import("../Services/NextTurnQueueStore.ts").UsageResumeLedger
+      >`SELECT l.limit_key AS "limitKey", l.state, l.source, l.item_id AS "itemId", l.not_before AS "notBefore", (SELECT h.not_before FROM usage_limit_resumes h WHERE h.thread_id=l.thread_id AND h.not_before IS NOT NULL ORDER BY h.updated_at DESC,h.rowid DESC LIMIT 1) AS "previousTarget", COALESCE(s.auto_count,0) AS "autoCount" FROM usage_limit_resumes l LEFT JOIN usage_limit_resume_streaks s ON s.thread_id=l.thread_id WHERE l.thread_id=${threadId} ORDER BY l.updated_at DESC, l.rowid DESC LIMIT 1`.pipe(
+        Effect.map((rows) => rows[0] ?? null),
+        Effect.mapError(normalizeError),
+      ),
+    recordUsageResumeFailure: (threadId, limitKey, eligible) =>
+      Effect.gen(function* () {
+        const at = now();
+        yield* sql`INSERT INTO usage_limit_resumes(thread_id,limit_key,state,source,auto_eligible_at_failure,created_at,updated_at) VALUES(${threadId},${limitKey},'revoked','auto',${eligible ? 1 : 0},${at},${at}) ON CONFLICT(thread_id,limit_key) DO NOTHING`;
+      }).pipe(Effect.mapError(normalizeError)),
+    scheduleUsageLimitResume: (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const threadId = input.command.threadId;
+            const at = now();
+            const ledger = (yield* sql<{
+              state: string;
+              eligible: number;
+            }>`SELECT state,auto_eligible_at_failure AS eligible FROM usage_limit_resumes WHERE thread_id=${threadId} AND limit_key=${input.limitKey}`)[0];
+            const existing = (yield* queueRows(
+              "WHERE thread_id=? AND schedule_reason='usage_limit_reset' AND deleted_at IS NULL",
+              [threadId],
+            ))[0];
+            const previous = existing ?? (yield* queueRows("WHERE item_id=?", [input.itemId]))[0];
+            const context = existing
+              ? yield* store.getUsageResumeContext(CommandId.makeUnsafe(existing.itemId))
+              : null;
+            if (context?.limitKey === input.limitKey) return "already_scheduled" as const;
+            if (
+              input.source === "auto" &&
+              ledger &&
+              (ledger.eligible === 0 ||
+                ["cancelled", "superseded", "gave_up"].includes(ledger.state))
+            )
+              return "suppressed" as const;
+            const count =
+              (yield* sql<{
+                count: number;
+              }>`SELECT auto_count AS count FROM usage_limit_resume_streaks WHERE thread_id=${threadId}`)[0]
+                ?.count ?? 0;
+            if (input.source === "auto" && count >= MAX_CONSECUTIVE_AUTO_RESUMES) {
+              yield* sql`UPDATE usage_limit_resumes SET state='gave_up',updated_at=${at} WHERE thread_id=${threadId} AND limit_key=${input.limitKey}`;
+              return "gave_up" as const;
+            }
+            if (existing?.status === "dispatching") return "busy" as const;
+            const itemId = previous ? CommandId.makeUnsafe(previous.itemId) : input.itemId;
+            if (previous) {
+              if (previous.submissionId !== input.submissionId)
+                yield* sql`UPDATE turn_submissions SET disposition='canceled',reason_code='usage_resume_superseded',settled_at=${at} WHERE submission_id=${previous.submissionId} AND disposition IN ('pending','queued')`;
+              yield* sql`UPDATE next_turn_queue SET position=position+1,updated_at=${at} WHERE thread_id=${threadId} AND deleted_at IS NULL AND item_id != ${itemId}`;
+              yield* sql`UPDATE usage_limit_resumes SET state='superseded',updated_at=${at} WHERE item_id=${itemId} AND state='scheduled'`;
+              yield* sql`UPDATE next_turn_queue SET position=0,schedule_limit_key=${input.limitKey},schedule_provider_instance_id=${input.providerInstanceId},not_before=${input.notBefore},command_id=${input.command.commandId},message_id=${input.command.message.messageId},submission_id=${input.submissionId},command_json=${JSON.stringify(input.command)},deleted_at=NULL,status='queued',attempt_count=0,lease_owner=NULL,lease_expires_at=NULL,dispatch_started_at=NULL,last_error_code=NULL,last_error_detail=NULL,updated_at=${at} WHERE item_id=${itemId}`;
+              yield* sql`INSERT INTO turn_submissions(submission_id,thread_id,request_hash,item_id,message_id,disposition,created_at) VALUES(${input.submissionId},${threadId},${input.requestHash},${itemId},${input.command.message.messageId},'pending',${at}) ON CONFLICT(submission_id) DO UPDATE SET disposition='pending',request_hash=excluded.request_hash,message_id=excluded.message_id,item_id=excluded.item_id,settled_at=NULL,reason_code=NULL`;
+            } else {
+              yield* store.insertSubmission({
+                ...input,
+                atHead: true,
+                scheduleReason: "usage_limit_reset",
+                scheduleLimitKey: input.limitKey,
+                scheduleProviderInstanceId: input.providerInstanceId,
+              });
+            }
+            yield* sql`UPDATE next_turn_queue SET schedule_provider_fingerprint=${input.providerFingerprint ?? null} WHERE item_id=${itemId}`;
+            yield* sql`UPDATE next_turn_queue_state SET paused=0,pause_reason_code=NULL,pause_detail=NULL WHERE thread_id=${threadId} AND pause_reason_code='turn_failed'`;
+            yield* sql`INSERT INTO usage_limit_resumes(thread_id,limit_key,state,source,auto_eligible_at_failure,item_id,not_before,prev_target,created_at,updated_at) VALUES(${threadId},${input.limitKey},'scheduled',${input.source},1,${itemId},${input.notBefore},${existing?.notBefore ?? null},${at},${at}) ON CONFLICT(thread_id,limit_key) DO UPDATE SET state='scheduled',source=excluded.source,item_id=excluded.item_id,prev_target=usage_limit_resumes.not_before,not_before=excluded.not_before,updated_at=excluded.updated_at`;
+            if (input.source === "auto")
+              yield* sql`INSERT INTO usage_limit_resume_streaks(thread_id,auto_count,updated_at) VALUES(${threadId},1,${at}) ON CONFLICT(thread_id) DO UPDATE SET auto_count=auto_count+1,updated_at=excluded.updated_at`;
+            yield* normalizePositions(threadId, at);
+            yield* bumpRevision(threadId, at);
+            return previous ? ("rebound" as const) : ("created" as const);
+          }),
+        )
+        .pipe(Effect.mapError(normalizeError)),
+    revokeAutoResumes: (threadIds) =>
+      threadIds?.length === 0
+        ? Effect.succeed([])
+        : sql
+            .withTransaction(
+              Effect.gen(function* () {
+                if (threadIds?.length === 0) return [];
+                const rows = yield* sql<{ threadId: ThreadId; itemId: CommandId }>`
+          SELECT q.thread_id AS "threadId",q.item_id AS "itemId"
+          FROM next_turn_queue q JOIN usage_limit_resumes l ON l.item_id=q.item_id AND l.limit_key=q.schedule_limit_key
+          WHERE l.source='auto' AND q.status='queued' AND q.deleted_at IS NULL
+          ${threadIds ? sql`AND ${sql.in("q.thread_id", threadIds)}` : sql``}`;
+                const changed = new Set<ThreadId>();
+                for (const row of rows) {
+                  const at = now();
+                  yield* sql`UPDATE turn_submissions SET disposition='canceled',settled_at=${at} WHERE item_id=${row.itemId} AND disposition IN ('pending','queued')`;
+                  yield* sql`UPDATE next_turn_queue SET deleted_at=${at},updated_at=${at} WHERE item_id=${row.itemId} AND status='queued'`;
+                  yield* sql`UPDATE usage_limit_resumes SET state='revoked',auto_eligible_at_failure=0,updated_at=${at} WHERE item_id=${row.itemId} AND state='scheduled'`;
+                  yield* normalizePositions(row.threadId, at);
+                  yield* bumpRevision(row.threadId, at);
+                  changed.add(row.threadId);
+                }
+                return [...changed];
+              }),
+            )
+            .pipe(Effect.mapError(normalizeError)),
+    rescheduleByInstance: (instanceId, notBefore, guard) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{
+              threadId: ThreadId;
+              itemId: CommandId;
+              limitKey: string;
+            }>`SELECT thread_id AS "threadId",item_id AS "itemId",schedule_limit_key AS "limitKey" FROM next_turn_queue WHERE schedule_provider_instance_id=${instanceId} AND status='queued' AND deleted_at IS NULL`;
+            const changed: ThreadId[] = [];
+            for (const row of rows) {
+              if (guard?.limitKey && guard.limitKey !== row.limitKey) continue;
+              if (
+                guard?.revision !== undefined &&
+                (yield* readState(row.threadId)).revision !== guard.revision
+              )
+                continue;
+              const at = now();
+              yield* sql`UPDATE next_turn_queue SET not_before=${notBefore},updated_at=${at} WHERE item_id=${row.itemId} AND status='queued'`;
+              yield* sql`UPDATE usage_limit_resumes SET prev_target=not_before,not_before=${notBefore},updated_at=${at} WHERE item_id=${row.itemId} AND limit_key=${row.limitKey}`;
+              yield* bumpRevision(row.threadId, at);
+              changed.push(row.threadId);
+            }
+            return changed;
+          }),
+        )
+        .pipe(Effect.mapError(normalizeError)),
+    resetUsageResumeStreak: (threadId) =>
+      sql`DELETE FROM usage_limit_resume_streaks WHERE thread_id=${threadId}`.pipe(
+        Effect.asVoid,
+        Effect.mapError(normalizeError),
+      ),
+    completeUsageResume: (threadId) =>
+      sql`UPDATE usage_limit_resumes SET state='completed',updated_at=${now()} WHERE thread_id=${threadId} AND state='scheduled'`.pipe(
+        Effect.asVoid,
+        Effect.mapError(normalizeError),
+      ),
+
     getByCommandId: (commandId) =>
       readItemByCommandId(commandId).pipe(Effect.mapError(normalizeError)),
 
@@ -487,12 +641,21 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               return { kind: "replay" as const, submission: existing };
             }
 
+            if (input.supersedeUsageResume) {
+              const at = now();
+              yield* sql`UPDATE usage_limit_resumes SET state='superseded', updated_at=${at} WHERE thread_id=${input.command.threadId} AND item_id IN (SELECT item_id FROM next_turn_queue WHERE thread_id=${input.command.threadId} AND schedule_reason='usage_limit_reset' AND status='queued' AND deleted_at IS NULL)`;
+              yield* sql`UPDATE turn_submissions SET disposition='canceled',settled_at=${at} WHERE submission_id IN (SELECT submission_id FROM next_turn_queue WHERE thread_id=${input.command.threadId} AND schedule_reason='usage_limit_reset' AND status='queued' AND deleted_at IS NULL)`;
+              yield* sql`UPDATE next_turn_queue SET deleted_at=${at}, updated_at=${at} WHERE thread_id=${input.command.threadId} AND schedule_reason='usage_limit_reset' AND status='queued' AND deleted_at IS NULL`;
+            }
             const countRows = yield* sql<{ readonly count: number }>`
               SELECT COUNT(*) AS count
               FROM next_turn_queue
               WHERE thread_id = ${input.command.threadId} AND deleted_at IS NULL
             `;
-            if ((countRows[0]?.count ?? 0) >= MAX_QUEUED_TURNS_PER_THREAD) {
+            if (
+              (countRows[0]?.count ?? 0) >=
+              MAX_QUEUED_TURNS_PER_THREAD + (input.scheduleReason ? 1 : 0)
+            ) {
               return yield* new NextTurnQueueLimitExceededError({
                 message: `A thread can queue at most ${MAX_QUEUED_TURNS_PER_THREAD} turns.`,
               });
@@ -533,11 +696,11 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             yield* sql`
               INSERT INTO next_turn_queue (
                 item_id, thread_id, submission_id, command_id, message_id, position,
-                status, attempt_count, command_json, created_at, updated_at
+                status, attempt_count, command_json, created_at, updated_at, not_before, schedule_reason, schedule_limit_key, schedule_provider_instance_id
               ) VALUES (
                 ${input.itemId}, ${input.command.threadId}, ${input.submissionId},
                 ${input.command.commandId}, ${input.command.message.messageId}, ${position},
-                'queued', 0, ${JSON.stringify(input.command)}, ${at}, ${at}
+                'queued', 0, ${JSON.stringify(input.command)}, ${at}, ${at}, ${input.notBefore ?? null}, ${input.scheduleReason ?? null}, ${input.scheduleLimitKey ?? null}, ${input.scheduleProviderInstanceId ?? null}
               )
             `;
             yield* Effect.forEach(
@@ -756,6 +919,8 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 `,
               { concurrency: 1, discard: true },
             );
+            if (input.clearScheduleItemId)
+              yield* sql`UPDATE next_turn_queue SET not_before=NULL WHERE item_id=${input.clearScheduleItemId} AND thread_id=${input.threadId} AND status='queued' AND deleted_at IS NULL`;
             yield* bumpRevision(input.threadId, at);
           }),
         )
@@ -1058,6 +1223,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             const item = yield* requireItem(input.itemId);
+            if (
+              input.expectedRevision !== undefined &&
+              (yield* readState(item.threadId)).revision !== input.expectedRevision
+            )
+              return yield* new NextTurnQueueConflictError({
+                message: "The queue changed. Refresh and try again.",
+              });
             if (item.status === "dispatching") {
               return yield* new NextTurnQueueItemDispatchingError({
                 message: "That turn is already being sent. Stop the turn to change it.",
@@ -1085,6 +1257,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               UPDATE turn_submissions SET disposition = 'canceled', settled_at = ${at}
               WHERE submission_id = ${item.submissionId}
             `;
+            yield* sql`UPDATE usage_limit_resumes SET state='cancelled', updated_at=${at} WHERE item_id=${item.itemId} AND state='scheduled'`;
             yield* normalizePositions(item.threadId, at);
             yield* bumpRevision(item.threadId, at);
             return item;
@@ -1131,6 +1304,8 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 }),
               { concurrency: 1, discard: true },
             );
+            for (const item of items)
+              yield* sql`UPDATE usage_limit_resumes SET state='cancelled', updated_at=${at} WHERE item_id=${item.itemId} AND state='scheduled'`;
             yield* normalizePositions(input.threadId, at);
             yield* bumpRevision(input.threadId, at);
             return items;
@@ -1507,13 +1682,15 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
       readonly dispatchingCount: number;
       readonly failedCount: number;
       readonly paused: number;
+      readonly scheduledResumeAt: string | null;
     }>`
       SELECT
         queue.thread_id AS "threadId",
         SUM(CASE WHEN queue.status = 'queued' THEN 1 ELSE 0 END) AS "queuedCount",
         SUM(CASE WHEN queue.status = 'dispatching' THEN 1 ELSE 0 END) AS "dispatchingCount",
         SUM(CASE WHEN queue.status = 'failed' THEN 1 ELSE 0 END) AS "failedCount",
-        COALESCE(state.paused, 0) AS paused
+        COALESCE(state.paused, 0) AS paused,
+        MIN(CASE WHEN queue.status='queued' AND queue.schedule_reason='usage_limit_reset' THEN queue.not_before END) AS "scheduledResumeAt"
       FROM next_turn_queue AS queue
       LEFT JOIN next_turn_queue_state AS state ON state.thread_id = queue.thread_id
       WHERE queue.deleted_at IS NULL
@@ -1528,6 +1705,7 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             dispatchingCount: row.dispatchingCount,
             failedCount: row.failedCount,
             paused: row.paused === 1,
+            scheduledResumeAt: row.paused === 1 ? null : row.scheduledResumeAt,
           })),
         }),
       ),

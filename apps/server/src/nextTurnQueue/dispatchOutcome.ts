@@ -42,7 +42,7 @@ export function classifyNextTurnDispatchFailure(input: {
   readonly random?: (() => number) | undefined;
 }): NextTurnDispatchOutcome {
   const { tag, message } = taggedError(input.error);
-  if (tag === "ThreadTurnAlreadyActiveError") {
+  if (tag === "ThreadTurnAlreadyActiveError" || tag === "ThreadTurnNotReadyError") {
     return {
       kind: "retry",
       delayMs: 250,

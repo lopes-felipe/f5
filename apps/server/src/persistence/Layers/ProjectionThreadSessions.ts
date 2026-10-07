@@ -1,6 +1,6 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema, Struct } from "effect";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 
@@ -28,6 +28,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id,
           last_error,
           last_error_id,
+          usage_limit_json,
           last_error_occurred_at,
           last_error_retryability,
           estimated_context_tokens,
@@ -44,6 +45,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.activeTurnId},
           ${row.lastError},
           ${row.lastErrorId},
+          ${row.usageLimit ? JSON.stringify(row.usageLimit) : null},
           ${row.lastErrorOccurredAt},
           ${row.lastErrorRetryability},
           ${row.estimatedContextTokens},
@@ -60,6 +62,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id = excluded.active_turn_id,
           last_error = excluded.last_error,
           last_error_id = excluded.last_error_id,
+          usage_limit_json = excluded.usage_limit_json,
           last_error_occurred_at = excluded.last_error_occurred_at,
           last_error_retryability = excluded.last_error_retryability,
           estimated_context_tokens = excluded.estimated_context_tokens,
@@ -71,7 +74,11 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
 
   const getProjectionThreadSessionRow = SqlSchema.findOneOption({
     Request: GetProjectionThreadSessionInput,
-    Result: ProjectionThreadSession,
+    Result: ProjectionThreadSession.mapFields(
+      Struct.assign({
+        usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+      }),
+    ),
     execute: ({ threadId }) =>
       sql`
         SELECT
@@ -83,6 +90,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           last_error_id AS "lastErrorId",
+          usage_limit_json AS "usageLimit",
           last_error_occurred_at AS "lastErrorOccurredAt",
           last_error_retryability AS "lastErrorRetryability",
           estimated_context_tokens AS "estimatedContextTokens",

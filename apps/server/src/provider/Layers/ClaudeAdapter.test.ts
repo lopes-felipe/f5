@@ -4024,7 +4024,16 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  for (const scenario of ["blocked", "recovered", "login", "interrupted", "unrelated"] as const) {
+  for (const scenario of [
+    "blocked",
+    "recovered",
+    "login",
+    "interrupted",
+    "unrelated",
+    "multiple",
+    "unknown",
+    "overage",
+  ] as const) {
     it.effect(`reports Claude ${scenario} evidence at turn completion`, () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -4036,6 +4045,16 @@ describe("ClaudeAdapterLive", () => {
         });
         yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
         if (scenario === "login") {
+          harness.query.emit({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: 1790607600,
+            },
+            uuid: "auth-limit",
+            session_id: "limits-session",
+          } as unknown as SDKMessage);
           harness.query.emit({
             type: "assistant",
             error: "authentication_failed",
@@ -4049,12 +4068,23 @@ describe("ClaudeAdapterLive", () => {
             type: "rate_limit_event",
             rate_limit_info: {
               status: "rejected",
-              rateLimitType: "five_hour",
+              rateLimitType: scenario === "overage" ? "overage" : "five_hour",
               resetsAt: 1790607600,
             },
             uuid: "limit",
             session_id: "limits-session",
           } as unknown as SDKMessage);
+          if (scenario === "multiple" || scenario === "unknown")
+            harness.query.emit({
+              type: "rate_limit_event",
+              rate_limit_info: {
+                status: "rejected",
+                rateLimitType: "seven_day",
+                ...(scenario === "multiple" ? { resetsAt: 1790694000 } : {}),
+              },
+              uuid: "weekly-limit",
+              session_id: "limits-session",
+            } as unknown as SDKMessage);
           if (scenario === "recovered")
             harness.query.emit({
               type: "rate_limit_event",
@@ -4097,8 +4127,21 @@ describe("ClaudeAdapterLive", () => {
             assert.equal(completed.value.payload.errorMessage, "disk is full");
           if (scenario === "login")
             assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
-          if (scenario === "blocked")
+          if (scenario === "blocked") {
             assert.match(completed.value.payload.errorMessage ?? "", /5-hour.*Resets at/);
+            assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
+            assert.equal(completed.value.payload.usageLimit?.windows[0]?.id, "five_hour");
+            assert.equal(
+              completed.value.payload.usageLimit?.resetsAt,
+              new Date(1790607600 * 1000).toISOString(),
+            );
+          } else if (scenario === "multiple" || scenario === "unknown") {
+            assert.equal(completed.value.payload.usageLimit?.windows.length, 2);
+            assert.equal(
+              completed.value.payload.usageLimit?.resetsAt,
+              scenario === "multiple" ? new Date(1790694000 * 1000).toISOString() : null,
+            );
+          } else assert.equal(completed.value.payload.usageLimit, undefined);
           if (scenario === "recovered")
             assert.equal(completed.value.payload.errorMessage, undefined);
         }

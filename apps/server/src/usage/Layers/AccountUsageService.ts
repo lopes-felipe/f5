@@ -1,5 +1,5 @@
 import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
-import { Cache, Cause, Clock, Effect, Ref } from "effect";
+import { Cache, Cause, Clock, Deferred, Effect, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
 
 import { ACCOUNT_ATTEMPT_TTL_MS, type AccountUsageCapability } from "../accountUsage.ts";
@@ -18,6 +18,8 @@ export const makeAccountUsageCapability = <E>(
     const scope = yield* Effect.scope;
     const state = yield* Ref.make(initial);
     // TTL starts at completion, including failure. Forced refresh bypasses it.
+    let inFlight: Deferred.Deferred<void> | undefined;
+    const lastJobFresh = yield* Ref.make(false);
     const lastCompleted = yield* Ref.make<number | null>(null);
     const attempts = yield* Cache.make({
       capacity: 4,
@@ -64,6 +66,9 @@ export const makeAccountUsageCapability = <E>(
             return [true, { ...current, refreshState: "queued" as const }] as const;
           });
           if (!scheduled) return;
+          const completion = yield* Deferred.make<void>();
+          inFlight = completion;
+          let jobFresh = false;
           const job = permits.withPermits(1)(
             Effect.gen(function* () {
               yield* Ref.update(state, (current) => ({
@@ -72,6 +77,9 @@ export const makeAccountUsageCapability = <E>(
               }));
               if (mode === "force") yield* Cache.invalidate(attempts, initial.key);
               const sections = yield* Cache.get(attempts, initial.key);
+              jobFresh = sections.some(
+                (section) => section.outcome === "available" && section.snapshot !== null,
+              );
               yield* Ref.update(state, (current) => ({
                 ...current,
                 sections: sections.map((section) => {
@@ -86,11 +94,41 @@ export const makeAccountUsageCapability = <E>(
           );
           yield* job.pipe(
             Effect.ensuring(
-              Ref.update(state, (current) => ({ ...current, refreshState: "idle" as const })),
+              Effect.gen(function* () {
+                yield* Ref.update(state, (current) => ({
+                  ...current,
+                  refreshState: "idle" as const,
+                }));
+                yield* Ref.set(lastJobFresh, jobFresh);
+                inFlight = undefined;
+                yield* Deferred.succeed(completion, undefined);
+              }),
             ),
             Effect.forkIn(scope),
           );
         }),
       );
-    return { getSnapshot: Ref.get(state), refresh } satisfies AccountUsageCapability;
+    const refreshAccount = (permits: Parameters<AccountUsageCapability["refresh"]>[1]) =>
+      Effect.gen(function* () {
+        const previousCompletion = yield* Ref.get(lastCompleted);
+        yield* refresh("force", permits);
+        const pending = inFlight;
+        if (pending) yield* Deferred.await(pending);
+        const snapshot = yield* Ref.get(state);
+        const completed = yield* Ref.get(lastCompleted);
+        const joined = pending !== undefined || completed !== previousCompletion;
+        const fresh = joined && (yield* Ref.get(lastJobFresh));
+        return {
+          snapshot,
+          fresh,
+          ...(!joined && completed !== null
+            ? { nextAllowedAt: new Date(completed + 5000).toISOString() }
+            : {}),
+        };
+      });
+    return {
+      getSnapshot: Ref.get(state),
+      refresh,
+      refreshAccount,
+    } satisfies AccountUsageCapability;
   });

@@ -33,3 +33,10 @@ export function asIsoDateTime(value: unknown): string | null {
   const text = asTrimmedString(value);
   return text && Number.isFinite(Date.parse(text)) ? new Date(text).toISOString() : null;
 }
+
+/** Normalize epoch timestamps or provider ISO dates without throwing on invalid input. */
+export function resetDate(value: unknown, unit: "ms" | "s" = "ms"): string | null {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const time = typeof value === "number" ? value * (unit === "s" ? 1000 : 1) : Date.parse(value);
+  return Number.isFinite(time) && Math.abs(time) < 8.64e15 ? new Date(time).toISOString() : null;
+}

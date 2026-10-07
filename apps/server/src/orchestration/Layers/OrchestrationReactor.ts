@@ -1,3 +1,4 @@
+import { CommandId } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
 
 import {
@@ -36,7 +37,47 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* providerRuntimeIngestion.start;
     yield* providerCommandReactor.start;
     yield* Stream.runForEach(providerTurnDeliveryWorker.outcomes, (outcome) =>
-      nextTurnQueueDispatcher.handleDeliveryOutcome(outcome).pipe(
+      Effect.gen(function* () {
+        if (outcome.usageLimit && outcome.state === "rejected") {
+          const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
+            (entry) => entry.id === outcome.threadId,
+          );
+          if (
+            thread &&
+            !thread.session?.activeTurnId &&
+            thread.session?.status !== "running" &&
+            thread.session?.status !== "starting" &&
+            !(
+              outcome.occurredAt &&
+              thread.session &&
+              thread.session.updatedAt > outcome.occurredAt
+            ) &&
+            thread.session?.usageLimit?.deliveryId !== outcome.deliveryId
+          ) {
+            const now = new Date().toISOString();
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: CommandId.makeUnsafe(`delivery-limit:${outcome.deliveryId}`),
+              threadId: thread.id,
+              session: {
+                threadId: thread.id,
+                status: "error",
+                providerName: thread.session?.providerName ?? null,
+                providerInstanceId: outcome.usageLimit.providerInstanceId,
+                runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+                activeTurnId: null,
+                lastError: outcome.detail ?? "Usage limit reached",
+                lastErrorId: `delivery:${outcome.deliveryId}`,
+                lastErrorOccurredAt: now,
+                usageLimit: outcome.usageLimit,
+                updatedAt: now,
+              },
+              createdAt: now,
+            });
+          }
+        }
+        yield* nextTurnQueueDispatcher.handleDeliveryOutcome(outcome);
+      }).pipe(
         Effect.andThen(providerTurnDeliveryWorker.acknowledgeOutcome(outcome.deliveryId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("failed to project provider delivery outcome into the queue", {

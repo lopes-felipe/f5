@@ -1,3 +1,4 @@
+import { RuntimeUsageLimit } from "./usageLimit";
 import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
 import { SourceControlPullRequestRef } from "./sourceControl";
@@ -545,7 +546,16 @@ export const OrchestrationSessionStatus = Schema.Literals([
 ]);
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
+export const OrchestrationUsageLimit = Schema.Struct({
+  ...RuntimeUsageLimit.fields,
+  providerInstanceId: ProviderInstanceId,
+  turnId: Schema.NullOr(TurnId),
+  deliveryId: Schema.NullOr(Schema.String),
+});
+export type OrchestrationUsageLimit = typeof OrchestrationUsageLimit.Type;
+
 export const OrchestrationSession = Schema.Struct({
+  usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),

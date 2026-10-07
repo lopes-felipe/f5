@@ -331,6 +331,7 @@ import { supportsClaudeTraitsControls } from "./chat/ClaudeTraitsPicker";
 
 import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
+import { UsageLimitResumeAction } from "./chat/UsageLimitResumeAction";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
@@ -6576,6 +6577,15 @@ export default function ChatView({
       content: (
         <ThreadErrorBanner
           error={activeThread.error}
+          action={
+            activeThread.session?.usageLimit &&
+            activeThread.session.lastError === activeThread.error ? (
+              <UsageLimitResumeAction
+                threadId={activeThread.id}
+                limit={activeThread.session.usageLimit}
+              />
+            ) : undefined
+          }
           occurredAt={
             activeThread.session?.lastError === activeThread.error
               ? (activeThread.session.lastErrorOccurredAt ?? null)

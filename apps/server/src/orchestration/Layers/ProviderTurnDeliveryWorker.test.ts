@@ -1,4 +1,13 @@
-import { CommandId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
+import { ProviderTurnDeliveryError } from "../../provider/Errors.ts";
+import {
+  CommandId,
+  MessageId,
+  ThreadId,
+  TurnId,
+  ProviderInstanceId,
+  type RuntimeUsageLimit,
+  type OrchestrationUsageLimit,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Option, Stream } from "effect";
 
@@ -22,6 +31,9 @@ const messageId = MessageId.makeUnsafe("message-unknown-outcome");
 const createdAt = "2026-01-01T00:00:00.000Z";
 
 let state: ProviderTurnDelivery;
+let usageRejection: RuntimeUsageLimit | null = null;
+let failureProjectionFails = false;
+let failureProjectionCount = 0;
 let requeueCount = 0;
 let outcomeProjected = false;
 let providerReadFails = false;
@@ -55,6 +67,9 @@ function resetDelivery() {
     updatedAt: createdAt,
     outcomeProjectedAt: null,
   };
+  usageRejection = null;
+  failureProjectionFails = false;
+  failureProjectionCount = 0;
   requeueCount = 0;
   outcomeProjected = false;
   providerReadFails = false;
@@ -108,6 +123,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
     readonly errorDetail: string;
     readonly certainty: "not_sent" | "unknown";
     readonly ambiguous: boolean;
+    readonly usageLimit?: OrchestrationUsageLimit;
   }) =>
     Effect.sync(() => {
       state = {
@@ -116,6 +132,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
         errorCode: input.errorCode,
         errorDetail: input.errorDetail,
         certainty: input.certainty,
+        ...(input.usageLimit ? { usageLimit: input.usageLimit } : {}),
       };
     }),
   requeue: () =>
@@ -145,12 +162,32 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(ProviderCommandReactor, {
       deliverTurnStart: () =>
-        methodNotFound
-          ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
-          : acceptSend
-            ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
-            : Effect.fail(new Error("session not found after request write")),
-      recordTurnStartFailure: () => Effect.void,
+        usageRejection
+          ? Effect.fail(
+              new ProviderTurnDeliveryError({
+                certainty: "not_sent",
+                retryable: true,
+                detail: "Usage limit reached",
+                usageLimit: usageRejection,
+              }),
+            )
+          : methodNotFound
+            ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
+            : acceptSend
+              ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
+              : Effect.fail(new Error("session not found after request write")),
+      recordTurnStartFailure: () =>
+        Effect.sync(() => {
+          failureProjectionCount += 1;
+        }).pipe(
+          Effect.andThen(
+            Effect.suspend(() =>
+              failureProjectionFails
+                ? Effect.fail(new Error("projection unavailable"))
+                : Effect.void,
+            ),
+          ),
+        ),
     } as never),
   ),
   Layer.provideMerge(
@@ -164,6 +201,15 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(OrchestrationEngineService, {
       streamDomainEvents: Stream.empty,
+      getReadModel: () =>
+        Effect.succeed({
+          threads: [
+            {
+              id: threadId,
+              session: { providerInstanceId: ProviderInstanceId.makeUnsafe("claude-instance") },
+            },
+          ],
+        }),
     } as never),
   ),
 );
@@ -371,4 +417,47 @@ it.effect("Codex method-not-found wrapped by provider delivery is a definite ste
     assert.equal(state.certainty, "not_sent");
     assert.equal(requeueCount, 0);
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "persists a definitely-unsent usage rejection before publication and replays it after projection failure",
+  () =>
+    Effect.gen(function* () {
+      resetDelivery();
+      usageRejection = {
+        windows: [{ id: "five_hour", label: "5-hour", resetsAt: "2026-10-01T03:00:00.000Z" }],
+        resetsAt: "2026-10-01T03:00:00.000Z",
+        resetSource: "provider",
+        evidence: "typed",
+      };
+      failureProjectionFails = true;
+      const worker = yield* ProviderTurnDeliveryWorker;
+      const publication = yield* worker.outcomes.pipe(
+        Stream.take(1),
+        Stream.runForEach((outcome) =>
+          Effect.sync(() => {
+            assert.equal(state.state, "rejected");
+            assert.deepEqual(state.usageLimit, outcome.usageLimit);
+            assert.equal(outcome.usageLimit?.deliveryId, deliveryId);
+            assert.equal(outcome.usageLimit?.turnId, null);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      yield* worker.start;
+      yield* worker.drain;
+      yield* Fiber.join(publication);
+      assert.equal(requeueCount, 0);
+      assert.equal(failureProjectionCount, 1);
+      assert.equal(state.certainty, "not_sent");
+      assert.equal(outcomeProjected, false);
+      const replay = yield* Stream.runHead(worker.outcomes).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* worker.start;
+      const result = yield* Fiber.join(replay);
+      assert.equal(Option.isSome(result), true);
+      if (Option.isSome(result)) assert.deepEqual(result.value.usageLimit, state.usageLimit);
+      assert.equal(requeueCount, 0);
+    }).pipe(Effect.provide(testLayer)),
 );

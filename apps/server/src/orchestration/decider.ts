@@ -1707,7 +1707,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.set": {
-      yield* requireThread({
+      const previous = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1723,7 +1723,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: {
+            ...command.session,
+            usageLimit:
+              command.session.usageLimit !== undefined
+                ? command.session.usageLimit
+                : previous.session?.lastErrorId === command.session.lastErrorId
+                  ? (previous.session?.usageLimit ?? null)
+                  : null,
+          },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),
         },

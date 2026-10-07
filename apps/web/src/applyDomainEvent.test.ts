@@ -609,6 +609,7 @@ describe("applyDomainEvent", () => {
       createdAt: "2026-04-01T09:06:00.000Z",
       updatedAt: "2026-04-01T09:06:00.000Z",
       lastError: "boom",
+      usageLimit: null,
       tokenUsageSource: "provider",
     });
     expect(next.threads[0]?.error).toBe("boom");

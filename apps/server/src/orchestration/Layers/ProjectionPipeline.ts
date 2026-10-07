@@ -1661,6 +1661,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             activeTurnId: event.payload.session.activeTurnId,
             lastError: event.payload.session.lastError,
             lastErrorId: event.payload.session.lastErrorId ?? null,
+            usageLimit: event.payload.session.usageLimit ?? null,
             lastErrorOccurredAt: event.payload.session.lastErrorOccurredAt ?? null,
             lastErrorRetryability: event.payload.session.lastErrorRetryability ?? null,
             estimatedContextTokens:

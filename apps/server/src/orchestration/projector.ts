@@ -1189,6 +1189,7 @@ export function projectEvent(
         );
         const nextSession: OrchestrationSession = {
           ...session,
+          usageLimit: session.usageLimit ?? null,
           ...(session.estimatedContextTokens === undefined &&
           thread.session?.estimatedContextTokens !== undefined
             ? { estimatedContextTokens: thread.session.estimatedContextTokens }

@@ -1,3 +1,4 @@
+import { usageLimitKey } from "./usageLimitResume.ts";
 import type { NextTurnQueueItem, QueueReasonCode } from "@t3tools/contracts";
 
 import type { ProjectionThreadSession } from "../persistence/Services/ProjectionThreadSessions.ts";
@@ -36,6 +37,10 @@ export function resolveNextTurnQueueGate(input: {
   readonly worktreeExists: boolean | null;
   readonly worktreeSetup?: WorktreeSetupGateState | undefined;
   readonly nowMs?: number | undefined;
+  readonly scheduleLimitKey?: string | null | undefined;
+  readonly scheduleProviderInstanceId?: string | null | undefined;
+  readonly usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null | undefined;
+  readonly providerContextChanged?: boolean | undefined;
 }): NextTurnQueueGate {
   if (input.thread === null || input.thread.deletedAt !== null) {
     return { kind: "drop", reasonCode: "thread_deleted" };
@@ -68,6 +73,19 @@ export function resolveNextTurnQueueGate(input: {
     };
   }
   if (
+    input.item.scheduleReason === "usage_limit_reset" &&
+    (input.providerContextChanged ||
+      (input.scheduleProviderInstanceId &&
+        input.scheduleProviderInstanceId !== input.session?.providerInstanceId))
+  )
+    return { kind: "autoPause", reasonCode: "usage_limit_context_changed" };
+  if (
+    !(
+      input.item.scheduleReason === "usage_limit_reset" &&
+      input.scheduleLimitKey &&
+      usageLimitKey({ usageLimit: input.usageLimit ?? input.session?.usageLimit }) ===
+        input.scheduleLimitKey
+    ) &&
     input.session !== null &&
     (input.session.status === "error" || input.session.lastError !== null) &&
     isNewerThan(input.session.updatedAt, input.state.resumedAt)
@@ -93,7 +111,13 @@ export function resolveNextTurnQueueGate(input: {
     input.item.notBefore !== null &&
     Date.parse(input.item.notBefore) > (input.nowMs ?? Date.now())
   ) {
-    return { kind: "wait", reasonCode: "delivery_retrying" };
+    return {
+      kind: "wait",
+      reasonCode:
+        input.item.scheduleReason === "usage_limit_reset" && input.item.attemptCount === 0
+          ? "usage_limit_reset"
+          : "delivery_retrying",
+    };
   }
   if (input.automaticCompaction) {
     return { kind: "wait", reasonCode: "thread_compacting" };

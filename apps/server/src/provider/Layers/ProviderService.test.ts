@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings";
 import { beginAccountChange } from "../../profiles/ProviderAccountGuard.ts";
 import fs from "node:fs";
 import os from "node:os";
@@ -2117,3 +2118,71 @@ it.effect("uses the admitted binding without rereading routing during send", () 
     }
   }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", fake.adapter]]))));
 });
+
+it.effect("does not mark an accepted running usage recovery for another restart continuation", () =>
+  Effect.gen(function* () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-recovery-restart-"));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => fs.rmSync(tempDir, { recursive: true, force: true })),
+    );
+    const persistence = makeSqlitePersistenceLive(path.join(tempDir, "state.sqlite"));
+    const repository = ProviderSessionRuntimeRepositoryLive.pipe(Layer.provide(persistence));
+    const directory = ProviderSessionDirectoryLive.pipe(Layer.provide(repository));
+    const codex = makeFakeCodexAdapter();
+    const listReadySessions = codex.listSessions.getMockImplementation()!;
+    codex.listSessions.mockImplementation(() =>
+      listReadySessions().pipe(
+        Effect.map((sessions) =>
+          sessions.map((session) => ({
+            ...session,
+            status: "running" as const,
+            activeTurnId: asTurnId(`turn-${session.threadId}`),
+          })),
+        ),
+      ),
+    );
+
+    const registry = makeAdapterRegistryMock({ codex: codex.adapter });
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directory),
+      Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(ServerSettingsService.layerTest({ resumeActiveTurnsAfterRestart: true })),
+      Layer.provideMerge(persistence),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-10-01T00:00:00Z";
+      for (const id of ["recovering", "ordinary"]) {
+        const threadId = asThreadId(id);
+        yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model, created_at, last_interaction_at, updated_at) VALUES (${id}, 'project', ${id}, 'gpt-5', ${at}, ${at}, ${at})`;
+        yield* service.startSession(threadId, {
+          provider: "codex",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          threadId,
+        });
+        const turn = yield* service.sendTurn({ threadId, input: "continue", attachments: [] });
+        const pendingMessageId =
+          id === "recovering" ? `usage-resume:${id}:instance:codex:turn:limited` : "user-message";
+        yield* sql`INSERT INTO projection_turns (thread_id, turn_id, pending_message_id, state, requested_at, started_at, checkpoint_files_json) VALUES (${id}, ${turn.turnId}, ${pendingMessageId}, 'running', ${at}, ${at}, '[]')`;
+      }
+      const sessions = yield* service.listSessions();
+      assert.equal(sessions.filter((session) => session.activeTurnId !== undefined).length, 2);
+    }).pipe(Effect.provide(providerLayer));
+    // Disposing the production provider layer runs markRestartTurns before shutdown.
+    const markers = yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      return yield* sql<{
+        readonly thread_id: string;
+      }>`SELECT thread_id FROM restart_turn_markers ORDER BY thread_id`;
+    }).pipe(Effect.provide(persistence));
+    assert.deepEqual(
+      markers.map((row) => row.thread_id),
+      ["ordinary"],
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

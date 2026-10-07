@@ -400,6 +400,14 @@ const make = Effect.gen(function* () {
   const redeem = yield* makeResetCreditCoordinator;
   const registry = yield* ProviderInstanceRegistry;
   const permits = yield* Semaphore.make(2);
+  const refreshAccount: UsageServiceShape["refreshAccount"] = (instanceId) =>
+    Effect.gen(function* () {
+      const instance = yield* registry.getInstance(instanceId);
+      const capability = instance?.accountUsage;
+      if (!instance?.enabled || !capability) return { snapshot: null, fresh: false };
+      if (capability.refreshAccount) return yield* capability.refreshAccount(permits);
+      return { snapshot: yield* capability.getSnapshot, fresh: false };
+    });
   const consumeResetCredit: UsageServiceShape["consumeResetCredit"] = (input) =>
     Effect.gen(function* () {
       const instance = yield* registry.getInstance(input.providerInstanceId);
@@ -412,7 +420,9 @@ const make = Effect.gen(function* () {
         (key) => instance.consumeResetCredit!(key),
         instance.resetCreditIdentity,
       );
-      if (instance.accountUsage) yield* instance.accountUsage.refresh("force", permits);
+      // The redemption route owns the awaited refresh and uses its freshness
+      // result to update scheduled resumes. Refreshing here would discard that
+      // result and throttle the route's refresh immediately afterward.
       return result;
     });
   const getAccounts: UsageServiceShape["getAccounts"] = (request) =>
@@ -497,7 +507,12 @@ const make = Effect.gen(function* () {
       });
     });
 
-  return { getSummary, getAccounts, consumeResetCredit } satisfies UsageServiceShape;
+  return {
+    getSummary,
+    getAccounts,
+    consumeResetCredit,
+    refreshAccount,
+  } satisfies UsageServiceShape;
 });
 
 export const UsageServiceLive = Layer.effect(UsageService, make).pipe(

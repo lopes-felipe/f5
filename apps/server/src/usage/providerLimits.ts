@@ -10,13 +10,8 @@ import type {
   AccountUsageSection,
 } from "@t3tools/contracts";
 import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
-import { asRecord, asNonNegativeNumber, asTrimmedString } from "./accountUsageJson.ts";
+import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
 
-function resetDate(value: unknown): string | null {
-  if (typeof value !== "string" && typeof value !== "number") return null;
-  const time = typeof value === "number" ? value : Date.parse(value);
-  return Number.isFinite(time) && Math.abs(time) < 8.64e15 ? new Date(time).toISOString() : null;
-}
 export function normalizeProviderLimits(
   provider: ProviderKind,
   value: unknown,

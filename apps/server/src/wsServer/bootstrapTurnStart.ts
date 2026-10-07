@@ -15,6 +15,7 @@ import {
   OrchestrationListenerCallbackError,
   OrchestrationProjectorDecodeError,
   ThreadTurnAlreadyActiveError,
+  ThreadTurnNotReadyError,
 } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -184,6 +185,7 @@ function withAppendedCleanupDetail(
       detail: `${error.detail ?? ""}${suffix}`,
     });
   }
+  if (Schema.is(ThreadTurnNotReadyError)(error)) return new ThreadTurnNotReadyError({ ...error });
   if (Schema.is(ThreadTurnAlreadyActiveError)(error)) {
     return new ThreadTurnAlreadyActiveError({ ...error });
   }

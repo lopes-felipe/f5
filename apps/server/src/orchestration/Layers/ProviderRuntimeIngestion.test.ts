@@ -1,4 +1,5 @@
 import { ServerSettingsService } from "../../serverSettings";
+import { UsageService, type UsageServiceShape } from "../../usage/Services/UsageService.ts";
 import { RuntimeRequestId } from "@t3tools/contracts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
@@ -22,10 +23,21 @@ import {
   OrchestrationFileChangeId,
   ProjectId,
   ProviderItemId,
+  ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Exit, Layer, ManagedRuntime, Option, PubSub, Scope, Stream } from "effect";
+import {
+  Deferred,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  PubSub,
+  Scope,
+  Stream,
+} from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 
@@ -42,6 +54,10 @@ import {
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
+import {
+  makeTurnCompletedSessionSetCommand,
+  toOrchestrationUsageLimit,
+} from "../providerTerminalLifecycle.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
@@ -226,6 +242,7 @@ describe("ProviderRuntimeIngestion", () => {
 
   async function createHarness(options?: {
     readonly startIngestion?: boolean;
+    readonly refreshAccount?: UsageServiceShape["refreshAccount"];
     readonly settings?: Partial<import("@t3tools/contracts").ServerSettings>;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
@@ -246,6 +263,16 @@ describe("ProviderRuntimeIngestion", () => {
     );
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provide(ServerSettingsService.layerTest(options?.settings)),
+      Layer.provide(
+        options?.refreshAccount
+          ? Layer.succeed(UsageService, {
+              refreshAccount: options.refreshAccount,
+              consumeResetCredit: () => Effect.die("unused"),
+              getAccounts: () => Effect.succeed([]),
+              getSummary: () => Effect.die("unused"),
+            })
+          : Layer.empty,
+      ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(
         ThreadCommandExecutionQueryLive.pipe(
@@ -372,6 +399,330 @@ describe("ProviderRuntimeIngestion", () => {
       workspaceRoot,
     };
   }
+
+  it("never infers the failed provider instance from the current composer selection", async () => {
+    const harness = await createHarness();
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const original = readModel.threads[0]!;
+    const composerInstance = ProviderInstanceId.makeUnsafe("composer-provider");
+    const thread = {
+      ...original,
+      modelSelection: { instanceId: composerInstance, model: "other-model" },
+    };
+    const usageLimit = {
+      windows: [],
+      resetsAt: null,
+      resetSource: null,
+      evidence: "typed" as const,
+    };
+    const event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }> = {
+      type: "turn.completed",
+      eventId: asEventId("missing-instance"),
+      provider: "codex",
+      threadId: thread.id,
+      turnId: asTurnId("failed-turn"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "failed", errorMessage: "usage limit reached", usageLimit },
+    };
+    expect(toOrchestrationUsageLimit(usageLimit, event, thread)).toBeNull();
+    expect(
+      makeTurnCompletedSessionSetCommand({ event, thread }).session.providerInstanceId,
+    ).toBeNull();
+    const actualInstance = ProviderInstanceId.makeUnsafe("actual-provider");
+    expect(
+      toOrchestrationUsageLimit(
+        usageLimit,
+        { ...event, providerInstanceId: actualInstance },
+        thread,
+      )?.providerInstanceId,
+    ).toBe(actualInstance);
+  });
+
+  it("retains an immediate refresh result when the failed terminal report arrives later", async () => {
+    const instance = ProviderInstanceId.makeUnsafe("claude-test");
+    let refreshes = 0;
+    const harness = await createHarness({
+      refreshAccount: () =>
+        Effect.sync(() => {
+          refreshes++;
+          return {
+            fresh: true,
+            snapshot: {
+              key: "claude:test",
+              provider: "claudeAgent" as const,
+              providerInstanceId: instance,
+              displayName: "Claude",
+              enabled: true,
+              refreshState: "idle" as const,
+              sections: [
+                {
+                  kind: "claude-usage" as const,
+                  outcome: "available" as const,
+                  lastAttemptAt: "2026-10-01T00:00:01Z",
+                  errorCode: null,
+                  snapshot: {
+                    fetchedAt: "2026-10-01T00:00:01Z",
+                    data: {
+                      subscriptionLabel: "Max",
+                      limitsAvailable: true,
+                      extraUsage: null,
+                      windows: [
+                        {
+                          key: "five_hour",
+                          label: "5-hour",
+                          utilization: 100,
+                          resetsAt: "2026-10-01T03:00:00Z",
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          };
+        }),
+    });
+    const usageLimit = {
+      windows: [{ id: "five_hour", label: "5-hour", resetsAt: null }],
+      resetsAt: null,
+      resetSource: "provider",
+      evidence: "typed",
+    };
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("fast-limit-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: "2026-10-01T00:00:00Z",
+      payload: { message: "usage limit reached", usageLimit },
+    });
+    const failed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.usageLimit?.resetsAt === "2026-10-01T03:00:00Z",
+    );
+    expect(failed.session?.activeTurnId).toBe("limited-turn");
+    expect(failed.session?.lastErrorId).toBe("fast-limit-error");
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("fast-limit-terminal"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: "2026-10-01T00:00:00Z",
+      payload: { state: "failed", errorMessage: "usage limit reached", usageLimit },
+    });
+    const terminal = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.lastErrorId === "fast-limit-terminal",
+    );
+    expect(terminal.session?.activeTurnId).toBeNull();
+    expect(terminal.session?.usageLimit?.resetsAt).toBe("2026-10-01T03:00:00Z");
+    expect(refreshes).toBe(1);
+  });
+
+  it.each([false, true])(
+    "refreshes a failed limit in the background and preserves newer sessions (resolved=%s)",
+    async (resolveBeforeNextTurn) => {
+      const release = Effect.runSync(
+        Deferred.make<Awaited<Effect.Success<ReturnType<UsageServiceShape["refreshAccount"]>>>>(),
+      );
+      let refreshes = 0;
+      const harness = await createHarness({
+        settings: { enableAssistantStreaming: true },
+        refreshAccount: () =>
+          Effect.sync(() => {
+            refreshes++;
+          }).pipe(Effect.andThen(Deferred.await(release))),
+      });
+      const at = "2026-10-01T00:00:00Z";
+      const instance = ProviderInstanceId.makeUnsafe("claude-test");
+      const limit = {
+        windows: [{ id: "five_hour", label: "5-hour", resetsAt: null }],
+        resetsAt: null,
+        resetSource: "provider",
+        evidence: "typed",
+      };
+      harness.emit({
+        type: "runtime.error",
+        eventId: asEventId("limit-error"),
+        provider: "claudeAgent",
+        providerInstanceId: instance,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("limited-turn"),
+        createdAt: at,
+        payload: { message: "usage limit reached", usageLimit: limit },
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.usageLimit?.turnId === "limited-turn",
+      );
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("limit-terminal"),
+        provider: "claudeAgent",
+        providerInstanceId: instance,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("limited-turn"),
+        createdAt: at,
+        payload: { state: "failed", errorMessage: "usage limit reached", usageLimit: limit },
+      });
+      // The serial worker must settle the terminal report while the refresh is held open.
+      await waitForThread(
+        harness.engine,
+        (thread) =>
+          thread.session?.lastErrorId === "limit-terminal" && thread.session.activeTurnId === null,
+      );
+      const createSecondThread = harness.engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("second-thread"),
+        threadId: asThreadId("thread-2"),
+        projectId: asProjectId("project-1"),
+        title: "Second",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: at,
+      });
+      await Effect.runPromise(createSecondThread);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("second-requested"),
+          threadId: asThreadId("thread-2"),
+          message: {
+            messageId: asMessageId("second-request"),
+            role: "user",
+            text: "Continue streaming",
+            attachments: [],
+          },
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          assistantDeliveryMode: "streaming",
+          createdAt: at,
+        }),
+      );
+      await harness.drain();
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("second-started"),
+        provider: "codex",
+        threadId: asThreadId("thread-2"),
+        turnId: asTurnId("second-turn"),
+        createdAt: at,
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.activeTurnId === "second-turn",
+        2000,
+        asThreadId("thread-2"),
+      );
+      harness.emit({
+        type: "content.delta",
+        eventId: asEventId("second-streamed"),
+        provider: "codex",
+        threadId: asThreadId("thread-2"),
+        turnId: asTurnId("second-turn"),
+        createdAt: at,
+        itemId: asItemId("second-message"),
+        payload: { streamKind: "assistant_text", delta: "Streaming continues" },
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.messages.some((message) => message.text === "Streaming continues"),
+        2000,
+        asThreadId("thread-2"),
+      );
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId("second-completed"),
+        provider: "codex",
+        threadId: asThreadId("thread-2"),
+        turnId: asTurnId("second-turn"),
+        createdAt: at,
+        payload: { state: "completed" },
+      });
+      await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "ready",
+        2000,
+        asThreadId("thread-2"),
+      );
+      if (!resolveBeforeNextTurn) {
+        harness.emit({
+          type: "turn.started",
+          eventId: asEventId("new-started"),
+          provider: "claudeAgent",
+          providerInstanceId: instance,
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("new-turn"),
+          createdAt: at,
+        });
+        await waitForThread(
+          harness.engine,
+          (thread) => thread.session?.activeTurnId === "new-turn",
+        );
+      }
+      await Effect.runPromise(
+        Deferred.succeed(release, {
+          fresh: true,
+          snapshot: {
+            key: "claude:test",
+            provider: "claudeAgent",
+            providerInstanceId: instance,
+            displayName: "Claude",
+            enabled: true,
+            refreshState: "idle",
+            sections: [
+              {
+                kind: "claude-usage",
+                outcome: "available",
+                lastAttemptAt: "2026-10-01T00:00:01Z",
+                errorCode: null,
+                snapshot: {
+                  fetchedAt: "2026-10-01T00:00:01Z",
+                  data: {
+                    subscriptionLabel: "Max",
+                    limitsAvailable: true,
+                    extraUsage: null,
+                    windows: [
+                      {
+                        key: "five_hour",
+                        label: "5-hour",
+                        utilization: 100,
+                        resetsAt: "2026-10-01T03:00:00Z",
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      );
+      if (resolveBeforeNextTurn) {
+        const thread = await waitForThread(
+          harness.engine,
+          (thread) => thread.session?.usageLimit?.resetsAt === "2026-10-01T03:00:00Z",
+        );
+        expect(thread.session?.lastErrorId).toBe("limit-terminal");
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await harness.drain();
+        const thread = await waitForThread(
+          harness.engine,
+          (thread) => thread.session?.activeTurnId === "new-turn",
+        );
+        expect(thread.session?.usageLimit?.resetsAt).toBeNull();
+        expect(thread.session?.status).toBe("running");
+      }
+      expect(refreshes).toBe(1);
+    },
+  );
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

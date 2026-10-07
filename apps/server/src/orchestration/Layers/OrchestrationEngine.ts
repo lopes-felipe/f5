@@ -30,6 +30,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import {
   OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
+  ThreadTurnNotReadyError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
 } from "../Errors.ts";
@@ -224,11 +225,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               envelope.command.type === "thread.conversation.revert" &&
               active[0]?.operationId === envelope.command.operationId
             )
-          )
+          ) {
+            if (
+              envelope.command.type === "thread.turn.start" &&
+              envelope.command.dispatchSource === "next-turn-queue"
+            )
+              return yield* new ThreadTurnNotReadyError({
+                threadId: envelope.command.threadId,
+                detail: "A conversation rewind is awaiting completion or reconciliation.",
+              });
             return yield* new OrchestrationCommandInvariantError({
               commandType: envelope.command.type,
               detail: "A conversation rewind is awaiting completion or reconciliation.",
             });
+          }
         }
         if (envelope.command.type === "thread.conversation.revert") {
           const command = envelope.command;

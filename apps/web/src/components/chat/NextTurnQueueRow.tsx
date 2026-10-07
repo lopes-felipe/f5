@@ -25,7 +25,7 @@ import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { SkillInlineChip } from "./SkillInlineChip";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
-import { buildQueueRowDisplay } from "./NextTurnQueuePanel.logic";
+import { buildQueueRowDisplay, USAGE_LIMIT_RESUME_LABEL } from "./NextTurnQueuePanel.logic";
 import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 
 export function NextTurnQueueRow({
@@ -86,10 +86,32 @@ export function NextTurnQueueRow({
   }, [editing]);
 
   useEffect(() => {
-    if (item.notBefore === null || Date.parse(item.notBefore) <= nowMs) return;
-    const interval = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    if (!item.notBefore) return;
+    const deadline = Date.parse(item.notBefore);
+    if (!Number.isFinite(deadline) || deadline <= Date.now()) {
+      setNowMs(Date.now());
+      return;
+    }
+    if (item.scheduleReason === "usage_limit_reset" && item.attemptCount === 0) {
+      let timeout: number;
+      const arm = () => {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          setNowMs(Date.now());
+          return;
+        }
+        timeout = window.setTimeout(arm, Math.min(remaining, 86_400_000));
+      };
+      arm();
+      return () => window.clearTimeout(timeout);
+    }
+    const interval = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+      if (now >= deadline) window.clearInterval(interval);
+    }, 1_000);
     return () => window.clearInterval(interval);
-  }, [item.notBefore, nowMs]);
+  }, [item.notBefore, item.scheduleReason, item.attemptCount]);
 
   const retrySeconds =
     item.notBefore === null
@@ -100,7 +122,9 @@ export function NextTurnQueueRow({
     item.status === "dispatching"
       ? "Sending this turn now."
       : retrySeconds > 0
-        ? `Retrying in ${retrySeconds}s`
+        ? item.scheduleReason === "usage_limit_reset" && item.attemptCount === 0
+          ? `${USAGE_LIMIT_RESUME_LABEL} · ${new Date(item.notBefore!).toLocaleString()}`
+          : `Retrying in ${retrySeconds}s`
         : item.status === "failed"
           ? (item.lastErrorDetail ?? "Delivery failed")
           : index === 0
@@ -116,7 +140,7 @@ export function NextTurnQueueRow({
       }}
       className={`rounded-lg border border-border/55 bg-background/55 p-2 ${sortable.isDragging ? "z-20 opacity-70" : ""}`}
       tabIndex={0}
-      aria-label={`Queued turn ${index + 1}: ${continuation ? "Resuming after restart" : display.label || "Empty turn"}`}
+      aria-label={`Queued turn ${index + 1}: ${item.scheduleReason === "usage_limit_reset" ? USAGE_LIMIT_RESUME_LABEL : continuation ? "Resuming after restart" : display.label || "Empty turn"}`}
       aria-describedby="next-turn-queue-reorder-help"
       onKeyDown={(event) => {
         if (!event.altKey || disabled) return;
@@ -361,7 +385,7 @@ export function NextTurnQueueRow({
               type="button"
               variant="ghost"
               size="icon-xs"
-              disabled={disabled || continuation}
+              disabled={disabled || (continuation && item.scheduleReason !== "usage_limit_reset")}
               aria-label="Cancel queued turn"
               onClick={() => void onCancel(item)}
             >

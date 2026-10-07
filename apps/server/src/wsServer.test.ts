@@ -109,6 +109,10 @@ import {
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
+import {
+  makeAccountUsageCapability,
+  emptyAccountSection,
+} from "./usage/Layers/AccountUsageService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import {
   makePreviewAutomationBroker,
@@ -830,6 +834,7 @@ describe("WebSocket Server", () => {
       stateDir?: string;
       staticDir?: string;
       providerLayer?: Layer.Layer<ProviderService, never>;
+      providerInstanceRegistryLayer?: Layer.Layer<ProviderInstanceRegistry, never>;
       providerHealth?: ProviderHealthShape;
       harnessValidation?: HarnessValidationShape;
       open?: OpenShape;
@@ -847,8 +852,11 @@ describe("WebSocket Server", () => {
     const stateDir = options.stateDir ?? makeTempDir("t3code-ws-state-");
     const scope = await Effect.runPromise(Scope.make("sequential"));
     const persistenceLayer = options.persistenceLayer ?? SqlitePersistenceMemory;
-    const providerLayer = makeProviderRuntimeTestLayer(
-      options.providerLayer ?? Layer.succeed(ProviderService, defaultProviderService),
+    const providerLayer = Layer.merge(
+      makeProviderRuntimeTestLayer(
+        options.providerLayer ?? Layer.succeed(ProviderService, defaultProviderService),
+      ),
+      options.providerInstanceRegistryLayer ?? Layer.empty,
     );
     const providerHealthLayer = Layer.succeed(
       ProviderHealth,
@@ -1008,6 +1016,97 @@ describe("WebSocket Server", () => {
     expect(refreshedAccounts.error).toBeUndefined();
     expect(refreshedAccounts.result).toEqual([]);
     expect(response.result).not.toHaveProperty("codexAccount");
+  });
+
+  it("refreshes once after reset-credit redemption with the real account throttle", async () => {
+    const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent-credit-test");
+    let refreshCalls = 0;
+    let probeCalls = 0;
+    const registryLayer = Layer.effect(
+      ProviderInstanceRegistry,
+      Effect.gen(function* () {
+        const capability = yield* makeAccountUsageCapability(
+          {
+            key: instanceId,
+            provider: "claudeAgent",
+            providerInstanceId: instanceId,
+            displayName: "Credit test",
+            enabled: true,
+            refreshState: "idle",
+            sections: [emptyAccountSection("claude-usage")],
+          },
+          Effect.sync(() => {
+            probeCalls++;
+            const fetchedAt = new Date().toISOString();
+            return [
+              {
+                kind: "claude-usage" as const,
+                outcome: "available" as const,
+                lastAttemptAt: fetchedAt,
+                errorCode: null,
+                snapshot: {
+                  fetchedAt,
+                  data: {
+                    subscriptionLabel: "Max",
+                    limitsAvailable: true,
+                    windows: [],
+                    extraUsage: null,
+                  },
+                },
+              },
+            ];
+          }),
+        );
+        const instance = {
+          instanceId,
+          driverKind: ProviderDriverKind.make("claudeAgent"),
+          continuationIdentity: {
+            driverKind: ProviderDriverKind.make("claudeAgent"),
+            continuationKey: instanceId,
+          },
+          displayName: undefined,
+          snapshot: {
+            getSnapshot: Effect.succeed(defaultProviderSnapshots[0]!),
+            refresh: Effect.succeed(defaultProviderSnapshots[0]!),
+            streamChanges: Stream.empty,
+          },
+          adapter: {} as ProviderInstance["adapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+          enabled: true,
+          consumeResetCredit: () => Effect.succeed({ outcome: "reset" as const }),
+          accountUsage: {
+            ...capability,
+            refreshAccount: (permits) => {
+              refreshCalls++;
+              return capability.refreshAccount!(permits);
+            },
+          },
+        } as ProviderInstance;
+        return {
+          getInstance: (id) => Effect.succeed(id === instanceId ? instance : undefined),
+          listInstances: Effect.succeed([instance]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+            Effect.flatMap(PubSub.subscribe),
+          ),
+        };
+      }),
+    );
+    server = await createTestServer({ providerInstanceRegistryLayer: registryLayer });
+    const address = server.address();
+    const [ws] = await connectAndAwaitWelcome(
+      typeof address === "object" && address ? address.port : 0,
+    );
+    connections.push(ws);
+    const response = await sendRequest(ws, USAGE_WS_METHODS.consumeResetCredit, {
+      providerInstanceId: instanceId,
+      idempotencyKey: "credit-route-test",
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({ outcome: "reset" });
+    expect(refreshCalls).toBe(1);
+    expect(probeCalls).toBe(1);
   });
 
   it("writes rpc and websocket observability records when enabled", async () => {
@@ -1530,6 +1629,7 @@ describe("WebSocket Server", () => {
         }),
         Layer.succeed(usageServiceModule.UsageService, {
           consumeResetCredit: () => Effect.die("unused reset credit"),
+          refreshAccount: () => Effect.succeed({ snapshot: null, fresh: false }),
           getSummary: () => Effect.die("unused usage summary"),
           getAccounts: () => Effect.succeed([]),
         }),
@@ -1799,6 +1899,7 @@ describe("WebSocket Server", () => {
         }),
         Layer.succeed(usageServiceModule.UsageService, {
           consumeResetCredit: () => Effect.die("unused reset credit"),
+          refreshAccount: () => Effect.succeed({ snapshot: null, fresh: false }),
           getSummary: () => Effect.die("unused usage summary"),
           getAccounts: () => Effect.succeed([]),
         }),
@@ -3998,6 +4099,58 @@ describe("WebSocket Server", () => {
   });
 
   it("keeps orchestration domain push behavior for provider runtime events", async () => {
+    let targetedRefreshCalls = 0;
+    const usageInstanceId = defaultInstanceIdForDriver(ProviderDriverKind.make("codex"));
+    const usageRegistryLayer = Layer.effect(
+      ProviderInstanceRegistry,
+      Effect.gen(function* () {
+        const capability = yield* makeAccountUsageCapability(
+          {
+            key: usageInstanceId,
+            provider: "codex",
+            providerInstanceId: usageInstanceId,
+            displayName: "Codex",
+            enabled: true,
+            refreshState: "idle",
+            sections: [emptyAccountSection("codex-limits")],
+          },
+          Effect.succeed([]),
+        );
+        const instance = {
+          instanceId: usageInstanceId,
+          enabled: true,
+          driverKind: ProviderDriverKind.make("codex"),
+          continuationIdentity: {
+            driverKind: ProviderDriverKind.make("codex"),
+            continuationKey: usageInstanceId,
+          },
+          displayName: undefined,
+          snapshot: {
+            getSnapshot: Effect.succeed(defaultProviderSnapshots[0]!),
+            refresh: Effect.succeed(defaultProviderSnapshots[0]!),
+            streamChanges: Stream.empty,
+          },
+          adapter: {} as ProviderInstance["adapter"],
+          textGeneration: {} as ProviderInstance["textGeneration"],
+          accountUsage: {
+            ...capability,
+            refreshAccount: (permits) => {
+              targetedRefreshCalls++;
+              return capability.refreshAccount!(permits);
+            },
+          },
+        } as ProviderInstance;
+        return {
+          getInstance: (id) => Effect.succeed(id === usageInstanceId ? instance : undefined),
+          listInstances: Effect.succeed([instance]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+            Effect.flatMap(PubSub.subscribe),
+          ),
+        };
+      }),
+    );
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     const emitRuntimeEvent = (event: ProviderRuntimeEvent) => {
       Effect.runSync(PubSub.publish(runtimeEventPubSub, event));
@@ -4033,9 +4186,16 @@ describe("WebSocket Server", () => {
     };
     const providerLayer = Layer.succeed(ProviderService, providerService);
 
+    const usageStateDir = makeTempDir("t3code-ws-usage-recovery-");
+    const usageDbPath = path.join(usageStateDir, "state.sqlite");
     server = await createTestServer({
       cwd: "/test",
       providerLayer,
+      providerInstanceRegistryLayer: usageRegistryLayer,
+      stateDir: usageStateDir,
+      persistenceLayer: makeSqlitePersistenceLive(usageDbPath).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
     });
     const addr = server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
@@ -4124,6 +4284,135 @@ describe("WebSocket Server", () => {
     expect(domainEvent.type).toBe("thread.message-sent");
     expect(domainEvent.payload.messageId).toBe("assistant:item-1");
     expect(domainEvent.payload.text).toBe("hello from runtime");
+
+    // Exercise both optional consumers through the production runtime layer,
+    // rather than supplying UsageService directly to isolated test layers.
+    emitRuntimeEvent({
+      type: "runtime.error",
+      eventId: asEventId("evt-usage-composition"),
+      provider: "codex",
+      providerInstanceId: usageInstanceId,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("provider-turn-1"),
+      createdAt: new Date().toISOString(),
+      payload: {
+        message: "Usage limit reached",
+        usageLimit: { windows: [], resetsAt: null, resetSource: null, evidence: "typed" },
+      },
+    });
+    await vi.waitFor(() => expect(targetedRefreshCalls).toBeGreaterThan(0));
+    const refreshCallsBeforeRoute = targetedRefreshCalls;
+    const refreshed = await sendRequest(ws, WS_METHODS.nextTurnQueueRefreshUsageLimitResume, {
+      threadId: "thread-1",
+      expectedLimitKey: `instance:${usageInstanceId}:turn:provider-turn-1`,
+    });
+    expect(refreshed.error).toBeUndefined();
+    expect(targetedRefreshCalls).toBeGreaterThan(refreshCallsBeforeRoute);
+
+    emitRuntimeEvent({
+      type: "turn.completed",
+      eventId: asEventId("evt-usage-terminal"),
+      provider: "codex",
+      providerInstanceId: usageInstanceId,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("provider-turn-1"),
+      createdAt: new Date().toISOString(),
+      payload: {
+        state: "failed",
+        errorMessage: "Usage limit reached",
+        usageLimit: {
+          windows: [],
+          resetsAt: null,
+          resetSource: null,
+          evidence: "typed",
+        },
+      },
+    });
+    await vi.waitFor(async () => {
+      const model = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+      const thread = (model.result as OrchestrationReadModel).threads.find(
+        (entry) => entry.id === "thread-1",
+      );
+      expect(thread?.session?.activeTurnId).toBeNull();
+      expect(thread?.session?.usageLimit?.turnId).toBe("provider-turn-1");
+    });
+    const stale = await sendRequest(ws, WS_METHODS.nextTurnQueueScheduleUsageLimitResume, {
+      threadId: "thread-1",
+      expectedLimitKey: "instance:other:turn:old",
+      notBefore: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    expect(stale.error?.message).toMatch(/changed|stale/i);
+    const scheduled = await sendRequest(ws, WS_METHODS.nextTurnQueueScheduleUsageLimitResume, {
+      threadId: "thread-1",
+      expectedLimitKey: `instance:${usageInstanceId}:turn:provider-turn-1`,
+      notBefore: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    expect(scheduled.error).toBeUndefined();
+    const scheduledSnapshot = scheduled.result as {
+      revision: number;
+      items: Array<{ itemId: string; scheduleReason?: string }>;
+    };
+    const recoveryItem = scheduledSnapshot.items.find(
+      (item) => item.scheduleReason === "usage_limit_reset",
+    )!;
+    // Hold the durable row in the acceptance state to exercise the route's
+    // typed race result without sending a real provider turn.
+    const usageDb = new DatabaseSync(usageDbPath);
+    try {
+      usageDb
+        .prepare("UPDATE next_turn_queue SET status = 'dispatching' WHERE item_id = ?")
+        .run(recoveryItem.itemId);
+      const cancelSending = await sendRequest(ws, WS_METHODS.nextTurnQueueCancelUsageLimitResume, {
+        threadId: "thread-1",
+        itemId: recoveryItem.itemId,
+        expectedRevision: scheduledSnapshot.revision,
+      });
+      expect(cancelSending.error).toBeUndefined();
+      expect(cancelSending.result).toEqual(expect.objectContaining({ kind: "already_sending" }));
+    } finally {
+      usageDb
+        .prepare("UPDATE next_turn_queue SET status = 'queued' WHERE item_id = ?")
+        .run(recoveryItem.itemId);
+      usageDb.close();
+    }
+    const command = (id: string) => ({
+      type: "thread.turn.start",
+      commandId: `cmd-${id}`,
+      threadId: "thread-1",
+      message: { messageId: `msg-${id}`, role: "user", text: "follow up", attachments: [] },
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      createdAt: new Date().toISOString(),
+    });
+    const tail = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      submissionId: "usage-tail",
+      intent: "queue-tail",
+      command: command("usage-tail"),
+    });
+    expect(tail.error).toBeUndefined();
+    const queueAfterTail = await sendRequest(ws, WS_METHODS.nextTurnQueueList, {
+      threadId: "thread-1",
+    });
+    expect(
+      (queueAfterTail.result as { items: Array<{ scheduleReason?: string }> }).items.some(
+        (item) => item.scheduleReason === "usage_limit_reset",
+      ),
+    ).toBe(true);
+    const immediate = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      submissionId: "usage-immediate",
+      intent: "auto",
+      command: command("usage-immediate"),
+    });
+    expect(immediate.error).toBeUndefined();
+    const queueAfterImmediate = await sendRequest(ws, WS_METHODS.nextTurnQueueList, {
+      threadId: "thread-1",
+    });
+    expect(
+      (queueAfterImmediate.result as { items: Array<{ scheduleReason?: string }> }).items.some(
+        (item) => item.scheduleReason === "usage_limit_reset",
+      ),
+    ).toBe(false);
   });
 
   it("routes terminal RPC methods and broadcasts terminal events", async () => {

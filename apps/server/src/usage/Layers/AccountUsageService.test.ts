@@ -1,6 +1,6 @@
 import { it, expect } from "@effect/vitest";
 import { TestClock } from "effect/testing";
-import { Effect, Deferred, Ref, Scope, Exit, Fiber } from "effect";
+import { Effect, Deferred, Ref, Scope, Exit, Fiber, Clock } from "effect";
 import * as Semaphore from "effect/Semaphore";
 import type { UsageAccount, AccountUsageSection } from "@t3tools/contracts";
 import { makeAccountUsageCapability, emptyAccountSection } from "./AccountUsageService.ts";
@@ -287,4 +287,79 @@ it.effect("sanitizes defects and clears refresh state", () =>
     });
     yield* permits.withPermits(1)(Effect.void);
   }).pipe(Effect.scoped),
+);
+
+it.effect("awaited refreshes join the asynchronous probe and survive caller cancellation", () =>
+  Effect.gen(function* () {
+    const calls = yield* Ref.make(0);
+    const release = yield* Deferred.make<void>();
+    const permits = yield* Semaphore.make(2);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Effect.gen(function* () {
+        yield* Ref.update(calls, (n) => n + 1);
+        yield* Deferred.await(release);
+        const fetchedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        return sections.map(
+          (section) =>
+            ({
+              ...section,
+              lastAttemptAt: fetchedAt,
+              snapshot: section.snapshot ? { ...section.snapshot, fetchedAt } : null,
+            }) as AccountUsageSection,
+        );
+      }),
+    );
+    yield* capability.refresh("force", permits);
+    const cancelled = yield* capability.refreshAccount!(permits).pipe(Effect.forkChild);
+    const waiting = yield* capability.refreshAccount!(permits).pipe(Effect.forkChild);
+    yield* settle;
+    yield* Fiber.interrupt(cancelled);
+    expect(yield* Ref.get(calls)).toBe(1);
+    yield* TestClock.adjust("1 second");
+    yield* Deferred.succeed(release, undefined);
+    const result = yield* Fiber.join(waiting);
+    expect(result.fresh).toBe(true);
+    const throttled = yield* capability.refreshAccount!(permits);
+    expect(throttled.fresh).toBe(false);
+    expect(throttled.nextAllowedAt).toBeDefined();
+  }).pipe(Effect.scoped),
+);
+
+it.effect("awaited failed reads do not call a retained snapshot fresh", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(2);
+    let failed = false;
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Effect.suspend(() =>
+        failed ? Effect.fail(new Error("unavailable")) : Effect.succeed(sections),
+      ),
+    );
+    yield* capability.refreshAccount!(permits);
+    yield* TestClock.adjust("30 seconds");
+    failed = true;
+    const result = yield* capability.refreshAccount!(permits);
+    expect(result.fresh).toBe(false);
+    expect(result.snapshot.sections[0]?.snapshot).toEqual(sections[0]?.snapshot);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("retirement completes refresh joiners and never marks a retained snapshot fresh", () =>
+  Effect.gen(function* () {
+    const providerScope = yield* Scope.make();
+    const permits = yield* Semaphore.make(1);
+    const capability = yield* makeAccountUsageCapability(
+      { ...initial(), sections },
+      Effect.never,
+    ).pipe(Effect.provideService(Scope.Scope, providerScope));
+    const joined = yield* capability.refreshAccount!(permits).pipe(Effect.forkChild);
+    yield* settle;
+    yield* Scope.close(providerScope, Exit.void);
+    const result = yield* Fiber.join(joined);
+    expect(result.fresh).toBe(false);
+    expect(result.snapshot.sections[0]?.snapshot).toEqual(sections[0]?.snapshot);
+    expect(result.snapshot.refreshState).toBe("idle");
+    yield* permits.withPermits(1)(Effect.void);
+  }),
 );

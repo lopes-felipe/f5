@@ -1,7 +1,11 @@
 import type { ThreadId } from "@t3tools/contracts";
-import { ListOrderedIcon, PauseIcon } from "lucide-react";
+import { ClockIcon, ListOrderedIcon, PauseIcon } from "lucide-react";
 
-import { useNextTurnQueueBadge, useNextTurnQueueCount } from "../../nextTurnQueueStore";
+import {
+  useNextTurnQueueBadge,
+  useNextTurnQueueCount,
+  useNextTurnQueueScheduledResumeAt,
+} from "../../nextTurnQueueStore";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 
@@ -22,12 +26,17 @@ export function ThreadQueueCountBadge({
   readonly className?: string | undefined;
 }) {
   const count = useNextTurnQueueCount(threadId);
+  const scheduledResumeAt = useNextTurnQueueScheduledResumeAt(threadId);
   const badge = useNextTurnQueueBadge(threadId);
 
   if (badge === "none") return null;
 
-  const label = badge === "paused" ? `${count} queued turns, paused` : `${count} queued turns`;
-  const Icon = badge === "paused" ? PauseIcon : ListOrderedIcon;
+  const label = scheduledResumeAt
+    ? `Continues at ${new Date(scheduledResumeAt).toLocaleString()}`
+    : badge === "paused"
+      ? `${count} queued turns, paused`
+      : `${count} queued turns`;
+  const Icon = scheduledResumeAt ? ClockIcon : badge === "paused" ? PauseIcon : ListOrderedIcon;
   return (
     <Badge
       variant={badge === "paused" ? "warning" : "secondary"}
@@ -43,6 +52,7 @@ export function ThreadQueueCountBadge({
         </>
       ) : (
         <>
+          {scheduledResumeAt ? <ClockIcon aria-hidden="true" className="size-3" /> : null}
           {count} queued{badge === "paused" ? " · paused" : ""}
         </>
       )}

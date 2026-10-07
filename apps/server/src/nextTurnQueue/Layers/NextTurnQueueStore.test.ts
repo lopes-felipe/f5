@@ -9,10 +9,15 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
+import { vi } from "vitest";
+import type { OrchestrationThread } from "@t3tools/contracts";
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { scheduleUsageLimitResumeFor } from "../usageLimitResume.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import fs from "node:fs";
 import path from "node:path";
 
+import ensureUsageLimitResumeSchema from "../../persistence/Migrations/103_UsageLimitResume.ts";
 import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -79,6 +84,325 @@ const insert = (store: NextTurnQueueStoreShape, index: number, threadId: ThreadI
   });
 
 layer("NextTurnQueueStore", (it) => {
+  it.effect("keeps migration reruns safe and concurrent recovery inserts unique", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-concurrent");
+      yield* seedThread(threadId);
+      yield* ensureUsageLimitResumeSchema;
+      yield* ensureUsageLimitResumeSchema;
+      const columns = yield* sql<{
+        name: string;
+      }>`SELECT name FROM pragma_table_info('next_turn_queue')`;
+      assert.ok(columns.some((column) => column.name === "schedule_reason"));
+      const indexes = yield* sql<{
+        name: string;
+      }>`SELECT name FROM sqlite_master WHERE type='index' AND name='next_turn_queue_one_usage_resume'`;
+      assert.equal(indexes.length, 1);
+      const input = {
+        command: command(9980, threadId),
+        itemId: CommandId.makeUnsafe("resume-concurrent"),
+        submissionId: CommandId.makeUnsafe("resume-concurrent-submission"),
+        requestHash: "concurrent",
+        limitKey: "instance:codex:turn:concurrent",
+        providerInstanceId: "codex",
+        source: "manual" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      const results = yield* Effect.all(
+        [store.scheduleUsageLimitResume(input), store.scheduleUsageLimitResume(input)],
+        { concurrency: 2 },
+      );
+      assert.deepEqual([...results].sort(), ["already_scheduled", "created"]);
+      assert.equal((yield* store.listByThread(threadId)).items.length, 1);
+    }),
+  );
+
+  it.effect(
+    "retains scheduled history across fresh failure rows and applies the five-minute backoff",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("usage-resume-real-backoff");
+        yield* seedThread(threadId);
+        let nowMs = Date.parse("2026-10-07T12:00:00.000Z");
+        const resetsAt = new Date(nowMs + 2_000).toISOString();
+        const clock = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+        yield* Effect.gen(function* () {
+          for (let index = 0; index < 3; index++) {
+            const key = `instance:codex:turn:backoff-${index}`;
+            yield* store.recordUsageResumeFailure(threadId, key, true);
+            const thread = {
+              id: threadId,
+              model: "gpt-5.1-codex",
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              session: {
+                status: "error",
+                activeTurnId: null,
+                usageLimit: {
+                  providerInstanceId: "codex",
+                  turnId: `backoff-${index}`,
+                  deliveryId: null,
+                  windows: [],
+                  resetsAt,
+                  resetSource: "provider",
+                  evidence: "typed",
+                },
+              },
+            } as unknown as OrchestrationThread;
+            const result = yield* scheduleUsageLimitResumeFor({
+              threadId,
+              source: "auto",
+              thread,
+            }).pipe(Effect.provideService(OrchestrationEngineService, {} as never));
+            assert.equal(result.kind, index === 0 ? "created" : "rebound");
+            const target = (yield* store.listByThread(threadId)).items[0]!.notBefore!;
+            assert.equal(
+              Date.parse(target) - nowMs,
+              index === 0 ? 62_000 : index === 1 ? 60_000 : 300_000,
+            );
+            nowMs = Date.parse(target);
+          }
+        }).pipe(Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+      }),
+  );
+
+  it.effect("revokes the requested SQL scope without touching other automatic queues", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const ids = ["usage-scope-one", "usage-scope-two", "usage-scope-other"].map(
+        ThreadId.makeUnsafe,
+      );
+      for (const [index, threadId] of ids.entries()) {
+        yield* seedThread(threadId);
+        yield* store.scheduleUsageLimitResume({
+          command: command(9985 + index, threadId),
+          itemId: CommandId.makeUnsafe(`scope-item-${index}`),
+          submissionId: CommandId.makeUnsafe(`scope-submission-${index}`),
+          requestHash: `scope-${index}`,
+          limitKey: `instance:codex:turn:scope-${index}`,
+          providerInstanceId: "codex",
+          source: "auto",
+          notBefore: new Date(Date.now() + 60_000).toISOString(),
+        });
+      }
+      assert.deepEqual(yield* store.revokeAutoResumes(ids.slice(0, 2)), ids.slice(0, 2));
+      assert.deepEqual(yield* store.revokeAutoResumes(ids.slice(0, 2)), []);
+      assert.equal((yield* store.listByThread(ids[2]!)).items.length, 1);
+    }),
+  );
+
+  it.effect("schedules once, survives cancellation, and only clears failure pauses", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-manual");
+      yield* seedThread(threadId);
+      const input = {
+        command: { ...command(9901, threadId), presentation: "continuation" as const },
+        itemId: CommandId.makeUnsafe("usage-resume-manual-item"),
+        submissionId: CommandId.makeUnsafe("usage-resume-manual-submission"),
+        requestHash: "resume-hash",
+        limitKey: "instance:codex:turn:limited",
+        providerInstanceId: "codex",
+        source: "manual" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      yield* store.setPaused({ threadId, paused: true, reasonCode: "turn_failed" });
+      assert.equal(yield* store.scheduleUsageLimitResume(input), "created");
+      assert.equal(yield* store.scheduleUsageLimitResume(input), "already_scheduled");
+      const queue = yield* store.listByThread(threadId);
+      assert.equal(queue.state.paused, false);
+      assert.equal(queue.items[0]?.scheduleReason, "usage_limit_reset");
+      assert.equal(queue.items[0]?.notBefore, input.notBefore);
+      yield* store.softDelete({ itemId: input.itemId });
+      assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "cancelled");
+      assert.equal(
+        yield* store.scheduleUsageLimitResume({ ...input, source: "auto" }),
+        "suppressed",
+      );
+      yield* store.setPaused({ threadId, paused: true, reasonCode: "manual_pause" });
+      assert.equal(yield* store.scheduleUsageLimitResume(input), "rebound");
+      assert.equal((yield* store.listByThread(threadId)).state.paused, true);
+      assert.equal((yield* store.listByThread(threadId)).items.length, 1);
+    }),
+  );
+
+  it.effect("persists the three-attempt guard and rebinds identity for subsequent failures", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-streak");
+      yield* seedThread(threadId);
+      for (let index = 0; index < 4; index++) {
+        const key = `instance:codex:turn:limited-${index}`;
+        yield* store.recordUsageResumeFailure(threadId, key, true);
+        const input = {
+          command: command(9910 + index, threadId),
+          itemId: CommandId.makeUnsafe(`resume-streak-${index}`),
+          submissionId: CommandId.makeUnsafe(`resume-streak-submission-${index}`),
+          requestHash: `resume-${index}`,
+          limitKey: key,
+          providerInstanceId: "codex",
+          source: "auto" as const,
+          notBefore: new Date(Date.now() + 60_000).toISOString(),
+        };
+        assert.equal(
+          yield* store.scheduleUsageLimitResume(input),
+          index === 0 ? "created" : index === 3 ? "gave_up" : "rebound",
+        );
+        if (index < 3)
+          assert.equal(
+            (yield* store.listByThread(threadId)).items[0]?.command.commandId,
+            input.command.commandId,
+          );
+      }
+      assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "gave_up");
+      assert.equal(
+        (yield* store.getBySubmissionId(CommandId.makeUnsafe("resume-streak-submission-0")))
+          ?.disposition,
+        "canceled",
+      );
+      yield* store.resetUsageResumeStreak(threadId);
+      yield* store.completeUsageResume(threadId);
+      const key = "instance:codex:turn:after-success";
+      yield* store.recordUsageResumeFailure(threadId, key, true);
+      assert.equal(
+        yield* store.scheduleUsageLimitResume({
+          command: command(9920, threadId),
+          itemId: CommandId.makeUnsafe("after-success"),
+          submissionId: CommandId.makeUnsafe("after-success-submission"),
+          requestHash: "after-success",
+          limitKey: key,
+          providerInstanceId: "codex",
+          source: "auto",
+          notBefore: new Date(Date.now() + 60_000).toISOString(),
+        }),
+        "rebound",
+      );
+    }),
+  );
+
+  it.effect("supersedes recovery on ordinary sends and preserves it for tail enqueues", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-supersede");
+      yield* seedThread(threadId);
+      const input = {
+        command: command(9930, threadId),
+        itemId: CommandId.makeUnsafe("resume-supersede"),
+        submissionId: CommandId.makeUnsafe("resume-supersede-submission"),
+        requestHash: "resume",
+        limitKey: "instance:codex:turn:blocked",
+        providerInstanceId: "codex",
+        source: "manual" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      yield* store.scheduleUsageLimitResume(input);
+      yield* insert(store, 9931, threadId);
+      assert.equal((yield* store.listByThread(threadId)).items[0]?.itemId, input.itemId);
+      yield* store.insertSubmission({
+        command: command(9932, threadId),
+        itemId: CommandId.makeUnsafe("supersede-send"),
+        submissionId: CommandId.makeUnsafe("supersede-send-submission"),
+        requestHash: "send",
+        atHead: true,
+        supersedeUsageResume: true,
+      });
+      assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "superseded");
+      assert.equal(
+        (yield* store.listByThread(threadId)).items.some(
+          (item) => item.scheduleReason === "usage_limit_reset",
+        ),
+        false,
+      );
+    }),
+  );
+
+  it.effect("reserves one recovery slot and atomically clears the schedule on promote", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-full");
+      yield* seedThread(threadId);
+      for (let index = 9940; index < 9960; index++) yield* insert(store, index, threadId);
+      const input = {
+        command: command(9960, threadId),
+        itemId: CommandId.makeUnsafe("resume-full"),
+        submissionId: CommandId.makeUnsafe("resume-full-submission"),
+        requestHash: "full",
+        limitKey: "instance:codex:turn:full",
+        providerInstanceId: "codex",
+        source: "manual" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      assert.equal(yield* store.scheduleUsageLimitResume(input), "created");
+      const queue = yield* store.listByThread(threadId);
+      assert.equal(queue.items.length, 21);
+      const stale = yield* Effect.exit(
+        store.replacePositions({
+          threadId,
+          orderedItemIds: queue.items.map((item) => item.itemId),
+          expectedRevision: queue.state.revision - 1,
+          clearScheduleItemId: input.itemId,
+        }),
+      );
+      assert.equal(stale._tag, "Failure");
+      assert.equal((yield* store.getItem(input.itemId))?.notBefore, input.notBefore);
+      yield* store.replacePositions({
+        threadId,
+        orderedItemIds: queue.items.map((item) => item.itemId),
+        expectedRevision: queue.state.revision,
+        clearScheduleItemId: input.itemId,
+      });
+      assert.equal((yield* store.getItem(input.itemId))?.notBefore, null);
+    }),
+  );
+
+  it.effect("revokes only automatic schedules and never moves an item already sending", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-revoke");
+      yield* seedThread(threadId);
+      const input = {
+        command: command(9970, threadId),
+        itemId: CommandId.makeUnsafe("resume-revoke"),
+        submissionId: CommandId.makeUnsafe("resume-revoke-submission"),
+        requestHash: "revoke",
+        limitKey: "instance:codex:turn:revoke",
+        providerInstanceId: "codex",
+        source: "auto" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      yield* store.scheduleUsageLimitResume(input);
+      const summary = yield* store.summary;
+      assert.equal(
+        summary.threads.find((row) => row.threadId === threadId)?.scheduledResumeAt,
+        input.notBefore,
+      );
+      yield* store.revokeAutoResumes([threadId]);
+      assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "revoked");
+      assert.equal((yield* store.listByThread(threadId)).items.length, 0);
+      yield* store.scheduleUsageLimitResume({ ...input, source: "manual" });
+      yield* store.revokeAutoResumes([threadId]);
+      assert.equal((yield* store.listByThread(threadId)).items.length, 1);
+      yield* store.rescheduleByInstance("codex", new Date(Date.now() - 1000).toISOString());
+      yield* store.claim({
+        itemId: input.itemId,
+        leaseOwner: "owner",
+        now: new Date().toISOString(),
+        leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      assert.equal(
+        (yield* store.rescheduleByInstance("codex", input.notBefore)).includes(threadId),
+        false,
+      );
+      assert.equal(
+        yield* store.scheduleUsageLimitResume({ ...input, limitKey: "instance:codex:turn:next" }),
+        "busy",
+      );
+    }),
+  );
+
   it.effect("returns a rejected steer to the head with the same durable identifiers", () =>
     Effect.gen(function* () {
       const store = yield* NextTurnQueueStore;
