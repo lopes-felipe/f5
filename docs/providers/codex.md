@@ -147,7 +147,7 @@ should use the shared-home plus shadow-home setup instead.
 
 ### Isolated profiles
 
-[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials; versions beyond the audited baseline show an informational notice; legacy Default shadow-home behavior is unchanged.
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.160.1 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
 
 ## Release 0 rewind compatibility
 
@@ -179,9 +179,8 @@ marks rollback deprecated. The [0.158.0 start implementation](https://github.com
 defaults persistent threads to paginated history when the thread store supports history lists
 (source revision `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`).
 
-The full protocol manifest remains audited at **0.144.3** until Release 1; its fixed
-baseline audit still passes. The minimum permitted CLI remains 0.37.0; versions below
-0.144 are unverified. Custom executable paths and CODEX_HOME isolation are preserved;
+Release 1 moved the full protocol manifest to **0.160.1** (see below). The minimum
+permitted CLI remains 0.37.0; versions below 0.144 are permitted but unverified. Custom executable paths and CODEX_HOME isolation are preserved;
 certification installs use temporary directories and never replace the operator CLI.
 
 For a credential-free native startup smoke, set `CODEX_BINARY_PATH` to the chosen
@@ -214,3 +213,57 @@ early events, cached flags and failed post-adoption reads. Provider-directory an
 orchestration recovery tests prove the validated fork cursor survives final-read failure.
 Manual browser UI acceptance and Linux/Windows release-environment runs remain unverified;
 the model-backed matrix above exercises the actual manager, not a fake server.
+
+## Release 1 protocol baseline (0.160.1)
+
+`bun run protocol:audit:baseline` installs Codex 0.160.1 into a temporary directory and
+audits two layers:
+
+1. **Surface.** Every server notification, server request and thread item in the
+   generated experimental TypeScript must have a disposition in
+   `packages/shared/src/codexProtocolManifest.ts`, and every client request group F5
+   sends must have at least one method the CLI offers.
+2. **Fields.** For responses F5 decodes, `CODEX_DECODED_RESPONSE_FIELDS` lists the exact
+   fields it reads; each is resolved through the generated JSON schema
+   (`generate-json-schema --experimental`, following `$ref`, `allOf`, `anyOf`, `oneOf`
+   and array items). Request shapes are certified separately by
+   `bun run protocol:audit:requests:baseline`, which type-checks F5's real builders.
+
+Checksums of the surface files and decoded response schemas are committed in
+`scripts/fixtures/codex-protocol/0.160.1.json` with the CLI version and source revision
+`d27764b82f7118f674371e6d6e76271d9d606edb`. Any regenerated difference fails the audit;
+after re-certifying, refresh it with `CODEX_SOURCE_REVISION=<commit> bun scripts/audit-codex-protocol.ts --install-baseline --write-fixture`.
+
+Dispositions added for 0.160.1:
+
+| Surface                                                                                                                                                                                                                   | Disposition        | Why                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thread/reverted`                                                                                                                                                                                                         | state-only         | F5 validates retained history through its own paged read-back; the adapter has no second handler.                                                                 |
+| `rawResponseItem/completed`                                                                                                                                                                                               | internal-duplicate | Raw items duplicate the typed `item/*` stream (`experimentalRawEvents:false`).                                                                                    |
+| `rawResponse/completed`                                                                                                                                                                                                   | internal-duplicate | Internal per-completion usage; `thread/tokenUsage/updated` already carries the usage F5 records.                                                                  |
+| `functionCallOutput` item                                                                                                                                                                                                 | internal-duplicate | Duplicates the typed tool items F5 renders; dropped silently.                                                                                                     |
+| `item/fileChange/outputDelta`                                                                                                                                                                                             | diagnostics-only   | No longer emitted; the adapter still maps it for persisted logs and older CLIs.                                                                                   |
+| `thread/compacted`                                                                                                                                                                                                        | canonical          | Deprecated in favor of the `contextCompaction` item, but older CLIs only send this.                                                                               |
+| `thread/attachment/updated`, `thread/queue/changed`, `project/changed`, `thread/project/updated`, `thread/environment/*`, `account/gatewayOAuth/changed`, `mcpServer/event/stream/notification`, `thread/realtime/item/*` | state-only         | Native attachments, queues, projects, environments, gateway OAuth, MCP streams and realtime voice are not mapped; queue and projects would create a second owner. |
+| `modelProvider/authRecovery{Started,Completed}`, `autoApprovalReview/strictReviewRequired`                                                                                                                                | diagnostics-only   | Visible in native logs only.                                                                                                                                      |
+
+No surface present in 0.144.3 was removed in 0.160.1, so no manifest entry was dropped.
+Runtime handlers for older CLIs (for example `currentTime/read`, `thread/rollback`) stay.
+
+Field-level findings:
+
+- All 34 decoded response fields exist in 0.160.1 and in 0.144.3. On 0.144.3 and 0.147
+  `thread/revert` is absent, so its response is skipped and the rollback fallback is used.
+- `model/list` exposes no context-window metadata in 0.160.1; F5 falls back to its built-in
+  context windows. `additionalSpeedTiers` is not read.
+- F5 sends no `personality` or multi-agent fields; `collaborationMode` remains current,
+  so no request field needed removal.
+- `capabilities.mcpServerOpenaiFormElicitation:false` is still sent. 0.160.1 marks it the
+  legacy opt-in for `openai/form`; the replacement is `capabilities.extensions`. F5 switches
+  only after the private elicitation path (Release 3) passes end-to-end and the minimum
+  supported CLI passes 0.147.
+
+Older CLIs: the manager, adapter and rewind suites pass against fakes, and the
+credential-free startup smoke (`bun scripts/certify-codex-runtime.ts`) passed on 0.144.3
+and 0.160.1 on 2026-10-07. The authenticated rewind matrix from Release 0 above covers
+0.144.3, 0.147.0, 0.156.0 and 0.160.1. CLIs older than 0.144 are permitted but unverified.

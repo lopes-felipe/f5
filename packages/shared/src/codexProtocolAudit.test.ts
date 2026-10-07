@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { parseCodexCliVersion } from "./codexCliVersion";
 import {
+  auditCodexResponseFields,
   checkCodexClientRequests,
+  codexJsonSchemaHasField,
   diffCodexProtocolSurface,
   isExpectedCodexProtocolVersion,
 } from "./codexProtocolAudit";
@@ -58,5 +60,59 @@ describe("Codex protocol audit versions", () => {
     expect(isExpectedCodexProtocolVersion("codex-cli 0.144.3", "0.144.3")).toBe(true);
     expect(isExpectedCodexProtocolVersion("codex-cli 0.144.1", "0.144.3")).toBe(false);
     expect(isExpectedCodexProtocolVersion("codex-cli 0.145.0", "0.144.3")).toBe(false);
+  });
+});
+
+describe("Codex decoded response field audit", () => {
+  const turnsList = {
+    definitions: {
+      Turn: {
+        properties: { id: { type: "string" }, items: { type: "array", items: {} } },
+        type: "object",
+      },
+      Account: {
+        oneOf: [
+          { properties: { type: { enum: ["apiKey"] } } },
+          { properties: { type: { enum: ["chatgpt"] }, planType: { type: "string" } } },
+        ],
+      },
+    },
+    properties: {
+      data: { items: { $ref: "#/definitions/Turn" }, type: "array" },
+      nextCursor: { type: ["string", "null"] },
+      account: { anyOf: [{ $ref: "#/definitions/Account" }, { type: "null" }] },
+      thread: { allOf: [{ $ref: "#/definitions/Turn" }] },
+    },
+  };
+
+  it("resolves refs, combinators and array items", () => {
+    expect(codexJsonSchemaHasField(turnsList, "data[].id")).toBe(true);
+    expect(codexJsonSchemaHasField(turnsList, "data[].items")).toBe(true);
+    expect(codexJsonSchemaHasField(turnsList, "nextCursor")).toBe(true);
+    expect(codexJsonSchemaHasField(turnsList, "account.planType")).toBe(true);
+    expect(codexJsonSchemaHasField(turnsList, "thread.id")).toBe(true);
+  });
+
+  it("rejects renamed fields and non-array steps", () => {
+    expect(codexJsonSchemaHasField(turnsList, "data[].itemsView")).toBe(false);
+    expect(codexJsonSchemaHasField(turnsList, "nextCursor[]")).toBe(false);
+    expect(codexJsonSchemaHasField(turnsList, "missing")).toBe(false);
+  });
+
+  it("reports missing fields and skips methods the CLI does not offer", () => {
+    const report = auditCodexResponseFields(
+      (schema) => (schema === "list.json" ? turnsList : undefined),
+      new Set(["thread/turns/list", "turn/start"]),
+      {
+        "thread/turns/list": { schema: "list.json", fields: ["data[].id", "data[].renamed"] },
+        "turn/start": { schema: "turn.json", fields: ["turn.id"] },
+        "thread/revert": { schema: "revert.json", fields: ["thread.id"] },
+      },
+    );
+    expect(report).toEqual({
+      missingFields: ["thread/turns/list list.json: data[].renamed"],
+      missingSchemas: ["turn/start turn.json"],
+      skippedMethods: ["thread/revert"],
+    });
   });
 });

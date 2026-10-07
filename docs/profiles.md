@@ -4,7 +4,7 @@ A Profile is an independent F5 environment with its own accounts, projects, conv
 
 Create a profile in **Settings → Profiles**, then open it and use its account panels to sign in. Account setup works before adding a project. Login output is streamed in memory and is never written to terminal history or server logs. Cancel terminates the owned login process. Only one provider or MCP OAuth login can run per installation at a time; another login receives a visible conflict. F5 never terminates an unrelated callback-port owner.
 
-Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.280. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
+Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.292. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
 
 Account usage is read through each configured provider instance, using the same home and environment as its sessions. Codex usage caches are instance-local; an unavailable instance never falls back to the machine account. Provider-reported subscription limits can still match when two profiles deliberately sign into the same upstream account.
 
@@ -117,7 +117,7 @@ Browser authentication cookies include the stable profile ID because cookies are
 
 ### Codex version mismatch
 
-Isolated profiles require Codex 0.144.3 or newer. This minimum is independent of the protocol audit baseline: auditing a newer release does not automatically raise the minimum. Versions differing from the audited baseline show an informational notice, but sign-in and sessions remain available. Global Codex updates no longer require downgrading or installing a separate executable. Missing executables, failed or unreadable version probes, and versions below the minimum still produce actionable errors.
+Isolated profiles require Codex 0.144.3 or newer. This minimum is independent of the protocol audit baseline: auditing a newer release does not automatically raise the minimum. Versions older than the audited baseline (0.160.1) show a notice that managed profiles may lack newer protocol features; newer versions show an informational notice. Sign-in and sessions remain available in both cases. Global Codex updates no longer require downgrading or installing a separate executable. Missing executables, failed or unreadable version probes, and versions below the minimum still produce actionable errors.
 
 Managed homes, file-backed credentials, environment filtering and protection against account-home overrides remain mandatory. Startup and protocol failures retain their cause; F5 never falls back to a host account. Version checks and successful startup do not prove credential isolation: the real-provider release gate above still applies.
 

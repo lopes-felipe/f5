@@ -1,0 +1,27 @@
+{
+  "cliVersion": "0.160.1",
+  "sourceRevision": "d27764b82f7118f674371e6d6e76271d9d606edb",
+  "experimental": true,
+  "sha256": {
+    "ClientRequest.ts": "f21e6307c8c2c7f2b5a32d434cdca238e3ec19b71a1f40b60f8c305289860436",
+    "ServerNotification.ts": "459d76defb8b368e906b2afbdd14f5ea8cae33eabdd28de097fd703c6f38c4ad",
+    "ServerRequest.ts": "1c5837adbfbdd005f387478ba87840808d1353b47b82dcf63739a78bb1c8d3be",
+    "v2/ConfigReadResponse.json": "4ec77e1a3eed746037149799c3b6bb8fe7b4b593e5930fc9f410e6282de9df50",
+    "v2/ConfigWriteResponse.json": "1d690287d9e8a0c552f664038d3810dfc3903ec8042eb2c0f772856414f59954",
+    "v2/GetAccountRateLimitsResponse.json": "cb9655e68130116f634ed9353e45b336492e6069a6628f424d1cd52e54eda0e0",
+    "v2/GetAccountResponse.json": "67ac3095b058a7d3c1627ff4dd9e52c8ee3c55f961cb1b980959ac15336d6827",
+    "v2/GetAccountTokenUsageResponse.json": "a58e58c852c888e5de925d99a66688d55ebb2fff038e795aadf04f8a8426dff8",
+    "v2/ListMcpServerStatusResponse.json": "00c56c0faacbd4950b7f446f20b11b8a95456c5108de2f1e7366a1b2e60db8c6",
+    "v2/ModelListResponse.json": "bfbb3ee9f6e203e0b767587c17de94b9cb42f712d0d8168afbbbc3fcb4492f30",
+    "v2/SkillsListResponse.json": "230f125d6c36ec1b1514018a0bb6d0627f7308ea82f1ef04cad85490de482bae",
+    "v2/ThreadForkResponse.json": "eaee302037bef9b21a1aa560542db107665380d845fcc5e45bbc1d1dcc604505",
+    "v2/ThreadItem.ts": "047df9febb13b40263fb5b0abe244171c4dcb5e83229bbf9efba31abae840746",
+    "v2/ThreadReadResponse.json": "2af6b987644cfb23e6f408f3cfb29e73ad6255ba2294366d36d56aeabe3854da",
+    "v2/ThreadResumeResponse.json": "d841a3fc57d72033f21bad4816a1a1fbf52c912d23d0881f5de7fcf86c1f9a6e",
+    "v2/ThreadRevertResponse.json": "a32197dd1101bc210580e3fca517e47e02edf247b7528c0caea507fc5da38587",
+    "v2/ThreadStartResponse.json": "92f5ddc37717b922de1dc0b0405e9a6d463f370554e2091610c6e595bc2616d4",
+    "v2/ThreadTurnsListResponse.json": "8db83d38553204a223cf349680c59b0cc674ba95a4637e1995bfeabd73c80219",
+    "v2/TurnStartResponse.json": "12c5151421bb061297c9790ff795a44aa4b9bdb91fbb68012dcf0a08cf4198b1",
+    "v2/TurnSteerResponse.json": "866ba9a77c12b5d570c837d58f73bf40b24e50fa93404bdf792dd984d313b1aa"
+  }
+}
