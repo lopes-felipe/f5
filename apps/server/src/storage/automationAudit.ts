@@ -45,7 +45,7 @@ export const recordStorageAutomationAudit = (record: StorageAutomationAuditRecor
     const sql = yield* SqlClient.SqlClient;
     const createdAt = new Date().toISOString();
     yield* sql`
-      INSERT INTO storage_automation_audit (
+      INSERT INTO storage_automation_audit_v2 (
         audit_id, operation_id, job, policy_version, target, project_id, thread_id,
         before_ref, after_ref, result, reason, created_at
       ) VALUES (
@@ -78,7 +78,7 @@ export const listStorageAutomationAudit = (limit: number) =>
         result,
         reason,
         created_at AS "createdAt"
-      FROM storage_automation_audit
+      FROM storage_automation_audit_v2
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -88,11 +88,11 @@ export const listStorageAutomationAudit = (limit: number) =>
 export const pruneStorageAutomationAudit = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS).toISOString();
-  yield* sql`DELETE FROM storage_automation_audit WHERE created_at < ${cutoff}`;
+  yield* sql`DELETE FROM storage_automation_audit_v2 WHERE created_at < ${cutoff}`;
   yield* sql`
-    DELETE FROM storage_automation_audit
+    DELETE FROM storage_automation_audit_v2
     WHERE audit_id NOT IN (
-      SELECT audit_id FROM storage_automation_audit
+      SELECT audit_id FROM storage_automation_audit_v2
       ORDER BY created_at DESC
       LIMIT ${AUDIT_MAX_ROWS}
     )

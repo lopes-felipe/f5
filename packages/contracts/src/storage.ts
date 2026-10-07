@@ -13,6 +13,7 @@ export const StorageAutomationJob = Schema.Literals([
   "worktree-cleanup",
   "provider-logs",
   "auto-pull",
+  "codex-marketplace-staging",
 ]);
 export type StorageAutomationJob = typeof StorageAutomationJob.Type;
 
@@ -70,6 +71,7 @@ export const StorageCleanupCategoryId = Schema.Literals([
   "providerLogsForTerminalThreads",
   "providerLogRotations",
   "orphanAttachments",
+  "codexMarketplaceStaging",
   "databaseVacuum",
   "inactiveF5Worktrees",
   "legacyT3Userdata",
@@ -93,6 +95,7 @@ export const StorageCleanupSectionId = Schema.Literals([
   "worktrees",
   "logs",
   "attachments",
+  "providers",
   "legacy",
 ]);
 export type StorageCleanupSectionId = typeof StorageCleanupSectionId.Type;

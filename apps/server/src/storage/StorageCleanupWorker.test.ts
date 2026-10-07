@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import type { ProjectId } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCo
 import {
   blockingIgnoredEntries,
   matchWorktreeCleanupRule,
+  redactHomePath,
   StorageCleanupWorker,
   StorageCleanupWorkerLive,
 } from "./StorageCleanupWorker.ts";
@@ -364,6 +366,89 @@ describe("StorageCleanupWorker races (lifecycle lock)", { timeout: 60_000 }, () 
     await expectKept(({ worktreePath }) => {
       git(worktreePath, "commit", "-q", "--allow-empty", "-m", "new work");
     }, "HEAD moved since the check");
+  });
+});
+
+describe("StorageCleanupWorker Codex marketplace staging", () => {
+  const HOUR_MS = 60 * 60 * 1_000;
+  const dirs: string[] = [];
+  afterEach(async () => {
+    for (const dir of dirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const makeDir = async (target: string, ageMs: number) => {
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, "pack"), "x".repeat(2_000));
+    const when = new Date(Date.now() - ageMs);
+    await fs.utimes(target, when, when);
+  };
+
+  it("sweeps old leftovers in every Codex home even while storage cleanup is off", async () => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "f5-codex-sweep-")));
+    dirs.push(dir);
+    const work = path.join(dir, "work");
+    const personal = path.join(dir, "personal");
+    const workMarketplaces = path.join(work, ".tmp", "marketplaces");
+    const personalMarketplaces = path.join(personal, ".tmp", "marketplaces");
+    const oldClone = path.join(workMarketplaces, ".staging", "marketplace-upgrade-old");
+    const freshClone = path.join(workMarketplaces, ".staging", "marketplace-upgrade-fresh");
+    const oldBackup = path.join(personalMarketplaces, "marketplace-backup-old");
+    const installed = path.join(personalMarketplaces, "doordash-agentskills");
+    await makeDir(oldClone, 3 * HOUR_MS);
+    await makeDir(freshClone, 30 * 60 * 1_000);
+    await makeDir(oldBackup, 5 * HOUR_MS);
+    await makeDir(installed, 5 * HOUR_MS);
+
+    const settings = {
+      providers: { codex: { homePath: work } },
+      providerInstances: {
+        codex_personal: { driver: "codex", config: { homePath: personal } },
+      },
+    } as Parameters<typeof automationLayer>[1];
+    const layer = StorageCleanupWorkerLive.pipe(
+      Layer.provideMerge(automationLayer(makeWorld(), settings, "f5-codex-sweep-state-")),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const worker = yield* StorageCleanupWorker;
+        const preview = yield* worker.dryRun;
+        expect(preview.storageCleanupEnabled).toBe(false);
+        expect(
+          preview.targets.map((target) => [target.job, target.action, target.target]).toSorted(),
+        ).toEqual(
+          [
+            ["codex-marketplace-staging", "remove", redactHomePath(workMarketplaces)],
+            ["codex-marketplace-staging", "remove", redactHomePath(personalMarketplaces)],
+          ].toSorted(),
+        );
+        expect(yield* Effect.promise(() => exists(oldClone))).toBe(true);
+
+        yield* worker.runOnce;
+
+        expect(yield* Effect.promise(() => exists(oldClone))).toBe(false);
+        expect(yield* Effect.promise(() => exists(oldBackup))).toBe(false);
+        expect(yield* Effect.promise(() => exists(freshClone))).toBe(true);
+        expect(yield* Effect.promise(() => exists(installed))).toBe(true);
+        const audit = yield* listStorageAutomationAudit(10);
+        expect(audit.map((entry) => [entry.job, entry.result, entry.target]).toSorted()).toEqual(
+          [
+            ["codex-marketplace-staging", "removed", redactHomePath(oldClone)],
+            ["codex-marketplace-staging", "removed", redactHomePath(oldBackup)],
+          ].toSorted(),
+        );
+        expect(
+          audit.every((entry) => /older than 2 hours; \d+ bytes$/.test(entry.reason ?? "")),
+        ).toBe(true);
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    );
+  });
+
+  it("labels paths under the user's home with ~", () => {
+    expect(redactHomePath("/Users/me/.codex/.tmp", "/Users/me")).toBe(
+      path.join("~", ".codex", ".tmp"),
+    );
+    expect(redactHomePath("/opt/codex", "/Users/me")).toBe("/opt/codex");
   });
 });
 

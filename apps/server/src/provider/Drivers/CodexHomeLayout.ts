@@ -69,6 +69,32 @@ function resolveHomePath(path: Path.Path, value: string | undefined): string {
   return path.resolve(expanded);
 }
 
+/**
+ * Every Codex home a Codex instance's processes write to: the shared home
+ * (`homePath`, or the inherited `CODEX_HOME`, or `~/.codex`) and, for an auth
+ * overlay, the shadow home. Mirrors `resolveCodexHomeLayout` plus the
+ * `CODEX_HOME` fallback the process environment applies when `homePath` is empty.
+ */
+export function resolveCodexInstanceHomePaths(input: {
+  readonly config: Pick<CodexSettings, "homePath" | "shadowHomePath">;
+  readonly managed: boolean;
+  readonly inheritedCodexHome: string | undefined;
+}): ReadonlyArray<string> {
+  const homePath = input.config.homePath.trim();
+  const inherited = input.inheritedCodexHome?.trim();
+  const shared = NodePath.resolve(
+    homePath.length > 0
+      ? expandHomePath(homePath)
+      : !input.managed && inherited
+        ? expandHomePath(inherited)
+        : NodePath.join(NodeOS.homedir(), ".codex"),
+  );
+  const shadow = input.config.shadowHomePath.trim();
+  return !input.managed && shadow.length > 0
+    ? [shared, NodePath.resolve(expandHomePath(shadow))]
+    : [shared];
+}
+
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
   config: CodexSettings,
   managed = false,

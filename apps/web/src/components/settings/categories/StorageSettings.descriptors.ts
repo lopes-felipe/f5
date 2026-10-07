@@ -38,7 +38,7 @@ export const STORAGE_SETTINGS_DESCRIPTORS = [
     category: "storage",
     label: "Storage usage",
     description: "Inspect local data and reclaim selected storage categories.",
-    keywords: ["cleanup", "disk", "database", "logs", "worktrees"],
+    keywords: ["cleanup", "disk", "database", "logs", "worktrees", "codex", "marketplace"],
     targetSelector: '[data-settings-search-target="storage.usage"]',
   },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

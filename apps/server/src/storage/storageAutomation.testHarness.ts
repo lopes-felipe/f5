@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -125,11 +126,28 @@ export const thread = (input: {
     session: null,
   }) as unknown as OrchestrationThread;
 
+/**
+ * Codex home the default test settings point at. Without it Codex resolves to
+ * the developer's real `~/.codex`, which the marketplace staging sweep would scan.
+ */
+export const isolatedCodexHome = (prefix: string) =>
+  path.join(os.tmpdir(), `${prefix}codex-home-${randomUUID()}`);
+
 export function automationLayer(
   world: AutomationWorld,
   settings: DeepPartial<ServerSettings>,
   prefix: string,
 ) {
+  const isolatedSettings: DeepPartial<ServerSettings> = {
+    ...settings,
+    providers: {
+      ...settings.providers,
+      codex: {
+        homePath: isolatedCodexHome(prefix),
+        ...settings.providers?.codex,
+      },
+    },
+  };
   const engine = Layer.succeed(OrchestrationEngineService, {
     getReadModel: () =>
       Effect.sync(() => {
@@ -161,7 +179,7 @@ export function automationLayer(
     providers,
     queue,
     turns,
-    ServerSettingsService.layerTest(settings as never),
+    ServerSettingsService.layerTest(isolatedSettings as never),
     SqlitePersistenceMemory,
   ).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix })),

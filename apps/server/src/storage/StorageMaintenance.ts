@@ -31,6 +31,14 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  type CodexMarketplaceLeftover,
+  codexMarketplaceLeftoverBytes,
+  listCodexMarketplaceLeftovers,
+  removeCodexMarketplaceLeftover,
+  resolveCodexLaunchHomes,
+} from "./codexMarketplaceStaging.ts";
 import { enumerateFiles, recursiveSize, sizeIfExists, type EnumeratedFile } from "./diskUsage.ts";
 import { probeLegacyState, type LegacyProbeResult } from "./legacyStateProbe.ts";
 import {
@@ -495,6 +503,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const git = yield* GitCore;
   const eventStore = yield* OrchestrationEventStore;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
 
   let cachedReport: {
     readonly stateDir: string;
@@ -940,6 +949,43 @@ const makeStorageMaintenance = Effect.gen(function* () {
         }),
     });
 
+  /**
+   * Leftover Codex marketplace upgrade clones and backups in every Codex home
+   * this profile launches. Null when settings are unavailable.
+   */
+  const computeCodexMarketplaceLeftovers = () =>
+    Effect.gen(function* () {
+      if (settingsService._tag === "None") return null;
+      const settings = yield* settingsService.value.getSettings.pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (settings === null) return null;
+      const homes = resolveCodexLaunchHomes({
+        settings,
+        profile: config.profile,
+        stateDir: config.stateDir,
+      });
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const leftovers = await listCodexMarketplaceLeftovers({ homes, nowMs: Date.now() });
+          const sized: Array<{
+            readonly leftover: CodexMarketplaceLeftover;
+            readonly bytes: number;
+          }> = [];
+          for (const leftover of leftovers) {
+            sized.push({ leftover, bytes: await codexMarketplaceLeftoverBytes(leftover) });
+          }
+          return sized;
+        },
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.inspect.codexMarketplaceStaging",
+            message: "Failed to inspect Codex marketplace staging directories.",
+            cause,
+          }),
+      });
+    });
+
   const computeVacuumReclaimableBytes = () =>
     Effect.gen(function* () {
       const rows = yield* sql<{ readonly pageSize: number }>`PRAGMA page_size`;
@@ -1302,6 +1348,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const f5WorktreeCandidates = yield* computeF5WorktreeTargets();
       warnings.push(...f5WorktreeCandidates.warnings);
       const vacuumBytes = yield* computeVacuumReclaimableBytes();
+      const codexLeftovers = yield* computeCodexMarketplaceLeftovers();
       const archivedDbBytes = yield* estimateArchivedThreadDbBytes(archivedThreadCutoffIso);
 
       const deletedProviderLogBytes = providerLogCandidates.files
@@ -1449,6 +1496,29 @@ const makeStorageMaintenance = Effect.gen(function* () {
           targets: orphanAttachmentTargets,
         }),
       ];
+      if (codexLeftovers !== null) {
+        const codexLeftoverBytes = codexLeftovers.reduce((total, entry) => total + entry.bytes, 0);
+        categories.push(
+          categoryUsage({
+            id: "codexMarketplaceStaging",
+            section: "providers",
+            title: "Delete leftover Codex marketplace clones",
+            description:
+              "Deletes marketplace upgrade clones and backups older than 2 hours that Codex left in .tmp/marketplaces. Codex downloads the marketplace again on its next upgrade. Also runs hourly on its own.",
+            bytes: codexLeftoverBytes,
+            reclaimableBytes: codexLeftoverBytes,
+            defaultSelected: true,
+            impact: "none",
+            targets: codexLeftovers.map(({ leftover, bytes }) => ({
+              id: leftover.path,
+              label: `${leftover.kind === "staging" ? "Upgrade clone" : "Upgrade backup"} ${Path.basename(leftover.path)}`,
+              path: leftover.path,
+              bytes,
+              safeToDelete: true,
+            })),
+          }),
+        );
+      }
 
       const legacyCategoryMeta: ReadonlyArray<{
         readonly id: LegacyCleanupCategoryId;
@@ -2027,6 +2097,66 @@ const makeStorageMaintenance = Effect.gen(function* () {
         "providerLogRotations",
         candidates.files,
       );
+    });
+
+  /**
+   * Remove the leftovers the confirmed scan listed that are still leftovers
+   * now (the age guard is re-applied), so nothing newer than the scan goes.
+   */
+  const cleanCodexMarketplaceStaging = (
+    request: StorageCleanupRequest,
+    context: StorageCleanupContext | undefined,
+    category: StorageCleanupCategoryUsage | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const confirmed = new Set(category?.targets.map((target) => target.id) ?? []);
+      const current = (yield* computeCodexMarketplaceLeftovers()) ?? [];
+      const leftovers = current.filter(({ leftover }) => confirmed.has(leftover.path));
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const warnings: StoragePathWarning[] = [];
+          const perTargetReclaimed: PerTargetReclaimed = [];
+          let completedTargets = 0;
+          for (const { leftover } of leftovers) {
+            if (checkCancelled(request.operationId)) break;
+            await Effect.runPromise(
+              publishProgress(request, context, {
+                categoryId: "codexMarketplaceStaging",
+                phase: "deleting",
+                message: `Deleting ${Path.basename(leftover.path)}`,
+                completedTargets,
+                totalTargets: leftovers.length,
+              }),
+            );
+            const removal = await removeCodexMarketplaceLeftover(leftover);
+            if (removal.warning) warnings.push(removal.warning);
+            if (removal.reclaimedBytes > 0) {
+              perTargetReclaimed.push({
+                id: leftover.path,
+                path: leftover.path,
+                reclaimedBytes: removal.reclaimedBytes,
+              });
+            }
+            completedTargets += 1;
+          }
+          return resultFor({
+            categoryId: "codexMarketplaceStaging",
+            status: perTargetReclaimed.length > 0 ? "Cleaned" : "Skipped",
+            reclaimedBytes: perTargetReclaimed.reduce(
+              (total, target) => total + target.reclaimedBytes,
+              0,
+            ),
+            perTargetReclaimed,
+            warnings,
+          });
+        },
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.cleanup.codexMarketplaceStaging",
+            message: "Failed to delete Codex marketplace staging directories.",
+            cause,
+          }),
+      });
     });
 
   const dispatchArchivedThreadDeletes = (
@@ -2888,6 +3018,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 return pruneEventsLogRotations(request, context);
               case "orphanAttachments":
                 return cleanOrphanAttachments(request, context, targetSelections.get(categoryId));
+              case "codexMarketplaceStaging":
+                return cleanCodexMarketplaceStaging(
+                  request,
+                  context,
+                  requestedCategoryById.get(categoryId),
+                );
               case "databaseVacuum":
                 return vacuumDatabase();
               case "legacyT3Userdata":
@@ -2905,7 +3041,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 );
             }
           })();
-          if (categoryId !== "databaseVacuum" && result.reclaimedBytes > 0) {
+          // Codex staging lives outside the database; removing it frees no pages.
+          if (
+            categoryId !== "databaseVacuum" &&
+            categoryId !== "codexMarketplaceStaging" &&
+            result.reclaimedBytes > 0
+          ) {
             performedDeletes = true;
           }
           results.push(result);
