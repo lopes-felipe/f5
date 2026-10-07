@@ -6927,6 +6927,7 @@ export default function ChatView({
                             <ThreadTasksPanel
                               threadId={activeThread.id}
                               tasks={effectiveThreadTasks}
+                              tracking={activeThread.tasksTracking}
                               open={tasksPanelOpen}
                               summary={taskPanelSummary}
                               onToggle={onToggleTasksPanel}
@@ -6967,6 +6968,7 @@ export default function ChatView({
                         attached
                         threadId={activeThread.id}
                         tasks={effectiveThreadTasks}
+                        tracking={activeThread.tasksTracking}
                         open={tasksPanelOpen}
                         summary={taskPanelSummary}
                         onToggle={onToggleTasksPanel}

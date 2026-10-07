@@ -856,6 +856,60 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.lastInteractionAt).toBe("2026-04-01T09:07:00.000Z");
   });
 
+  it("applies native task tracking and keeps retained-turn tasks across a revert", () => {
+    const turn1 = TurnId.makeUnsafe("turn-1");
+    const turn2 = TurnId.makeUnsafe("turn-2");
+    const tracking = {
+      version: 1 as const,
+      source: "claude-task-tools" as const,
+      nativeSessionId: "native-1",
+      generation: 0,
+      syncState: "synced" as const,
+      pendingCalls: [
+        { nativeCallId: "late", toolName: "TaskUpdate" as const, generation: 0, turnId: turn2 },
+      ],
+      invalidatedCallIds: [],
+      handledCallIds: ["c1", "c2"],
+      provenance: [
+        { taskId: "1", nativeCallId: "c1", turnId: turn1 },
+        { taskId: "2", nativeCallId: "c2", turnId: turn2 },
+      ],
+      suppressedTaskIds: [],
+    };
+    const updated = applyDomainEvent(
+      makeState({ threads: [makeThread()] }),
+      makeEvent("thread.tasks.updated", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        tasks: [
+          { id: "1", content: "Keep", activeForm: "Keep", status: "in_progress", owner: "main" },
+          { id: "2", content: "Drop", activeForm: "Drop", status: "in_progress", blockedBy: ["1"] },
+        ],
+        tracking,
+        turnId: turn2,
+        updatedAt: "2026-04-01T09:07:00.000Z",
+      }),
+    );
+    expect(updated.threads[0]?.tasksTracking).toEqual(tracking);
+    expect(updated.threads[0]?.tasks[1]?.blockedBy).toEqual(["1"]);
+
+    const reverted = applyDomainEvent(
+      updated,
+      makeEvent("thread.reverted", {
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnCount: 1,
+        retainedTurnIds: [turn1],
+      }),
+    );
+    expect(reverted.threads[0]?.tasks.map((task) => task.id)).toEqual(["1"]);
+    expect(reverted.threads[0]?.tasksTracking).toMatchObject({
+      generation: 1,
+      syncState: "sync-required",
+      pendingCalls: [],
+      invalidatedCallIds: ["late"],
+      suppressedTaskIds: ["2"],
+    });
+  });
+
   it("upserts proposed plans and keeps the thread recency current", () => {
     const next = applyDomainEvent(
       makeState(),

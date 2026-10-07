@@ -1,3 +1,4 @@
+import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
@@ -424,6 +425,15 @@ function upsertTurnDiffSummary(
     : orderedTurnDiffSummaries;
 }
 
+function idListsEqual(
+  left: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
 function mergeTasks(
   previous: Thread["tasks"],
   nextTasks: Extract<OrchestrationEvent, { type: "thread.tasks.updated" }>["payload"]["tasks"],
@@ -437,7 +447,11 @@ function mergeTasks(
       existing &&
       existing.content === task.content &&
       existing.activeForm === task.activeForm &&
-      existing.status === task.status
+      existing.status === task.status &&
+      existing.description === task.description &&
+      existing.owner === task.owner &&
+      idListsEqual(existing.blocks, task.blocks) &&
+      idListsEqual(existing.blockedBy, task.blockedBy)
     ) {
       return existing;
     }
@@ -803,6 +817,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         tasks: [],
         tasksTurnId: null,
         tasksUpdatedAt: null,
+        tasksTracking: null,
         sessionNotes: null,
         threadReferences: [...(event.payload.threadReferences ?? [])],
         history: {
@@ -1314,10 +1329,17 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           thread.tasks.length === 0 &&
           thread.tasksTurnId === null &&
           thread.tasksUpdatedAt === null &&
+          !thread.tasksTracking &&
           thread.lastInteractionAt === event.occurredAt
         ) {
           return thread;
         }
+        // Same rule as the server projector (an unknown retained set suppresses
+        // every attributed native task), so stale clients stay consistent.
+        const revertedTasks = revertTaskToolState(
+          { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
+          event.payload.retainedTurnIds ? new Set(event.payload.retainedTurnIds) : undefined,
+        );
         return {
           ...thread,
           pendingUserInputs,
@@ -1325,9 +1347,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           messages,
           commandExecutions,
           proposedPlans,
-          tasks: [],
+          tasks: [...revertedTasks.tasks],
           tasksTurnId: null,
           tasksUpdatedAt: null,
+          tasksTracking: revertedTasks.tracking,
           compaction: null,
           ...(thread.session?.tokenUsageSource !== undefined
             ? {
@@ -1525,8 +1548,13 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         const tasks = detailGate.applyDetailMutations
           ? mergeTasks(thread.tasks, event.payload.tasks)
           : thread.tasks;
+        const tasksTracking =
+          detailGate.applyDetailMutations && event.payload.tracking
+            ? event.payload.tracking
+            : thread.tasksTracking;
         if (
           tasks === thread.tasks &&
+          tasksTracking === thread.tasksTracking &&
           (!detailGate.applyDetailMutations || thread.tasksTurnId === event.payload.turnId) &&
           (!detailGate.applyDetailMutations || thread.tasksUpdatedAt === event.payload.updatedAt) &&
           thread.lastInteractionAt === event.payload.updatedAt
@@ -1536,6 +1564,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(tasks !== thread.tasks ? { tasks } : {}),
+          ...(tasksTracking !== thread.tasksTracking ? { tasksTracking } : {}),
           ...(detailGate.applyDetailMutations && thread.tasksTurnId !== event.payload.turnId
             ? { tasksTurnId: event.payload.turnId }
             : {}),

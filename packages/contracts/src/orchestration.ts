@@ -387,8 +387,63 @@ export const TaskItem = Schema.Struct({
   content: TrimmedNonEmptyString,
   activeForm: TrimmedNonEmptyString,
   status: TaskItemStatus,
+  // Native Task tools (Claude TaskCreate/TaskUpdate/TaskList/TaskGet) only.
+  description: Schema.optional(Schema.String),
+  owner: Schema.optional(TrimmedNonEmptyString),
+  blocks: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  blockedBy: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type TaskItem = typeof TaskItem.Type;
+
+export const MAX_THREAD_TASKS = 512;
+export const MAX_TASK_TOOL_PENDING_CALLS = 64;
+export const MAX_TASK_TOOL_HANDLED_CALL_IDS = 256;
+
+/**
+ * `synced`: the projection matches every result F5 observed. `sync-required`:
+ * F5 saw a result it could not reconcile (unknown id, missing call, revert);
+ * the next native TaskList restores it. `overflow`: a bound was exceeded and
+ * the last valid snapshot is kept.
+ */
+export const TaskToolSyncState = Schema.Literals(["synced", "sync-required", "overflow"]);
+export type TaskToolSyncState = typeof TaskToolSyncState.Type;
+
+export const TaskToolPendingCall = Schema.Struct({
+  nativeCallId: TrimmedNonEmptyString,
+  toolName: TrimmedNonEmptyString,
+  generation: NonNegativeInt,
+  turnId: Schema.NullOr(TurnId),
+});
+export type TaskToolPendingCall = typeof TaskToolPendingCall.Type;
+
+/** Which call (and turn) created a task, so revert can suppress discarded tasks. */
+export const TaskToolProvenance = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  nativeCallId: TrimmedNonEmptyString,
+  turnId: Schema.NullOr(TurnId),
+});
+export type TaskToolProvenance = typeof TaskToolProvenance.Type;
+
+/**
+ * Bounded correlation state for native Task tools, persisted with the task
+ * snapshot (no separate event family). The harness owns execution; F5 owns
+ * this projection. `generation` increases on revert and checkpoint restore so
+ * results from discarded work are never applied.
+ */
+export const ThreadTaskTracking = Schema.Struct({
+  version: Schema.Literal(1),
+  source: Schema.Literal("claude-task-tools"),
+  nativeSessionId: Schema.NullOr(TrimmedNonEmptyString),
+  generation: NonNegativeInt,
+  syncState: TaskToolSyncState,
+  syncDetail: Schema.optional(Schema.String),
+  pendingCalls: Schema.Array(TaskToolPendingCall),
+  invalidatedCallIds: Schema.Array(TrimmedNonEmptyString),
+  handledCallIds: Schema.Array(TrimmedNonEmptyString),
+  provenance: Schema.Array(TaskToolProvenance),
+  suppressedTaskIds: Schema.Array(TrimmedNonEmptyString),
+});
+export type ThreadTaskTracking = typeof ThreadTaskTracking.Type;
 
 export const ThreadCompactionDirection = Schema.Literals(["from", "up_to"]);
 export type ThreadCompactionDirection = typeof ThreadCompactionDirection.Type;
@@ -872,6 +927,9 @@ export const OrchestrationThread = Schema.Struct({
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  tasksTracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   compaction: Schema.NullOr(ThreadCompaction).pipe(Schema.withDecodingDefault(() => null)),
   sessionNotes: Schema.optional(Schema.NullOr(ThreadSessionNotes)).pipe(
     Schema.withDecodingDefault(() => null),
@@ -1571,6 +1629,13 @@ const ThreadTasksUpdateCommand = Schema.Struct({
   threadId: ThreadId,
   tasks: Schema.Array(TaskItem),
   turnId: Schema.optional(TurnId),
+  /** Omitted: tracking unchanged (TodoWrite). Present: replaces it atomically. */
+  tracking: Schema.optional(ThreadTaskTracking),
+  /**
+   * Generation the update was computed from. The decider rejects the command
+   * when a revert advanced the thread's generation in the meantime.
+   */
+  expectedTrackingGeneration: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 
@@ -2150,6 +2215,7 @@ export const ThreadTasksUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   tasks: Schema.Array(TaskItem),
   turnId: Schema.NullOr(TurnId),
+  tracking: Schema.optional(ThreadTaskTracking),
   updatedAt: IsoDateTime,
 });
 
@@ -2622,6 +2688,9 @@ export const OrchestrationThreadDetails = Schema.Struct({
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  tasksTracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   sessionNotes: Schema.NullOr(ThreadSessionNotes).pipe(Schema.withDecodingDefault(() => null)),
   threadReferences: Schema.Array(ThreadReference).pipe(Schema.withDecodingDefault(() => [])),
   detailSequence: NonNegativeInt,
@@ -2662,6 +2731,9 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   tasks: Schema.Array(TaskItem).pipe(Schema.withDecodingDefault(() => [])),
   tasksTurnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  tasksTracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   sessionNotes: Schema.NullOr(ThreadSessionNotes).pipe(Schema.withDecodingDefault(() => null)),
   threadReferences: Schema.Array(ThreadReference).pipe(Schema.withDecodingDefault(() => [])),
   hasOlderMessages: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),

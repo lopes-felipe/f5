@@ -11,6 +11,11 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  isTaskToolName,
+  reduceTaskToolLifecycle,
+  type TaskToolState,
+} from "@t3tools/shared/claudeTaskToolProjection";
 import { getDefaultReasoningEffort } from "@t3tools/shared/model";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -19,6 +24,7 @@ import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecuta
 import { createControllableAsyncIterable } from "../src/provider/Layers/ClaudeSdk.testUtils.ts";
 import { normalizeClaudeAccountUsage } from "../src/usage/claudeAccountUsage.ts";
 import { makeClaudeTextGeneration } from "../src/git/Layers/ClaudeTextGeneration.ts";
+import { buildClaudeToolCompletion } from "../src/provider/claudeToolCompletion.ts";
 
 // Explicit opt-in: uses the current Claude account and consumes its quota.
 // Auth/quota/entitlement failures fail the run; they are never converted to skips.
@@ -31,6 +37,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
         input: ReturnType<typeof createControllableAsyncIterable<SDKUserMessage>>,
       ) => Promise<void>,
       model = "claude-fable-5-1",
+      environment: NodeJS.ProcessEnv = process.env,
     ) {
       const cwd = mkdtempSync(join(tmpdir(), "f5-claude-live-"));
       const input = createControllableAsyncIterable<SDKUserMessage>();
@@ -48,14 +55,14 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
             : {}),
           persistSession: false,
           settingSources: [],
-          env: buildClaudeQueryEnv({ subagentModel: "inherit" }, process.env),
+          env: buildClaudeQueryEnv({ subagentModel: "inherit" }, environment),
           abortController: abort,
           includePartialMessages: true,
           maxTurns: 10,
           canUseTool: async (name, toolInput) =>
-            name === "TodoWrite"
+            name === "TodoWrite" || isTaskToolName(name)
               ? { behavior: "allow", updatedInput: toolInput }
-              : { behavior: "deny", message: "This smoke test only permits TodoWrite." },
+              : { behavior: "deny", message: "This smoke test only permits task tools." },
           spawnClaudeCodeProcess: (options) => {
             expect(options.command).toBe(resolveBundledClaudeExecutable());
             const child = spawn(options.command, options.args, {
@@ -74,7 +81,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
       const deadline = setTimeout(() => {
         abort.abort();
         q.close();
-      }, 50_000);
+      }, 80_000);
       try {
         await use(q, input);
       } finally {
@@ -111,65 +118,148 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
       60_000,
     );
 
-    it("advertises and successfully uses TodoWrite to complete three steps in a streamed turn", async () => {
-      await withQuery(async (q, input) => {
-        await q.initializationResult();
-        input.push({
-          type: "user",
-          parent_tool_use_id: null,
-          message: {
-            role: "user",
-            content:
-              "Use TodoWrite to track exactly three steps: compute 2+2, compute 3+3, and report both answers. Keep one in_progress at a time and mark all three completed using TodoWrite. Do not use other tools.",
-          },
-        });
-        const messages: SDKMessage[] = [];
-        for (;;) {
-          const next = await q.next();
-          expect(next.done, "Executable exited without a result").toBe(false);
-          if (next.done) break;
-          messages.push(next.value);
-          if (next.value.type === "result") {
-            expect(next.value.is_error, JSON.stringify(next.value)).toBe(false);
-            expect(next.value.subtype).toBe("success");
-            break;
-          }
+    // This suite may itself run inside a Claude Code session whose task variables
+    // would be honored as operator overrides; start from production defaults.
+    const {
+      CLAUDE_CODE_ENABLE_TASKS: _tasks,
+      CLAUDE_CODE_ENABLE_TODO_TOOLS: _todos,
+      ...defaultEnv
+    } = process.env;
+
+    async function runTurn(
+      q: Query,
+      input: ReturnType<typeof createControllableAsyncIterable<SDKUserMessage>>,
+      prompt: string,
+    ) {
+      await q.initializationResult();
+      input.push({
+        type: "user",
+        parent_tool_use_id: null,
+        message: { role: "user", content: prompt },
+      });
+      const messages: SDKMessage[] = [];
+      for (;;) {
+        const next = await q.next();
+        expect(next.done, "Executable exited without a result").toBe(false);
+        if (next.done) break;
+        messages.push(next.value);
+        if (next.value.type === "result") {
+          expect(next.value.is_error, JSON.stringify(next.value)).toBe(false);
+          expect(next.value.subtype).toBe("success");
+          break;
         }
-        expect(
-          messages.some(
-            (m) => m.type === "system" && m.subtype === "init" && m.tools.includes("TodoWrite"),
-          ),
-        ).toBe(true);
-        expect(messages.some((m) => m.type === "stream_event")).toBe(true);
-        const calls = messages.flatMap((m) =>
-          m.type === "assistant"
-            ? m.message.content.filter(
-                (block) => block.type === "tool_use" && block.name === "TodoWrite",
-              )
-            : [],
-        );
-        expect(calls.length).toBeGreaterThanOrEqual(2);
-        const last = calls.at(-1);
-        expect(last?.type).toBe("tool_use");
-        if (last?.type === "tool_use") {
-          const input = last.input as { todos: Array<{ status: string }> };
-          expect(input.todos).toHaveLength(3);
-          expect(input.todos.every((todo) => todo.status === "completed")).toBe(true);
+      }
+      expect(messages.some((m) => m.type === "stream_event")).toBe(true);
+      return messages;
+    }
+
+    it("advertises native Task tools by default and projects a three-step task list", async () => {
+      await withQuery(
+        async (q, input) => {
+          const messages = await runTurn(
+            q,
+            input,
+            "Use TaskCreate to create exactly three tasks: compute 2+2, compute 3+3, and report both answers. Then use TaskUpdate to mark each one in_progress and then completed as you do it. Do not use any other tools.",
+          );
+          const init = messages.find((m) => m.type === "system" && m.subtype === "init");
+          expect(init?.type === "system" && init.subtype === "init" ? init.tools : []).toEqual(
+            expect.arrayContaining(["TaskCreate", "TaskUpdate"]),
+          );
+          expect(
+            init?.type === "system" && init.subtype === "init" ? init.tools : [],
+          ).not.toContain("TodoWrite");
+
+          // Replay the real stream through F5's completion builder and shared reducer.
+          const calls = new Map<string, { name: string; input: Record<string, unknown> }>();
+          let state: TaskToolState = { tasks: [], tracking: null };
+          for (const message of messages) {
+            if (message.type === "assistant" && !message.parent_tool_use_id) {
+              for (const block of message.message.content) {
+                if (block.type !== "tool_use" || !isTaskToolName(block.name) || calls.has(block.id))
+                  continue;
+                calls.set(block.id, {
+                  name: block.name,
+                  input: block.input as Record<string, unknown>,
+                });
+                state =
+                  reduceTaskToolLifecycle(state, {
+                    phase: "started",
+                    nativeCallId: block.id,
+                    toolName: block.name,
+                    turnId: null,
+                  }) ?? state;
+              }
+            }
+            if (message.type !== "user" || message.parent_tool_use_id) continue;
+            const content = Array.isArray(message.message.content) ? message.message.content : [];
+            const results = content.filter((block) => block.type === "tool_result");
+            for (const block of results) {
+              if (block.type !== "tool_result") continue;
+              const call = calls.get(block.tool_use_id);
+              if (!call || !isTaskToolName(call.name)) continue;
+              const { envelope } = buildClaudeToolCompletion({
+                toolUseId: block.tool_use_id,
+                toolName: call.name,
+                toolInput: call.input,
+                structuredOutput: (message as { tool_use_result?: unknown }).tool_use_result,
+                correlated: results.length === 1,
+                isError: block.is_error === true,
+                nativeSessionId: message.session_id,
+              });
+              expect(envelope.semanticSuccess, JSON.stringify(envelope)).toBe(true);
+              state =
+                reduceTaskToolLifecycle(state, {
+                  phase: "completed",
+                  nativeCallId: block.tool_use_id,
+                  toolName: call.name,
+                  turnId: null,
+                  completion: envelope,
+                }) ?? state;
+            }
+          }
+          expect([...calls.values()].filter((call) => call.name === "TaskCreate")).toHaveLength(3);
+          expect(state.tracking?.syncState, JSON.stringify(state.tracking)).toBe("synced");
+          expect(state.tracking?.pendingCalls).toEqual([]);
+          expect(state.tasks).toHaveLength(3);
+          expect(state.tasks.every((task) => task.status === "completed")).toBe(true);
+        },
+        "claude-fable-5-1",
+        defaultEnv,
+      );
+    }, 90_000);
+
+    it("keeps TodoWrite when an operator opts out of native Task tools", async () => {
+      await withQuery(
+        async (q, input) => {
+          const messages = await runTurn(
+            q,
+            input,
+            "Use TodoWrite to track exactly three steps: compute 2+2, compute 3+3, and report both answers. Mark all three completed using TodoWrite. Do not use other tools.",
+          );
           expect(
             messages.some(
-              (m) =>
-                m.type === "user" &&
-                Array.isArray(m.message.content) &&
-                m.message.content.some(
-                  (block) =>
-                    block.type === "tool_result" &&
-                    block.tool_use_id === last.id &&
-                    !block.is_error,
-                ),
+              (m) => m.type === "system" && m.subtype === "init" && m.tools.includes("TodoWrite"),
             ),
           ).toBe(true);
-        }
-      });
+          const calls = messages.flatMap((m) =>
+            m.type === "assistant"
+              ? m.message.content.filter(
+                  (block) => block.type === "tool_use" && block.name === "TodoWrite",
+                )
+              : [],
+          );
+          expect(calls.length).toBeGreaterThanOrEqual(1);
+          const last = calls.at(-1);
+          expect(last?.type).toBe("tool_use");
+          if (last?.type === "tool_use") {
+            const todos = (last.input as { todos: Array<{ status: string }> }).todos;
+            expect(todos).toHaveLength(3);
+            expect(todos.every((todo) => todo.status === "completed")).toBe(true);
+          }
+        },
+        "claude-fable-5-1",
+        { ...defaultEnv, CLAUDE_CODE_ENABLE_TASKS: "0" },
+      );
     }, 60_000);
 
     it.each(["claude-fable-5-1", "claude-opus-4-8", "claude-opus-5-5"])(

@@ -236,6 +236,10 @@
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"
     },
+    "./claudeTaskToolProjection": {
+      "types": "./src/claudeTaskToolProjection.ts",
+      "import": "./src/claudeTaskToolProjection.ts"
+    },
     "./pendingUserInputs": {
       "types": "./src/pendingUserInputs.ts",
       "import": "./src/pendingUserInputs.ts"

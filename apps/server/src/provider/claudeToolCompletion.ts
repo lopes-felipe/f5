@@ -12,18 +12,9 @@ import {
 import { createAttachmentId } from "../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
 
-/**
- * Claude's native task-tracking tools (the `CLAUDE_CODE_ENABLE_TASKS` surface).
- * Not to be confused with the legacy `Task` sub-agent delegation tool.
- */
-export const CLAUDE_TASK_TOOL_NAMES = ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"] as const;
-export type ClaudeTaskToolName = (typeof CLAUDE_TASK_TOOL_NAMES)[number];
+import { isTaskToolName } from "@t3tools/shared/claudeTaskToolProjection";
 
-const TASK_TOOL_NAME_SET: ReadonlySet<string> = new Set(CLAUDE_TASK_TOOL_NAMES);
-
-export function isClaudeTaskToolName(value: unknown): value is ClaudeTaskToolName {
-  return typeof value === "string" && TASK_TOOL_NAME_SET.has(value);
-}
+export { isTaskToolName as isClaudeTaskToolName };
 
 /**
  * Tools whose structured output F5 consumes and therefore persists. Other tools
@@ -31,7 +22,7 @@ export function isClaudeTaskToolName(value: unknown): value is ClaudeTaskToolNam
  * native event log, so ordinary Read/Bash results never bloat thread storage.
  */
 function retainsStructuredOutput(toolName: string): boolean {
-  return isClaudeTaskToolName(toolName);
+  return isTaskToolName(toolName);
 }
 
 interface SerializedValue {

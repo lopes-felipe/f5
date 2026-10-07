@@ -27,7 +27,7 @@ import {
   requireThreadAbsent,
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
-import { validateThreadTasks } from "./threadTasks.ts";
+import { validateThreadTaskTracking, validateThreadTasks } from "./threadTasks.ts";
 import { resolveWorkflowBehavior, documentWorkflowCreateInvariant } from "./workflowBehavior.ts";
 import {
   buildCodeReviewWorkflowRecord,
@@ -2015,17 +2015,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.tasks.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
 
-      const taskValidationError = validateThreadTasks(command.tasks);
+      const taskValidationError =
+        validateThreadTasks(command.tasks) ??
+        (command.tracking ? validateThreadTaskTracking(command.tracking) : null);
       if (taskValidationError) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: taskValidationError,
+        });
+      }
+      // Fence native Task tool updates computed before a revert advanced the
+      // generation; the caller recomputes from the current snapshot.
+      if (
+        command.expectedTrackingGeneration !== undefined &&
+        (thread.tasksTracking?.generation ?? 0) !== command.expectedTrackingGeneration
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Stale task tracking generation ${command.expectedTrackingGeneration}; current is ${thread.tasksTracking?.generation ?? 0}.`,
         });
       }
 
@@ -2041,6 +2054,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           tasks: command.tasks,
           turnId: command.turnId ?? null,
+          ...(command.tracking ? { tracking: command.tracking } : {}),
           updatedAt: command.createdAt,
         },
       };

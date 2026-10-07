@@ -161,6 +161,7 @@ describe("orchestration projector", () => {
         messages: [],
         proposedPlans: [],
         tasks: [],
+        tasksTracking: null,
         tasksTurnId: null,
         tasksUpdatedAt: null,
         sessionNotes: null,

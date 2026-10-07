@@ -243,7 +243,9 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("## Claude Runtime Notes");
     expect(text).toContain("planning-workflow role");
     expect(text).toContain("prior-work summary");
-    expect(text).toContain("use the TodoWrite tool to track progress");
+    expect(text).toContain("track progress with the task-tracking tools available");
+    expect(text).toContain("TaskCreate/TaskUpdate/TaskList, or TodoWrite");
+    expect(text).not.toContain("exactly one task in_progress");
     expect(text).toContain('subagent_type: "Explore"');
     expect(text).toContain("smart colleague who just walked into the room");
     expect(text).toContain("Never delegate understanding");

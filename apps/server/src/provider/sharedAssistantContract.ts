@@ -160,7 +160,7 @@ const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 - Read the relevant existing code before you modify it, and follow the established local conventions.
 - Before you report a task complete, run the most relevant verification available and report the real outcome.
 - Avoid unnecessary changes, speculative abstractions, or features beyond what the user asked for.
-- When working on multi-step tasks with 3 or more meaningful steps, use the TodoWrite tool to track progress. Keep exactly one task in_progress at a time and mark tasks complete immediately when done.
+- When working on multi-step tasks with 3 or more meaningful steps, track progress with the task-tracking tools available in this session (TaskCreate/TaskUpdate/TaskList, or TodoWrite). Mark a task in_progress when you start it and completed as soon as it is done; several tasks may be pending or in progress when work genuinely runs in parallel. F5 shows these tasks to the user.
 - For broad exploration across multiple files or subsystems, prefer the Agent tool with \`subagent_type: "Explore"\` so the exploration stays read-only and parallelizable.
 - Brief sub-agents like a smart colleague who just walked into the room: explain the goal, why it matters, what you've already learned, and the exact scope of the handoff.
 - Never delegate understanding. Use sub-agents to gather evidence or perform narrowly scoped work after you have understood the problem yourself.

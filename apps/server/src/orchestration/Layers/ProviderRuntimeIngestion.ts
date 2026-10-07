@@ -76,7 +76,13 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
-import { validateThreadTasks } from "../threadTasks.ts";
+import { validateThreadTaskTracking, validateThreadTasks } from "../threadTasks.ts";
+import {
+  isTaskToolName,
+  reduceTaskToolLifecycle,
+  type TaskToolLifecycleInput,
+  type TaskToolName,
+} from "@t3tools/shared/claudeTaskToolProjection";
 import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
 import { increment, providerProjectionWriteFailuresTotal } from "../../observability/Metrics.ts";
 import {
@@ -1070,6 +1076,42 @@ function todoWriteInputFromLifecycleEvent(
   return asRecord(data?.input);
 }
 
+function taskToolNameFromLifecycleEvent(
+  event: ItemLifecycleRuntimeEvent,
+): TaskToolName | undefined {
+  const toolName = asRecord(event.payload.data)?.toolName;
+  return isTaskToolName(toolName) ? toolName : undefined;
+}
+
+/** TodoWrite and native Task tool calls feed the task panel, not the work log. */
+function isTaskTrackingLifecycleEvent(event: ItemLifecycleRuntimeEvent): boolean {
+  return (
+    todoWriteInputFromLifecycleEvent(event) !== undefined ||
+    taskToolNameFromLifecycleEvent(event) !== undefined
+  );
+}
+
+function taskToolLifecycleInput(
+  event: ItemLifecycleRuntimeEvent,
+  turnId: TurnId | null,
+): TaskToolLifecycleInput | undefined {
+  const toolName = taskToolNameFromLifecycleEvent(event);
+  if (!toolName || !event.itemId) return undefined;
+  if (event.type === "item.started") {
+    return { phase: "started", nativeCallId: event.itemId, toolName, turnId };
+  }
+  if (event.type === "item.completed" && event.payload.completion) {
+    return {
+      phase: "completed",
+      nativeCallId: event.payload.completion.nativeCallId,
+      toolName,
+      turnId,
+      completion: event.payload.completion,
+    };
+  }
+  return undefined;
+}
+
 function buildTodoTaskId(content: string, activeForm: string, occurrence: number): string {
   const slug = content
     .toLowerCase()
@@ -1949,7 +1991,7 @@ function runtimeEventToActivities(
     }
 
     case "item.updated": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (shouldSuppressCollaborationUpdate(event)) {
@@ -1980,7 +2022,7 @@ function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -2008,7 +2050,7 @@ function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -3163,6 +3205,69 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Read, reduce and dispatch one native Task tool event. The serial ingestion
+   * worker orders events per thread; the generation fence in the decider covers
+   * a revert landing between the read and the dispatch, in which case the
+   * update is recomputed once from the post-revert snapshot.
+   */
+  const applyTaskToolLifecycle = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly input: TaskToolLifecycleInput;
+    readonly now: string;
+  }) => {
+    const attempt = (attemptIndex: 0 | 1) =>
+      Effect.gen(function* () {
+        const readModel = yield* orchestrationEngine.getReadModel();
+        const current = readModel.threads.find((entry) => entry.id === input.threadId);
+        if (!current) return "done" as const;
+        const tracking = current.tasksTracking ?? null;
+        const result = reduceTaskToolLifecycle({ tasks: current.tasks, tracking }, input.input);
+        if (!result) return "done" as const;
+        const invalid =
+          validateThreadTasks(result.tasks) ?? validateThreadTaskTracking(result.tracking);
+        if (invalid) {
+          yield* Effect.logWarning("skipping invalid native task snapshot", {
+            eventId: input.event.eventId,
+            threadId: input.threadId,
+            detail: invalid,
+          });
+          return "done" as const;
+        }
+        return yield* orchestrationEngine
+          .dispatch({
+            type: "thread.tasks.update",
+            commandId: providerCommandId(
+              input.event,
+              attemptIndex === 0 ? "thread-task-tools-update" : "thread-task-tools-update-retry",
+            ),
+            threadId: input.threadId,
+            tasks: result.tasks,
+            ...(input.input.turnId ? { turnId: input.input.turnId } : {}),
+            tracking: result.tracking,
+            expectedTrackingGeneration: tracking?.generation ?? 0,
+            createdAt: input.now,
+          })
+          .pipe(
+            Effect.as("done" as const),
+            Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+              error.detail.startsWith("Stale task tracking generation")
+                ? Effect.succeed("stale" as const)
+                : Effect.fail(error),
+            ),
+          );
+      });
+    return Effect.gen(function* () {
+      if ((yield* attempt(0)) === "done") return;
+      if ((yield* attempt(1)) === "done") return;
+      yield* Effect.logWarning("dropping native task update after repeated reverts", {
+        eventId: input.event.eventId,
+        threadId: input.threadId,
+      });
+    });
+  };
+
   const processRuntimeEvent = (incomingEvent: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       let event = incomingEvent;
@@ -3917,6 +4022,14 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      const taskToolInput =
+        event.type === "item.started" || event.type === "item.completed"
+          ? taskToolLifecycleInput(event, eventTurnId ?? null)
+          : undefined;
+      if (taskToolInput) {
+        yield* applyTaskToolLifecycle({ event, threadId: thread.id, input: taskToolInput, now });
       }
 
       if (event.type === "compaction.recommended") {

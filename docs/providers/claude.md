@@ -34,11 +34,12 @@ your normal home directory.
 F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
-F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
-to expose the legacy `TodoWrite` surface required by its assistant instructions. Set
-`CLAUDE_CODE_ENABLE_TASKS=1` in the server environment to opt into the newer task-tracking
-surface instead; F5 preserves this explicit operator override. That surface replaces
-`TodoWrite` with task-tracking tools.
+F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
+exposes the native Task tools (`TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`). In SDK
+mode `CLAUDE_CODE_ENABLE_TODO_TOOLS` is the master switch for task tracking (unset, neither
+surface appears) and `CLAUDE_CODE_ENABLE_TASKS` picks the surface. Set
+`CLAUDE_CODE_ENABLE_TASKS=0` in the server environment to return to `TodoWrite`. Explicit
+operator values for either variable are preserved. See [Native Task tools](#native-task-tools-release-1).
 
 With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
 advisory. Known versions below v2.1.280 also omit Opus 5.5 and show the upgrade advisory.
@@ -80,7 +81,7 @@ failures fail the live run rather than being reported as passes or automatic ski
 
 The suite uses the bundled executable and the adapter's production query environment. It checks
 account usage through `normalizeClaudeAccountUsage`, native 1M context, cancellation and child
-process exit, streamed `TodoWrite` calls completing a three-step task, and structured `xhigh`
+process exit, streamed task-tracking calls (native Task tools, or `TodoWrite` when opted out) completing a three-step task, and structured `xhigh`
 generation through the production generator and schema validator.
 
 ## I Want Work And Personal Claude Accounts
@@ -436,3 +437,38 @@ direction, with or without a launch `thinking` option. F5 still sends it on mode
 changes, but in practice a thinking toggle change takes effect at the next session
 start. This predates Release 1. The deprecated `setMaxThinkingTokens` control was
 removed from F5's runtime interface; it was never called.
+
+## Native Task tools (Release 1)
+
+The task panel is a projection of the native Task tools. F5 never writes tasks back
+to Claude; it applies tool results as they arrive:
+
+- Only successful results change tasks. `TaskCreate` appends the returned id;
+  `TaskUpdate` applies its input unless the result reports `success: false`, and
+  `status: "deleted"` removes the task; `TaskList` and `TaskGet` reconcile by id while
+  keeping fields the read omitted (for example `activeForm` and `description`).
+- Each call is applied once per `tool_use_id`, in order per thread. Several tasks may be
+  pending or in progress at once. Owner and blocking dependencies appear in the panel.
+- When F5 cannot tell what changed — a result without a matching start, an unknown task
+  id, a new native session, or output it could not retain — the panel shows
+  "Task list may be out of date" until the next `TaskList` resynchronizes it. F5 never
+  invents tasks from unmatched results.
+- Bounds: 512 tasks and 64 unresolved calls per thread. Beyond them the panel keeps the
+  last valid snapshot and shows an overflow notice.
+- Revert and checkpoint restore drop tasks created in discarded turns, remember their
+  ids so a later `TaskList` cannot resurrect them, invalidate in-flight calls, and bump a
+  tracking generation. Writes computed against an older generation are rejected, so
+  late results from a discarded turn are ignored.
+- Task tool calls do not appear as work-log rows. Their typed completion (native call id,
+  correlated input, structured result, transport and semantic success) is persisted once
+  on `item.completed`; results above 64 KiB are stored as a thread-scoped JSON
+  attachment and referenced with omission metadata. Other tools record ids and success
+  flags only.
+- Only the main session's Task tools drive the panel; child-agent task lists stay with
+  the child.
+
+Tracking state is stored with the thread (`tasks_tracking_json`). `TodoWrite`
+snapshots keep their previous behavior and clear on revert.
+
+Wire protocol 16 adds the tracking state, task dependency fields, and the completion
+envelope; clients and servers must both run Release 1.

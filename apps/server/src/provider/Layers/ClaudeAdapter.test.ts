@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { afterAll, beforeAll, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -528,6 +528,21 @@ function emitClaudeSuccessResult(
 }
 
 describe("ClaudeAdapterLive", () => {
+  // The adapter inherits process.env; a host Claude Code session may export task
+  // variables that would be honored as operator overrides. Assert F5 defaults.
+  const inheritedTaskEnv = {
+    CLAUDE_CODE_ENABLE_TASKS: process.env.CLAUDE_CODE_ENABLE_TASKS,
+    CLAUDE_CODE_ENABLE_TODO_TOOLS: process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS,
+  };
+  beforeAll(() => {
+    for (const key of Object.keys(inheritedTaskEnv)) delete process.env[key];
+  });
+  afterAll(() => {
+    for (const [key, value] of Object.entries(inheritedTaskEnv)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  });
+
   for (const sessionSignals of [false, true]) {
     it.effect(
       `keeps background continuations in one turn (idle signals: ${sessionSignals})`,
@@ -1185,8 +1200,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.permissionMode, "default");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1196,10 +1211,16 @@ describe("ClaudeAdapterLive", () => {
 
   it("honors the operator task-tool override in every subagent environment branch", () => {
     for (const options of [undefined, { subagentModel: "inherit" }, { subagentModel: "fable-5" }]) {
-      const env = buildClaudeQueryEnv(options, { CLAUDE_CODE_ENABLE_TASKS: "1" });
-      assert.equal(env.CLAUDE_CODE_ENABLE_TASKS, "1");
-      assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
+      const optedOut = buildClaudeQueryEnv(options, { CLAUDE_CODE_ENABLE_TASKS: "0" });
+      assert.equal(optedOut.CLAUDE_CODE_ENABLE_TASKS, "0");
+      // TODO_TOOLS is the master switch; TASKS=0 selects the TodoWrite surface.
+      assert.equal(optedOut.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      const explicit = buildClaudeQueryEnv(options, {
+        CLAUDE_CODE_ENABLE_TASKS: "0",
+        CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+      });
+      assert.equal(explicit.CLAUDE_CODE_ENABLE_TODO_TOOLS, "0");
+      assert.equal(explicit.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
     }
   });
 
@@ -1232,8 +1253,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1257,8 +1278,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-opus-5");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3857,6 +3878,34 @@ describe("ClaudeAdapterLive", () => {
           tool_use_result: structured,
         } as unknown as SDKMessage);
 
+      // A child agent's own task list must not drive the parent thread's panel.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tasks",
+        uuid: "stream-child-task",
+        parent_tool_use_id: "agent-tool",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "child-task-create",
+            name: "TaskCreate",
+            input: { subject: "Child work" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-tasks",
+        uuid: "user-child-task",
+        parent_tool_use_id: "agent-tool",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "child-task-create", content: "ok" }],
+        },
+        tool_use_result: { task: { id: "1", subject: "Child work" } },
+      } as unknown as SDKMessage);
       toolUse(0, "tool-task-create-1", "TaskCreate", {
         subject: "Run tests",
         description: "Run the suite",
@@ -3875,6 +3924,10 @@ describe("ClaudeAdapterLive", () => {
       const completions = events.filter(
         (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
           event.type === "item.completed",
+      );
+      assert.equal(
+        events.some((event) => event.itemId === "child-task-create"),
+        false,
       );
       const created = completions.find((event) => event.itemId === "tool-task-create-1");
       assert.equal(created?.payload.itemType, "dynamic_tool_call");

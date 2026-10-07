@@ -1385,12 +1385,15 @@ export function buildClaudeQueryEnv(
   providerOptions: { readonly subagentModel?: string | undefined } | undefined,
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  // New models omit task tools by default. Keep the TodoWrite surface required
-  // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
+  // In SDK mode ENABLE_TODO_TOOLS is the master switch for task tracking and
+  // ENABLE_TASKS picks the surface (verified on Claude Code 2.1.292): with
+  // TODO_TOOLS unset neither TodoWrite nor TaskCreate is exposed. F5 projects
+  // both surfaces and defaults to the native Task tools. Explicit operator
+  // values always win.
   const taskEnvironment = {
     CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-    CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
-    CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "0",
+    CLAUDE_CODE_ENABLE_TODO_TOOLS: environment.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? "1",
+    CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "1",
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {

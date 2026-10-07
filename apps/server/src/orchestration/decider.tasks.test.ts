@@ -122,56 +122,76 @@ describe("decider task validation", () => {
     ).rejects.toThrow("duplicate id 'task-dup'");
   });
 
-  it("rejects multiple in-progress tasks", async () => {
+  it.each([
+    [
+      "several in-progress tasks",
+      [
+        { id: "task-1", content: "Inspect", activeForm: "Inspecting", status: "in_progress" },
+        { id: "task-2", content: "Patch", activeForm: "Patching", status: "in_progress" },
+      ],
+    ],
+    [
+      "an incomplete list with nothing in progress",
+      [
+        { id: "task-1", content: "Inspect", activeForm: "Inspecting", status: "completed" },
+        { id: "task-2", content: "Patch", activeForm: "Patching", status: "pending" },
+      ],
+    ],
+  ] as const)("accepts %s (native Task tools allow it)", async (_label, tasks) => {
     const readModel = await createThreadReadModel();
-
-    await expect(
-      Effect.runPromise(
-        decideOrchestrationCommand({
-          command: makeTasksUpdateCommand([
-            {
-              id: "task-1",
-              content: "Inspect implementation",
-              activeForm: "Inspecting implementation",
-              status: "in_progress",
-            },
-            {
-              id: "task-2",
-              content: "Apply patch",
-              activeForm: "Applying patch",
-              status: "in_progress",
-            },
-          ]),
-          readModel,
-        }),
-      ),
-    ).rejects.toThrow("Only one task may be in_progress at a time.");
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({ command: makeTasksUpdateCommand(tasks), readModel }),
+    );
+    expect([result].flat()[0]?.type).toBe("thread.tasks.updated");
   });
 
-  it("rejects incomplete task snapshots without an in-progress task", async () => {
+  it("rejects more than 512 tasks", async () => {
     const readModel = await createThreadReadModel();
+    const tasks = Array.from({ length: 513 }, (_, index) => ({
+      id: `task-${index}`,
+      content: "Task",
+      activeForm: "Task",
+      status: "pending" as const,
+    }));
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({ command: makeTasksUpdateCommand(tasks), readModel }),
+      ),
+    ).rejects.toThrow("at most 512 tasks");
+  });
 
+  it("fences native task updates computed before a revert advanced the generation", async () => {
+    const readModel = await createThreadReadModel();
+    const tracking = {
+      version: 1 as const,
+      source: "claude-task-tools" as const,
+      nativeSessionId: null,
+      generation: 2,
+      syncState: "synced" as const,
+      pendingCalls: [],
+      invalidatedCallIds: [],
+      handledCallIds: [],
+      provenance: [],
+      suppressedTaskIds: [],
+    };
+    const accepted = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: { ...makeTasksUpdateCommand([]), tracking, expectedTrackingGeneration: 0 },
+        readModel,
+      }),
+    );
+    const event = Array.isArray(accepted) ? accepted[0]! : accepted;
+    expect(event.type === "thread.tasks.updated" ? event.payload.tracking : null).toEqual(tracking);
+
+    const advanced = await Effect.runPromise(projectEvent(readModel, { ...event, sequence: 2 }));
     await expect(
       Effect.runPromise(
         decideOrchestrationCommand({
-          command: makeTasksUpdateCommand([
-            {
-              id: "task-1",
-              content: "Inspect implementation",
-              activeForm: "Inspecting implementation",
-              status: "completed",
-            },
-            {
-              id: "task-2",
-              content: "Apply patch",
-              activeForm: "Applying patch",
-              status: "pending",
-            },
-          ]),
-          readModel,
+          command: { ...makeTasksUpdateCommand([]), tracking, expectedTrackingGeneration: 0 },
+          readModel: advanced,
         }),
       ),
-    ).rejects.toThrow("An incomplete task list must have exactly one task in_progress.");
+    ).rejects.toThrow("Stale task tracking generation 0; current is 2.");
   });
 
   it("accepts fully completed task snapshots", async () => {

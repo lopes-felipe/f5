@@ -369,6 +369,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             },
           ],
           tasks: [],
+          tasksTracking: null,
           tasksTurnId: null,
           tasksUpdatedAt: null,
           sessionNotes: null,

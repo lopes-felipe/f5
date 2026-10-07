@@ -7004,18 +7004,12 @@ describe("ProviderRuntimeIngestion", () => {
         data: {
           toolName: "TodoWrite",
           input: {
-            todos: [
-              {
-                content: "Inspect implementation",
-                activeForm: "Inspecting implementation",
-                status: "in_progress",
-              },
-              {
-                content: "Apply patch",
-                activeForm: "Applying patch",
-                status: "in_progress",
-              },
-            ],
+            // One more than MAX_THREAD_TASKS; several in_progress tasks are valid.
+            todos: Array.from({ length: 513 }, (_, index) => ({
+              content: `Step ${index}`,
+              activeForm: `Doing step ${index}`,
+              status: "in_progress",
+            })),
           },
         },
       },
@@ -7025,6 +7019,116 @@ describe("ProviderRuntimeIngestion", () => {
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === "thread-1");
     expect(thread?.tasks).toEqual([]);
+  });
+
+  it("projects native Task tool results onto thread tasks and hides their tool rows", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-task-1");
+    const emitCall = (
+      callId: string,
+      toolName: string,
+      input: Record<string, unknown>,
+      output: unknown,
+      semanticSuccess = true,
+    ) => {
+      harness.emit({
+        type: "item.started",
+        eventId: asEventId(`evt-${callId}-start`),
+        provider: "claudeAgent",
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId: asItemId(callId),
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: "inProgress",
+          title: toolName,
+          data: { toolName, input },
+        },
+      });
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-${callId}-complete`),
+        provider: "claudeAgent",
+        createdAt: now,
+        threadId,
+        turnId,
+        itemId: asItemId(callId),
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: semanticSuccess ? "completed" : "failed",
+          title: toolName,
+          data: { toolName, input },
+          completion: {
+            version: 1,
+            nativeCallId: callId,
+            nativeSessionId: "native-session-1",
+            toolName,
+            input,
+            structuredOutput: output,
+            transportError: false,
+            semanticSuccess,
+          },
+        },
+      });
+    };
+
+    emitCall(
+      "task-create-1",
+      "TaskCreate",
+      { subject: "Write tests", activeForm: "Writing tests" },
+      { task: { id: "1", subject: "Write tests" } },
+    );
+    emitCall(
+      "task-create-2",
+      "TaskCreate",
+      { subject: "Ship it" },
+      { task: { id: "2", subject: "Ship it" } },
+    );
+    emitCall(
+      "task-update-1",
+      "TaskUpdate",
+      { taskId: "1", status: "in_progress", owner: "main" },
+      { success: true, taskId: "1", updatedFields: ["status", "owner"] },
+    );
+    emitCall(
+      "task-update-2",
+      "TaskUpdate",
+      { taskId: "2", status: "completed" },
+      { success: false, taskId: "2", updatedFields: [], error: "Task is blocked" },
+      false,
+    );
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.tasks.length === 2 &&
+        entry.tasksTracking?.handledCallIds.includes("task-update-2") === true,
+    );
+    expect(thread.tasks).toEqual([
+      expect.objectContaining({
+        id: "1",
+        content: "Write tests",
+        activeForm: "Writing tests",
+        status: "in_progress",
+        owner: "main",
+      }),
+      expect.objectContaining({ id: "2", content: "Ship it", status: "pending" }),
+    ]);
+    expect(thread.tasksTracking).toMatchObject({
+      source: "claude-task-tools",
+      nativeSessionId: "native-session-1",
+      generation: 0,
+      syncState: "synced",
+      pendingCalls: [],
+    });
+    expect(
+      thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
+        String(activity.id).startsWith("evt-task-"),
+      ),
+    ).toEqual([]);
   });
 
   it.each(["turn.completed", "turn.aborted"] as const)(
