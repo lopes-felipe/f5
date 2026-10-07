@@ -434,6 +434,22 @@ function idListsEqual(
   return left.every((value, index) => value === right[index]);
 }
 
+/** Whether a task can be reused as-is; shared with snapshot hydration. */
+export function taskItemsEqual(
+  existing: Thread["tasks"][number],
+  task: Thread["tasks"][number],
+): boolean {
+  return (
+    existing.content === task.content &&
+    existing.activeForm === task.activeForm &&
+    existing.status === task.status &&
+    existing.description === task.description &&
+    existing.owner === task.owner &&
+    idListsEqual(existing.blocks, task.blocks) &&
+    idListsEqual(existing.blockedBy, task.blockedBy)
+  );
+}
+
 function mergeTasks(
   previous: Thread["tasks"],
   nextTasks: Extract<OrchestrationEvent, { type: "thread.tasks.updated" }>["payload"]["tasks"],
@@ -443,16 +459,7 @@ function mergeTasks(
 
   const merged = nextTasks.map((task) => {
     const existing = previousById.get(task.id);
-    if (
-      existing &&
-      existing.content === task.content &&
-      existing.activeForm === task.activeForm &&
-      existing.status === task.status &&
-      existing.description === task.description &&
-      existing.owner === task.owner &&
-      idListsEqual(existing.blocks, task.blocks) &&
-      idListsEqual(existing.blockedBy, task.blockedBy)
-    ) {
+    if (existing && taskItemsEqual(existing, task)) {
       return existing;
     }
     reusedAll = false;
@@ -1334,11 +1341,11 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         ) {
           return thread;
         }
-        // Same rule as the server projector (an unknown retained set suppresses
-        // every attributed native task), so stale clients stay consistent.
+        // Same rule as the server projector, using the same retained-turn
+        // fallback as messages and activities.
         const revertedTasks = revertTaskToolState(
           { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
-          event.payload.retainedTurnIds ? new Set(event.payload.retainedTurnIds) : undefined,
+          retainedTurnIds,
         );
         return {
           ...thread,

@@ -7131,6 +7131,43 @@ describe("ProviderRuntimeIngestion", () => {
     ).toEqual([]);
   });
 
+  it("releases a Task tool call that completes without a result", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const base = {
+      provider: "claudeAgent" as const,
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-task-cut"),
+      itemId: asItemId("task-cut"),
+    };
+    const payload = {
+      itemType: "dynamic_tool_call" as const,
+      title: "TaskUpdate",
+      data: { toolName: "TaskUpdate", input: { taskId: "1", status: "completed" } },
+    };
+    harness.emit({
+      ...base,
+      type: "item.started",
+      eventId: asEventId("evt-task-cut-start"),
+      payload: { ...payload, status: "inProgress" },
+    });
+    // Interrupt/stop: the adapter completes in-flight tools without an envelope.
+    harness.emit({
+      ...base,
+      type: "item.completed",
+      eventId: asEventId("evt-task-cut-complete"),
+      payload: { ...payload, status: "failed" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.tasksTracking?.handledCallIds.includes("task-cut") === true,
+    );
+    expect(thread.tasks).toEqual([]);
+    expect(thread.tasksTracking).toMatchObject({ pendingCalls: [], syncState: "sync-required" });
+  });
+
   it.each(["turn.completed", "turn.aborted"] as const)(
     "dismisses blocking questions after %s",
     async (type) => {

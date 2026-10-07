@@ -1228,6 +1228,17 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) {
             return;
           }
+          // Events without retainedTurnIds fall back to the first turnCount
+          // turns, as message and activity projections do.
+          const retainedTurnIds = new Set<string>(
+            event.payload.retainedTurnIds ??
+              retainedProjectionTurns(
+                yield* projectionTurnRepository.listByThreadId({
+                  threadId: event.payload.threadId,
+                }),
+                event.payload.turnCount,
+              ).flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+          );
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: null,
@@ -1239,7 +1250,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                   tasks: existingRow.value.tasks,
                   tracking: existingRow.value.tasksTracking ?? null,
                 },
-                event.payload.retainedTurnIds ? new Set(event.payload.retainedTurnIds) : undefined,
+                retainedTurnIds,
               );
               return {
                 tasks: [...reverted.tasks],

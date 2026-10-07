@@ -908,6 +908,28 @@ describe("applyDomainEvent", () => {
       invalidatedCallIds: ["late"],
       suppressedTaskIds: ["2"],
     });
+
+    // Without retainedTurnIds, retained checkpoints decide, as for messages.
+    const withCheckpoints = {
+      ...updated,
+      threads: updated.threads.map((thread) => ({
+        ...thread,
+        turnDiffSummaries: [turn1, turn2].map((turnId, index) => ({
+          turnId,
+          completedAt: `2026-04-01T09:0${index + 1}:40.000Z`,
+          status: "ready" as const,
+          checkpointTurnCount: index + 1,
+          checkpointRef: `checkpoint-${index + 1}` as never,
+          files: [],
+        })),
+      })),
+    };
+    const legacy = applyDomainEvent(
+      withCheckpoints,
+      makeEvent("thread.reverted", { threadId: ThreadId.makeUnsafe("thread-1"), turnCount: 1 }),
+    );
+    expect(legacy.threads[0]?.tasks.map((task) => task.id)).toEqual(["1"]);
+    expect(legacy.threads[0]?.tasksTracking?.suppressedTaskIds).toEqual(["2"]);
   });
 
   it("upserts proposed plans and keeps the thread recency current", () => {

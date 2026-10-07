@@ -1109,6 +1109,10 @@ function taskToolLifecycleInput(
       completion: event.payload.completion,
     };
   }
+  if (event.type === "item.completed") {
+    // Turn end, interrupt, and stop complete in-flight tools without a result.
+    return { phase: "abandoned", nativeCallId: event.itemId, toolName, turnId };
+  }
   return undefined;
 }
 

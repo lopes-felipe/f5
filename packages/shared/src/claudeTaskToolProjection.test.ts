@@ -385,6 +385,35 @@ describe("reduceTaskToolLifecycle", () => {
     expect(listed.tasks).toEqual(base.tasks);
     expect(listed.tracking?.syncState).toBe("overflow");
   });
+
+  it("releases a call that ended without a result and marks sync required", () => {
+    const base = create(empty, "1", "Build");
+    const started = reduceTaskToolLifecycle(base, {
+      phase: "started",
+      nativeCallId: "cut",
+      toolName: "TaskUpdate",
+      turnId: TURN_1,
+    })!;
+    const abandoned = reduceTaskToolLifecycle(started, {
+      phase: "abandoned",
+      nativeCallId: "cut",
+      toolName: "TaskUpdate",
+      turnId: TURN_1,
+    });
+    expect(abandoned?.tasks).toEqual(base.tasks);
+    expect(abandoned?.tracking.pendingCalls).toEqual([]);
+    expect(abandoned?.tracking.handledCallIds).toContain("cut");
+    expect(abandoned?.tracking.syncState).toBe("sync-required");
+    // Unknown calls are a no-op rather than a sync failure.
+    expect(
+      reduceTaskToolLifecycle(base, {
+        phase: "abandoned",
+        nativeCallId: "never-started",
+        toolName: "TaskUpdate",
+        turnId: TURN_1,
+      }),
+    ).toBeUndefined();
+  });
 });
 
 describe("revertTaskToolState", () => {

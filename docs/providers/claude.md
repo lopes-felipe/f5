@@ -330,8 +330,9 @@ Release 0 sends F5's full host contract through the type-checked Claude Code pre
 `systemPrompt.append`, with `snapshot: false`, on every start and resume. The previous
 `appendSystemPrompt` option was ignored by the SDK. The append includes workflow policy,
 project memory, preserved transcript and post-compaction prior-work context. Threads
-compacted before this fix regain that context on their next restart. Instruction profiles
-now identify Claude supplement `v11`. Turn counters are omitted from this append so normal
+compacted before this fix regain that context on their next restart. Release 0 instruction
+profiles identified Claude supplement `v11`; Release 1 uses `v12` (see
+[Plan-mode instructions](#plan-mode-instructions-release-1)). Turn counters are omitted from this append so normal
 turns do not invalidate its prompt cache; date, model and effort update on relaunch.
 
 Transcript injection is disabled by default pending the authenticated snapshot-replacement
@@ -449,8 +450,9 @@ to Claude; it applies tool results as they arrive:
   keeping fields the read omitted (for example `activeForm` and `description`).
 - Each call is applied once per `tool_use_id`, in order per thread. Several tasks may be
   pending or in progress at once. Owner and blocking dependencies appear in the panel.
-- When F5 cannot tell what changed — a result without a matching start, an unknown task
-  id, a new native session, or output it could not retain — the panel shows
+- When F5 cannot tell what changed — a result without a matching start, a call that
+  ended without a result (interrupt, stream failure, stop), an unknown task id, a new
+  native session, or output it could not retain — the panel shows
   "Task list may be out of date" until the next `TaskList` resynchronizes it. F5 never
   invents tasks from unmatched results.
 - Bounds: 512 tasks and 64 unresolved calls per thread. Beyond them the panel keeps the

@@ -1509,7 +1509,7 @@ export function projectEvent(
               }),
               // TodoWrite snapshots are cleared; native Task tool state drops and
               // suppresses tasks from discarded turns and bumps its generation.
-              ...revertedTaskFields(thread, payload.retainedTurnIds),
+              ...revertedTaskFields(thread, [...retainedTurnIds]),
               compaction: null,
               ...(session !== thread.session ? { session } : {}),
               estimatedContextTokens: null,

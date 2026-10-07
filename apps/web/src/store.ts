@@ -24,7 +24,7 @@ import {
   type TurnDiffSummary,
 } from "./types";
 import { Debouncer } from "@tanstack/react-pacer";
-import { applyDomainEvent } from "./applyDomainEvent";
+import { applyDomainEvent, taskItemsEqual } from "./applyDomainEvent";
 import {
   areUnknownEqual,
   arraysShallowEqual,
@@ -497,12 +497,7 @@ function mapTasksFromReadModel(
 
   const next = incoming.map((task) => {
     const existing = previousById.get(task.id);
-    if (
-      existing &&
-      existing.content === task.content &&
-      existing.activeForm === task.activeForm &&
-      existing.status === task.status
-    ) {
+    if (existing && taskItemsEqual(existing, task)) {
       return existing;
     }
     reusedAll = false;

@@ -51,6 +51,13 @@ export type TaskToolLifecycleInput =
       readonly toolName: TaskToolName;
       readonly turnId: TurnId | null;
       readonly completion: ToolCompletionEnvelope;
+    }
+  | {
+      /** The call ended (interrupt, stream failure, stop) without a result. */
+      readonly phase: "abandoned";
+      readonly nativeCallId: string;
+      readonly toolName: TaskToolName;
+      readonly turnId: TurnId | null;
     };
 
 export function emptyTaskToolTracking(): ThreadTaskTracking {
@@ -411,8 +418,20 @@ export function reduceTaskToolLifecycle(
     };
   }
 
-  const { completion } = input;
   const pending = base.pendingCalls.find((call) => call.nativeCallId === nativeCallId);
+  if (input.phase === "abandoned") {
+    if (!pending) return undefined;
+    // Release the pending slot; the call may still have run natively.
+    return {
+      tasks: [...state.tasks],
+      tracking: markSyncRequired(
+        resolveCall(base, nativeCallId),
+        `A ${input.toolName} call ended without a result.`,
+      ),
+    };
+  }
+
+  const { completion } = input;
   let tracking = base;
   if (pending && pending.generation !== base.generation) {
     return { tasks: [...state.tasks], tracking: resolveCall(base, nativeCallId) };
