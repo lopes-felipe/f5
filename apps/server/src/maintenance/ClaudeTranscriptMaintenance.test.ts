@@ -105,6 +105,30 @@ it("offers repair after a successful fallback without requiring a thread error",
     canRepair: true,
   });
 });
+it.each(["file", "projects"])(
+  "treats a missing %s as advisory absence but refuses repair and undo",
+  async (missing) => {
+    const f = await fixture();
+    await rm(missing === "file" ? f.file : path.dirname(path.dirname(f.file)), { recursive: true });
+    expect(await Effect.runPromise(getClaudeTranscriptMaintenance(f.input))).toBeNull();
+    await expect(Effect.runPromise(runClaudeTranscriptMaintenance(f.input))).rejects.toThrow();
+    await expect(
+      Effect.runPromise(runClaudeTranscriptMaintenance(f.input, "backup")),
+    ).rejects.toThrow();
+  },
+);
+it("does not hide ambiguous transcript locations", async () => {
+  const f = await fixture();
+  const duplicate = path.join(path.dirname(path.dirname(f.file)), "another-project");
+  await mkdir(duplicate);
+  await writeFile(path.join(duplicate, path.basename(f.file)), await readFile(f.file));
+  const failure = await Effect.runPromise(
+    getClaudeTranscriptMaintenance(f.input).pipe(
+      Effect.catch((error) => Effect.succeed(claudeMaintenanceErrorMessage(error))),
+    ),
+  );
+  expect(failure).toContain("not uniquely located");
+});
 it("serializes maintenance with a session admitted after the request began and preserves stopped fields", async () => {
   const f = await fixture();
   let release!: () => void;

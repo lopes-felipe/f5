@@ -2308,7 +2308,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.resumeSessionId = undefined;
         context.resumeAttemptSessionId = undefined;
         context.lastAssistantUuid = undefined;
-        context.recoveryMetadata = {};
+        const generation = context.recoveryMetadata.resumeRecoveryGeneration;
+        context.recoveryMetadata =
+          generation !== undefined ? { resumeRecoveryGeneration: generation } : {};
         resumeFailures.delete(context.session.threadId);
         context.turns.length = 0;
         context.baseContextChars = 0;
@@ -3100,6 +3102,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
         };
         context.turnState = undefined;
+        context.pendingPrompts.length = 0;
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
         }
@@ -4585,13 +4588,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               // pending take from the failed process can consume the retry message.
               yield* Queue.shutdown(context.promptQueue);
               yield* Effect.sleep(Duration.millis(500));
-              if (
-                context.stopped ||
-                context.turnState?.interruptRequested ||
-                sessions.get(threadId) !== context ||
-                isClaudeTranscriptUnderMaintenance(context.resumeSessionId!)
-              )
-                return;
+              if (context.stopped || sessions.get(threadId) !== context) return;
+              if (context.turnState?.interruptRequested) return yield* Effect.interrupt;
+              if (isClaudeTranscriptUnderMaintenance(context.resumeSessionId!))
+                return yield* Effect.fail(
+                  new Error(
+                    "Claude transcript repair started during resume recovery. Retry after repair finishes.",
+                  ),
+                );
               context.promptQueue = yield* Queue.unbounded<PromptQueueItem>();
               context.lastAssistantUuid = selected;
               yield* updateResumeCursor(context);
@@ -4613,6 +4617,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 yield* Queue.offer(context.promptQueue, { type: "message", message });
               context.recovering = false;
             }),
+          ).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                context.recovering = false;
+              }),
+            ),
           );
         }
       });

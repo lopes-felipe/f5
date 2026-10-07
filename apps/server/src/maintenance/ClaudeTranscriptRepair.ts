@@ -11,7 +11,7 @@ import {
 
 export async function inspectClaudeResumePoint(file: string, target: string) {
   const malformed: number[] = [];
-  const entries = await readClaudeTranscript(file, true, {
+  const entries = await readClaudeTranscript(file, false, {
     skipMalformed: true,
     onMalformed: (line) => malformed.push(line),
   });

@@ -28,6 +28,8 @@ export async function findClaudeTranscript(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
+  if (matches.length === 0)
+    throw Object.assign(new Error("Claude transcript does not exist yet."), { code: "ENOENT" });
   if (matches.length !== 1) throw new Error("Claude transcript was not uniquely located.");
   return matches[0]!;
 }

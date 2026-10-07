@@ -24,6 +24,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Random, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
+import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -6956,6 +6957,115 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(observed.filter((event) => event.type === "runtime.error").length, 2);
       }).pipe(Effect.provide(harness.layer));
     });
+    it.effect("does not replay a completed result-only prompt during recovery", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const firstIterator = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "/status" });
+        yield* Effect.promise(() => firstIterator.next());
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          uuid: "local-command-result",
+          session_id: sessionId,
+          total_cost_usd: 0,
+          usage: {},
+        } as unknown as SDKMessage);
+        while (!observed.some((event) => event.type === "turn.completed")) yield* Effect.yieldNow;
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "current prompt" });
+        const current = yield* Effect.promise(() => firstIterator.next());
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "recovery-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+        const replay = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+        );
+        assert.deepEqual(replay.value, current.value);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("reports repair cancellation during the recovery delay without relaunching", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "current prompt" });
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "recovery-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        const release = beginClaudeTranscriptMaintenance(sessionId);
+        yield* Effect.addFinalizer(() => Effect.sync(release));
+        yield* TestClock.adjust("500 millis");
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        const failure = observed.find((event) => event.type === "runtime.error");
+        assert.isDefined(failure);
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "repair started during resume recovery");
+      }).pipe(Effect.provide(harness.layer));
+    });
     it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
       const harness = makeHarness({ readResumeTranscript: async () => new Map() });
       return Effect.gen(function* () {
@@ -7387,6 +7497,9 @@ describe("ClaudeAdapterLive", () => {
         resumeCursor: {
           threadId: RESUME_THREAD_ID,
           resume: attempted,
+          resumeRecoveryGeneration: "repair-generation",
+          missingResumePoint: "obsolete",
+          transcriptRepairBackupId: "obsolete-backup",
           turnCount: 5,
           baseContextChars: 1_000,
           approximateConversationChars: 2_000,
@@ -7414,6 +7527,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(completed?.type, "turn.completed");
       if (completed?.type !== "turn.completed") return;
       const cursor = completed.resumeCursor as Record<string, unknown>;
+      assert.equal(cursor.resumeRecoveryGeneration, "repair-generation");
+      assert.equal("missingResumePoint" in cursor, false);
+      assert.equal("transcriptRepairBackupId" in cursor, false);
       assert.equal("resume" in cursor, false);
       assert.equal("sessionId" in cursor, false);
       assert.equal(cursor.turnCount, 0);

@@ -102,6 +102,20 @@ export function getClaudeTranscriptMaintenance(input: MaintenanceInput) {
         ...(undoAvailable ? { backupId } : {}),
       };
     }),
+  ).pipe(
+    Effect.catchIf(
+      (error) => {
+        let value: unknown = error;
+        while (value && typeof value === "object") {
+          if ((value as { code?: unknown }).code === "ENOENT") return true;
+          const cause = (value as { cause?: unknown }).cause;
+          if (cause === value) break;
+          value = cause;
+        }
+        return false;
+      },
+      () => Effect.succeed(null),
+    ),
   );
 }
 

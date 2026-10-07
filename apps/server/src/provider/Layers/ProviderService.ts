@@ -60,6 +60,7 @@ import {
   Queue,
   Ref,
   Schedule,
+  Semaphore,
   Schema,
   SchemaIssue,
   Stream,
@@ -308,7 +309,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const directory = yield* ProviderSessionDirectory;
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
-    // Terminal receipts are persisted in this single ordered worker. Bound the
+    // Terminal receipts are persisted in order within each thread. Bound the
     // queue so a prolonged SQLite outage applies backpressure to provider
     // streams instead of allowing process memory to grow without limit.
     const runtimeEventQueue = yield* Queue.bounded<{
@@ -367,69 +368,67 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const persistResumeCursorFromRuntimeEvent = (
       event: ProviderRuntimeEvent,
     ): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (event.resumeCursor === undefined) {
-          return;
-        }
+      event.resumeCursor === undefined
+        ? Effect.void
+        : Effect.gen(function* () {
+            const bindingOption = yield* directory.getBinding(event.threadId);
+            if (Option.isNone(bindingOption)) {
+              return;
+            }
 
-        const bindingOption = yield* directory.getBinding(event.threadId);
-        if (Option.isNone(bindingOption)) {
-          return;
-        }
+            const binding = bindingOption.value;
+            if (binding.provider !== event.provider) {
+              yield* Effect.logWarning("provider runtime resume cursor provider mismatch", {
+                expectedProvider: binding.provider,
+                eventProvider: event.provider,
+                threadId: event.threadId,
+                eventType: event.type,
+              });
+              return;
+            }
+            if (
+              event.providerInstanceId !== undefined &&
+              binding.providerInstanceId !== undefined &&
+              binding.providerInstanceId !== null &&
+              binding.providerInstanceId !== event.providerInstanceId
+            ) {
+              yield* Effect.logWarning("provider runtime resume cursor instance mismatch", {
+                expectedInstanceId: binding.providerInstanceId,
+                eventInstanceId: event.providerInstanceId,
+                threadId: event.threadId,
+                eventType: event.type,
+              });
+              return;
+            }
 
-        const binding = bindingOption.value;
-        if (binding.provider !== event.provider) {
-          yield* Effect.logWarning("provider runtime resume cursor provider mismatch", {
-            expectedProvider: binding.provider,
-            eventProvider: event.provider,
-            threadId: event.threadId,
-            eventType: event.type,
-          });
-          return;
-        }
-        if (
-          event.providerInstanceId !== undefined &&
-          binding.providerInstanceId !== undefined &&
-          binding.providerInstanceId !== null &&
-          binding.providerInstanceId !== event.providerInstanceId
-        ) {
-          yield* Effect.logWarning("provider runtime resume cursor instance mismatch", {
-            expectedInstanceId: binding.providerInstanceId,
-            eventInstanceId: event.providerInstanceId,
-            threadId: event.threadId,
-            eventType: event.type,
-          });
-          return;
-        }
-
-        if (
-          binding.provider === "claudeAgent" &&
-          readClaudeRecoveryMetadata(binding.resumeCursor).resumeRecoveryGeneration !==
-            readClaudeRecoveryMetadata(event.resumeCursor).resumeRecoveryGeneration
-        ) {
-          yield* Effect.logInfo("ignored Claude cursor from an earlier recovery generation", {
-            threadId: event.threadId,
-            eventType: event.type,
-          });
-          return;
-        }
-        yield* directory.upsert({
-          threadId: event.threadId,
-          provider: binding.provider,
-          providerInstanceId: binding.providerInstanceId ?? event.providerInstanceId ?? null,
-          resumeCursor: event.resumeCursor,
-        });
-      }).pipe(
-        (effect) => withProviderThreadAccess(event.threadId, effect),
-        Effect.catch((cause) =>
-          Effect.logWarning("failed to persist provider runtime resume cursor", {
-            provider: event.provider,
-            threadId: event.threadId,
-            eventType: event.type,
-            cause,
-          }),
-        ),
-      );
+            if (
+              binding.provider === "claudeAgent" &&
+              readClaudeRecoveryMetadata(binding.resumeCursor).resumeRecoveryGeneration !==
+                readClaudeRecoveryMetadata(event.resumeCursor).resumeRecoveryGeneration
+            ) {
+              yield* Effect.logInfo("ignored Claude cursor from an earlier recovery generation", {
+                threadId: event.threadId,
+                eventType: event.type,
+              });
+              return;
+            }
+            yield* directory.upsert({
+              threadId: event.threadId,
+              provider: binding.provider,
+              providerInstanceId: binding.providerInstanceId ?? event.providerInstanceId ?? null,
+              resumeCursor: event.resumeCursor,
+            });
+          }).pipe(
+            (effect) => withProviderThreadAccess(event.threadId, effect),
+            Effect.catch((cause) =>
+              Effect.logWarning("failed to persist provider runtime resume cursor", {
+                provider: event.provider,
+                threadId: event.threadId,
+                eventType: event.type,
+                cause,
+              }),
+            ),
+          );
 
     const processRuntimeEvent = (item: {
       readonly source: {
@@ -484,8 +483,47 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
+    // One maintenance lock must not stall every provider stream. Admission and
+    // lane buffering share a fixed global budget; each thread retains cursor,
+    // terminal-receipt and publication order, and idle lanes are discarded.
+    const laneBudget = yield* Semaphore.make(PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY);
+    type RuntimeEventItem = Parameters<typeof processRuntimeEvent>[0];
+    const lanes = new Map<ThreadId, RuntimeEventItem[]>();
+    const dispatchRuntimeEvent = (item: RuntimeEventItem) =>
+      Effect.gen(function* () {
+        yield* laneBudget.take(1);
+        const threadId = item.event.threadId;
+        const existing = lanes.get(threadId);
+        if (existing) {
+          existing.push(item);
+          return;
+        }
+        const lane = [item];
+        lanes.set(threadId, lane);
+        const drain = Effect.gen(function* () {
+          while (true) {
+            const next = yield* Effect.sync(() => {
+              const next = lane.shift();
+              // Retire atomically with the empty check so a new event cannot
+              // append to an idle lane just before its finalizer removes it.
+              if (!next) lanes.delete(threadId);
+              return next;
+            });
+            if (!next) return;
+            yield* processRuntimeEvent(next).pipe(Effect.ensuring(laneBudget.release(1)));
+          }
+        }).pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              if (lanes.get(threadId) === lane) lanes.delete(threadId);
+              yield* laneBudget.release(lane.length);
+            }),
+          ),
+        );
+        yield* Effect.forkScoped(drain);
+      });
     const worker = Effect.forever(
-      Queue.take(runtimeEventQueue).pipe(Effect.flatMap(processRuntimeEvent)),
+      Queue.take(runtimeEventQueue).pipe(Effect.flatMap(dispatchRuntimeEvent)),
     );
     yield* Effect.forkScoped(worker);
 
