@@ -29,6 +29,24 @@ import { NextTurnQueueDispatcherLive } from "./NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
+// Provider delivery rows keyed by command id, and the unresolved delivery that
+// the repository's supersession rule reports per thread.
+const deliveryRows = new Map<string, unknown>();
+const unresolvedDeliveries = new Map<string, unknown>();
+
+const deliveryRow = (input: {
+  readonly commandId: string;
+  readonly threadId: ThreadId;
+  readonly state: "accepted" | "rejected" | "ambiguous" | "abandoned";
+}) => ({
+  deliveryId: CommandId.makeUnsafe(input.commandId),
+  commandId: CommandId.makeUnsafe(input.commandId),
+  threadId: input.threadId,
+  state: input.state,
+  certainty: input.state === "ambiguous" ? "unknown" : null,
+  errorDetail: null,
+  event: { type: "thread.turn-start-requested" },
+});
 
 const makeDependencies = (
   worktreePath: string | null,
@@ -65,7 +83,10 @@ const makeDependencies = (
       getByCommandId: () => Effect.succeed(Option.none()),
     } as never),
     Layer.succeed(ProviderTurnDeliveryRepository, {
-      getByCommandId: () => Effect.succeed(null),
+      getByCommandId: (commandId: CommandId) =>
+        Effect.sync(() => deliveryRows.get(commandId) ?? null),
+      getUnresolvedByThread: (threadId: ThreadId) =>
+        Effect.sync(() => unresolvedDeliveries.get(threadId) ?? null),
     } as never),
     Layer.succeed(OrchestrationEngineService, {
       dispatch: (command: { readonly commandId: CommandId }) =>
@@ -431,6 +452,98 @@ layer("NextTurnQueueDispatcher", (it) => {
       queue = yield* store.listByThread(threadId);
       assert.deepEqual(dispatched, [second.item.command.commandId]);
       assert.equal(queue.items[0]?.status, "dispatching");
+    }),
+  );
+
+  it.effect("clears a delivery pause once a newer accepted delivery supersedes it", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-superseded-delivery-thread");
+      yield* seedThread(threadId);
+      // An ambiguous direct send paused the queue; a later "continue" was then
+      // accepted, so the repository no longer reports an unresolved delivery.
+      yield* store.setPaused({
+        threadId,
+        paused: true,
+        reasonCode: "delivery_ambiguous",
+        detail: "The provider delivery outcome is unknown.",
+      });
+      deliveryRows.set(
+        "superseded-continue",
+        deliveryRow({ commandId: "superseded-continue", threadId, state: "accepted" }),
+      );
+      assert.equal((yield* dispatcher.getSnapshot(threadId)).unresolvedDelivery, null);
+
+      yield* dispatcher.handleDeliveryOutcome({
+        deliveryId: CommandId.makeUnsafe("superseded-continue"),
+        commandId: CommandId.makeUnsafe("superseded-continue"),
+        threadId,
+        state: "accepted",
+        detail: null,
+      });
+
+      const snapshot = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(snapshot.paused, false);
+      assert.equal(snapshot.reasonCode, null);
+      assert.equal(snapshot.unresolvedDelivery, null);
+    }),
+  );
+
+  it.effect("keeps a delivery pause and reports the delivery while it is unresolved", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-unresolved-delivery-thread");
+      yield* seedThread(threadId);
+      yield* store.setPaused({ threadId, paused: true, reasonCode: "delivery_ambiguous" });
+      unresolvedDeliveries.set(
+        threadId,
+        deliveryRow({ commandId: "unresolved-author", threadId, state: "ambiguous" }),
+      );
+
+      yield* dispatcher.reconcileDeliveryPause(threadId);
+
+      const snapshot = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(snapshot.paused, true);
+      assert.deepEqual(snapshot.unresolvedDelivery, {
+        deliveryId: CommandId.makeUnsafe("unresolved-author"),
+        state: "ambiguous",
+      });
+      unresolvedDeliveries.delete(threadId);
+    }),
+  );
+
+  it.effect("targets a failed queue item's own delivery even after it is superseded", () =>
+    Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("queue-superseded-item-thread");
+      yield* seedThread(threadId);
+      const created = yield* insert(31, threadId);
+      if (created.kind !== "created") return;
+      const commandId = created.item.command.commandId;
+      yield* store.markDeliveryFailed({
+        commandId,
+        errorCode: "delivery_ambiguous",
+        errorDetail: "The provider delivery outcome is unknown.",
+      });
+      yield* store.setPaused({ threadId, paused: true, reasonCode: "delivery_ambiguous" });
+      deliveryRows.set(commandId, deliveryRow({ commandId, threadId, state: "ambiguous" }));
+
+      const blocking = yield* dispatcher.getBlockingDelivery(threadId);
+      assert.equal(blocking?.deliveryId, commandId);
+      yield* dispatcher.reconcileDeliveryPause(threadId);
+      assert.equal((yield* store.listByThread(threadId)).state.paused, true);
+
+      // Once Recheck proves the delivery, the failed item completes and the
+      // pause clears without any manual database repair.
+      deliveryRows.set(commandId, deliveryRow({ commandId, threadId, state: "accepted" }));
+      yield* dispatcher.reconcileDeliveryPause(threadId);
+      const queue = yield* store.listByThread(threadId);
+      assert.equal(queue.items.length, 0);
+      assert.equal(queue.state.paused, false);
+      deliveryRows.delete(commandId);
     }),
   );
 });

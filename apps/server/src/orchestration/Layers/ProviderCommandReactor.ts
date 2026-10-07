@@ -294,6 +294,69 @@ function buildGeneratedWorktreeBranchName(raw: string, configuredPrefix: string)
   return `${prefix}/${safeFragment}`;
 }
 
+/**
+ * Maps a turn-start failure to a durable delivery outcome. Only failures that
+ * prove the input never reached the model are `not_sent`; anything else is
+ * ambiguous so the user rechecks provider history before retrying.
+ */
+export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliveryError {
+  if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
+  let rejectedUsageLimit: import("@t3tools/contracts").RuntimeUsageLimit | undefined;
+  let rejectedMessage: string | undefined;
+  let adapterNotSent: ProviderAdapterRequestError | undefined;
+  let nested: unknown = error;
+  const seen = new Set<unknown>();
+  while (nested && typeof nested === "object" && !seen.has(nested)) {
+    seen.add(nested);
+    if (
+      Schema.is(ProviderAdapterRequestError)(nested) &&
+      nested.usageLimit &&
+      nested.method === "turn/start"
+    ) {
+      rejectedUsageLimit = nested.usageLimit;
+      rejectedMessage = nested.message;
+      break;
+    }
+    if (
+      Schema.is(ProviderAdapterRequestError)(nested) &&
+      nested.deliveryCertainty === "not_sent" &&
+      adapterNotSent === undefined
+    ) {
+      adapterNotSent = nested;
+    }
+    nested = "cause" in nested ? nested.cause : undefined;
+  }
+  if (!rejectedUsageLimit && adapterNotSent) {
+    // The adapter proved the input never reached the model.
+    return new ProviderTurnDeliveryError({
+      certainty: "not_sent",
+      retryable: adapterNotSent.deliveryRetryable === true,
+      detail: adapterNotSent.detail,
+      cause: error,
+    });
+  }
+  const definitelyNotSent =
+    !!rejectedUsageLimit ||
+    Schema.is(ProviderValidationError)(error) ||
+    Schema.is(ProviderSessionNotFoundError)(error) ||
+    Schema.is(ProviderUnsupportedError)(error) ||
+    Schema.is(ProviderAdapterValidationError)(error);
+  const detail =
+    rejectedMessage ??
+    (definitelyNotSent
+      ? error instanceof Error
+        ? error.message
+        : "The provider rejected the turn before it was sent."
+      : "The provider delivery outcome is unknown. Recheck provider history before retrying.");
+  return new ProviderTurnDeliveryError({
+    certainty: definitelyNotSent ? "not_sent" : "unknown",
+    ...(rejectedUsageLimit ? { usageLimit: rejectedUsageLimit } : {}),
+    retryable: false,
+    detail,
+    cause: error,
+  });
+}
+
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
@@ -2159,46 +2222,7 @@ const make = Effect.gen(function* () {
           eventType: event.type,
         }),
       ),
-      Effect.mapError((error) => {
-        if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
-        let rejectedUsageLimit: import("@t3tools/contracts").RuntimeUsageLimit | undefined;
-        let rejectedMessage: string | undefined;
-        let nested: unknown = error;
-        const seen = new Set<unknown>();
-        while (nested && typeof nested === "object" && !seen.has(nested)) {
-          seen.add(nested);
-          if (
-            Schema.is(ProviderAdapterRequestError)(nested) &&
-            nested.usageLimit &&
-            nested.method === "turn/start"
-          ) {
-            rejectedUsageLimit = nested.usageLimit;
-            rejectedMessage = nested.message;
-            break;
-          }
-          nested = "cause" in nested ? nested.cause : undefined;
-        }
-        const definitelyNotSent =
-          !!rejectedUsageLimit ||
-          Schema.is(ProviderValidationError)(error) ||
-          Schema.is(ProviderSessionNotFoundError)(error) ||
-          Schema.is(ProviderUnsupportedError)(error) ||
-          Schema.is(ProviderAdapterValidationError)(error);
-        const detail =
-          rejectedMessage ??
-          (definitelyNotSent
-            ? error instanceof Error
-              ? error.message
-              : "The provider rejected the turn before it was sent."
-            : "The provider delivery outcome is unknown. Recheck provider history before retrying.");
-        return new ProviderTurnDeliveryError({
-          certainty: definitelyNotSent ? "not_sent" : "unknown",
-          ...(rejectedUsageLimit ? { usageLimit: rejectedUsageLimit } : {}),
-          retryable: false,
-          detail,
-          cause: error,
-        });
-      }),
+      Effect.mapError(toProviderTurnDeliveryError),
     );
 
   return {

@@ -1,6 +1,9 @@
 import type { PlanningWorkflow, WorkflowBranch, WorkflowModelSlot } from "@t3tools/contracts";
 
-import type { WorkflowRetryContext } from "./workflowPromptFragments.ts";
+import {
+  type WorkflowRetryContext,
+  workflowInterruptedRetrySection,
+} from "./workflowPromptFragments.ts";
 import { joinPromptSections, providerGuidanceSection, slotLabel } from "./workflowSharedUtils.ts";
 
 export interface WorkflowPromptArtifactSource {
@@ -40,6 +43,7 @@ ${input.workflow.requirementPrompt}`,
     `Return the full plan in your assistant response.
 Do not create or modify files during this planning phase.`,
     PLAN_SUBMISSION_REQUIREMENT,
+    workflowInterruptedRetrySection(input.retry),
   ];
 }
 

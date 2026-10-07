@@ -135,6 +135,19 @@ const make = Effect.gen(function* () {
         Effect.mapError(mapError("ProviderTurnDelivery.getLatestByThread")),
       );
 
+  const listAcceptedTurnIdsByThread: ProviderTurnDeliveryRepositoryShape["listAcceptedTurnIdsByThread"] =
+    (threadId) =>
+      sql
+        .unsafe<{ readonly turnId: string }>(
+          `SELECT provider_turn_id AS "turnId" FROM provider_turn_deliveries
+           WHERE thread_id = ? AND state = 'accepted' AND provider_turn_id IS NOT NULL`,
+          [threadId],
+        )
+        .pipe(
+          Effect.map((rows) => rows.map((row) => TurnId.makeUnsafe(row.turnId))),
+          Effect.mapError(mapError("ProviderTurnDelivery.listAcceptedTurnIdsByThread")),
+        );
+
   const claim: ProviderTurnDeliveryRepositoryShape["claim"] = (deliveryId, preSendTurnIds) =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
@@ -239,6 +252,7 @@ const make = Effect.gen(function* () {
     getByCommandId,
     getLatestByThread,
     getUnresolvedByThread,
+    listAcceptedTurnIdsByThread,
     claim,
     markAccepted,
     markRejected,

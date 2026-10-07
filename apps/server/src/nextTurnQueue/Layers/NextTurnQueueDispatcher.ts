@@ -57,7 +57,10 @@ import { ProjectionThreadRepository } from "../../persistence/Services/Projectio
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { RuntimeReceiptBus } from "../../orchestration/Services/RuntimeReceiptBus.ts";
-import { ProviderTurnDeliveryRepository } from "../../orchestration/Services/ProviderTurnDeliveryRepository.ts";
+import {
+  ProviderTurnDeliveryRepository,
+  type ProviderTurnDelivery,
+} from "../../orchestration/Services/ProviderTurnDeliveryRepository.ts";
 import {
   NextTurnQueueStorageError,
   NextTurnQueueConflictError,
@@ -100,6 +103,14 @@ function blockedKindFor(reasonCode: QueueReasonCode, paused: boolean): NextTurnQ
     reasonCode === "dispatch_rejected"
     ? "error"
     : "paused";
+}
+
+function isDeliveryFailureCode(code: string | null | undefined): boolean {
+  return code === "delivery_rejected" || code === "delivery_ambiguous";
+}
+
+function isFailedDeliveryItem(item: NextTurnQueueItem): boolean {
+  return item.status === "failed" && isDeliveryFailureCode(item.lastErrorCode);
 }
 
 function storageError(cause: unknown): NextTurnQueueStorageError {
@@ -291,6 +302,88 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       );
     });
 
+  // The delivery that Recheck, Retry and Discard act on: a failed queue item's
+  // own delivery first (it may be superseded by a newer delivery on the
+  // thread), then the thread's unresolved delivery from a direct send.
+  const findBlockingDelivery = (
+    threadId: ThreadId,
+    items: ReadonlyArray<NextTurnQueueItem>,
+  ): Effect.Effect<ProviderTurnDelivery | null, NextTurnQueueError> =>
+    Effect.gen(function* () {
+      for (const item of items) {
+        if (!isFailedDeliveryItem(item)) continue;
+        const delivery = yield* deliveries
+          .getByCommandId(item.command.commandId)
+          .pipe(Effect.mapError(storageError));
+        if (delivery?.state === "rejected" || delivery?.state === "ambiguous") return delivery;
+      }
+      const unresolved = yield* deliveries
+        .getUnresolvedByThread(threadId)
+        .pipe(Effect.mapError(storageError));
+      return unresolved?.state === "rejected" || unresolved?.state === "ambiguous"
+        ? unresolved
+        : null;
+    });
+
+  // Only threads paused for a delivery failure, or holding a failed delivery
+  // item, can have a blocking delivery. Skip the lookups for everything else.
+  const readBlockingDelivery = (
+    data: {
+      readonly state: {
+        readonly paused: boolean;
+        readonly pauseReasonCode: QueueReasonCode | null;
+      };
+      readonly items: ReadonlyArray<NextTurnQueueItem>;
+    },
+    threadId: ThreadId,
+  ) =>
+    (data.state.paused && isDeliveryFailureCode(data.state.pauseReasonCode)) ||
+    data.items.some(isFailedDeliveryItem)
+      ? findBlockingDelivery(threadId, data.items)
+      : Effect.succeed(null);
+
+  /**
+   * Settles failed delivery items whose delivery was already resolved, then
+   * clears a delivery pause once no rejected or ambiguous delivery remains.
+   * A newer accepted delivery supersedes the one that paused the queue, which
+   * otherwise leaves Recheck, Retry and Discard with nothing to act on.
+   * Returns true when the queue changed.
+   */
+  const reconcileDeliveryPause = (threadId: ThreadId): Effect.Effect<boolean, NextTurnQueueError> =>
+    Effect.gen(function* () {
+      let data = yield* store.listByThread(threadId);
+      let changed = false;
+      for (const item of data.items) {
+        if (!isFailedDeliveryItem(item)) continue;
+        const delivery = yield* deliveries
+          .getByCommandId(item.command.commandId)
+          .pipe(Effect.mapError(storageError));
+        if (delivery?.state === "accepted") {
+          yield* store.completeDelivery({ commandId: item.command.commandId });
+          changed = true;
+        } else if (delivery?.state === "abandoned") {
+          yield* store.discardDelivery({ commandId: item.command.commandId });
+          changed = true;
+        }
+      }
+      if (changed) data = yield* store.listByThread(threadId);
+      if (!data.state.paused || !isDeliveryFailureCode(data.state.pauseReasonCode)) return changed;
+      if (data.items.some(isFailedDeliveryItem)) return changed;
+      if ((yield* findBlockingDelivery(threadId, data.items)) !== null) return changed;
+      const cleared = yield* store
+        .setPaused({ threadId, paused: false, expectedRevision: data.state.revision })
+        .pipe(
+          Effect.as(true),
+          Effect.catchTag("NextTurnQueueConflictError", () => Effect.succeed(false)),
+        );
+      if (cleared)
+        yield* Effect.logInfo("cleared stale provider delivery pause", {
+          threadId,
+          reasonCode: data.state.pauseReasonCode,
+        });
+      return changed || cleared;
+    });
+
   const getSnapshot = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const data = yield* store.listByThread(threadId);
@@ -322,6 +415,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const session = ((yield* engine.getReadModel()).threads ?? []).find(
         (entry) => entry.id === threadId,
       )?.session;
+      const blockingDelivery = yield* readBlockingDelivery(data, threadId);
       return {
         threadId,
         items: [...data.items],
@@ -332,6 +426,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         reasonDetail,
         maxItems: MAX_QUEUED_TURNS_PER_THREAD,
         quarantinedCount: data.quarantinedCount,
+        unresolvedDelivery:
+          blockingDelivery?.state === "rejected" || blockingDelivery?.state === "ambiguous"
+            ? { deliveryId: blockingDelivery.deliveryId, state: blockingDelivery.state }
+            : null,
         usageLimitResume: yield* store
           .getUsageResumeLedger(threadId)
           .pipe(
@@ -393,13 +491,14 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const processThread = (threadId: ThreadId): Effect.Effect<void, NextTurnQueueError> =>
     Effect.gen(function* () {
-      const queue = yield* store.listByThread(threadId);
-      let deliveryFailure = queue.items.find(
-        (candidate) =>
-          candidate.status === "failed" &&
-          (candidate.lastErrorCode === "delivery_rejected" ||
-            candidate.lastErrorCode === "delivery_ambiguous"),
-      );
+      let queue = yield* store.listByThread(threadId);
+      if (
+        (queue.state.paused && isDeliveryFailureCode(queue.state.pauseReasonCode)) ||
+        queue.items.some(isFailedDeliveryItem)
+      ) {
+        if (yield* reconcileDeliveryPause(threadId)) queue = yield* store.listByThread(threadId);
+      }
+      let deliveryFailure = queue.items.find(isFailedDeliveryItem);
       if (deliveryFailure?.lastErrorCode === "delivery_rejected") {
         const delivery = yield* deliveries
           .getByCommandId(deliveryFailure.command.commandId)
@@ -1344,6 +1443,17 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* notify(threadId);
         return yield* getSnapshot(threadId);
       }),
+    getBlockingDelivery: (threadId) =>
+      store
+        .listByThread(threadId)
+        .pipe(Effect.flatMap((data) => findBlockingDelivery(threadId, data.items))),
+    reconcileDeliveryPause: (threadId) =>
+      reconcileDeliveryPause(threadId).pipe(
+        Effect.tap((changed) =>
+          changed ? publishChanged(threadId).pipe(Effect.andThen(notify(threadId))) : Effect.void,
+        ),
+        Effect.asVoid,
+      ),
     handleDeliveryOutcome: (outcome) =>
       Effect.gen(function* () {
         const item = yield* store.getByCommandId(outcome.commandId);
@@ -1390,6 +1500,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
           ? store
               .completeDelivery({ commandId: outcome.commandId })
               .pipe(
+                Effect.andThen(reconcileDeliveryPause(outcome.threadId)),
                 Effect.andThen(publishChanged(outcome.threadId)),
                 Effect.andThen(notify(outcome.threadId)),
               )

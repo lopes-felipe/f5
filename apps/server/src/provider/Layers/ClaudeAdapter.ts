@@ -8,6 +8,8 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
 import { claudeLimitState, usageLimitFromWindows } from "../usageLimitMessages.ts";
+import { isProviderResumeFailureText } from "../resumeFailure.ts";
+import { appendClaudeStderrTail, parseClaudeProcessExit } from "../claudeProcessExit.ts";
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
  *
@@ -337,6 +339,14 @@ interface ClaudeSessionContext {
   resumeCompactionDialogShown: boolean;
   resumeAttemptSessionId: string | undefined;
   resumeConfirmed: boolean;
+  /**
+   * Settles once the CLI confirms the resumed conversation, or the session
+   * ends before it does. The first turn after a resume waits on this so a
+   * prompt the CLI never loaded is not reported as delivered.
+   */
+  readonly resumeSettlement: Deferred.Deferred<ClaudeResumeSettlement> | undefined;
+  /** Bounded CLI stderr tail, written to the provider log when the session ends. */
+  readonly processDiagnostics: { stderrTail: string };
   resumeInvalidatedTurnId: TurnId | undefined;
   modelContextWindowTokens: number;
   stopped: boolean;
@@ -397,6 +407,11 @@ export interface ClaudeAdapterLiveOptions {
   readonly probeResumableClaudeSession?: (
     input: ClaudeSessionProbeInput,
   ) => Effect.Effect<"present" | "absent" | "unknown">;
+  /**
+   * How long the first turn after a resume waits for the CLI to confirm the
+   * saved conversation. Zero skips the wait.
+   */
+  readonly resumeConfirmationTimeoutMs?: number;
 }
 
 export interface ClaudeSessionProbeInput {
@@ -599,6 +614,14 @@ function isClaudeInterruptedCause(cause: Cause.Cause<Error>): boolean {
     normalizeClaudeStreamMessages(cause).some(isClaudeInterruptedMessage)
   );
 }
+
+type ClaudeResumeSettlement =
+  | { readonly confirmed: true }
+  | { readonly confirmed: false; readonly resumeRejected: boolean };
+
+// Bounds how long the first turn after a resume waits for the CLI to confirm
+// the saved conversation. On timeout the send is reported as before.
+const DEFAULT_CLAUDE_RESUME_CONFIRMATION_TIMEOUT_MS = 20_000;
 
 const CLAUDE_MISSING_SESSION_PATTERNS = [
   "no conversation found",
@@ -1982,6 +2005,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           })
         : undefined);
 
+    const resumeConfirmationTimeoutMs = Math.max(
+      0,
+      options?.resumeConfirmationTimeoutMs ?? DEFAULT_CLAUDE_RESUME_CONFIRMATION_TIMEOUT_MS,
+    );
     const createQuery =
       options?.createQuery ??
       ((input: {
@@ -2275,6 +2302,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
       });
 
+    // The first settlement wins; later calls are no-ops.
+    const settleResume = (
+      context: ClaudeSessionContext,
+      settlement: ClaudeResumeSettlement,
+    ): Effect.Effect<void> =>
+      context.resumeSettlement
+        ? Deferred.succeed(context.resumeSettlement, settlement).pipe(Effect.asVoid)
+        : Effect.void;
+
     const invalidateClaudeResumeState = (
       context: ClaudeSessionContext,
       reason: string,
@@ -2515,6 +2551,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ) {
           if (nextThreadId === context.resumeAttemptSessionId) {
             context.resumeConfirmed = true;
+            yield* settleResume(context, { confirmed: true });
           } else {
             const attemptedSessionId = context.resumeAttemptSessionId;
             yield* Effect.logWarning("claude resume produced a different session id", {
@@ -3827,6 +3864,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         if (status === "failed") {
           const attemptedSessionId = context.resumeAttemptSessionId;
+          if (attemptedSessionId !== undefined && !context.resumeConfirmed)
+            yield* settleResume(context, {
+              confirmed: false,
+              resumeRejected:
+                resumeErrorText !== undefined &&
+                (isClaudeMissingConversationError(resumeErrorText, attemptedSessionId) ||
+                  isProviderResumeFailureText(resumeErrorText)),
+            });
           if (
             attemptedSessionId !== undefined &&
             !context.resumeConfirmed &&
@@ -4471,6 +4516,60 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ),
       );
 
+    // Records why the CLI session ended, so a stream that stops without an
+    // error line can still be diagnosed from the provider log.
+    const logClaudeSessionExit = (
+      context: ClaudeSessionContext,
+      exit: Exit.Exit<void, Error>,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const outcome = Exit.isSuccess(exit)
+          ? "ended"
+          : isClaudeInterruptedCause(exit.cause)
+            ? "interrupted"
+            : "failed";
+        const causeText = Exit.isFailure(exit) ? Cause.pretty(exit.cause) : null;
+        const { exitCode, signal } = parseClaudeProcessExit(causeText);
+        const stderrTail = context.processDiagnostics.stderrTail;
+        const diagnostics = {
+          outcome,
+          exitCode,
+          signal,
+          error: Exit.isFailure(exit)
+            ? messageFromClaudeStreamCause(exit.cause, "Claude runtime stream failed.")
+            : null,
+          stderrTail: stderrTail.length > 0 ? stderrTail : null,
+          activeTurnId: context.turnState?.turnId ?? null,
+          lastAssistantUuid: context.lastAssistantUuid ?? null,
+          resumeAttemptSessionId: context.resumeAttemptSessionId ?? null,
+          resumeConfirmed: context.resumeConfirmed,
+          sessionStartedAt: context.startedAt,
+        };
+        yield* Effect.logWarning("claude session ended", {
+          threadId: context.session.threadId,
+          ...diagnostics,
+          stderrTail: stderrTail.length > 0 ? stderrTail.slice(-1_000) : null,
+        });
+        if (!nativeEventLogger) return;
+        const observedAt = new Date().toISOString();
+        yield* nativeEventLogger.write(
+          {
+            observedAt,
+            event: {
+              id: crypto.randomUUID(),
+              kind: "notification",
+              provider: PROVIDER,
+              createdAt: observedAt,
+              method: "claude/session-exit",
+              ...(context.resumeSessionId ? { providerThreadId: context.resumeSessionId } : {}),
+              ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+              payload: diagnostics,
+            },
+          },
+          context.session.threadId,
+        );
+      });
+
     const handleStreamExit = (
       context: ClaudeSessionContext,
       exit: Exit.Exit<void, Error>,
@@ -4479,6 +4578,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.stopped) {
           return;
         }
+        yield* logClaudeSessionExit(context, exit);
 
         if (Exit.isFailure(exit)) {
           if (isClaudeInterruptedCause(exit.cause)) {
@@ -4495,6 +4595,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               "Claude runtime stream failed.",
             );
             const attemptedSessionId = context.resumeAttemptSessionId;
+            if (attemptedSessionId !== undefined && !context.resumeConfirmed) {
+              const causeText = Cause.pretty(exit.cause);
+              yield* settleResume(context, {
+                confirmed: false,
+                resumeRejected:
+                  isClaudeMissingConversationError(causeText, attemptedSessionId) ||
+                  isProviderResumeFailureText(causeText),
+              });
+            }
             if (
               attemptedSessionId !== undefined &&
               !context.resumeConfirmed &&
@@ -4577,6 +4686,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.stopped) return;
 
         context.stopped = true;
+        yield* settleResume(context, { confirmed: false, resumeRejected: false });
         if (context.settlementWatchdog) {
           yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
           context.settlementWatchdog = undefined;
@@ -5548,9 +5658,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               cause,
             }),
         });
+        const processDiagnostics = { stderrTail: "" };
         const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(runtimeModelSelection.apiModel ? { model: runtimeModelSelection.apiModel } : {}),
+          stderr: (data: string) => {
+            processDiagnostics.stderrTail = appendClaudeStderrTail(
+              processDiagnostics.stderrTail,
+              data,
+            );
+          },
           ...sdkExecutableOptions,
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
@@ -5706,6 +5823,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,
           resumeAttemptSessionId: existingResumeSessionId,
           resumeConfirmed: false,
+          resumeSettlement:
+            existingResumeSessionId !== undefined
+              ? yield* Deferred.make<ClaudeResumeSettlement>()
+              : undefined,
+          processDiagnostics,
           resumeInvalidatedTurnId: undefined,
           modelContextWindowTokens:
             runtimeModelSelection.contextWindowTokens ??
@@ -5809,6 +5931,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   provider: PROVIDER,
                   method: "turn/start",
                   detail: "Claude session stopped while preparing the turn.",
+                  // Every ensureLive check runs before the prompt is queued.
+                  deliveryCertainty: "not_sent",
+                  deliveryRetryable: true,
                 }),
               )
             : Effect.void,
@@ -6003,6 +6128,41 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           type: "message",
           message,
         }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
+
+        // Queueing the prompt does not prove the CLI loaded the resumed
+        // conversation. If the session ends before it confirms the resume, the
+        // prompt never reached the model, so report it as not sent rather than
+        // letting durable delivery accept it.
+        if (
+          context.resumeSettlement &&
+          !context.resumeConfirmed &&
+          resumeConfirmationTimeoutMs > 0
+        ) {
+          const settlement = yield* Deferred.await(context.resumeSettlement).pipe(
+            Effect.timeoutOption(resumeConfirmationTimeoutMs),
+          );
+          if (Option.isSome(settlement) && !settlement.value.confirmed) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/start",
+              detail: settlement.value.resumeRejected
+                ? "Claude could not load the saved conversation, so this message was not sent."
+                : "Claude stopped before it loaded the saved conversation, so this message was not sent.",
+              deliveryCertainty: "not_sent",
+              // A rejected resume fails the same way until the transcript is repaired.
+              deliveryRetryable: !settlement.value.resumeRejected,
+            });
+          }
+          if (Option.isNone(settlement))
+            yield* Effect.logWarning(
+              "claude resume was not confirmed before the turn was reported",
+              {
+                threadId: context.session.threadId,
+                turnId,
+                timeoutMs: resumeConfirmationTimeoutMs,
+              },
+            );
+        }
 
         return {
           threadId: context.session.threadId,

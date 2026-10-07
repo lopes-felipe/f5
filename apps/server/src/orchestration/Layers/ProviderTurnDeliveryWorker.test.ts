@@ -45,6 +45,7 @@ let methodNotFound = false;
 let reconciliationFails = false;
 let extraReplayDelivery: ProviderTurnDelivery | null = null;
 let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
+let acceptedTurnIds: Array<TurnId> = [];
 
 function resetDelivery() {
   state = {
@@ -82,6 +83,7 @@ function resetDelivery() {
   reconciliationFails = false;
   extraReplayDelivery = null;
   providerTurns = [];
+  acceptedTurnIds = [];
 }
 
 const reconcile = (target: ThreadId) =>
@@ -105,6 +107,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
   getByCommandId: () => Effect.succeed(state),
   getLatestByThread: () => Effect.succeed(state),
   getUnresolvedByThread: () => Effect.succeed(state),
+  listAcceptedTurnIdsByThread: () => Effect.sync(() => acceptedTurnIds),
   claim: (_deliveryId: CommandId, preSendTurnIds: ReadonlyArray<never>) =>
     Effect.sync(() => {
       if (state.state !== "pending") return null;
@@ -487,4 +490,42 @@ it.effect.each(["turn/start", "account/read"])(
       assert.equal(Boolean(state.usageLimit), method === "turn/start");
       assert.equal(requeueCount, 0);
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck does not claim a turn already attributed to a newer accepted delivery", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    // The ambiguous send never produced a turn; a later "continue" did.
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    providerTurns = [{ id: TurnId.makeUnsafe("continue-turn"), items: [] }];
+    acceptedTurnIds = [TurnId.makeUnsafe("continue-turn")];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(threadId, deliveryId);
+    assert.equal(delivery?.state, "ambiguous");
+    assert.equal(state.state, "ambiguous");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck ignores a target delivery from another thread", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(ThreadId.makeUnsafe("other-thread"), deliveryId);
+    assert.equal(delivery, null);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a turn start that reports a pre-existing provider turn is not accepted", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    acceptSend = true;
+    providerTurns = [{ id: TurnId.makeUnsafe("existing-turn"), items: [] }];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "ambiguous");
+    assert.equal(state.errorCode, "provider_turn_not_new");
+    assert.equal(state.providerTurnId, null);
+  }).pipe(Effect.provide(testLayer)),
 );

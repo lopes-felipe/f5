@@ -214,7 +214,11 @@ export function NextTurnQueuePanel({
     return null;
   }
   const blockedDescription = describeQueueBlockedState(snapshot);
-  const hasDeliveryFailure =
+  // Gate on the delivery the server can still act on, not on the pause reason:
+  // a superseded delivery can leave a stale reason with nothing to recover.
+  const unresolvedDelivery = snapshot.unresolvedDelivery ?? null;
+  const hasDeliveryFailure = unresolvedDelivery !== null;
+  const hasDeliveryPause =
     snapshot.reasonCode === "delivery_rejected" || snapshot.reasonCode === "delivery_ambiguous";
 
   const runDeliveryRecovery = async (action: "recheck" | "retry" | "discard"): Promise<void> => {
@@ -226,7 +230,7 @@ export function NextTurnQueuePanel({
         return;
       }
       if (action === "retry") {
-        const allowPossibleDuplicate = snapshot.reasonCode === "delivery_ambiguous";
+        const allowPossibleDuplicate = unresolvedDelivery?.state === "ambiguous";
         if (
           allowPossibleDuplicate &&
           !window.confirm(
@@ -371,7 +375,7 @@ export function NextTurnQueuePanel({
               Refresh
             </Button>
           ) : null}
-          {hasDeliveryFailure ? (
+          {hasDeliveryFailure || hasDeliveryPause ? (
             <span className="ml-1 inline-flex gap-1">
               <Button
                 type="button"
@@ -381,22 +385,26 @@ export function NextTurnQueuePanel({
               >
                 Recheck
               </Button>
-              <Button
-                type="button"
-                variant="link"
-                size="xs"
-                onClick={() => void runDeliveryRecovery("retry")}
-              >
-                Retry
-              </Button>
-              <Button
-                type="button"
-                variant="link"
-                size="xs"
-                onClick={() => void runDeliveryRecovery("discard")}
-              >
-                Discard
-              </Button>
+              {hasDeliveryFailure ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="xs"
+                    onClick={() => void runDeliveryRecovery("retry")}
+                  >
+                    Retry
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="xs"
+                    onClick={() => void runDeliveryRecovery("discard")}
+                  >
+                    Discard
+                  </Button>
+                </>
+              ) : null}
             </span>
           ) : null}
         </div>

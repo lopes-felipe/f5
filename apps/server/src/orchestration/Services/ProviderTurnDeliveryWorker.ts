@@ -18,12 +18,26 @@ export interface ProviderTurnDeliveryWorkerShape {
   readonly drain: Effect.Effect<void>;
   readonly outcomes: Stream.Stream<ProviderTurnDeliveryOutcome>;
   readonly acknowledgeOutcome: (deliveryId: CommandId) => Effect.Effect<void, Error>;
-  readonly recheck: (threadId: ThreadId) => Effect.Effect<ProviderTurnDelivery | null, Error>;
+  /**
+   * Rechecks `deliveryId` when given, otherwise the thread's latest delivery.
+   * Queue recovery passes the delivery that paused the queue, which may have
+   * been superseded by a newer delivery on the same thread.
+   */
+  readonly recheck: (
+    threadId: ThreadId,
+    deliveryId?: CommandId,
+  ) => Effect.Effect<ProviderTurnDelivery | null, Error>;
+  /** Targets `deliveryId` when given, otherwise the thread's unresolved delivery. */
   readonly retry: (input: {
     readonly threadId: ThreadId;
     readonly allowPossibleDuplicate: boolean;
+    readonly deliveryId?: CommandId | undefined;
   }) => Effect.Effect<ProviderTurnDelivery, Error>;
-  readonly discard: (threadId: ThreadId) => Effect.Effect<ProviderTurnDelivery, Error>;
+  /** Targets `deliveryId` when given, otherwise the thread's unresolved delivery. */
+  readonly discard: (
+    threadId: ThreadId,
+    deliveryId?: CommandId,
+  ) => Effect.Effect<ProviderTurnDelivery, Error>;
 }
 
 export class ProviderTurnDeliveryWorker extends ServiceMap.Service<

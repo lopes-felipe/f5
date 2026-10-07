@@ -8483,6 +8483,150 @@ describe("WorkflowService", () => {
     );
   });
 
+  const makeAuthoringRetryHarness = async () => {
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "authoring",
+      },
+    });
+    return createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "running",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.makeUnsafe("author-turn"),
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+  };
+
+  const setAuthorSessionStatus = (
+    target: NonNullable<typeof harness>,
+    status: "starting" | "ready",
+  ) => {
+    const current = target.getSnapshot();
+    target.setSnapshot({
+      ...current,
+      threads: current.threads.map((thread) =>
+        thread.id === ThreadId.makeUnsafe("author-a") && thread.session
+          ? { ...thread, session: { ...thread.session, status, activeTurnId: null } }
+          : thread,
+      ),
+    });
+  };
+
+  it("does not auto-retry authoring after a Claude resume point is missing", async () => {
+    vi.useFakeTimers();
+    harness = await makeAuthoringRetryHarness();
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: ThreadId.makeUnsafe("author-a"),
+        session: {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          status: "error",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          // "timed out" alone would be retryable; the resume failure is not.
+          lastError:
+            "Claude Code process exited: timed out. No message found with message.uuid of: e66ba90e-0000-4000-8000-000000000000",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe("error");
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.retryCount).toBe(0);
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      0,
+    );
+  });
+
+  it("waits for a restarting author session before the automatic retry", async () => {
+    vi.useFakeTimers();
+    harness = await makeAuthoringRetryHarness();
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: ThreadId.makeUnsafe("author-a"),
+        session: {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          status: "error",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "503 overloaded",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    setAuthorSessionStatus(harness, "starting");
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      0,
+    );
+
+    setAuthorSessionStatus(harness, "ready");
+    // One settled observation is not enough; the next one releases the retry.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      0,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const retries = turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]?.message.text).toContain("## Resuming After an Interruption");
+    expect(retries[0]?.message.text).toContain("503 overloaded");
+  });
+
+  it("records an authoring error when the session never settles for the retry", async () => {
+    vi.useFakeTimers();
+    harness = await makeAuthoringRetryHarness();
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: ThreadId.makeUnsafe("author-a"),
+        session: {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          status: "error",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "503 overloaded",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    setAuthorSessionStatus(harness, "starting");
+    await vi.advanceTimersByTimeAsync(130_000);
+
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      0,
+    );
+    const branch = lastWorkflowUpsert(harness.dispatched)?.workflow.branchA;
+    expect(branch?.status).toBe("error");
+    expect(branch?.error).toContain("did not become ready for an automatic retry");
+  });
+
   it("revalidates a persisted Opus 5 slot after a CLI downgrade before an automatic retry", async () => {
     vi.useFakeTimers();
     let providers: ReadonlyArray<ServerProvider> = [

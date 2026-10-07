@@ -95,6 +95,8 @@ import {
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationCommandInvariantError, type OrchestrationDispatchError } from "../Errors.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
+import { ProviderTurnDeliveryRepository } from "../Services/ProviderTurnDeliveryRepository.ts";
+import { isProviderResumeFailureText } from "../../provider/resumeFailure.ts";
 import {
   assertWorkflowStageProviderSupported,
   latestWorkflowTemplateVersion,
@@ -111,6 +113,12 @@ import { prepareCodeReviewPrompt } from "../workflowReviewPrompt.ts";
 const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
 const AUTO_RETRY_BACKOFF_MS = 5_000;
+// An automatic retry dispatches only after the thread's session looks settled
+// on two observations this far apart, the last one at the end of the backoff.
+// A session that is still restarting after the failure would otherwise turn
+// the retry into an ambiguous delivery.
+const AUTO_RETRY_SETTLE_INTERVAL_MS = 1_000;
+const AUTO_RETRY_SETTLE_TIMEOUT_MS = 120_000;
 
 function stableWorkflowUuid(namespace: string, ...parts: ReadonlyArray<string | number | null>) {
   const digest = createHash("sha256")
@@ -174,6 +182,11 @@ function isRetryableSessionError(session: {
   readonly lastError: string | null;
   readonly lastErrorRetryability?: "retryable" | "non-retryable" | null | undefined;
 }): boolean {
+  // A resume or transcript failure repeats on every retry until the saved
+  // conversation is repaired.
+  if (isProviderResumeFailureText(session.lastError)) {
+    return false;
+  }
   if (session.lastErrorRetryability) {
     return session.lastErrorRetryability === "retryable";
   }
@@ -225,6 +238,14 @@ function formatSessionError(
   ]
     .filter((part): part is string => part !== null)
     .join(" | ");
+}
+
+function isSessionSettledForAutoRetry(
+  thread: Pick<OrchestrationReadModel["threads"][number], "session"> | null | undefined,
+): boolean {
+  if (!thread) return false;
+  const status = thread.session?.status ?? null;
+  return status !== "starting" && !hasActiveRunningTurn(thread);
 }
 
 function hasActiveRunningTurn(
@@ -1313,6 +1334,9 @@ export const makeWorkflowService = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
+  const providerTurnDeliveryRepository = yield* Effect.serviceOption(
+    ProviderTurnDeliveryRepository,
+  );
   const checkpointDiffQuery = yield* Effect.serviceOption(CheckpointDiffQuery);
 
   const getWorkflowProviders =
@@ -1354,6 +1378,45 @@ export const makeWorkflowService = Effect.gen(function* () {
     return null;
   };
 
+  const hasDeliveryInFlight = (threadId: ThreadId) =>
+    providerTurnDeliveryRepository._tag === "Some"
+      ? providerTurnDeliveryRepository.value.getLatestByThread(threadId).pipe(
+          Effect.map((delivery) => delivery?.state === "pending" || delivery?.state === "sending"),
+          Effect.catchCause(() => Effect.succeed(false)),
+        )
+      : Effect.succeed(false);
+
+  const isThreadSettledForAutoRetry = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const snapshot = yield* orchestrationEngine.getReadModel();
+      const thread = snapshot.threads.find((entry) => entry.id === threadId);
+      return isSessionSettledForAutoRetry(thread) && !(yield* hasDeliveryInFlight(threadId));
+    });
+
+  /**
+   * Sleeps for the retry backoff, then keeps waiting until the thread's session
+   * has looked settled on two consecutive observations. Fails when the session
+   * never settles, so the caller records an error instead of a blind send.
+   */
+  const awaitAutoRetrySettled = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS - AUTO_RETRY_SETTLE_INTERVAL_MS));
+      let previousSettled = yield* isThreadSettledForAutoRetry(threadId);
+      let waitedMs = 0;
+      while (true) {
+        yield* Effect.sleep(Duration.millis(AUTO_RETRY_SETTLE_INTERVAL_MS));
+        const settled = yield* isThreadSettledForAutoRetry(threadId);
+        if (settled && previousSettled) return;
+        previousSettled = settled;
+        waitedMs += AUTO_RETRY_SETTLE_INTERVAL_MS;
+        if (waitedMs >= AUTO_RETRY_SETTLE_TIMEOUT_MS) {
+          return yield* Effect.fail(
+            new Error("The provider session did not become ready for an automatic retry."),
+          );
+        }
+      }
+    });
+
   const forkAutoRetry = (input: {
     readonly kind: "authoring" | "implementation" | "code_review" | "document_reader";
     readonly workflowId: PlanningWorkflowId;
@@ -1362,9 +1425,15 @@ export const makeWorkflowService = Effect.gen(function* () {
       readonly workflow: PlanningWorkflow;
       readonly snapshot: OrchestrationReadModel;
     }) => Effect.Effect<unknown, OrchestrationDispatchError | Error> | null;
+    /** Records a visible error when the retry cannot be dispatched. */
+    readonly markFailed?: (input: {
+      readonly workflow: PlanningWorkflow;
+      readonly detail: string;
+      readonly failedAt: string;
+    }) => PlanningWorkflow | null;
   }) =>
     Effect.gen(function* () {
-      yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS));
+      yield* awaitAutoRetrySettled(input.threadId);
       const snapshot = yield* orchestrationEngine.getReadModel();
       const workflow =
         snapshot.planningWorkflows.find(
@@ -1385,12 +1454,40 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* dispatch;
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logError("WorkflowService.autoRetryDispatch failed", {
-          kind: input.kind,
-          workflowId: input.workflowId,
-          threadId: input.threadId,
-          cause,
-        }),
+        Effect.gen(function* () {
+          yield* Effect.logError("WorkflowService.autoRetryDispatch failed", {
+            kind: input.kind,
+            workflowId: input.workflowId,
+            threadId: input.threadId,
+            cause,
+          });
+          if (!input.markFailed || Cause.hasInterruptsOnly(cause)) return;
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow =
+            snapshot.planningWorkflows.find(
+              (entry) =>
+                entry.id === input.workflowId &&
+                !isDeletedWorkflow(entry) &&
+                !isArchivedWorkflow(entry),
+            ) ?? null;
+          if (!workflow) return;
+          const squashed = Cause.squash(cause);
+          const failed = input.markFailed({
+            workflow,
+            detail: squashed instanceof Error ? squashed.message : Cause.pretty(cause),
+            failedAt: new Date().toISOString(),
+          });
+          if (failed) yield* upsertWorkflow(failed);
+        }).pipe(
+          Effect.catchCause((markCause) =>
+            Effect.logError("WorkflowService.autoRetryDispatch failure could not be recorded", {
+              kind: input.kind,
+              workflowId: input.workflowId,
+              threadId: input.threadId,
+              cause: markCause,
+            }),
+          ),
+        ),
       ),
       Effect.forkScoped,
     );
@@ -1403,7 +1500,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly originalError: string;
   }) =>
     Effect.gen(function* () {
-      yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS));
+      yield* awaitAutoRetrySettled(input.threadId);
       const snapshot = yield* orchestrationEngine.getReadModel();
       const workflow =
         snapshot.planningWorkflows.find(
@@ -4813,8 +4910,20 @@ export const makeWorkflowService = Effect.gen(function* () {
                     retry: {
                       kind: "retry",
                       reusedThread: true,
+                      interrupted: true,
                       priorFailure: event.payload.session.lastError ?? undefined,
                     },
+                  });
+                },
+                markFailed: ({ workflow, detail, failedAt }) => {
+                  const branch = authorMatch.branchId === "a" ? workflow.branchA : workflow.branchB;
+                  if (branch.status !== "authoring" || branch.retryCount !== expectedRetryCount) {
+                    return null;
+                  }
+                  return markBranchError(workflow, authorMatch.branchId, {
+                    error: `${formatSessionError(event.payload.session, "Authoring failed.")} | Automatic retry failed: ${detail}`,
+                    stage: "authoring",
+                    updatedAt: failedAt,
                   });
                 },
               });

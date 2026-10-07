@@ -67,6 +67,10 @@ export interface ProviderTurnDeliveryRepositoryShape {
   readonly getUnresolvedByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
+  /** Provider turns already attributed to accepted deliveries on this thread. */
+  readonly listAcceptedTurnIdsByThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<TurnId>, ProviderTurnDeliveryRepositoryError>;
   readonly claim: (
     deliveryId: CommandId,
     preSendTurnIds: ReadonlyArray<TurnId>,

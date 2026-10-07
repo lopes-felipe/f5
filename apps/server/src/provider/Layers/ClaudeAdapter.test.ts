@@ -21,12 +21,12 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Random, Stream } from "effect";
+import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { ProviderAdapterValidationError } from "../Errors.ts";
+import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import { clearAnthropicModelContextWindowCatalogCacheForTest } from "../modelContextWindowMetadata.ts";
 import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
 import {
@@ -222,6 +222,7 @@ function makeHarness(config?: {
   readonly cwd?: string;
   readonly stateDir?: string;
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
+  readonly resumeConfirmationTimeoutMs?: number;
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -250,6 +251,9 @@ function makeHarness(config?: {
     },
     probeResumableClaudeSession:
       config?.probeResumableClaudeSession ?? (() => Effect.succeed("unknown" as const)),
+    // The fake CLI only emits messages when a test pushes them, so most tests
+    // cannot confirm a resume while sendTurn waits. Tests of that wait opt in.
+    resumeConfirmationTimeoutMs: config?.resumeConfirmationTimeoutMs ?? 0,
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -7257,6 +7261,127 @@ describe("ClaudeAdapterLive", () => {
         assert.equal((completed.resumeCursor as { resume?: string }).resume, attempted);
       }
       yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "writes the CLI exit code and stderr tail to the provider log when a session ends",
+    () => {
+      const nativeEvents: Array<{
+        readonly event: { readonly method: string; readonly payload: Record<string, unknown> };
+      }> = [];
+      const harness = makeHarness({
+        nativeEventLogger: {
+          filePath: "memory://claude-native-events",
+          write: (event) => {
+            nativeEvents.push(event as (typeof nativeEvents)[number]);
+            return Effect.void;
+          },
+          close: () => Effect.void,
+        },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()?.options as
+          | { stderr?: (data: string) => void }
+          | undefined;
+        const stderr = options?.stderr;
+        assert.equal(typeof stderr, "function");
+        stderr?.("ENOSPC: no space left on device\n");
+        harness.query.fail(
+          new Error("Claude Code process exited with code 137\nENOSPC: no space left on device"),
+        );
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)));
+
+        const exitRecord = nativeEvents.find(
+          (entry) => entry.event.method === "claude/session-exit",
+        );
+        assert.ok(exitRecord);
+        assert.equal(exitRecord?.event.payload.outcome, "failed");
+        assert.equal(exitRecord?.event.payload.exitCode, 137);
+        assert.equal(exitRecord?.event.payload.signal, null);
+        assert.match(String(exitRecord?.event.payload.stderrTail), /no space left on device/u);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("reports the first turn after a rejected resume point as not sent", () => {
+    const harness = makeHarness({ resumeConfirmationTimeoutMs: 5_000 });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: attempted },
+        runtimeMode: "full-access",
+      });
+      const send = yield* adapter
+        .sendTurn({ threadId: RESUME_THREAD_ID, input: "continue", attachments: [] })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+      const missing = "No message found with message.uuid of: ee6d2082-0000-4000-8000-000000000000";
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: [missing],
+        session_id: attempted,
+        uuid: "missing-resume-point-result",
+      } as unknown as SDKMessage);
+      harness.query.fail(new Error(missing));
+
+      const exit = yield* Fiber.join(send);
+      assert.equal(exit._tag, "Failure");
+      if (exit._tag !== "Failure") return;
+      const error = Cause.squash(exit.cause);
+      assert.isTrue(Schema.is(ProviderAdapterRequestError)(error));
+      if (!Schema.is(ProviderAdapterRequestError)(error)) return;
+      assert.equal(error.deliveryCertainty, "not_sent");
+      assert.equal(error.deliveryRetryable, false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("returns the first turn after the CLI confirms the resumed conversation", () => {
+    const harness = makeHarness({ resumeConfirmationTimeoutMs: 5_000 });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: attempted },
+        runtimeMode: "full-access",
+      });
+      const send = yield* adapter
+        .sendTurn({ threadId: RESUME_THREAD_ID, input: "continue", attachments: [] })
+        .pipe(Effect.exit, Effect.forkChild);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+      assert.equal(send.pollUnsafe(), undefined);
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        session_id: attempted,
+        uuid: "confirmed-init",
+        model: "claude-opus-4-6",
+      } as unknown as SDKMessage);
+
+      const exit = yield* Fiber.join(send);
+      assert.equal(exit._tag, "Success");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
