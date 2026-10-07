@@ -107,3 +107,24 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     ...(compactionRecommendationEmitted !== undefined ? { compactionRecommendationEmitted } : {}),
   };
 }
+
+/** Metadata for transcript recovery remains attached to the durable cursor. */
+export function readClaudeRecoveryMetadata(cursor: unknown): {
+  resumeRecoveryGeneration?: string;
+  transcriptRepairBackupId?: string;
+  missingResumePoint?: string;
+} {
+  if (!cursor || typeof cursor !== "object") return {};
+  const value = cursor as Record<string, unknown>;
+  return {
+    ...(typeof value.resumeRecoveryGeneration === "string"
+      ? { resumeRecoveryGeneration: value.resumeRecoveryGeneration }
+      : {}),
+    ...(typeof value.transcriptRepairBackupId === "string"
+      ? { transcriptRepairBackupId: value.transcriptRepairBackupId }
+      : {}),
+    ...(typeof value.missingResumePoint === "string"
+      ? { missingResumePoint: value.missingResumePoint }
+      : {}),
+  };
+}

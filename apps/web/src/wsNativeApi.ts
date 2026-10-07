@@ -572,6 +572,12 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     server: {
+      getClaudeTranscriptRepair: (input) =>
+        transport.request(WS_METHODS.serverGetClaudeTranscriptRepair, input),
+      repairClaudeTranscript: (input) =>
+        transport.request(WS_METHODS.serverRepairClaudeTranscript, input),
+      undoClaudeTranscriptRepair: (input) =>
+        transport.request(WS_METHODS.serverUndoClaudeTranscriptRepair, input),
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       getProjectSettings: (input) => transport.request(WS_METHODS.serverGetProjectSettings, input),
       migrateClientSetting: (input) =>
