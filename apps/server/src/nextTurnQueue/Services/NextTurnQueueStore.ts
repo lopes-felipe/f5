@@ -89,6 +89,11 @@ export interface NextTurnQueueStoreShape {
     guard?: { limitKey?: string; revision?: number },
   ) => Effect.Effect<ReadonlyArray<ThreadId>, NextTurnQueueError>;
   readonly resetUsageResumeStreak: (threadId: ThreadId) => Effect.Effect<void, NextTurnQueueError>;
+  readonly markUsageResumeEligible: (
+    threadId: ThreadId,
+    limitKey: string,
+  ) => Effect.Effect<void, NextTurnQueueError>;
+  readonly pruneUsageResumeLedger: (before: string) => Effect.Effect<void, NextTurnQueueError>;
   readonly completeUsageResume: (threadId: ThreadId) => Effect.Effect<void, NextTurnQueueError>;
   readonly getUsageResumeContext: (itemId: CommandId) => Effect.Effect<
     {
@@ -96,6 +101,7 @@ export interface NextTurnQueueStoreShape {
       providerInstanceId: string;
       source: "manual" | "auto";
       fingerprint: string | null;
+      state: UsageResumeLedger["state"];
     } | null,
     NextTurnQueueError
   >;

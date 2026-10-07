@@ -7,7 +7,10 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Exit, Layer, ManagedRuntime, Option, PubSub, Scope, Stream, Tracer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import { ThreadTurnNotReadyError } from "../../orchestration/Errors.ts";
+import { UsageService, type UsageServiceShape } from "../../usage/Services/UsageService.ts";
+import type { OrchestrationCommand } from "@t3tools/contracts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -59,7 +62,12 @@ function blockedThread(
   } as unknown as OrchestrationThread;
 }
 
-async function fixture(model: OrchestrationThread[], automatic = false) {
+async function fixture(
+  model: OrchestrationThread[],
+  automatic = false,
+  refresh?: UsageServiceShape["refreshAccount"],
+  notReady?: () => ThreadTurnNotReadyError,
+) {
   const events = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
   const queries: string[] = [];
   let reads = 0;
@@ -79,6 +87,7 @@ async function fixture(model: OrchestrationThread[], automatic = false) {
     ServerConfig.layerTest(process.cwd(), { prefix: "f5-policy-regression-" }),
   ).pipe(Layer.provideMerge(NodeServices.layer));
   const dependencies = Layer.mergeAll(
+    refresh ? Layer.succeed(UsageService, { refreshAccount: refresh } as never) : Layer.empty,
     Layer.succeed(GitCore, makeFakeGitCore().service),
     Layer.succeed(ProjectionThreadRepository, {
       getById: ({ threadId }: { threadId: ThreadId }) =>
@@ -111,7 +120,21 @@ async function fixture(model: OrchestrationThread[], automatic = false) {
           reads++;
           return { threads: model, projects: [] };
         }),
-      dispatch: () => Effect.succeed({ sequence: 1 }),
+      dispatch: (command: OrchestrationCommand) =>
+        Effect.gen(function* () {
+          if (command.type === "thread.turn.start" && notReady) return yield* notReady();
+          if (command.type === "thread.session.set") {
+            const target = model.find((thread) => thread.id === command.threadId);
+            if (target) Object.assign(target, { session: command.session });
+            yield* PubSub.publish(events, {
+              aggregateKind: "thread",
+              aggregateId: command.threadId,
+              type: "thread.session-set",
+              payload: { threadId: command.threadId, settledTurnId: null },
+            } as unknown as OrchestrationEvent);
+          }
+          return { sequence: 1 };
+        }),
       streamDomainEvents: Stream.fromPubSub(events),
     } as never),
     Layer.succeed(RuntimeReceiptBus, { publish: () => Effect.void, stream: Stream.empty }),
@@ -166,6 +189,15 @@ async function fixture(model: OrchestrationThread[], automatic = false) {
     store,
     settings,
     publish,
+    publishLifecycle: (threadId: ThreadId) =>
+      run(
+        PubSub.publish(events, {
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          type: "thread.checkpoint-revert-requested",
+          payload: { threadId },
+        } as unknown as OrchestrationEvent),
+      ),
     queries,
     readCount: () => reads,
     resetCounts: () => {
@@ -306,5 +338,182 @@ it("another thread's scan cannot suppress an unknown reset failure", async () =>
       .toBe(1);
   } finally {
     await f.dispose();
+  }
+});
+
+it("retries a throttled unknown reset after its deadline and schedules from fresh account data", async () => {
+  let nowMs = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+  const thread = blockedThread(0, null);
+  Object.assign(thread.session!.usageLimit!, {
+    windows: [{ id: "five_hour", label: "5-hour", resetsAt: null }],
+  });
+  let calls = 0;
+  const refresh: UsageServiceShape["refreshAccount"] = () =>
+    Effect.sync(() => {
+      calls++;
+      if (calls === 1)
+        return {
+          fresh: false,
+          snapshot: null,
+          nextAllowedAt: new Date(nowMs + 90_000).toISOString(),
+        };
+      const fetchedAt = new Date(nowMs + 1_000).toISOString();
+      return {
+        fresh: true,
+        snapshot: {
+          key: "codex",
+          provider: "claudeAgent",
+          providerInstanceId: "codex",
+          displayName: "test",
+          enabled: true,
+          refreshState: "idle",
+          sections: [
+            {
+              kind: "claude-usage",
+              outcome: "available",
+              lastAttemptAt: fetchedAt,
+              errorCode: null,
+              snapshot: {
+                fetchedAt,
+                data: {
+                  subscriptionLabel: "Max",
+                  limitsAvailable: true,
+                  windows: [
+                    {
+                      key: "five_hour",
+                      label: "5-hour",
+                      utilization: 100,
+                      resetsAt: new Date(nowMs + 3_600_000).toISOString(),
+                    },
+                  ],
+                  extraUsage: null,
+                },
+              },
+            },
+          ],
+        } as never,
+      };
+    });
+  const f = await fixture([thread], true, refresh);
+  try {
+    await f.run(f.dispatcher.start);
+    await expect.poll(() => calls).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    nowMs += 60_000;
+    await f.run(f.settings.updateSettings({ autoResumeUsageLimitedThreads: true }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toBe(1);
+    nowMs += 60_000;
+    await f.run(f.settings.updateSettings({ autoResumeUsageLimitedThreads: true }));
+    await expect
+      .poll(async () => (await f.run(f.store.listByThread(thread.id))).items.length)
+      .toBe(1);
+    expect(calls).toBe(2);
+    expect(thread.session!.usageLimit!.resetSource).toBe("account");
+  } finally {
+    await f.dispose();
+    clock.mockRestore();
+  }
+});
+
+it("drops an obsolete continuation without removing queued follow-ups", async () => {
+  const thread = blockedThread(0);
+  const f = await fixture([thread]);
+  try {
+    await f.run(f.dispatcher.scheduleUsageLimitResume({ threadId: thread.id }));
+    const recovery = (await f.run(f.store.listByThread(thread.id))).items[0]!;
+    await f.run(
+      f.store.insertSubmission({
+        submissionId: (recovery.submissionId + "-followup") as never,
+        itemId: (recovery.itemId + "-followup") as never,
+        requestHash: "followup",
+        atHead: false,
+        command: {
+          ...recovery.command,
+          commandId: (recovery.command.commandId + "-followup") as never,
+          presentation: undefined,
+          message: {
+            ...recovery.command.message,
+            messageId: (recovery.command.message.messageId + "-followup") as never,
+            text: "follow up",
+          },
+        },
+      }),
+    );
+    Object.assign(thread.session!, { status: "ready", lastError: null, usageLimit: null });
+    await f.run(f.dispatcher.notify(thread.id));
+    await f.run(f.dispatcher.drain);
+    expect(
+      (await f.run(f.store.listByThread(thread.id))).items.some(
+        (item) => item.scheduleReason === "usage_limit_reset",
+      ),
+    ).toBe(false);
+    expect((await f.run(f.store.listByThread(thread.id))).items).toHaveLength(1);
+    expect((await f.run(f.store.getUsageResumeLedger(thread.id)))?.state).toBe("cancelled");
+  } finally {
+    await f.dispose();
+  }
+});
+
+it("a cancellation failure cannot suppress the lifecycle pause", async () => {
+  const thread = blockedThread(0);
+  const f = await fixture([thread]);
+  try {
+    await f.run(f.dispatcher.start);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await f.run(f.dispatcher.scheduleUsageLimitResume({ threadId: thread.id }));
+    const sql = await f.run(Effect.service(SqlClient.SqlClient));
+    await f.run(
+      sql`CREATE TRIGGER fail_resume_cancellation BEFORE UPDATE OF deleted_at ON next_turn_queue WHEN NEW.deleted_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'cancel failed'); END`,
+    );
+    await f.publishLifecycle(thread.id);
+    await expect
+      .poll(async () => (await f.run(f.store.listByThread(thread.id))).state.pauseReasonCode)
+      .toBe("thread_reverted");
+    expect((await f.run(f.store.listByThread(thread.id))).items).toHaveLength(1);
+  } finally {
+    await f.dispose();
+  }
+});
+
+it("backs off repeated rewind readiness failures without consuming delivery attempts", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  let nowMs = Date.now();
+  let attempts = 0;
+  const thread = blockedThread(0);
+  const f = await fixture([thread], false, undefined, () => {
+    attempts++;
+    return new ThreadTurnNotReadyError({
+      threadId: thread.id,
+      detail: "Rewind is awaiting reconciliation",
+    });
+  });
+  try {
+    const snapshot = await f.run(f.dispatcher.scheduleUsageLimitResume({ threadId: thread.id }));
+    await f.run(
+      f.dispatcher.promote({
+        itemId: snapshot.items[0]!.itemId,
+        expectedRevision: snapshot.revision,
+        interruptActive: false,
+      }),
+    );
+    await f.run(f.dispatcher.drain);
+    for (const [index, base] of [1_000, 2_000, 4_000].entries()) {
+      const item = (await f.run(f.store.listByThread(thread.id))).items[0]!;
+      expect(attempts).toBe(index + 1);
+      expect(item.attemptCount).toBe(0);
+      expect(Date.parse(item.notBefore!) - nowMs).toBeGreaterThanOrEqual(base * 0.8);
+      expect(Date.parse(item.notBefore!) - nowMs).toBeLessThanOrEqual(base * 1.2);
+      nowMs += 10_000;
+      vi.setSystemTime(nowMs);
+      if (index < 2) {
+        await f.run(f.dispatcher.notify(thread.id));
+        await f.run(f.dispatcher.drain);
+      }
+    }
+  } finally {
+    await f.dispose();
+    vi.useRealTimers();
   }
 });

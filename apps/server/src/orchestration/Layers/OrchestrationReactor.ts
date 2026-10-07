@@ -38,47 +38,61 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* providerCommandReactor.start;
     yield* Stream.runForEach(providerTurnDeliveryWorker.outcomes, (outcome) =>
       Effect.gen(function* () {
+        let projectionSucceeded = true;
         if (outcome.usageLimit && outcome.state === "rejected") {
-          const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
-            (entry) => entry.id === outcome.threadId,
-          );
-          if (
-            thread &&
-            !thread.session?.activeTurnId &&
-            thread.session?.status !== "running" &&
-            thread.session?.status !== "starting" &&
-            !(
-              outcome.occurredAt &&
-              thread.session &&
-              thread.session.updatedAt > outcome.occurredAt
-            ) &&
-            thread.session?.usageLimit?.deliveryId !== outcome.deliveryId
-          ) {
-            const now = new Date().toISOString();
-            yield* orchestrationEngine.dispatch({
-              type: "thread.session.set",
-              commandId: CommandId.makeUnsafe(`delivery-limit:${outcome.deliveryId}`),
-              threadId: thread.id,
-              session: {
+          const limit = outcome.usageLimit;
+          yield* Effect.gen(function* () {
+            const thread = (yield* orchestrationEngine.getReadModel()).threads.find(
+              (entry) => entry.id === outcome.threadId,
+            );
+            if (
+              thread &&
+              !thread.session?.activeTurnId &&
+              thread.session?.status !== "running" &&
+              thread.session?.status !== "starting" &&
+              !(
+                outcome.occurredAt &&
+                thread.session &&
+                thread.session.updatedAt > outcome.occurredAt
+              ) &&
+              thread.session?.usageLimit?.deliveryId !== outcome.deliveryId
+            ) {
+              const now = new Date().toISOString();
+              yield* orchestrationEngine.dispatch({
+                type: "thread.session.set",
+                commandId: CommandId.makeUnsafe(`delivery-limit:${outcome.deliveryId}`),
                 threadId: thread.id,
-                status: "error",
-                providerName: thread.session?.providerName ?? null,
-                providerInstanceId: outcome.usageLimit.providerInstanceId,
-                runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-                activeTurnId: null,
-                lastError: outcome.detail ?? "Usage limit reached",
-                lastErrorId: `delivery:${outcome.deliveryId}`,
-                lastErrorOccurredAt: now,
-                usageLimit: outcome.usageLimit,
-                updatedAt: now,
-              },
-              createdAt: now,
-            });
-          }
+                session: {
+                  threadId: thread.id,
+                  status: "error",
+                  providerName: thread.session?.providerName ?? null,
+                  providerInstanceId: limit.providerInstanceId,
+                  runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+                  activeTurnId: null,
+                  lastError: outcome.detail ?? "Usage limit reached",
+                  lastErrorId: `delivery:${outcome.deliveryId}`,
+                  lastErrorOccurredAt: now,
+                  usageLimit: limit,
+                  updatedAt: now,
+                },
+                createdAt: now,
+              });
+            }
+          }).pipe(
+            Effect.catchCause((cause) => {
+              projectionSucceeded = false;
+              return Effect.logWarning("failed to project provider usage rejection", {
+                threadId: outcome.threadId,
+                cause,
+              });
+            }),
+          );
         }
         yield* nextTurnQueueDispatcher.handleDeliveryOutcome(outcome);
+        // Keep the durable outcome replayable until its session projection succeeds.
+        if (projectionSucceeded)
+          yield* providerTurnDeliveryWorker.acknowledgeOutcome(outcome.deliveryId);
       }).pipe(
-        Effect.andThen(providerTurnDeliveryWorker.acknowledgeOutcome(outcome.deliveryId)),
         Effect.catchCause((cause) =>
           Effect.logWarning("failed to project provider delivery outcome into the queue", {
             threadId: outcome.threadId,

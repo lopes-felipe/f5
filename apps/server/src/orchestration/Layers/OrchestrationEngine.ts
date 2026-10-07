@@ -282,6 +282,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (
+                envelope.command.type === "thread.turn.start" &&
+                envelope.command.dispatchSource === "next-turn-queue"
+              ) {
+                const recovery = yield* sql<{ state: string | null }>`
+                  SELECT l.state FROM next_turn_queue q
+                  LEFT JOIN usage_limit_resumes l ON l.thread_id = q.thread_id
+                    AND l.limit_key = q.schedule_limit_key
+                  WHERE q.command_id = ${envelope.command.commandId}
+                    AND q.schedule_reason = 'usage_limit_reset'
+                `;
+                if (recovery.length > 0 && recovery[0]?.state !== "scheduled")
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail:
+                      "The scheduled usage-limit continuation was cancelled before acceptance.",
+                  });
+              }
               const committedEvents: OrchestrationEvent[] = [];
               let nextReadModel = readModel;
 
@@ -289,6 +307,29 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
                 yield* projectionPipeline.projectEvent(savedEvent);
+                if (savedEvent.type === "thread.session-stop-requested") {
+                  // Commit cancellation with the stop intent: a crash before live
+                  // subscribers run must never revive an unsent continuation.
+                  yield* sql`UPDATE usage_limit_resumes SET state = 'cancelled',
+                    updated_at = ${savedEvent.occurredAt}
+                    WHERE thread_id = ${savedEvent.payload.threadId} AND state = 'scheduled'`;
+                  const cancelled = yield* sql<{ submissionId: string }>`
+                    UPDATE next_turn_queue SET deleted_at = ${savedEvent.occurredAt},
+                      updated_at = ${savedEvent.occurredAt}
+                    WHERE thread_id = ${savedEvent.payload.threadId}
+                      AND schedule_reason = 'usage_limit_reset'
+                      AND status = 'queued' AND deleted_at IS NULL
+                    RETURNING submission_id AS "submissionId"
+                  `;
+                  for (const item of cancelled) {
+                    yield* sql`UPDATE turn_submissions SET disposition = 'canceled',
+                      reason_code = 'session_stopped', settled_at = ${savedEvent.occurredAt}
+                      WHERE submission_id = ${item.submissionId} AND disposition IN ('pending', 'queued')`;
+                  }
+                  if (cancelled.length > 0)
+                    yield* sql`UPDATE next_turn_queue_state SET revision = revision + 1,
+                      updated_at = ${savedEvent.occurredAt} WHERE thread_id = ${savedEvent.payload.threadId}`;
+                }
                 if (savedEvent.type === "thread.message-sent") {
                   yield* Effect.forEach(
                     savedEvent.payload.attachments ?? [],

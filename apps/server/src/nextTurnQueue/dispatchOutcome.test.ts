@@ -26,6 +26,28 @@ describe("next-turn dispatch outcomes", () => {
     });
   });
 
+  it("backs off pending rewinds without consuming delivery attempts", () => {
+    const error = { _tag: "ThreadTurnNotReadyError" };
+    const delays = [1, 2, 3, 20].map((readinessAttempt) =>
+      classifyNextTurnDispatchFailure({
+        error,
+        postClaimAttempt: 1,
+        readinessAttempt,
+        random: () => 0.5,
+      }),
+    );
+    expect(delays).toEqual(
+      [1_000, 2_000, 4_000, 60_000].map((delayMs) => ({
+        kind: "retry",
+        delayMs,
+        clearDispatchStartedAt: true,
+        consumeAttempt: false,
+        errorCode: "ThreadTurnNotReadyError",
+        errorDetail: "The turn could not be sent.",
+      })),
+    );
+  });
+
   it("fails poisoned and exhausted attempts", () => {
     expect(
       classifyNextTurnDispatchFailure({

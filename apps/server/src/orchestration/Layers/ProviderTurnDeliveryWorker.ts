@@ -127,7 +127,9 @@ const make = Effect.gen(function* () {
       // Only a structured usage rejection at the turn-start call boundary proves
       // the provider refused this send. Transport text alone never does.
       const requestError = Schema.is(ProviderAdapterRequestError)(error) ? error : null;
-      const rejectedLimit = typedDeliveryError?.usageLimit ?? requestError?.usageLimit;
+      const rejectedLimit =
+        typedDeliveryError?.usageLimit ??
+        (requestError?.method === "turn/start" ? requestError.usageLimit : undefined);
       const notSent =
         Boolean(rejectedLimit) ||
         typedDeliveryError?.certainty === "not_sent" ||

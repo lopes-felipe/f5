@@ -35,7 +35,7 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it.each([false, true, "newer-session"] as const)(
+  it.each([false, true, "newer-session", "projection-failure"] as const)(
     "starts reactors and safely projects usage rejection replay (%s)",
     async (replayLimit) => {
       const started: string[] = [];
@@ -71,6 +71,8 @@ describe("OrchestrationReactor", () => {
       const writes: OrchestrationCommand[] = [];
       let acknowledged = 0;
       let resumes = 0;
+      let queueOutcomes = 0;
+      let projectionAttempts = 0;
 
       runtime = ManagedRuntime.make(
         Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
@@ -85,11 +87,13 @@ describe("OrchestrationReactor", () => {
                 }),
               readEvents: () => Stream.empty,
               dispatch: (command) =>
-                Effect.sync(() => {
-                  writes.push(command);
-                  if (command.type === "thread.session.set") session = command.session;
-                  return { sequence: writes.length };
-                }),
+                replayLimit === "projection-failure" && projectionAttempts++ === 0
+                  ? Effect.fail(new Error("projection unavailable") as never)
+                  : Effect.sync(() => {
+                      writes.push(command);
+                      if (command.type === "thread.session.set") session = command.session;
+                      return { sequence: writes.length };
+                    }),
               acquireMaintenanceLock: () => Effect.die("unsupported"),
               streamDomainEvents: Stream.empty,
             }),
@@ -128,7 +132,10 @@ describe("OrchestrationReactor", () => {
                 }).pipe(Effect.andThen(Effect.die("Unexpected continue for an unsent message"))),
               cancelUsageLimitResume: () => Effect.die("unsupported"),
               refreshUsageLimitResume: () => Effect.die("unsupported"),
-              handleDeliveryOutcome: () => Effect.void,
+              handleDeliveryOutcome: () =>
+                Effect.sync(() => {
+                  queueOutcomes += 1;
+                }),
               changes: Stream.empty,
               summaryChanges: Stream.empty,
             }),
@@ -263,8 +270,9 @@ describe("OrchestrationReactor", () => {
           expect(write.session.activeTurnId).toBeNull();
           expect(write.session.lastError).toBe("Usage limit reached");
         }
-        expect(acknowledged).toBe(2);
+        expect(acknowledged).toBe(replayLimit === "projection-failure" ? 1 : 2);
       }
+      if (replayLimit) expect(queueOutcomes).toBe(2);
       expect(resumes).toBe(0);
       await Effect.runPromise(Scope.close(scope, Exit.void));
     },

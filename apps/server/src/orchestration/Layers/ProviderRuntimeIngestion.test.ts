@@ -717,7 +717,7 @@ describe("ProviderRuntimeIngestion", () => {
           harness.engine,
           (thread) => thread.session?.activeTurnId === "new-turn",
         );
-        expect(thread.session?.usageLimit?.resetsAt).toBeNull();
+        expect(thread.session?.usageLimit).toBeNull();
         expect(thread.session?.status).toBe("running");
       }
       expect(refreshes).toBe(1);

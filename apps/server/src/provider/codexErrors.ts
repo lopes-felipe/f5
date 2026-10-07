@@ -114,11 +114,15 @@ export function detectCodexUsageLimit(input: {
 }): RuntimeUsageLimit | null {
   if (/\b(?:warning|retrying|will retry|authentication|unauthorized)\b/i.test(input.message))
     return null;
-  const snapshots = (input.snapshots ?? []).map((entry) =>
-    "snapshot" in entry ? entry.snapshot : entry,
-  );
+  const freshSnapshots = (input.snapshots ?? [])
+    .filter(
+      (entry) =>
+        !("snapshot" in entry) ||
+        Date.parse(entry.observedAt) >= Date.parse(input.snapshotNotBefore ?? input.at),
+    )
+    .map((entry) => ("snapshot" in entry ? entry.snapshot : entry));
   if (
-    snapshots.some((entry) =>
+    freshSnapshots.some((entry) =>
       /credits_depleted|usage_limit_reached/.test(entry.rateLimitReachedType ?? ""),
     )
   )
@@ -133,13 +137,6 @@ export function detectCodexUsageLimit(input: {
     !/\b(?:hit|reached) your usage limit\b|\busage limit reached\b/i.test(input.message)
   )
     return null;
-  const freshSnapshots = (input.snapshots ?? [])
-    .filter(
-      (entry) =>
-        !("snapshot" in entry) ||
-        Date.parse(entry.observedAt) >= Date.parse(input.snapshotNotBefore ?? input.at),
-    )
-    .map((entry) => ("snapshot" in entry ? entry.snapshot : entry));
   const windows = freshSnapshots.flatMap(exhaustedCodexWindows);
   const result = usageLimitFromWindows(windows, typed ? "typed" : "message");
   if (result.resetsAt) return result;

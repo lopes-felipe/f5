@@ -40,12 +40,16 @@ export function classifyNextTurnDispatchFailure(input: {
   readonly error: unknown;
   readonly postClaimAttempt: number;
   readonly random?: (() => number) | undefined;
+  readonly readinessAttempt?: number;
 }): NextTurnDispatchOutcome {
   const { tag, message } = taggedError(input.error);
   if (tag === "ThreadTurnAlreadyActiveError" || tag === "ThreadTurnNotReadyError") {
     return {
       kind: "retry",
-      delayMs: 250,
+      delayMs:
+        tag === "ThreadTurnNotReadyError"
+          ? nextTurnDispatchBackoffMs(input.readinessAttempt ?? 1, input.random)
+          : 250,
       clearDispatchStartedAt: true,
       consumeAttempt: false,
       errorCode: tag,

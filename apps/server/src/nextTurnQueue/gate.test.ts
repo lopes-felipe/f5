@@ -88,14 +88,14 @@ describe("resolveNextTurnQueueGate", () => {
         scheduleLimitKey: "instance:codex:turn:other",
         scheduleProviderInstanceId: "codex",
       }),
-    ).toEqual(expect.objectContaining({ kind: "autoPause", reasonCode: "turn_failed" }));
+    ).toEqual(expect.objectContaining({ kind: "drop", reasonCode: "usage_limit_context_changed" }));
     expect(
       gate({
         item: recovery,
         session: { ...session, usageLimit: null },
         scheduleLimitKey: "instance:codex:turn:limited",
       }),
-    ).toEqual(expect.objectContaining({ kind: "autoPause", reasonCode: "turn_failed" }));
+    ).toEqual(expect.objectContaining({ kind: "drop", reasonCode: "usage_limit_context_changed" }));
   });
   it("reports the reset wait separately from transport backoff", () => {
     const future = "2026-01-02T00:00:00.000Z";

@@ -5,11 +5,13 @@ import {
   type OrchestrationThread,
   type ThreadId,
 } from "@t3tools/contracts";
+import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { executionProviderFingerprint } from "../provider/providerConfigurationFingerprint.ts";
+import { executionProviderFingerprintFor } from "../provider/providerConfigurationFingerprint.ts";
 import { Effect, Option } from "effect";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { NextTurnQueueStore } from "./Services/NextTurnQueueStore.ts";
+import { toNextTurnQueueStorageError } from "./Errors.ts";
 import { canonicalRequestHash } from "./canonicalRequestHash.ts";
 
 export const BUFFER_MS = 60_000;
@@ -23,11 +25,7 @@ export const LEDGER_RETENTION_MS = 30 * 24 * 60 * 60_000;
 export function usageLimitKey(
   session: Pick<OrchestrationSession, "usageLimit"> | null | undefined,
 ): string | null {
-  const limit = session?.usageLimit;
-  if (!limit) return null;
-  if (limit.turnId) return `instance:${limit.providerInstanceId}:turn:${limit.turnId}`;
-  if (limit.deliveryId) return `instance:${limit.providerInstanceId}:delivery:${limit.deliveryId}`;
-  return null;
+  return usageLimitFailureKey(session?.usageLimit);
 }
 
 export function normalizeTarget(ms: number): string | null {
@@ -118,7 +116,13 @@ export const scheduleUsageLimitResumeFor = (input: {
       providerInstanceId: limit.providerInstanceId,
       source: input.source,
       notBefore,
-      ...(config ? { providerFingerprint: executionProviderFingerprint(config) } : {}),
+      ...(config
+        ? {
+            providerFingerprint: yield* executionProviderFingerprintFor(config).pipe(
+              Effect.mapError(toNextTurnQueueStorageError),
+            ),
+          }
+        : {}),
     });
     return result === "busy"
       ? { kind: "transient" as const, reason: "The continue is already sending." }

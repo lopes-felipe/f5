@@ -1,4 +1,6 @@
 import type { OrchestrationUsageLimit, ThreadId } from "@t3tools/contracts";
+import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
+export { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { useEffect, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
@@ -6,12 +8,6 @@ import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { SnoozePresetPicker } from "../SnoozePresetPicker";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
-
-export function usageLimitFailureKey(limit: OrchestrationUsageLimit): string | null {
-  if (limit.turnId) return `instance:${limit.providerInstanceId}:turn:${limit.turnId}`;
-  if (limit.deliveryId) return `instance:${limit.providerInstanceId}:delivery:${limit.deliveryId}`;
-  return null;
-}
 
 export function formatUsageResumeTime(value: string, now = new Date()): string {
   const date = new Date(value);
@@ -201,7 +197,10 @@ export function UsageLimitResumeAction({
                 size="xs"
                 variant="ghost"
                 disabled={busy || !limitKey}
-                onClick={() => setPicker(!picker)}
+                onClick={() => {
+                  if (!picker) setTarget(new Date(Date.now() + 3_600_000).toISOString());
+                  setPicker(!picker);
+                }}
               >
                 {resetTime ? "Pick another time…" : "Schedule continue…"}
               </Button>
@@ -238,7 +237,10 @@ export function UsageLimitResumeAction({
                   );
                 }}
               />
-              Always continue automatically
+              Always continue automatically (global default)
+              <span className="text-muted-foreground">
+                Project settings may override this default.
+              </span>
             </label>
           </details>
           <p className="text-muted-foreground">

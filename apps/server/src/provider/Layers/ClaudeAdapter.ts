@@ -3733,7 +3733,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             );
             const usageLimit =
               rejected.length > 0 &&
-              (!originalError || /usage.?limit|rate.?limit/i.test(originalError)) &&
+              /usage.?limit|rate.?limit/i.test(originalError ?? "") &&
               !/authentication|unauthorized/i.test(originalError ?? "")
                 ? usageLimitFromWindows(rejected.map((limit) => limit.structuredWindow))
                 : undefined;

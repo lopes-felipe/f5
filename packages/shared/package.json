@@ -84,6 +84,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./usageLimit": {
+      "types": "./src/usageLimit.ts",
+      "import": "./src/usageLimit.ts"
+    },
     "./providerOptions": {
       "types": "./src/providerOptions.ts",
       "import": "./src/providerOptions.ts"

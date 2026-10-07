@@ -1,5 +1,6 @@
+import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { executionProviderFingerprint } from "../../provider/providerConfigurationFingerprint.ts";
+import { executionProviderFingerprintFor } from "../../provider/providerConfigurationFingerprint.ts";
 import { UsageService } from "../../usage/Services/UsageService.ts";
 import { resolveAccountUsageLimit } from "../../provider/usageLimitMessages.ts";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
@@ -111,6 +112,16 @@ function storageError(cause: unknown): NextTurnQueueStorageError {
 export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
   const scope = yield* Effect.scope;
+  const secretsOption = yield* Effect.serviceOption(ServerSecretStore);
+  const protectedFingerprint = (config: import("@t3tools/contracts").ProviderInstanceConfig) => {
+    const fingerprint = executionProviderFingerprintFor(config);
+    return (
+      Option.isSome(secretsOption)
+        ? fingerprint.pipe(Effect.provideService(ServerSecretStore, secretsOption.value))
+        : fingerprint
+    ).pipe(Effect.mapError(storageError));
+  };
+  const readinessRetries = new Map<ThreadId, { commandId: CommandId; count: number }>();
   const usageOption = yield* Effect.serviceOption(UsageService);
   const registryOption = yield* Effect.serviceOption(ProviderInstanceRegistry);
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -225,9 +236,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const fingerprintChanged =
         !!resumeContext?.fingerprint &&
         !!settings &&
-        (!config || executionProviderFingerprint(config) !== resumeContext.fingerprint);
+        (!config || (yield* protectedFingerprint(config)) !== resumeContext.fingerprint);
       const gate = resolveNextTurnQueueGate({
         scheduleLimitKey: resumeContext?.limitKey,
+        scheduleState: resumeContext?.state,
         scheduleProviderInstanceId: resumeContext?.providerInstanceId,
         providerContextChanged:
           fingerprintChanged ||
@@ -462,7 +474,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       const expectedRevision = (yield* store.listByThread(threadId)).state.revision;
       const gate = yield* readGate(item, true);
       if (gate.kind === "drop") {
-        yield* store.deleteForThread(threadId);
+        if (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted") {
+          yield* store.softDelete({ itemId: item.itemId });
+          yield* notify(threadId);
+        } else yield* store.deleteForThread(threadId);
         yield* publishSnapshotIfChanged(threadId);
         yield* settleWaiter(item.itemId, {
           disposition: "rejected",
@@ -614,6 +629,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       );
       yield* finishDispatch(item.itemId);
       if (exit._tag === "Success") {
+        readinessRetries.delete(threadId);
         yield* store.markAwaitingDelivery({
           itemId: item.itemId,
           leaseOwner,
@@ -665,9 +681,26 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         });
         return;
       }
+      const notReady =
+        !!error &&
+        typeof error === "object" &&
+        "_tag" in error &&
+        error._tag === "ThreadTurnNotReadyError";
+      const previousRetry = readinessRetries.get(threadId);
+      const readinessAttempt = notReady
+        ? (previousRetry?.commandId === claimed.item.command.commandId ? previousRetry.count : 0) +
+          1
+        : 0;
+      if (notReady)
+        readinessRetries.set(threadId, {
+          commandId: claimed.item.command.commandId,
+          count: readinessAttempt,
+        });
+      else readinessRetries.delete(threadId);
       const outcome = classifyNextTurnDispatchFailure({
         error,
         postClaimAttempt: claimed.item.attemptCount,
+        readinessAttempt,
       });
       yield* applyDispatchFailure(claimed.item, leaseOwner, outcome);
       yield* publishSnapshotIfChanged(threadId);
@@ -737,8 +770,18 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
     Effect.gen(function* () {
       const queue = yield* store.listByThread(threadId);
       for (const item of queue.items)
-        if (item.scheduleReason === "usage_limit_reset" && item.status !== "dispatching")
-          yield* store.softDelete({ itemId: item.itemId });
+        if (item.scheduleReason === "usage_limit_reset" && item.status === "queued")
+          yield* store.softDelete({ itemId: item.itemId }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("could not cancel unsent usage resume", {
+                    threadId,
+                    itemId: item.itemId,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          );
     });
   const reactToDomainEvent = (event: OrchestrationEvent) =>
     Effect.gen(function* () {
@@ -868,13 +911,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       Effect.provideService(OrchestrationEngineService, engine),
       Effect.provideService(NextTurnQueueStore, store),
       (effect) =>
+        Option.isSome(secretsOption)
+          ? effect.pipe(Effect.provideService(ServerSecretStore, secretsOption.value))
+          : effect,
+      (effect) =>
         Option.isSome(restartSettingsOption)
           ? effect.pipe(Effect.provideService(ServerSettingsService, restartSettingsOption.value))
           : effect,
     );
   const scanSemaphore = yield* Semaphore.make(1);
   const previousPolicy = new Map<ThreadId, boolean>();
-  const refreshedFailures = new Set<string>();
+  const refreshAttempts = new Map<
+    ThreadId,
+    { key: string; inFlight: boolean; attempts: number; nextAllowedAt: number }
+  >();
   const refreshLimit = (threadId: ThreadId, expectedKey: string) =>
     Effect.gen(function* () {
       const thread = ((yield* engine.getReadModel()).threads ?? []).find(
@@ -886,18 +936,19 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         usageLimitKey(session) !== expectedKey ||
         Option.isNone(usageOption)
       )
-        return;
+        return { resolved: false };
       const detectedAt = new Date().toISOString();
       const result = yield* usageOption.value
         .refreshAccount(session.usageLimit.providerInstanceId)
         .pipe(Effect.mapError(storageError));
-      if (!result.fresh || !result.snapshot) return;
+      if (!result.fresh || !result.snapshot)
+        return { resolved: false, nextAllowedAt: result.nextAllowedAt };
       const limit = resolveAccountUsageLimit(session.usageLimit, result.snapshot, detectedAt);
-      if (!limit.resetsAt) return;
+      if (!limit.resetsAt) return { resolved: false };
       const latest = ((yield* engine.getReadModel()).threads ?? []).find(
         (entry) => entry.id === threadId,
       )?.session;
-      if (!latest || usageLimitKey(latest) !== expectedKey) return;
+      if (!latest || usageLimitKey(latest) !== expectedKey) return { resolved: true };
       yield* engine
         .dispatch({
           type: "thread.session.set",
@@ -917,6 +968,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         });
         yield* notify(threadId);
       }
+      return { resolved: true };
     });
   const scanUsageLimitResumes = (
     policyChange = false,
@@ -928,6 +980,26 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         if (Option.isNone(restartSettingsOption)) return;
         const settings = emittedSettings ?? (yield* restartSettingsOption.value.getSettings);
         const model = yield* engine.getReadModel();
+        if (!failureThreadId) {
+          const liveThreads = new Map(
+            model.threads
+              .filter((thread) => !thread.deletedAt)
+              .map((thread) => [thread.id, thread]),
+          );
+          for (const id of previousPolicy.keys())
+            if (!liveThreads.has(id)) previousPolicy.delete(id);
+          for (const id of readinessRetries.keys())
+            if (!liveThreads.has(id)) readinessRetries.delete(id);
+          for (const [id, attempt] of refreshAttempts) {
+            const current = liveThreads.get(id)?.session;
+            if (
+              !liveThreads.has(id) ||
+              usageLimitKey(current) !== attempt.key ||
+              current?.usageLimit?.resetsAt
+            )
+              refreshAttempts.delete(id);
+          }
+        }
         const candidates = failureThreadId
           ? model.threads.filter((thread) => thread.id === failureThreadId)
           : model.threads;
@@ -969,23 +1041,54 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             yield* store.recordUsageResumeFailure(thread.id, key, enabled);
           if (policyChange && enabled && wasEnabled !== true) {
             if (!future) continue;
-            if (Option.isSome(sqlOption))
-              yield* sqlOption.value`UPDATE usage_limit_resumes SET auto_eligible_at_failure=1 WHERE thread_id=${thread.id} AND limit_key=${key} AND state='revoked'`;
+            yield* store.markUsageResumeEligible(thread.id, key);
           }
           if (!enabled) continue;
           if (!failureThreadId && !future && session.usageLimit.resetsAt) {
             const ledger = yield* store.getUsageResumeLedger(thread.id);
             if (!ledger || ledger.limitKey !== key) continue;
           }
-          if (!session.usageLimit.resetsAt && !refreshedFailures.has(key) && !failureThreadId) {
-            refreshedFailures.add(key);
-            // Account reads must not hold the queue scan semaphore or delay due items.
-            yield* refreshLimit(thread.id, key).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("usage-limit refresh failed", { cause: Cause.pretty(cause) }),
-              ),
-              Effect.forkIn(scope),
-            );
+          if (!session.usageLimit.resetsAt && !failureThreadId) {
+            const previous = refreshAttempts.get(thread.id);
+            if (
+              !previous ||
+              previous.key !== key ||
+              (!previous.inFlight && previous.nextAllowedAt <= Date.now())
+            ) {
+              const attempt = {
+                key,
+                inFlight: true,
+                attempts: (previous?.key === key ? previous.attempts : 0) + 1,
+                nextAllowedAt: 0,
+              };
+              refreshAttempts.set(thread.id, attempt);
+              yield* refreshLimit(thread.id, key).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("usage-limit refresh failed", {
+                    cause: Cause.pretty(cause),
+                  }).pipe(Effect.as({ resolved: false })),
+                ),
+                Effect.tap((result) =>
+                  Effect.sync(() => {
+                    if (refreshAttempts.get(thread.id) !== attempt) return;
+                    if (result.resolved) refreshAttempts.delete(thread.id);
+                    else {
+                      attempt.inFlight = false;
+                      const providerDeadline =
+                        "nextAllowedAt" in result && typeof result.nextAllowedAt === "string"
+                          ? Date.parse(result.nextAllowedAt)
+                          : 0;
+                      attempt.nextAllowedAt = Math.max(
+                        Number.isFinite(providerDeadline) ? providerDeadline : 0,
+                        Date.now() +
+                          Math.min(300_000, 5_000 * 2 ** Math.min(6, attempt.attempts - 1)),
+                      );
+                    }
+                  }),
+                ),
+                Effect.forkIn(scope),
+              );
+            }
           }
           const result = yield* scheduleResume({ threadId: thread.id, source: "auto", thread });
           if (result.kind === "created" || result.kind === "rebound") {
@@ -1039,8 +1142,9 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
     if (maintenanceDue)
       yield* Effect.gen(function* () {
         yield* scanUsageLimitResumes();
-        if (Option.isSome(sqlOption))
-          yield* sqlOption.value`DELETE FROM usage_limit_resumes WHERE updated_at < ${new Date(Date.now() - LEDGER_RETENTION_MS).toISOString()} AND state != 'scheduled'`;
+        yield* store.pruneUsageResumeLedger(
+          new Date(Date.now() - LEDGER_RETENTION_MS).toISOString(),
+        );
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("usage-limit maintenance failed", { cause: Cause.pretty(cause) }),

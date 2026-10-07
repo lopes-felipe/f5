@@ -2786,10 +2786,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const result = yield* usageService
           .consumeResetCredit(body)
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        if (result.outcome === "reset" || result.outcome === "alreadyRedeemed") {
+        {
           yield* Effect.gen(function* () {
             const refreshed = yield* usageService.refreshAccount(body.providerInstanceId);
             if (!refreshed.fresh || !refreshed.snapshot) return;
+            if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed") return;
             for (const thread of (yield* orchestrationEngine.getReadModel()).threads) {
               const limit = thread.session?.usageLimit;
               const key = usageLimitKey(thread.session);

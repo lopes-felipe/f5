@@ -278,9 +278,102 @@ layer("NextTurnQueueStore", (it) => {
           source: "auto",
           notBefore: new Date(Date.now() + 60_000).toISOString(),
         }),
-        "rebound",
+        "created",
       );
     }),
+  );
+
+  it.effect(
+    "completed recovery removes a stale head, leaves follow-ups, and suppresses automation",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("usage-resume-completed");
+        yield* seedThread(threadId);
+        const input = {
+          command: command(9860, threadId),
+          itemId: CommandId.makeUnsafe("completed-recovery"),
+          submissionId: CommandId.makeUnsafe("completed-submission"),
+          requestHash: "completed",
+          limitKey: "instance:codex:turn:completed",
+          providerInstanceId: "codex",
+          source: "auto" as const,
+          notBefore: new Date(Date.now() + 60_000).toISOString(),
+        };
+        yield* store.scheduleUsageLimitResume(input);
+        yield* insert(store, 9861, threadId);
+        yield* store.completeUsageResume(threadId);
+        assert.equal((yield* store.listByThread(threadId)).items.length, 1);
+        assert.equal((yield* store.listByThread(threadId)).items[0]?.position, 0);
+        assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "completed");
+        assert.equal(yield* store.scheduleUsageLimitResume(input), "suppressed");
+      }),
+  );
+
+  it.effect(
+    "a replay after accepted removal does not create a phantom schedule or consume the guard",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const threadId = ThreadId.makeUnsafe("usage-resume-replay");
+        yield* seedThread(threadId);
+        const input = {
+          command: command(9862, threadId),
+          itemId: CommandId.makeUnsafe("replay-recovery"),
+          submissionId: CommandId.makeUnsafe("replay-submission"),
+          requestHash: "replay",
+          limitKey: "instance:codex:turn:replay",
+          providerInstanceId: "codex",
+          source: "auto" as const,
+          notBefore: new Date(Date.now() - 1_000).toISOString(),
+        };
+        yield* store.scheduleUsageLimitResume(input);
+        yield* store.claim({
+          itemId: input.itemId,
+          leaseOwner: "test",
+          now: new Date().toISOString(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        });
+        yield* store.complete({ itemId: input.itemId, leaseOwner: "test", sequence: 1 });
+        const count = (yield* store.getUsageResumeLedger(threadId))?.autoCount;
+        assert.equal(yield* store.scheduleUsageLimitResume(input), "already_scheduled");
+        assert.equal((yield* store.listByThread(threadId)).items.length, 0);
+        assert.equal((yield* store.getUsageResumeLedger(threadId))?.autoCount, count);
+      }),
+  );
+
+  it.effect(
+    "retargets an unadmitted failed recovery with fresh command and message identities",
+    () =>
+      Effect.gen(function* () {
+        const store = yield* NextTurnQueueStore;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("usage-resume-failed-retarget");
+        yield* seedThread(threadId);
+        const input = {
+          command: command(9863, threadId),
+          itemId: CommandId.makeUnsafe("failed-retarget"),
+          submissionId: CommandId.makeUnsafe("failed-retarget-submission"),
+          requestHash: "retarget",
+          limitKey: "instance:codex:turn:retarget",
+          providerInstanceId: "codex",
+          source: "manual" as const,
+          notBefore: new Date(Date.now() + 60_000).toISOString(),
+        };
+        yield* store.scheduleUsageLimitResume(input);
+        yield* sql`UPDATE next_turn_queue SET status='failed',attempt_count=1 WHERE item_id=${input.itemId}`;
+        const target = new Date(Date.now() + 3_600_000).toISOString();
+        assert.equal(
+          yield* store.scheduleUsageLimitResume({ ...input, notBefore: target }),
+          "rebound",
+        );
+        const item = (yield* store.listByThread(threadId)).items[0]!;
+        assert.equal(item.status, "queued");
+        assert.equal(item.notBefore, target);
+        assert.notEqual(item.command.commandId, input.command.commandId);
+        assert.notEqual(item.command.message.messageId, input.command.message.messageId);
+        assert.equal((yield* store.getBySubmissionId(input.submissionId))?.disposition, "canceled");
+      }),
   );
 
   it.effect("supersedes recovery on ordinary sends and preserves it for tail enqueues", () =>

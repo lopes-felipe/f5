@@ -1018,96 +1018,99 @@ describe("WebSocket Server", () => {
     expect(response.result).not.toHaveProperty("codexAccount");
   });
 
-  it("refreshes once after reset-credit redemption with the real account throttle", async () => {
-    const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent-credit-test");
-    let refreshCalls = 0;
-    let probeCalls = 0;
-    const registryLayer = Layer.effect(
-      ProviderInstanceRegistry,
-      Effect.gen(function* () {
-        const capability = yield* makeAccountUsageCapability(
-          {
-            key: instanceId,
-            provider: "claudeAgent",
-            providerInstanceId: instanceId,
-            displayName: "Credit test",
-            enabled: true,
-            refreshState: "idle",
-            sections: [emptyAccountSection("claude-usage")],
-          },
-          Effect.sync(() => {
-            probeCalls++;
-            const fetchedAt = new Date().toISOString();
-            return [
-              {
-                kind: "claude-usage" as const,
-                outcome: "available" as const,
-                lastAttemptAt: fetchedAt,
-                errorCode: null,
-                snapshot: {
-                  fetchedAt,
-                  data: {
-                    subscriptionLabel: "Max",
-                    limitsAvailable: true,
-                    windows: [],
-                    extraUsage: null,
+  it.each(["reset", "alreadyRedeemed", "nothingToReset", "noCredit"] as const)(
+    "refreshes once after reset-credit outcome %s with the real account throttle",
+    async (outcome) => {
+      const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent-credit-test");
+      let refreshCalls = 0;
+      let probeCalls = 0;
+      const registryLayer = Layer.effect(
+        ProviderInstanceRegistry,
+        Effect.gen(function* () {
+          const capability = yield* makeAccountUsageCapability(
+            {
+              key: instanceId,
+              provider: "claudeAgent",
+              providerInstanceId: instanceId,
+              displayName: "Credit test",
+              enabled: true,
+              refreshState: "idle",
+              sections: [emptyAccountSection("claude-usage")],
+            },
+            Effect.sync(() => {
+              probeCalls++;
+              const fetchedAt = new Date().toISOString();
+              return [
+                {
+                  kind: "claude-usage" as const,
+                  outcome: "available" as const,
+                  lastAttemptAt: fetchedAt,
+                  errorCode: null,
+                  snapshot: {
+                    fetchedAt,
+                    data: {
+                      subscriptionLabel: "Max",
+                      limitsAvailable: true,
+                      windows: [],
+                      extraUsage: null,
+                    },
                   },
                 },
-              },
-            ];
-          }),
-        );
-        const instance = {
-          instanceId,
-          driverKind: ProviderDriverKind.make("claudeAgent"),
-          continuationIdentity: {
+              ];
+            }),
+          );
+          const instance = {
+            instanceId,
             driverKind: ProviderDriverKind.make("claudeAgent"),
-            continuationKey: instanceId,
-          },
-          displayName: undefined,
-          snapshot: {
-            getSnapshot: Effect.succeed(defaultProviderSnapshots[0]!),
-            refresh: Effect.succeed(defaultProviderSnapshots[0]!),
-            streamChanges: Stream.empty,
-          },
-          adapter: {} as ProviderInstance["adapter"],
-          textGeneration: {} as ProviderInstance["textGeneration"],
-          enabled: true,
-          consumeResetCredit: () => Effect.succeed({ outcome: "reset" as const }),
-          accountUsage: {
-            ...capability,
-            refreshAccount: (permits) => {
-              refreshCalls++;
-              return capability.refreshAccount!(permits);
+            continuationIdentity: {
+              driverKind: ProviderDriverKind.make("claudeAgent"),
+              continuationKey: instanceId,
             },
-          },
-        } as ProviderInstance;
-        return {
-          getInstance: (id) => Effect.succeed(id === instanceId ? instance : undefined),
-          listInstances: Effect.succeed([instance]),
-          listUnavailable: Effect.succeed([]),
-          streamChanges: Stream.empty,
-          subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
-            Effect.flatMap(PubSub.subscribe),
-          ),
-        };
-      }),
-    );
-    server = await createTestServer({ providerInstanceRegistryLayer: registryLayer });
-    const address = server.address();
-    const [ws] = await connectAndAwaitWelcome(
-      typeof address === "object" && address ? address.port : 0,
-    );
-    connections.push(ws);
-    const response = await sendRequest(ws, USAGE_WS_METHODS.consumeResetCredit, {
-      providerInstanceId: instanceId,
-      idempotencyKey: "credit-route-test",
-    });
-    expect(response.error).toBeUndefined();
-    expect(response.result).toEqual({ outcome: "reset" });
-    expect(refreshCalls).toBe(1);
-    expect(probeCalls).toBe(1);
-  });
+            displayName: undefined,
+            snapshot: {
+              getSnapshot: Effect.succeed(defaultProviderSnapshots[0]!),
+              refresh: Effect.succeed(defaultProviderSnapshots[0]!),
+              streamChanges: Stream.empty,
+            },
+            adapter: {} as ProviderInstance["adapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
+            enabled: true,
+            consumeResetCredit: () => Effect.succeed({ outcome }),
+            accountUsage: {
+              ...capability,
+              refreshAccount: (permits) => {
+                refreshCalls++;
+                return capability.refreshAccount!(permits);
+              },
+            },
+          } as ProviderInstance;
+          return {
+            getInstance: (id) => Effect.succeed(id === instanceId ? instance : undefined),
+            listInstances: Effect.succeed([instance]),
+            listUnavailable: Effect.succeed([]),
+            streamChanges: Stream.empty,
+            subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+              Effect.flatMap(PubSub.subscribe),
+            ),
+          };
+        }),
+      );
+      server = await createTestServer({ providerInstanceRegistryLayer: registryLayer });
+      const address = server.address();
+      const [ws] = await connectAndAwaitWelcome(
+        typeof address === "object" && address ? address.port : 0,
+      );
+      connections.push(ws);
+      const response = await sendRequest(ws, USAGE_WS_METHODS.consumeResetCredit, {
+        providerInstanceId: instanceId,
+        idempotencyKey: "credit-route-test",
+      });
+      expect(response.error).toBeUndefined();
+      expect(response.result).toEqual({ outcome });
+      expect(refreshCalls).toBe(1);
+      expect(probeCalls).toBe(1);
+    },
+  );
 
   it("writes rpc and websocket observability records when enabled", async () => {
     const stateDir = makeTempDir("t3code-ws-observability-");

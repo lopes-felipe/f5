@@ -4152,6 +4152,57 @@ describe("ClaudeAdapterLive", () => {
     });
   }
 
+  for (const originalError of [undefined, "usage limit reached"] as const) {
+    it.effect(
+      `requires positive usage evidence outside a turn (${originalError ?? "no error text"})`,
+      () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          });
+          harness.query.emit({
+            type: "rate_limit_event",
+            rate_limit_info: {
+              status: "rejected",
+              rateLimitType: "five_hour",
+              resetsAt: 1790607600,
+            },
+            uuid: "outside-limit",
+            session_id: "limits-session",
+          } as unknown as SDKMessage);
+          harness.query.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: originalError ? [originalError] : [],
+            session_id: "limits-session",
+            uuid: "outside-failure",
+            usage: {},
+            modelUsage: {},
+          } as unknown as SDKMessage);
+          const event = yield* adapter.streamEvents.pipe(
+            Stream.filter((event) => event.type === "runtime.error"),
+            Stream.runHead,
+          );
+          assert.equal(event._tag, "Some");
+          if (event._tag === "Some") {
+            assert.equal(
+              event.value.payload.usageLimit?.evidence,
+              originalError ? "typed" : undefined,
+            );
+          }
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      },
+    );
+  }
+
   it.effect("surfaces in-band Fable alias rejection and completes a supported-model retry", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

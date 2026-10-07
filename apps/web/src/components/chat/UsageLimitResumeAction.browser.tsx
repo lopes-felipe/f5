@@ -15,6 +15,8 @@ import { UsageLimitResumeAction } from "./UsageLimitResumeAction";
 import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 
 const mocks = vi.hoisted(() => ({
+  automatic: false,
+  projectOverride: null as boolean | null,
   list: vi.fn(),
   schedule: vi.fn(),
   refresh: vi.fn(),
@@ -35,7 +37,13 @@ vi.mock("../../nativeApi", () => ({
   }),
 }));
 vi.mock("../../hooks/useSettings", () => ({
-  useSettings: () => false,
+  useSettings: (selector: (settings: unknown) => unknown) =>
+    selector({
+      autoResumeUsageLimitedThreads: mocks.automatic,
+      projectSettingsOverrides: {
+        project: { autoResumeUsageLimitedThreads: mocks.projectOverride },
+      },
+    }),
   useUpdateSettings: () => ({ updateSettings: mocks.update }),
 }));
 vi.mock("../ui/toast", () => ({ toastManager: { add: mocks.toast } }));
@@ -63,6 +71,8 @@ const snapshot: NextTurnQueueSnapshot = {
 let active: Awaited<ReturnType<typeof render>> | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.automatic = false;
+  mocks.projectOverride = null;
   mocks.list.mockResolvedValue(snapshot);
   mocks.schedule.mockResolvedValue(snapshot);
   mocks.refresh.mockResolvedValue(snapshot);
@@ -84,7 +94,9 @@ describe("UsageLimitResumeAction", () => {
       expectedLimitKey: "instance:claude:turn:failed-turn",
     });
     await page.getByText("Options", { exact: true }).click();
-    await page.getByRole("checkbox", { name: "Always continue automatically" }).click();
+    await page
+      .getByRole("checkbox", { name: /Always continue automatically \(global default\)/ })
+      .click();
     expect(mocks.update).toHaveBeenCalledWith({ autoResumeUsageLimitedThreads: true });
   });
   it("offers refresh and a time picker for an unknown reset", async () => {
@@ -304,6 +316,40 @@ describe("UsageLimitResumeAction", () => {
       await expect.element(page.getByText(/^Automatic continue stopped/)).not.toBeInTheDocument();
     });
   }
+
+  for (const global of [false, true]) {
+    it(`labels the global checkbox explicitly when a project overrides it: ${global}`, async () => {
+      mocks.automatic = global;
+      mocks.projectOverride = !global;
+      active = await render(<UsageLimitResumeAction threadId={threadId} limit={limit} />);
+      await page.getByText("Options", { exact: true }).click();
+      const checkbox = page.getByRole("checkbox", {
+        name: /Always continue automatically \(global default\)/,
+      });
+      if (global) await expect.element(checkbox).toBeChecked();
+      else await expect.element(checkbox).not.toBeChecked();
+      await expect
+        .element(page.getByText("Project settings may override this default."))
+        .toBeInTheDocument();
+    });
+  }
+
+  it("uses a fresh default when the picker opens after an hour", async () => {
+    active = await render(<UsageLimitResumeAction threadId={threadId} limit={limit} />);
+    const now = Date.now() + 7_200_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await page.getByRole("button", { name: "Pick another time…" }).click();
+      await page.getByRole("button", { name: "Schedule continue", exact: true }).click();
+      expect(mocks.schedule).toHaveBeenCalledWith({
+        threadId,
+        expectedLimitKey: "instance:claude:turn:failed-turn",
+        notBefore: new Date(now + 3_600_000).toISOString(),
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   it("surfaces a stale failure as a toast", async () => {
     mocks.schedule.mockRejectedValue(new Error("This usage limit has changed."));

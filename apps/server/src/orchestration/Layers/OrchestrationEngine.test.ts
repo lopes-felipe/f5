@@ -1360,3 +1360,122 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 });
+
+describe("usage recovery stop durability", () => {
+  it.each(["queued", "dispatching"] as const)(
+    "commits %s resume cancellation before subscribers and retains it on restart",
+    async (queueStatus) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-stop-resume-"));
+      const dbPath = path.join(directory, "state.sqlite");
+      let system = await createPersistentOrchestrationSystem({ dbPath });
+      const threadId = ThreadId.makeUnsafe("stop-resume-thread");
+      const at = now();
+      try {
+        await system.run(
+          system.engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.makeUnsafe("stop-project"),
+            projectId: asProjectId("stop-project"),
+            title: "Project",
+            workspaceRoot: directory,
+            defaultModel: "gpt-5-codex",
+            createdAt: at,
+          }),
+        );
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.makeUnsafe("stop-thread"),
+            threadId,
+            projectId: asProjectId("stop-project"),
+            title: "Thread",
+            model: "gpt-5-codex",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: at,
+          }),
+        );
+        const db = new DatabaseSync(dbPath);
+        db.prepare(
+          "INSERT INTO next_turn_queue_state(thread_id, revision, updated_at) VALUES (?, 1, ?)",
+        ).run(threadId, at);
+        db.prepare(
+          "INSERT INTO next_turn_queue(item_id, thread_id, submission_id, command_id, message_id, position, command_json, created_at, updated_at, schedule_reason, schedule_limit_key) VALUES ('resume', ?, 'resume', 'resume', 'resume', 0, '{}', ?, ?, 'usage_limit_reset', 'failure')",
+        ).run(threadId, at, at);
+        db.prepare(
+          "INSERT INTO turn_submissions(submission_id, thread_id, request_hash, message_id, disposition, created_at) VALUES ('resume', ?, 'hash', 'resume', 'queued', ?)",
+        ).run(threadId, at);
+        db.prepare(
+          "INSERT INTO usage_limit_resumes(thread_id, limit_key, state, source, auto_eligible_at_failure, item_id, created_at, updated_at) VALUES (?, 'failure', 'scheduled', 'auto', 1, 'resume', ?, ?)",
+        ).run(threadId, at, at);
+        db.prepare("UPDATE next_turn_queue SET status=? WHERE item_id='resume'").run(queueStatus);
+        db.close();
+        // No dispatcher or event subscriber is running in this engine-only fixture.
+        await system.run(
+          system.engine.dispatch({
+            type: "thread.session.stop",
+            commandId: CommandId.makeUnsafe("stop-intent"),
+            threadId,
+            createdAt: at,
+          }),
+        );
+        if (queueStatus === "dispatching") {
+          await expect(
+            system.run(
+              system.engine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.makeUnsafe("resume"),
+                threadId,
+                dispatchSource: "next-turn-queue",
+                presentation: "continuation",
+                runtimeMode: "approval-required",
+                interactionMode: "default",
+                message: {
+                  messageId: MessageId.makeUnsafe("resume"),
+                  role: "user",
+                  text: "continue",
+                  attachments: [],
+                },
+                createdAt: at,
+              }),
+            ),
+          ).rejects.toThrow("cancelled before acceptance");
+        }
+        await system.dispose();
+        system = await createPersistentOrchestrationSystem({ dbPath });
+        const restarted = new DatabaseSync(dbPath);
+        expect(
+          restarted.prepare("SELECT deleted_at FROM next_turn_queue WHERE item_id='resume'").get()
+            ?.deleted_at,
+        ).toBe(queueStatus === "queued" ? at : null);
+        expect(
+          restarted.prepare("SELECT state FROM usage_limit_resumes WHERE item_id='resume'").get()
+            ?.state,
+        ).toBe("cancelled");
+        expect(
+          restarted
+            .prepare("SELECT disposition FROM turn_submissions WHERE submission_id='resume'")
+            .get()?.disposition,
+        ).toBe(queueStatus === "queued" ? "canceled" : "queued");
+        expect(
+          restarted
+            .prepare("SELECT revision FROM next_turn_queue_state WHERE thread_id=?")
+            .get(threadId)?.revision,
+        ).toBe(queueStatus === "queued" ? 2 : 1);
+        expect(
+          restarted
+            .prepare(
+              "SELECT count(*) AS count FROM provider_turn_deliveries WHERE command_id='resume'",
+            )
+            .get()?.count,
+        ).toBe(0);
+        restarted.close();
+      } finally {
+        await system.dispose();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+});

@@ -2,6 +2,7 @@ import {
   CommandId,
   EventId,
   OrchestrationSession,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -93,7 +94,78 @@ describe("usage limit carry-over", () => {
         .usageLimit,
     ).toBeNull();
   });
+  it("clears a carried limit when another turn becomes active", async () => {
+    const { usageLimit: _, ...previous } = session;
+    expect(
+      (
+        await decide({
+          ...previous,
+          activeTurnId: TurnId.makeUnsafe("new-turn"),
+          status: "running",
+        })
+      ).usageLimit,
+    ).toBeNull();
+    expect(
+      (await decide({ ...previous, activeTurnId: limit.turnId, status: "running" })).usageLimit,
+    ).toEqual(limit);
+  });
   it("honors an explicit clear", async () => {
     expect((await decide({ ...session, usageLimit: null })).usageLimit).toBeNull();
+  });
+});
+
+describe("queued recovery settings", () => {
+  it("uses current permissions, interaction and model instead of restoring the scheduled snapshot", async () => {
+    const readModel = await model();
+    readModel.threads = readModel.threads.map((thread) => ({
+      ...thread,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+      model: "current-model",
+      session: { ...session, workflowExecutionProfile: "attended-readonly" },
+      modelSelection: {
+        instanceId: ProviderInstanceId.makeUnsafe("current-instance"),
+        model: "current-model",
+      },
+    }));
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("resume"),
+          threadId,
+          dispatchSource: "next-turn-queue",
+          presentation: "continuation",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          model: "old-model",
+          modelSelection: {
+            instanceId: ProviderInstanceId.makeUnsafe("old-instance"),
+            model: "old-model",
+          },
+          message: {
+            messageId: MessageId.makeUnsafe("resume-message"),
+            role: "user",
+            text: "continue",
+            attachments: [],
+          },
+          createdAt: at,
+        },
+      }),
+    );
+    const events = Array.isArray(result) ? result : [result];
+    expect(events.map((event) => event.type)).toEqual([
+      "thread.message-sent",
+      "thread.turn-start-requested",
+    ]);
+    const start = events.find((event) => event.type === "thread.turn-start-requested");
+    expect(start?.payload).toMatchObject({
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+      workflowExecutionProfile: "attended-readonly",
+      model: "current-model",
+      modelSelection: { instanceId: "current-instance", model: "current-model" },
+    });
   });
 });

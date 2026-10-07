@@ -40,6 +40,7 @@ export function resolveNextTurnQueueGate(input: {
   readonly scheduleLimitKey?: string | null | undefined;
   readonly scheduleProviderInstanceId?: string | null | undefined;
   readonly usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null | undefined;
+  readonly scheduleState?: string | null | undefined;
   readonly providerContextChanged?: boolean | undefined;
 }): NextTurnQueueGate {
   if (input.thread === null || input.thread.deletedAt !== null) {
@@ -79,6 +80,15 @@ export function resolveNextTurnQueueGate(input: {
         input.scheduleProviderInstanceId !== input.session?.providerInstanceId))
   )
     return { kind: "autoPause", reasonCode: "usage_limit_context_changed" };
+  if (
+    input.item.scheduleReason === "usage_limit_reset" &&
+    input.item.status === "queued" &&
+    input.scheduleLimitKey &&
+    ((input.scheduleState && input.scheduleState !== "scheduled") ||
+      usageLimitKey({ usageLimit: input.usageLimit ?? input.session?.usageLimit }) !==
+        input.scheduleLimitKey)
+  )
+    return { kind: "drop", reasonCode: "usage_limit_context_changed" };
   if (
     !(
       input.item.scheduleReason === "usage_limit_reset" &&

@@ -1,4 +1,4 @@
-import { ProviderTurnDeliveryError } from "../../provider/Errors.ts";
+import { ProviderAdapterRequestError, ProviderTurnDeliveryError } from "../../provider/Errors.ts";
 import {
   CommandId,
   MessageId,
@@ -32,6 +32,7 @@ const createdAt = "2026-01-01T00:00:00.000Z";
 
 let state: ProviderTurnDelivery;
 let usageRejection: RuntimeUsageLimit | null = null;
+let usageRequestMethod: string | null = null;
 let failureProjectionFails = false;
 let failureProjectionCount = 0;
 let requeueCount = 0;
@@ -68,6 +69,7 @@ function resetDelivery() {
     outcomeProjectedAt: null,
   };
   usageRejection = null;
+  usageRequestMethod = null;
   failureProjectionFails = false;
   failureProjectionCount = 0;
   requeueCount = 0;
@@ -162,20 +164,29 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(
     Layer.succeed(ProviderCommandReactor, {
       deliverTurnStart: () =>
-        usageRejection
+        usageRejection && usageRequestMethod
           ? Effect.fail(
-              new ProviderTurnDeliveryError({
-                certainty: "not_sent",
-                retryable: true,
+              new ProviderAdapterRequestError({
+                provider: "codex",
+                method: usageRequestMethod,
                 detail: "Usage limit reached",
                 usageLimit: usageRejection,
               }),
             )
-          : methodNotFound
-            ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
-            : acceptSend
-              ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
-              : Effect.fail(new Error("session not found after request write")),
+          : usageRejection
+            ? Effect.fail(
+                new ProviderTurnDeliveryError({
+                  certainty: "not_sent",
+                  retryable: true,
+                  detail: "Usage limit reached",
+                  usageLimit: usageRejection,
+                }),
+              )
+            : methodNotFound
+              ? Effect.fail({ cause: { cause: { code: -32601, message: "Method not found" } } })
+              : acceptSend
+                ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
+                : Effect.fail(new Error("session not found after request write")),
       recordTurnStartFailure: () =>
         Effect.sync(() => {
           failureProjectionCount += 1;
@@ -458,6 +469,22 @@ it.effect(
       const result = yield* Fiber.join(replay);
       assert.equal(Option.isSome(result), true);
       if (Option.isSome(result)) assert.deepEqual(result.value.usageLimit, state.usageLimit);
+      assert.equal(requeueCount, 0);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["turn/start", "account/read"])(
+  "only a turn-start request proves a usage rejection is unsent (%s)",
+  (method) =>
+    Effect.gen(function* () {
+      resetDelivery();
+      usageRejection = { windows: [], resetsAt: null, resetSource: null, evidence: "typed" };
+      usageRequestMethod = method;
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* worker.drain;
+      assert.equal(state.certainty, method === "turn/start" ? "not_sent" : "unknown");
+      assert.equal(Boolean(state.usageLimit), method === "turn/start");
       assert.equal(requeueCount, 0);
     }).pipe(Effect.provide(testLayer)),
 );
