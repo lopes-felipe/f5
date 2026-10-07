@@ -5117,15 +5117,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           yield* nextTurnQueueStore
             .discardDelivery({ commandId: delivery.commandId })
             .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-          // Discard keeps the queue paused, but as a manual pause the user can
-          // resume once no other failed delivery remains.
+          // Discard keeps the queue paused. With no other failed delivery left it
+          // becomes a manual pause the user can resume; otherwise the pause
+          // describes the delivery that still needs recovery.
           const remaining = yield* nextTurnQueueDispatcher
             .getBlockingDelivery(body.threadId)
             .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-          if (!remaining)
-            yield* nextTurnQueueStore
-              .setPaused({ threadId: body.threadId, paused: true, reasonCode: "manual_pause" })
-              .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+          yield* nextTurnQueueStore
+            .setPaused(
+              remaining
+                ? {
+                    threadId: body.threadId,
+                    paused: true,
+                    reasonCode:
+                      remaining.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
+                    detail: remaining.errorDetail ?? "The provider did not confirm this turn.",
+                  }
+                : { threadId: body.threadId, paused: true, reasonCode: "manual_pause" },
+            )
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
         } else {
           yield* nextTurnQueueDispatcher
             .reconcileDeliveryPause(body.threadId)

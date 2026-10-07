@@ -7356,6 +7356,40 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect(
+    "lets Interrupt stop a resumed session while the first turn awaits confirmation",
+    () => {
+      const harness = makeHarness({ resumeConfirmationTimeoutMs: 5_000 });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const attempted = "550e8400-e29b-41d4-a716-446655440000";
+        yield* adapter.startSession({
+          threadId: RESUME_THREAD_ID,
+          provider: "claudeAgent",
+          resumeCursor: { threadId: RESUME_THREAD_ID, resume: attempted },
+          runtimeMode: "full-access",
+        });
+        const send = yield* adapter
+          .sendTurn({ threadId: RESUME_THREAD_ID, input: "continue", attachments: [] })
+          .pipe(Effect.exit, Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        assert.equal(send.pollUnsafe(), undefined);
+
+        // The confirmation wait must not hold the thread lock, or this blocks
+        // until the wait times out.
+        yield* adapter.interruptTurn(RESUME_THREAD_ID);
+
+        // A user cancel keeps the turn accepted; it is interrupted, not resent.
+        const exit = yield* Fiber.join(send);
+        assert.equal(exit._tag, "Success");
+        assert.equal(harness.query.closeCalls, 1);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("returns the first turn after the CLI confirms the resumed conversation", () => {
     const harness = makeHarness({ resumeConfirmationTimeoutMs: 5_000 });
     return Effect.gen(function* () {

@@ -15,7 +15,7 @@ import {
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
 import { createHash } from "node:crypto";
-import { Cause, Duration, Effect, Layer, Stream } from "effect";
+import { Cause, Clock, Duration, Effect, Layer, Stream } from "effect";
 import {
   defaultDocumentReaderSlot,
   documentWorkflowForThread,
@@ -1382,7 +1382,14 @@ export const makeWorkflowService = Effect.gen(function* () {
     providerTurnDeliveryRepository._tag === "Some"
       ? providerTurnDeliveryRepository.value.getLatestByThread(threadId).pipe(
           Effect.map((delivery) => delivery?.state === "pending" || delivery?.state === "sending"),
-          Effect.catchCause(() => Effect.succeed(false)),
+          // An unreadable delivery state is not proof that nothing is in
+          // flight. Keep waiting; the settle timeout bounds a lasting failure.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("auto-retry could not read the thread's delivery state", {
+              threadId,
+              cause: Cause.pretty(cause),
+            }).pipe(Effect.as(true)),
+          ),
         )
       : Effect.succeed(false);
 
@@ -1401,15 +1408,15 @@ export const makeWorkflowService = Effect.gen(function* () {
   const awaitAutoRetrySettled = (threadId: ThreadId) =>
     Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS - AUTO_RETRY_SETTLE_INTERVAL_MS));
+      // Wall-clock deadline, so slow state reads cannot stretch the bound.
+      const deadline = (yield* Clock.currentTimeMillis) + AUTO_RETRY_SETTLE_TIMEOUT_MS;
       let previousSettled = yield* isThreadSettledForAutoRetry(threadId);
-      let waitedMs = 0;
       while (true) {
         yield* Effect.sleep(Duration.millis(AUTO_RETRY_SETTLE_INTERVAL_MS));
         const settled = yield* isThreadSettledForAutoRetry(threadId);
         if (settled && previousSettled) return;
         previousSettled = settled;
-        waitedMs += AUTO_RETRY_SETTLE_INTERVAL_MS;
-        if (waitedMs >= AUTO_RETRY_SETTLE_TIMEOUT_MS) {
+        if ((yield* Clock.currentTimeMillis) >= deadline) {
           return yield* Effect.fail(
             new Error("The provider session did not become ready for an automatic retry."),
           );

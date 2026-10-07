@@ -71,6 +71,14 @@ export interface ProviderTurnDeliveryRepositoryShape {
   readonly listAcceptedTurnIdsByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<TurnId>, ProviderTurnDeliveryRepositoryError>;
+  /**
+   * The pre-send turn snapshot of the earliest newer delivery on the same
+   * thread that has been claimed. Turns outside it may belong to that newer
+   * send. Null when no newer delivery has been claimed.
+   */
+  readonly getSupersedingPreSendTurnIds: (
+    deliveryId: CommandId,
+  ) => Effect.Effect<ReadonlyArray<TurnId> | null, ProviderTurnDeliveryRepositoryError>;
   readonly claim: (
     deliveryId: CommandId,
     preSendTurnIds: ReadonlyArray<TurnId>,
@@ -98,9 +106,10 @@ export interface ProviderTurnDeliveryRepositoryShape {
     readonly deliveryId: CommandId;
     readonly allowPossibleDuplicate: boolean;
   }) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
+  /** Returns false when the delivery was no longer rejected or ambiguous. */
   readonly markAbandoned: (
     deliveryId: CommandId,
-  ) => Effect.Effect<void, ProviderTurnDeliveryRepositoryError>;
+  ) => Effect.Effect<boolean, ProviderTurnDeliveryRepositoryError>;
   readonly markOutcomeProjected: (
     deliveryId: CommandId,
   ) => Effect.Effect<void, ProviderTurnDeliveryRepositoryError>;

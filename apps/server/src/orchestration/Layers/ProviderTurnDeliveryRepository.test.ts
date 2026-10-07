@@ -5,6 +5,7 @@ import {
   OrchestrationEvent,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
@@ -76,5 +77,58 @@ layer("durable usage-limit delivery rejection", (it) => {
         assert.equal(retried?.state, "pending");
         assert.equal(retried?.usageLimit, null);
       }),
+  );
+});
+
+layer("delivery-scoped recovery lookups", (it) => {
+  it.effect("bounds a superseded delivery by the newer send and reports abandon races", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderTurnDeliveryRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.makeUnsafe("superseded-lookup-thread");
+      const insert = (input: {
+        readonly id: string;
+        readonly state: string;
+        readonly attempt: number;
+        readonly preSend: ReadonlyArray<string>;
+        readonly at: string;
+      }) =>
+        sql`INSERT INTO provider_turn_deliveries (delivery_id, thread_id, command_id, message_id, state, attempt, pre_send_turn_ids_json, event_json, created_at, updated_at)
+          VALUES (${input.id}, ${threadId}, ${input.id}, ${`${input.id}-message`}, ${input.state}, ${input.attempt}, ${JSON.stringify(input.preSend)}, '{}', ${input.at}, ${input.at})`;
+      yield* insert({
+        id: "older-ambiguous",
+        state: "ambiguous",
+        attempt: 1,
+        preSend: ["t1"],
+        at: "2026-10-07T09:38:00.000Z",
+      });
+      const older = CommandId.makeUnsafe("older-ambiguous");
+      assert.equal(yield* repository.getSupersedingPreSendTurnIds(older), null);
+
+      // A newer delivery that was never claimed cannot own a turn yet.
+      yield* insert({
+        id: "newer-unclaimed",
+        state: "pending",
+        attempt: 0,
+        preSend: [],
+        at: "2026-10-07T09:50:00.000Z",
+      });
+      assert.equal(yield* repository.getSupersedingPreSendTurnIds(older), null);
+
+      yield* insert({
+        id: "newer-continue",
+        state: "accepted",
+        attempt: 1,
+        preSend: ["t1", "t2"],
+        at: "2026-10-07T09:53:00.000Z",
+      });
+      assert.deepEqual(yield* repository.getSupersedingPreSendTurnIds(older), [
+        TurnId.makeUnsafe("t1"),
+        TurnId.makeUnsafe("t2"),
+      ]);
+
+      assert.equal(yield* repository.markAbandoned(older), true);
+      assert.equal(yield* repository.markAbandoned(older), false);
+    }),
   );
 });

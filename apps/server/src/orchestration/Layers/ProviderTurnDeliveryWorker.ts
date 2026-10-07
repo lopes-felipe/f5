@@ -1,6 +1,6 @@
 import { CommandId, TurnId, type OrchestrationUsageLimit, type ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { Cause, Duration, Effect, Layer, PubSub, Schema, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Option, PubSub, Schema, Stream } from "effect";
 
 import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
 import { ProviderTurnDeliveryError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
@@ -73,19 +73,25 @@ const make = Effect.gen(function* () {
 
   // A delivery is proven only by exactly one provider turn that did not exist
   // before the send and is not already attributed to another accepted
-  // delivery. A newer accepted delivery on the same thread must never be
+  // delivery. When a newer send on the thread has been claimed, the turn must
+  // also predate that send, so its turn (accepted or still in flight) is never
   // mistaken for this one.
   const findNewProviderTurn = (
     delivery: ProviderTurnDelivery,
     turns: ReadonlyArray<{ readonly id: TurnId }>,
   ) =>
-    repository.listAcceptedTurnIdsByThread(delivery.threadId).pipe(
-      Effect.map((claimedTurnIds) => {
-        const excluded = new Set<TurnId>([...delivery.preSendTurnIds, ...claimedTurnIds]);
-        const added = turns.filter((turn) => !excluded.has(turn.id));
-        return added.length === 1 ? added[0]!.id : null;
-      }),
-    );
+    Effect.gen(function* () {
+      const claimedTurnIds = yield* repository.listAcceptedTurnIdsByThread(delivery.threadId);
+      const supersedingPreSend = yield* repository.getSupersedingPreSendTurnIds(
+        delivery.deliveryId,
+      );
+      const excluded = new Set<TurnId>([...delivery.preSendTurnIds, ...claimedTurnIds]);
+      const bound = supersedingPreSend === null ? null : new Set<TurnId>(supersedingPreSend);
+      const added = turns.filter(
+        (turn) => !excluded.has(turn.id) && (bound === null || bound.has(turn.id)),
+      );
+      return added.length === 1 ? added[0]!.id : null;
+    });
 
   const processDelivery = (deliveryId: CommandId) =>
     Effect.gen(function* () {
@@ -484,8 +490,14 @@ const make = Effect.gen(function* () {
       if (!delivery || (delivery.state !== "rejected" && delivery.state !== "ambiguous")) {
         return yield* Effect.fail(new Error("No failed provider delivery exists."));
       }
-      yield* repository.markAbandoned(delivery.deliveryId);
-      yield* turns.deletePendingTurnStartByThreadId({ threadId });
+      if (!(yield* repository.markAbandoned(delivery.deliveryId))) {
+        return yield* Effect.fail(new Error("That provider delivery can no longer be discarded."));
+      }
+      // The thread holds one pending turn start. Remove it only when it belongs
+      // to the discarded message, never a newer send's.
+      const pending = yield* turns.getPendingTurnStartByThreadId({ threadId });
+      if (Option.isSome(pending) && pending.value.messageId === delivery.messageId)
+        yield* turns.deletePendingTurnStartByThreadId({ threadId });
       return delivery;
     }).pipe(
       Effect.mapError((error) =>
