@@ -25,7 +25,10 @@ export async function findClaudeTranscript(
     try {
       if ((await stat(candidate)).isFile()) matches.push(candidate);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // The store can contain regular files such as macOS's .DS_Store.
+      // ENOTDIR means this entry cannot contain the session, just like ENOENT.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
     }
   }
   if (matches.length === 0)
