@@ -342,6 +342,9 @@ export const WS_METHODS = {
 
   // Server meta
   serverProbe: "server.probe",
+  serverGetClaudeTranscriptRepair: "server.getClaudeTranscriptRepair",
+  serverRepairClaudeTranscript: "server.repairClaudeTranscript",
+  serverUndoClaudeTranscriptRepair: "server.undoClaudeTranscriptRepair",
   serverGetConfig: "server.getConfig",
   serverUpdateSettings: "server.updateSettings",
   serverGetProjectSettings: "server.getProjectSettings",
@@ -691,6 +694,12 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.nextTurnQueueRefreshGate, NextTurnQueueRefreshGateInput),
   tagRequestBody(WS_METHODS.nextTurnQueueClear, NextTurnQueueClearInput),
   tagRequestBody(WS_METHODS.nextTurnQueueRestore, NextTurnQueueRestoreInput),
+  tagRequestBody(WS_METHODS.serverGetClaudeTranscriptRepair, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(WS_METHODS.serverRepairClaudeTranscript, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(
+    WS_METHODS.serverUndoClaudeTranscriptRepair,
+    Schema.Struct({ threadId: ThreadId, backupId: TrimmedNonEmptyString }),
+  ),
   tagRequestBody(WS_METHODS.nextTurnQueueRecheckDelivery, NextTurnQueueRecheckDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueRetryDelivery, NextTurnQueueRetryDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueDiscardDelivery, NextTurnQueueDiscardDeliveryInput),

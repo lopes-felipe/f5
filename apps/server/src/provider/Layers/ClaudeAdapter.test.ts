@@ -24,6 +24,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Random, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
+import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -221,6 +222,7 @@ function makeHarness(config?: {
   readonly nativeEventLogger?: ClaudeAdapterLiveOptions["nativeEventLogger"];
   readonly cwd?: string;
   readonly stateDir?: string;
+  readonly readResumeTranscript?: ClaudeAdapterLiveOptions["readResumeTranscript"];
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
 }) {
   const query = new FakeClaudeQuery();
@@ -248,6 +250,15 @@ function makeHarness(config?: {
       if (!queries.includes(nextQuery)) queries.push(nextQuery);
       return nextQuery;
     },
+    readResumeTranscript:
+      config?.readResumeTranscript ??
+      (async () =>
+        new Map([
+          [
+            "123e4567-e89b-42d3-a456-426614174001",
+            { uuid: "123e4567-e89b-42d3-a456-426614174001", parentUuid: null },
+          ],
+        ])),
     probeResumableClaudeSession:
       config?.probeResumableClaudeSession ?? (() => Effect.succeed("unknown" as const)),
     ...(config?.nativeEventLogger
@@ -6763,6 +6774,339 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  describe("persisted Claude resume points", () => {
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const saved = "123e4567-e89b-42d3-a456-426614174001";
+    const missing = "123e4567-e89b-42d3-a456-426614174002";
+    const cursor = {
+      resume: sessionId,
+      resumeSessionAt: missing,
+      turnBoundaries: [
+        { turnId: "old", assistantUuid: saved },
+        { turnId: "new", assistantUuid: missing },
+      ],
+    };
+    it.effect("falls back from a missing or broken checkpoint without resetting context", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: "lost-parent" }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: { ...cursor, missingResumePoint: "obsolete-target" },
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, saved);
+        assert.equal((session.resumeCursor as Record<string, unknown>).missingResumePoint, missing);
+        assert.equal((yield* adapter.readThread(THREAD_ID)).turns.length, 2);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    for (const checkpoint of ["mid-turn", "boundary-only", "unavailable"] as const) {
+      it.effect(`preserves the full saved conversation for ${checkpoint} resumes`, () => {
+        const harness = makeHarness({
+          readResumeTranscript: async () => {
+            if (checkpoint === "unavailable") throw new Error("storage unavailable");
+            return new Map([[saved, { uuid: saved, parentUuid: null }]]);
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: sessionId,
+              ...(checkpoint === "boundary-only" ? {} : { resumeSessionAt: saved }),
+              turnBoundaries:
+                checkpoint === "mid-turn" ? [] : [{ turnId: "old", assistantUuid: saved }],
+            },
+          });
+          assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+          assert.isUndefined(harness.getLastCreateQueryInput()?.options.resumeSessionAt);
+        }).pipe(Effect.provide(harness.layer));
+      });
+    }
+    it.effect("retries a missing checkpoint during startup before any prompt has been sent", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              observed.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        harness.queries[0]!.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "startup-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, saved);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("retries a missing resume point once, isolates stdin and caps total launches", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              observed.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const start = () =>
+          adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: cursor,
+          });
+        const reject = (index: number, uuid: string) =>
+          harness.queries[index]!.emit({
+            type: "result",
+            subtype: "error_during_execution",
+            errors: [`No message found with message.uuid of: ${uuid}`],
+            is_error: true,
+            session_id: sessionId,
+            uuid: `resume-error-${index}`,
+          } as unknown as SDKMessage);
+        yield* start();
+        const oldPrompt = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] });
+        const originalPrompt = yield* Effect.promise(() => oldPrompt.next());
+        const abandonedTake = oldPrompt.next();
+        reject(0, missing);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, saved);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+        assert.equal((yield* Effect.promise(() => abandonedTake)).done, true);
+        const replay = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+        );
+        assert.deepEqual(replay.value, originalPrompt.value);
+        reject(1, saved);
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        assert.equal(harness.getCreateQueryInputs().length, 2);
+        const failure = observed.find((event) => event.type === "runtime.error");
+        assert.isDefined(failure);
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "Repair transcript");
+        const thirdStart = yield* start().pipe(Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(thirdStart);
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "continue", attachments: [] });
+        reject(2, missing);
+        while (observed.filter((event) => event.type === "session.exited").length < 2)
+          yield* Effect.yieldNow;
+        assert.equal(harness.getCreateQueryInputs().length, 3);
+        assert.equal((yield* Effect.exit(start()))._tag, "Failure");
+        assert.equal(harness.getCreateQueryInputs().length, 3);
+        assert.equal(observed.filter((event) => event.type === "runtime.error").length, 2);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("does not replay a completed result-only prompt during recovery", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        const firstIterator = harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]();
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "/status" });
+        yield* Effect.promise(() => firstIterator.next());
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          uuid: "local-command-result",
+          session_id: sessionId,
+          total_cost_usd: 0,
+          usage: {},
+        } as unknown as SDKMessage);
+        while (!observed.some((event) => event.type === "turn.completed")) yield* Effect.yieldNow;
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "current prompt" });
+        const current = yield* Effect.promise(() => firstIterator.next());
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "recovery-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+        const replay = yield* Effect.promise(() =>
+          harness.getLastCreateQueryInput()!.prompt[Symbol.asyncIterator]().next(),
+        );
+        assert.deepEqual(replay.value, current.value);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("reports repair cancellation during the recovery delay without relaunching", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            observed.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "current prompt" });
+        harness.query.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "recovery-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        const release = beginClaudeTranscriptMaintenance(sessionId);
+        yield* Effect.addFinalizer(() => Effect.sync(release));
+        yield* TestClock.adjust("500 millis");
+        while (!observed.some((event) => event.type === "session.exited")) yield* Effect.yieldNow;
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        const failure = observed.find((event) => event.type === "runtime.error");
+        assert.isDefined(failure);
+        if (failure?.type === "runtime.error")
+          assert.include(failure.payload.message, "repair started during resume recovery");
+      }).pipe(Effect.provide(harness.layer));
+    });
+    it.effect("caps repeated failed preflights and permits retry after transcript repair", () => {
+      const harness = makeHarness({ readResumeTranscript: async () => new Map() });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const start = (resumeCursor: unknown = cursor) =>
+          adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor,
+          });
+        assert.equal((yield* Effect.exit(start()))._tag, "Failure");
+        const second = yield* start().pipe(Effect.exit, Effect.forkChild);
+        yield* TestClock.adjust("500 millis");
+        assert.equal((yield* Fiber.join(second))._tag, "Failure");
+        const third = yield* start().pipe(Effect.exit, Effect.forkChild);
+        yield* TestClock.adjust("1 second");
+        assert.equal((yield* Fiber.join(third))._tag, "Failure");
+        const capped = yield* Effect.exit(start());
+        assert.equal(capped._tag, "Failure");
+        assert.equal(harness.getCreateQueryInputs().length, 0);
+        // A completed repair changes this durable generation and lifts the cap.
+        const reset = yield* Effect.exit(
+          start({ resume: sessionId, resumeRecoveryGeneration: "repaired" }),
+        );
+        assert.equal(reset._tag, "Success");
+        assert.equal(harness.getCreateQueryInputs().length, 1);
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal((yield* Effect.exit(start(undefined)))._tag, "Failure");
+        // A fresh launch does not consume or inherit the broken resume cap.
+        const fresh = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.equal(fresh.status, "ready");
+        assert.isUndefined(harness.getLastCreateQueryInput()?.options.resume);
+      }).pipe(Effect.provide(harness.layer));
+    });
+  });
+
   describe("resume preflight transcript probe", () => {
     const probeSessionId = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -7153,6 +7497,9 @@ describe("ClaudeAdapterLive", () => {
         resumeCursor: {
           threadId: RESUME_THREAD_ID,
           resume: attempted,
+          resumeRecoveryGeneration: "repair-generation",
+          missingResumePoint: "obsolete",
+          transcriptRepairBackupId: "obsolete-backup",
           turnCount: 5,
           baseContextChars: 1_000,
           approximateConversationChars: 2_000,
@@ -7180,6 +7527,9 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(completed?.type, "turn.completed");
       if (completed?.type !== "turn.completed") return;
       const cursor = completed.resumeCursor as Record<string, unknown>;
+      assert.equal(cursor.resumeRecoveryGeneration, "repair-generation");
+      assert.equal("missingResumePoint" in cursor, false);
+      assert.equal("transcriptRepairBackupId" in cursor, false);
       assert.equal("resume" in cursor, false);
       assert.equal("sessionId" in cursor, false);
       assert.equal(cursor.turnCount, 0);

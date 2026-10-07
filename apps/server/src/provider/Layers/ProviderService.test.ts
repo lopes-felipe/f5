@@ -1,3 +1,5 @@
+import { withProviderThreadAccess } from "../providerThreadAccess.ts";
+import { Deferred } from "effect";
 import { ServerSettingsService } from "../../serverSettings";
 import { beginAccountChange } from "../../profiles/ProviderAccountGuard.ts";
 import fs from "node:fs";
@@ -400,6 +402,136 @@ function makeProviderServiceLayerForAdapters(
     NodeServices.layer,
   );
 }
+
+it.effect("ignores a delayed Claude exit cursor from before transcript repair", () => {
+  const claude = makeFakeCodexAdapter("claudeAgent");
+  const layer = makeProviderServiceLayerForAdapters(new Map([["claudeAgent", claude.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("thread-delayed-claude-exit");
+    const oldCursor = { resume: "session", resumeSessionAt: "missing" };
+    const repairedCursor = {
+      resume: "session",
+      resumeSessionAt: "restored",
+      resumeRecoveryGeneration: "repair-generation",
+    };
+    yield* provider.startSession(threadId, {
+      threadId,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+      resumeCursor: oldCursor,
+    });
+    yield* directory.upsert({ threadId, provider: "claudeAgent", resumeCursor: repairedCursor });
+    const observed = yield* Stream.runHead(
+      Stream.filter(provider.streamEvents, (event) => event.type === "session.exited"),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    claude.emit({
+      type: "session.exited",
+      eventId: asEventId("delayed-exit"),
+      provider: "claudeAgent",
+      threadId,
+      createdAt: new Date().toISOString(),
+      resumeCursor: oldCursor,
+      payload: { reason: "process-exit" },
+    } as unknown as LegacyProviderRuntimeEvent);
+    yield* Fiber.join(observed);
+    const binding = yield* directory.getBinding(threadId);
+    assert.deepEqual(Option.getOrThrow(binding).resumeCursor, repairedCursor);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("keeps healthy event lanes flowing while another thread cursor is locked", () => {
+  const claude = makeFakeCodexAdapter("claudeAgent");
+  const layer = makeProviderServiceLayerForAdapters(new Map([["claudeAgent", claude.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const blocked = asThreadId("blocked-cursor-lane"),
+      healthy = asThreadId("healthy-cursor-lane");
+    for (const threadId of [blocked, healthy])
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+    const acquired = yield* Deferred.make<void>(),
+      release = yield* Deferred.make<void>();
+    const lock = yield* withProviderThreadAccess(
+      blocked,
+      Effect.gen(function* () {
+        yield* Deferred.succeed(acquired, undefined);
+        yield* Deferred.await(release);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* Deferred.await(acquired);
+    const observed: string[] = [];
+    yield* Stream.runForEach(provider.streamEvents, (event) =>
+      Effect.sync(() => {
+        observed.push(event.eventId);
+      }),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    const emit = (threadId: ThreadId, id: string, resumeCursor?: unknown) =>
+      claude.emit({
+        type: "session.exited",
+        eventId: asEventId(id),
+        provider: "claudeAgent",
+        threadId,
+        createdAt: new Date().toISOString(),
+        ...(resumeCursor === undefined ? {} : { resumeCursor }),
+        payload: { reason: "process-exit" },
+      } as unknown as LegacyProviderRuntimeEvent);
+    emit(blocked, "no-cursor");
+    yield* Effect.promise(() => vi.waitFor(() => assert.include(observed, "no-cursor")));
+    emit(blocked, "locked-cursor", { resume: "blocked" });
+    emit(healthy, "healthy-first", { resume: "first" });
+    emit(healthy, "healthy-second", { resume: "second" });
+    yield* Effect.promise(() => vi.waitFor(() => assert.include(observed, "healthy-second")));
+    assert.deepEqual(observed, ["no-cursor", "healthy-first", "healthy-second"]);
+    const directory = yield* ProviderSessionDirectory;
+    assert.deepEqual(Option.getOrThrow(yield* directory.getBinding(healthy)).resumeCursor, {
+      resume: "second",
+    });
+    yield* Deferred.succeed(release, undefined);
+    yield* Fiber.join(lock);
+    yield* Effect.promise(() => vi.waitFor(() => assert.include(observed, "locked-cursor")));
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("persists invalidation from the current Claude recovery generation", () => {
+  const claude = makeFakeCodexAdapter("claudeAgent");
+  const layer = makeProviderServiceLayerForAdapters(new Map([["claudeAgent", claude.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService,
+      directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("invalidate-repaired-cursor"),
+      generation = "repair-generation";
+    yield* provider.startSession(threadId, {
+      threadId,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+      resumeCursor: { resume: "missing", resumeRecoveryGeneration: generation },
+    });
+    const observed = yield* Stream.runHead(
+      Stream.filter(provider.streamEvents, (event) => event.eventId === "current-invalidation"),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    claude.emit({
+      type: "session.exited",
+      eventId: asEventId("current-invalidation"),
+      provider: "claudeAgent",
+      threadId,
+      createdAt: new Date().toISOString(),
+      resumeCursor: { resumeRecoveryGeneration: generation },
+      payload: { reason: "process-exit" },
+    } as unknown as LegacyProviderRuntimeEvent);
+    yield* Fiber.join(observed);
+    assert.deepEqual(Option.getOrThrow(yield* directory.getBinding(threadId)).resumeCursor, {
+      resumeRecoveryGeneration: generation,
+    });
+  }).pipe(Effect.provide(layer));
+});
 
 for (const driver of ["grok", "antigravity"] as const)
   it.effect(

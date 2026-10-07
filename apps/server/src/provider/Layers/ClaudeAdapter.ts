@@ -1,3 +1,5 @@
+import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
+import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { randomUUID } from "node:crypto";
 import {
@@ -16,6 +18,14 @@ import { claudeLimitState, usageLimitFromWindows } from "../usageLimitMessages.t
  *
  * @module ClaudeAdapterLive
  */
+import {
+  isClaudeTranscriptUnderMaintenance,
+  findClaudeTranscript,
+  readClaudeTranscript,
+  selectClaudeResumePoint,
+  isClaudeMissingResumeMessageError,
+} from "../claudeTranscript.ts";
+
 import * as NodeFsSync from "node:fs";
 import * as NodeFs from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -154,7 +164,12 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
 import { resolveClaudeSdkExecutableOptions } from "../claudeSdkExecutable.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
-import { isUuid, readClaudeResumeCandidate, readClaudeResumeState } from "../claudeResumeState.ts";
+import {
+  isUuid,
+  readClaudeRecoveryMetadata,
+  readClaudeResumeCandidate,
+  readClaudeResumeState,
+} from "../claudeResumeState.ts";
 
 const PROVIDER = "claudeAgent" as const;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
@@ -292,8 +307,12 @@ interface ClaudeSessionContext {
   readonly turnBoundaries: Array<{ turnId: string; assistantUuid: string }>;
   session: ProviderSession;
   readonly providerInstanceId: ProviderInstanceId;
-  readonly promptQueue: Queue.Queue<PromptQueueItem>;
-  readonly query: ClaudeQueryRuntime;
+  promptQueue: Queue.Queue<PromptQueueItem>;
+  query: ClaudeQueryRuntime;
+  readonly queryOptions: ClaudeQueryOptions;
+  readonly pendingPrompts: SDKUserMessage[];
+  recovering: boolean;
+  recoveryMetadata: ReturnType<typeof readClaudeRecoveryMetadata>;
   lastTotalCostUsd: number | undefined;
   readonly processEnvironment: NodeJS.ProcessEnv;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
@@ -394,6 +413,9 @@ export interface ClaudeAdapterLiveOptions {
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly readResumeTranscript?: (
+    input: ClaudeSessionProbeInput,
+  ) => Promise<ReadonlyMap<string, Record<string, unknown>>>;
   readonly probeResumableClaudeSession?: (
     input: ClaudeSessionProbeInput,
   ) => Effect.Effect<"present" | "absent" | "unknown">;
@@ -2017,6 +2039,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
+    const resumeFailures = new Map<ThreadId, number>();
+    const resumeRecoveryGenerations = new Map<ThreadId, unknown>();
     const settlementClock = yield* Clock.Clock;
     interface ThreadLockEntry {
       readonly semaphore: Semaphore.Semaphore;
@@ -2253,6 +2277,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const resumeCursor = {
           threadId,
+          ...context.recoveryMetadata,
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
@@ -2283,6 +2308,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.resumeSessionId = undefined;
         context.resumeAttemptSessionId = undefined;
         context.lastAssistantUuid = undefined;
+        const generation = context.recoveryMetadata.resumeRecoveryGeneration;
+        context.recoveryMetadata =
+          generation !== undefined ? { resumeRecoveryGeneration: generation } : {};
+        resumeFailures.delete(context.session.threadId);
         context.turns.length = 0;
         context.baseContextChars = 0;
         context.approximateConversationChars = 0;
@@ -3073,6 +3102,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
         };
         context.turnState = undefined;
+        context.pendingPrompts.length = 0;
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
         }
@@ -3730,6 +3760,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         context.lastAssistantUuid = message.uuid;
+        resumeFailures.delete(context.session.threadId);
+        context.pendingPrompts.length = 0;
+        // Once new work is streamed, the old interruption must not be appended
+        // after it, and undo must not hide a future repair.
+        delete context.recoveryMetadata.missingResumePoint;
+        delete context.recoveryMetadata.transcriptRepairBackupId;
         yield* updateResumeCursor(context);
       });
 
@@ -4460,16 +4496,136 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       });
 
     const runSdkStream = (context: ClaudeSessionContext): Effect.Effect<void, Error> =>
-      Stream.fromAsyncIterable(context.query, (cause) =>
-        toError(cause, "Claude runtime stream failed."),
-      ).pipe(
-        Stream.takeWhile(() => !context.stopped),
-        Stream.runForEach((message) =>
-          handleSdkMessage(context, message).pipe(
-            Effect.andThen(reconcileSettlementWatchdog(context)),
-          ),
-        ),
-      );
+      Effect.gen(function* () {
+        for (let attempt = 0; ; attempt++) {
+          const exit = yield* Effect.exit(
+            Stream.fromAsyncIterable(context.query, (cause) =>
+              toError(cause, "Claude runtime stream failed."),
+            ).pipe(
+              Stream.takeWhile(() => !context.stopped),
+              Stream.runForEach((message) => {
+                if (
+                  message.type === "result" &&
+                  message.subtype !== "success" &&
+                  isClaudeMissingResumeMessageError(message.errors.join("\n"))
+                ) {
+                  return logNativeSdkMessage(context, message).pipe(
+                    Effect.andThen(Effect.fail(new Error(message.errors.join("\n")))),
+                  );
+                }
+                return handleSdkMessage(context, message).pipe(
+                  Effect.andThen(reconcileSettlementWatchdog(context)),
+                );
+              }),
+            ),
+          );
+          if (Exit.isSuccess(exit)) return;
+          if (!isClaudeMissingResumeMessageError(Cause.pretty(exit.cause)))
+            return yield* Effect.failCause(exit.cause);
+          const threadId = context.session.threadId;
+          if (context.lastAssistantUuid)
+            context.recoveryMetadata.missingResumePoint ??=
+              context.queryOptions.resumeSessionAt ?? context.lastAssistantUuid;
+          yield* updateResumeCursor(context);
+          const failures = (resumeFailures.get(threadId) ?? 0) + 1;
+          resumeFailures.set(threadId, failures);
+          if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
+            return yield* Effect.fail(
+              new Error(
+                "Claude resume message is missing. Use Repair transcript to recover this session.",
+              ),
+            );
+          }
+          yield* withProviderThreadAccess(
+            threadId,
+            Effect.gen(function* () {
+              if (context.stopped || sessions.get(threadId) !== context) return;
+              context.recovering = true;
+              const selected = yield* Effect.tryPromise(async () => {
+                const probe = {
+                  claudeConfigDir: resolveClaudeConfigDir(
+                    context.processEnvironment,
+                    context.queryOptions.cwd,
+                  ),
+                  sessionId: context.resumeSessionId!,
+                };
+                const entries = options?.readResumeTranscript
+                  ? await options.readResumeTranscript(probe)
+                  : await readClaudeTranscript(
+                      await findClaudeTranscript(probe.claudeConfigDir, probe.sessionId),
+                      false,
+                      { skipMalformed: true },
+                    );
+                return selectClaudeResumePoint(
+                  entries,
+                  undefined,
+                  context.turnBoundaries,
+                  context.queryOptions.resumeSessionAt,
+                );
+              }).pipe(
+                Effect.mapError((cause) =>
+                  toError(cause, "Cannot read Claude transcript. Use Repair transcript."),
+                ),
+              );
+              if (!selected)
+                return yield* Effect.fail(
+                  new Error("No valid Claude resume boundary remains. Use Repair transcript."),
+                );
+              yield* emitRuntimeWarning(
+                context,
+                "Claude rejected the resume message. Retrying once from a saved boundary.",
+                {
+                  category: "provider",
+                  actionable: true,
+                  detail: { requested: context.queryOptions.resumeSessionAt, selected },
+                },
+              );
+              if (context.queryOptions.resumeSessionAt)
+                context.recoveryMetadata.missingResumePoint ??=
+                  context.queryOptions.resumeSessionAt;
+              context.query.close();
+              // Retire the old stdin pump before replaying the prompt. Otherwise a
+              // pending take from the failed process can consume the retry message.
+              yield* Queue.shutdown(context.promptQueue);
+              yield* Effect.sleep(Duration.millis(500));
+              if (context.stopped || sessions.get(threadId) !== context) return;
+              if (context.turnState?.interruptRequested) return yield* Effect.interrupt;
+              if (isClaudeTranscriptUnderMaintenance(context.resumeSessionId!))
+                return yield* Effect.fail(
+                  new Error(
+                    "Claude transcript repair started during resume recovery. Retry after repair finishes.",
+                  ),
+                );
+              context.promptQueue = yield* Queue.unbounded<PromptQueueItem>();
+              context.lastAssistantUuid = selected;
+              yield* updateResumeCursor(context);
+              context.query = yield* Effect.try({
+                try: () =>
+                  createQuery({
+                    prompt: makeClaudePromptInput(context.promptQueue),
+                    options: { ...context.queryOptions, resumeSessionAt: selected },
+                  }),
+                catch: (cause) =>
+                  new ProviderAdapterProcessError({
+                    provider: PROVIDER,
+                    threadId,
+                    detail: "Failed to retry Claude resume. Use Repair transcript.",
+                    cause,
+                  }),
+              });
+              for (const message of context.pendingPrompts)
+                yield* Queue.offer(context.promptQueue, { type: "message", message });
+              context.recovering = false;
+            }),
+          ).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                context.recovering = false;
+              }),
+            ),
+          );
+        }
+      });
 
     const handleStreamExit = (
       context: ClaudeSessionContext,
@@ -4875,6 +5031,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           options?.processEnvironment ?? process.env,
         );
         let pendingContextResetReason: string | undefined;
+        let resumeFallbackWarning: { requested: string; selected: string } | undefined;
+        if (resumeState?.resume && isClaudeTranscriptUnderMaintenance(resumeState.resume)) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Claude transcript repair is in progress. Try again when it finishes.",
+          });
+        }
         if (rawResumeCandidate !== undefined && !isUuid(rawResumeCandidate)) {
           pendingContextResetReason = "invalid-resume-cursor";
           resumeState = undefined;
@@ -4900,6 +5064,88 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             resumeState = undefined;
           }
         }
+        let pinResumePoint = false;
+        let pendingTranscriptWarning: string | undefined;
+        if (resumeState?.resume) {
+          const sessionId = resumeState.resume;
+          const claudeConfigDir = resolveClaudeConfigDir(queryEnvironment, input.cwd);
+          const indexed = yield* Effect.tryPromise(async (signal) => {
+            if (options?.readResumeTranscript)
+              return {
+                entries: await options.readResumeTranscript({ sessionId, claudeConfigDir }),
+                cursor: input.resumeCursor,
+              };
+            const file = await findClaudeTranscript(claudeConfigDir, sessionId, signal);
+            const cursor = await recoverClaudeTranscriptCursor(file, input.resumeCursor);
+            return {
+              entries: await readClaudeTranscript(file, false, { skipMalformed: true, signal }),
+              cursor,
+            };
+          }).pipe(
+            Effect.timeoutOption(1500),
+            Effect.orElseSucceed(() => Option.none()),
+          );
+          if (Option.isSome(indexed)) {
+            input = { ...input, resumeCursor: indexed.value.cursor };
+            resumeState = readClaudeResumeState(indexed.value.cursor)!;
+            const requested =
+              resumeState.resumeSessionAt ?? resumeState.turnBoundaries?.at(-1)?.assistantUuid;
+            if (requested && isUuid(requested)) {
+              const selected = selectClaudeResumePoint(
+                indexed.value.entries,
+                requested,
+                resumeState.turnBoundaries ?? [],
+              );
+              if (!selected) {
+                resumeFailures.set(threadId, (resumeFailures.get(threadId) ?? 0) + 1);
+                return yield* new ProviderAdapterProcessError({
+                  provider: PROVIDER,
+                  threadId,
+                  detail:
+                    "No persisted Claude resume boundary has a complete parent chain. Use Repair transcript.",
+                });
+              }
+              // Preserve full saved mid-turn progress. Explicit completed-turn
+              // boundaries and verified repair cursors may intentionally pin.
+              pinResumePoint =
+                selected !== requested ||
+                (resumeState.resumeSessionAt !== undefined &&
+                  resumeState.turnBoundaries?.some(
+                    (boundary) => boundary.assistantUuid === requested,
+                  ) === true) ||
+                readClaudeRecoveryMetadata(input.resumeCursor).transcriptRepairBackupId !==
+                  undefined;
+              if (selected !== requested) {
+                resumeFallbackWarning = { requested, selected };
+                yield* Effect.logWarning(
+                  "Claude resume point was not persisted; using saved conversation",
+                  { threadId, ...resumeFallbackWarning },
+                );
+                resumeState = { ...resumeState, resumeSessionAt: selected };
+              }
+            }
+          } else {
+            // An unknown store must never authorize a pinned, unverified UUID.
+            // Let the CLI resume its saved conversation, as the existing probe does.
+            pendingTranscriptWarning =
+              "Claude transcript validation was unavailable or timed out. Resuming the saved conversation without a message checkpoint.";
+          }
+        }
+        const generation = readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration;
+        if (!resumeState?.resume || generation !== resumeRecoveryGenerations.get(threadId)) {
+          resumeFailures.delete(threadId);
+          resumeRecoveryGenerations.set(threadId, generation);
+        }
+        const failures = resumeFailures.get(threadId) ?? 0;
+        if (resumeState?.resume && failures >= 3)
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail:
+              "Claude resume repeatedly failed. Use Repair transcript to revalidate or repair before trying again.",
+          });
+        if (resumeState?.resume && failures > 0)
+          yield* Effect.sleep(Duration.millis(500 * 2 ** (failures - 1)));
         const existingResumeSessionId = resumeState?.resume;
         const newSessionId =
           existingResumeSessionId === undefined ? yield* Random.nextUUIDv4 : undefined;
@@ -5577,9 +5823,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(existingResumeSessionId
             ? {
                 resume: existingResumeSessionId,
-                ...(resumeState?.turnBoundaries?.some(
-                  (boundary) => boundary.assistantUuid === resumeState.resumeSessionAt,
-                )
+                ...(pinResumePoint &&
+                resumeState?.resumeSessionAt &&
+                isUuid(resumeState.resumeSessionAt)
                   ? { resumeSessionAt: resumeState.resumeSessionAt }
                   : {}),
               }
@@ -5620,6 +5866,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* stopSessionInternal(existingContext, { emitExitEvent: false });
         }
 
+        if (
+          existingResumeSessionId &&
+          isClaudeTranscriptUnderMaintenance(existingResumeSessionId)
+        ) {
+          return yield* new ProviderAdapterProcessError({
+            provider: PROVIDER,
+            threadId,
+            detail: "Claude transcript repair is in progress. Try again when it finishes.",
+          });
+        }
         const queryRuntime = yield* Effect.try({
           try: () =>
             createQuery({
@@ -5650,6 +5906,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resumeCursor: {
             ...(threadId ? { threadId } : {}),
             ...(sessionId ? { resume: sessionId } : {}),
+            ...readClaudeRecoveryMetadata(input.resumeCursor),
+            ...(resumeFallbackWarning
+              ? { missingResumePoint: resumeFallbackWarning.requested }
+              : {}),
             ...(resumeState?.resumeSessionAt
               ? { resumeSessionAt: resumeState.resumeSessionAt }
               : {}),
@@ -5673,6 +5933,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
           query: queryRuntime,
+          queryOptions,
+          pendingPrompts: [],
+          recovering: false,
+          recoveryMetadata: {
+            ...readClaudeRecoveryMetadata(input.resumeCursor),
+            ...(resumeFallbackWarning
+              ? { missingResumePoint: resumeFallbackWarning.requested }
+              : {}),
+          },
           lastTotalCostUsd,
           processEnvironment: queryEnvironment,
           streamFiber: undefined,
@@ -5716,6 +5985,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);
 
+        if (pendingTranscriptWarning)
+          yield* emitRuntimeWarning(context, pendingTranscriptWarning, {
+            category: "provider",
+            actionable: true,
+          });
+        if (resumeFallbackWarning) {
+          yield* emitRuntimeWarning(
+            context,
+            "The last Claude turn was not fully saved. Resuming from the previous saved turn; use Repair transcript to recover logged messages.",
+            { category: "provider", actionable: true, detail: resumeFallbackWarning },
+          );
+        }
         if (pendingContextResetReason !== undefined) {
           yield* emitRuntimeWarning(
             context,
@@ -5803,7 +6084,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
         const ensureLive = Effect.suspend(() =>
-          context.stopped || context.retiring || sessions.get(input.threadId) !== context
+          context.stopped ||
+          context.recovering ||
+          context.retiring ||
+          (context.resumeSessionId &&
+            isClaudeTranscriptUnderMaintenance(context.resumeSessionId)) ||
+          sessions.get(input.threadId) !== context
             ? Effect.fail(
                 new ProviderAdapterRequestError({
                   provider: PROVIDER,
@@ -5990,6 +6276,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
 
         yield* ensureLive;
+        context.pendingPrompts.push(message);
         context.replyOwned = undefined;
         if (message.uuid) turnState.userMessageUuids = new Set([message.uuid]);
         if (
@@ -6044,6 +6331,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               detail: "The turn ended before steering.",
             });
           }
+          context.pendingPrompts.push(message);
           if (message.uuid) (context.turnState.userMessageUuids ??= new Set()).add(message.uuid);
           yield* Queue.offer(context.promptQueue, { type: "message", message });
           return { threadId: input.threadId, turnId: input.expectedTurnId };

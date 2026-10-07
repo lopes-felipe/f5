@@ -55,6 +55,7 @@ async function openReadonlyDatabase(dbPath: string): Promise<ReadonlyDatabase> {
 }
 
 export type StuckTurnRepairReason =
+  | "missing_resume_point"
   | "eligible"
   | "eligible_stale_terminal_pointer"
   | "missing_terminal_event"
@@ -509,3 +510,11 @@ export const repairStaleTerminalPointer = Effect.fn(function* (input: {
 });
 
 export type { ProviderRuntimeEvent };
+
+// Transcript repair shares the resume validator: a repair is successful only
+// when the exact requested message has a complete persisted parent chain.
+export {
+  inspectClaudeResumePoint,
+  repairClaudeResumePoint,
+  undoClaudeResumeRepair,
+} from "./ClaudeTranscriptRepair.ts";

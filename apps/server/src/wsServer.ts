@@ -1,3 +1,8 @@
+import {
+  getClaudeTranscriptMaintenance,
+  runClaudeTranscriptMaintenance,
+  claudeMaintenanceErrorMessage,
+} from "./maintenance/ClaudeTranscriptMaintenance.ts";
 import { stampSubmissionSource } from "./provider/submissionProvenance.ts";
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
@@ -69,6 +74,7 @@ import {
   PR_HUB_WS_METHODS,
   ProjectId,
   ThreadId,
+  ProviderInstanceId,
   WS_CHANNELS,
   WS_METHODS,
   type StorageCleanupProgressPayload,
@@ -5029,6 +5035,49 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             .pipe(Effect.mapError(mapNextTurnQueueRouteError)),
           removed: [...restored],
         };
+      }
+
+      case WS_METHODS.serverGetClaudeTranscriptRepair:
+      case WS_METHODS.serverRepairClaudeTranscript:
+      case WS_METHODS.serverUndoClaudeTranscriptRepair: {
+        const body = stripRequestTag(request.body);
+        const { providerSessionDirectory } = yield* awaitOrchestrationRuntimeForRoute;
+        const input = {
+          threadId: body.threadId,
+          directory: providerSessionDirectory,
+          service: providerService,
+          resolveAccount: (id: ProviderInstanceId) => accountService.resolve(id),
+          providerLogsDir: serverConfig.providerLogsDir,
+        };
+        const mapMaintenanceError = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(
+            Effect.catchCause((cause) => {
+              const reason = Cause.squash(cause);
+              return Effect.logWarning("Claude transcript maintenance failed", {
+                threadId: body.threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new RouteRequestError({
+                      code: "TranscriptRepairError",
+                      message: claudeMaintenanceErrorMessage(reason),
+                    }),
+                  ),
+                ),
+              );
+            }),
+          );
+        const operation: Effect.Effect<unknown, RouteRequestError> =
+          request.body._tag === WS_METHODS.serverGetClaudeTranscriptRepair
+            ? mapMaintenanceError(getClaudeTranscriptMaintenance(input))
+            : mapMaintenanceError(
+                runClaudeTranscriptMaintenance(
+                  input,
+                  "backupId" in body ? String(body.backupId) : undefined,
+                ),
+              );
+        return yield* operation;
       }
 
       case WS_METHODS.nextTurnQueueRecheckDelivery: {

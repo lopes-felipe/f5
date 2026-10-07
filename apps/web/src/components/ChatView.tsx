@@ -1,3 +1,4 @@
+import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
@@ -6595,6 +6596,18 @@ export default function ChatView({
             dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
             setThreadError(activeThread.id, null);
           }}
+        />
+      ),
+    });
+  }
+  if (activeThread.session?.provider === "claudeAgent") {
+    threadNotices.push({
+      id: "transcript-repair",
+      content: (
+        <TranscriptRepairAction
+          key={activeThread.id}
+          threadId={activeThread.id}
+          refreshKey={`${activeThread.session.status}:${activeThread.latestTurn?.turnId}:${activeThread.latestTurn?.state}`}
         />
       ),
     });

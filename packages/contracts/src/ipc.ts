@@ -698,6 +698,15 @@ export interface NativeApi {
     ) => Promise<T | null>;
   };
   server: {
+    getClaudeTranscriptRepair: (input: {
+      threadId: ThreadId;
+    }) => Promise<{ backupId?: string; canRepair: boolean } | null>;
+    repairClaudeTranscript: (input: { threadId: ThreadId }) => Promise<{
+      backupId?: string;
+      restoredMessages: number;
+      status: "validated" | "repaired";
+    }>;
+    undoClaudeTranscriptRepair: (input: { threadId: ThreadId; backupId: string }) => Promise<void>;
     getConfig: () => Promise<ServerConfig>;
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
