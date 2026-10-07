@@ -25,6 +25,7 @@ async function fixture() {
   const sessionId = "550e8400-e29b-41d4-a716-446655440000";
   const project = path.join(dir, "relative-store", "projects", "project");
   await mkdir(project, { recursive: true });
+  await writeFile(path.join(path.dirname(project), ".DS_Store"), "macOS metadata");
   const file = path.join(project, `${sessionId}.jsonl`);
   await writeFile(
     file,
