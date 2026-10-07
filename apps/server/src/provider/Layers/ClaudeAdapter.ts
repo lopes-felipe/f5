@@ -120,6 +120,7 @@ import {
 } from "../providerContext.ts";
 import {
   buildClaudeAssistantInstructions,
+  buildClaudePlanModeInstructions,
   buildInstructionProfile,
   CLAUDE_SUPPLEMENT_VERSION,
   INSTRUCTION_PROFILE_CONFIG_KEY,
@@ -5583,6 +5584,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           append: appendInstructionText,
           snapshot: false,
         } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
+        // Sent on every launch: Claude Code applies it only while the permission
+        // mode is plan, so later plan/default switches pick it up natively.
+        const planModeInstructions = buildClaudePlanModeInstructions({
+          workflowExecutionProfile: input.workflowExecutionProfile,
+        });
 
         const sdkExecutableOptions = yield* Effect.try({
           try: () =>
@@ -5658,6 +5664,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           env: queryEnvironment,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           systemPrompt,
+          planModeInstructions,
         } satisfies ClaudeQueryOptions;
         if (translatedMcpServers) {
           queryOptions.mcpServers = translatedMcpServers as NonNullable<

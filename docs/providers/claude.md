@@ -355,6 +355,19 @@ reply UUIDs fence unrelated assistant/stream output and background results from 
 Unstamped native results use the carried reply ownership, origin and resume reason. Observed
 unrelated costs advance the baseline without charging the human turn.
 
+### Plan-mode instructions (Release 1)
+
+Plan-mode guidance is no longer part of the append. Every launch passes it as the SDK's
+`planModeInstructions`; Claude Code shows it, wrapped in its own read-only preamble and
+ExitPlanMode footer, only while the permission mode is `plan`. The append therefore stays
+byte-identical across plan/default switches (better prompt caching) and never claims a
+fixed mode. For workflow stages the read-only host contract follows the plan body, so it
+outranks plan mode's "ask questions" guidance, and it also stays in the append. Instruction
+profiles identify these threads as Claude supplement `v12` (shared with the native Task
+tools change). Live check, Claude Code 2.1.292, 2026-10-07: a sentinel in
+`planModeInstructions` appeared in plan turns only, across default → plan → default → plan
+switches made with `setPermissionMode` in one session.
+
 ## Transcript retention
 
 F5 defaults Claude's `cleanupPeriodDays` to **3650**. Set the server environment variable

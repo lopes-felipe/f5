@@ -2377,7 +2377,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("passes plan interaction mode into the appended assistant contract", () => {
+  it.effect("sends plan-mode instructions through the SDK instead of the append", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -2388,15 +2388,44 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
       });
 
-      const createQueryInput = harness.getLastCreateQueryInput();
-      assert.ok(createQueryInput);
-      const append = (
-        createQueryInput.options as ClaudeQueryOptions & {
-          readonly systemPrompt?: { readonly append?: string };
-        }
-      ).systemPrompt?.append;
-      assert.equal(append?.includes("# Plan Mode (Conversational)"), true);
-      assert.equal(append?.includes("# Collaboration Mode: Default"), false);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.ok(options);
+      const append =
+        options.systemPrompt && typeof options.systemPrompt === "object"
+          ? (options.systemPrompt as { readonly append?: string }).append
+          : undefined;
+      assert.equal(append?.includes("# Plan Mode (Conversational)"), false);
+      assert.equal(append?.includes("F5 switches between Default and Plan mode"), true);
+      assert.equal(options.planModeInstructions?.startsWith("# Plan Mode (Conversational)"), true);
+      assert.equal(
+        options.planModeInstructions?.includes("Workflow Read-Only Host Contract"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("puts the workflow host contract last in plan-mode instructions", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.permissionMode, "plan");
+      const plan = options?.planModeInstructions ?? "";
+      assert.ok(plan.indexOf("# Workflow Read-Only Host Contract") > plan.indexOf("# Plan Mode"));
+      assert.match(plan, /No user reply path exists/);
+      // The append keeps the stage policy for any mode.
+      const append = (options?.systemPrompt as { readonly append?: string } | undefined)?.append;
+      assert.match(append ?? "", /# Workflow Read-Only Host Contract/);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -6819,7 +6848,7 @@ describe("ClaudeAdapterLive", () => {
           readonly systemPrompt?: { readonly append?: string };
         }
       )?.systemPrompt?.append;
-      assert.equal(append?.includes("# Collaboration Mode: Default"), true);
+      assert.equal(append?.includes("F5 switches between Default and Plan mode"), true);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
