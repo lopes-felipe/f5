@@ -62,6 +62,13 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
     method: Schema.String,
     usageLimit: Schema.optional(RuntimeUsageLimit),
     detail: Schema.String,
+    /**
+     * Set only when the adapter knows the turn input never reached the model,
+     * so durable delivery can reject it instead of marking it ambiguous.
+     */
+    deliveryCertainty: Schema.optional(Schema.Literal("not_sent")),
+    /** Whether a not-sent delivery may be retried automatically. */
+    deliveryRetryable: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect),
   },
 ) {

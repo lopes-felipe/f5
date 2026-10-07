@@ -723,6 +723,13 @@ function mapNextTurnQueueRouteError(error: NextTurnQueueError): RouteRequestErro
   return new RouteRequestError({ message: error.message, code: error._tag });
 }
 
+function toDeliveryRecoveryError(error: Error): RouteRequestError {
+  return new RouteRequestError({
+    code: "NextTurnQueueDeliveryRecoveryError",
+    message: error.message,
+  });
+}
+
 function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
   const squashed = Cause.squash(cause);
   if (Schema.is(AttachmentIngressError)(squashed)) {
@@ -5084,15 +5091,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const { providerTurnDeliveryWorker, nextTurnQueueDispatcher } =
           yield* awaitOrchestrationRuntimeForRoute;
-        const delivery = yield* providerTurnDeliveryWorker.recheck(body.threadId).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                code: "NextTurnQueueDeliveryRecoveryError",
-                message: error.message,
-              }),
-          ),
-        );
+        // Recheck the delivery that paused the queue, not the thread's latest
+        // delivery: a newer accepted send can supersede the paused one.
+        const blocking = yield* nextTurnQueueDispatcher
+          .getBlockingDelivery(body.threadId)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        const delivery = blocking
+          ? yield* providerTurnDeliveryWorker
+              .recheck(body.threadId, blocking.deliveryId)
+              .pipe(Effect.mapError(toDeliveryRecoveryError))
+          : null;
         if (delivery?.state === "accepted") {
           yield* nextTurnQueueDispatcher
             .handleDeliveryOutcome({
@@ -5103,16 +5111,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               detail: null,
             })
             .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-          yield* providerTurnDeliveryWorker.acknowledgeOutcome(delivery.deliveryId).pipe(
-            Effect.mapError(
-              (error) =>
-                new RouteRequestError({
-                  code: "NextTurnQueueDeliveryRecoveryError",
-                  message: error.message,
-                }),
-            ),
-          );
+          yield* providerTurnDeliveryWorker
+            .acknowledgeOutcome(delivery.deliveryId)
+            .pipe(Effect.mapError(toDeliveryRecoveryError));
         }
+        yield* nextTurnQueueDispatcher
+          .reconcileDeliveryPause(body.threadId)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
         return yield* nextTurnQueueDispatcher
           .getSnapshot(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
@@ -5122,22 +5127,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const { providerTurnDeliveryWorker, nextTurnQueueDispatcher } =
           yield* awaitOrchestrationRuntimeForRoute;
-        const delivery = yield* providerTurnDeliveryWorker.retry(body).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                code: "NextTurnQueueDeliveryRecoveryError",
-                message: error.message,
-              }),
-          ),
-        );
-        yield* nextTurnQueueStore
-          .retryDelivery({ commandId: delivery.commandId })
+        const blocking = yield* nextTurnQueueDispatcher
+          .getBlockingDelivery(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        yield* nextTurnQueueStore
-          .setPaused({ threadId: body.threadId, paused: false })
-          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
-        yield* nextTurnQueueDispatcher.notify(body.threadId);
+        if (blocking) {
+          const delivery = yield* providerTurnDeliveryWorker
+            .retry({ ...body, deliveryId: blocking.deliveryId })
+            .pipe(Effect.mapError(toDeliveryRecoveryError));
+          yield* nextTurnQueueStore
+            .retryDelivery({ commandId: delivery.commandId })
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+          yield* nextTurnQueueStore
+            .setPaused({ threadId: body.threadId, paused: false })
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+          yield* nextTurnQueueDispatcher.notify(body.threadId);
+        } else {
+          // Nothing left to retry; release a pause left by a superseded delivery.
+          yield* nextTurnQueueDispatcher
+            .reconcileDeliveryPause(body.threadId)
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        }
         return yield* nextTurnQueueDispatcher
           .getSnapshot(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
@@ -5147,18 +5156,40 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const { providerTurnDeliveryWorker, nextTurnQueueDispatcher } =
           yield* awaitOrchestrationRuntimeForRoute;
-        const delivery = yield* providerTurnDeliveryWorker.discard(body.threadId).pipe(
-          Effect.mapError(
-            (error) =>
-              new RouteRequestError({
-                code: "NextTurnQueueDeliveryRecoveryError",
-                message: error.message,
-              }),
-          ),
-        );
-        yield* nextTurnQueueStore
-          .discardDelivery({ commandId: delivery.commandId })
+        const blocking = yield* nextTurnQueueDispatcher
+          .getBlockingDelivery(body.threadId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        if (blocking) {
+          const delivery = yield* providerTurnDeliveryWorker
+            .discard(body.threadId, blocking.deliveryId)
+            .pipe(Effect.mapError(toDeliveryRecoveryError));
+          yield* nextTurnQueueStore
+            .discardDelivery({ commandId: delivery.commandId })
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+          // Discard keeps the queue paused. With no other failed delivery left it
+          // becomes a manual pause the user can resume; otherwise the pause
+          // describes the delivery that still needs recovery.
+          const remaining = yield* nextTurnQueueDispatcher
+            .getBlockingDelivery(body.threadId)
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+          yield* nextTurnQueueStore
+            .setPaused(
+              remaining
+                ? {
+                    threadId: body.threadId,
+                    paused: true,
+                    reasonCode:
+                      remaining.state === "ambiguous" ? "delivery_ambiguous" : "delivery_rejected",
+                    detail: remaining.errorDetail ?? "The provider did not confirm this turn.",
+                  }
+                : { threadId: body.threadId, paused: true, reasonCode: "manual_pause" },
+            )
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        } else {
+          yield* nextTurnQueueDispatcher
+            .reconcileDeliveryPause(body.threadId)
+            .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+        }
         yield* nextTurnQueueDispatcher.notify(body.threadId);
         return yield* nextTurnQueueDispatcher
           .getSnapshot(body.threadId)

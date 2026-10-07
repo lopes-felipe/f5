@@ -437,6 +437,8 @@ export const makeOrchestrationIntegrationHarness = (
       scheduleUsageLimitResume: () => Effect.die("unsupported"),
       cancelUsageLimitResume: () => Effect.die("unsupported"),
       refreshUsageLimitResume: () => Effect.die("unsupported"),
+      getBlockingDelivery: () => Effect.succeed(null),
+      reconcileDeliveryPause: () => Effect.void,
       handleDeliveryOutcome: () => Effect.void,
       changes: Stream.empty,
       summaryChanges: Stream.empty,

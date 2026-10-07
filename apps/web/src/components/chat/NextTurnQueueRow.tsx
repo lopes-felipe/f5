@@ -333,11 +333,7 @@ export function NextTurnQueueRow({
                 type="button"
                 variant="ghost"
                 size="icon-xs"
-                disabled={
-                  disabled ||
-                  snapshot.reasonCode === "delivery_rejected" ||
-                  snapshot.reasonCode === "delivery_ambiguous"
-                }
+                disabled={disabled || (snapshot.unresolvedDelivery ?? null) !== null}
                 aria-label="Run queued turn now"
                 onClick={() => void onRunNow(item)}
               >

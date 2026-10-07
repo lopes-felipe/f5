@@ -91,6 +91,19 @@ export const NextTurnQueueSnapshot = Schema.Struct({
   reasonDetail: Schema.NullOr(Schema.String),
   maxItems: NonNegativeInt,
   quarantinedCount: NonNegativeInt,
+  /**
+   * The rejected or ambiguous provider delivery that Recheck, Retry and Discard
+   * act on. Null when no such delivery remains, even if a stale delivery pause
+   * reason is still shown.
+   */
+  unresolvedDelivery: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        deliveryId: CommandId,
+        state: Schema.Literals(["rejected", "ambiguous"]),
+      }),
+    ),
+  ).pipe(Schema.withDecodingDefault(() => null)),
   usageLimitResume: Schema.optional(
     Schema.NullOr(
       Schema.Struct({

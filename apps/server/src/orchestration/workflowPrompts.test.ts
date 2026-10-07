@@ -130,6 +130,35 @@ describe("workflowPrompts", () => {
     expect(codex).toContain("Return the full plan in your assistant response");
   });
 
+  it("tells an interrupted author retry to build on its existing research", () => {
+    const workflow = makeWorkflow();
+    const base = { workflow, branch: workflow.branchB, authorSlot: CLAUDE_SLOT };
+    const original = buildAuthorPrompt(base);
+    // Plain retries keep the legacy prompt output.
+    expect(
+      buildAuthorPrompt({
+        ...base,
+        retry: { kind: "retry", reusedThread: true, priorFailure: "Network failed" },
+      }),
+    ).toBe(original);
+    const interrupted = buildAuthorPrompt({
+      ...base,
+      retry: {
+        kind: "retry",
+        reusedThread: true,
+        interrupted: true,
+        priorFailure: `Claude runtime stream failed. ${"x".repeat(2_000)}`,
+      },
+    });
+    expect(interrupted).not.toBe(original);
+    expect(interrupted.startsWith(original)).toBe(true);
+    expect(interrupted).toContain("## Resuming After an Interruption");
+    expect(interrupted).toContain(
+      "Build on the research and findings already in this conversation",
+    );
+    expect(interrupted.length - original.length).toBeLessThan(1_000);
+  });
+
   it("uses the original actionable plan-review structure", () => {
     const sections = buildReviewPromptSections({
       requirementPrompt: "Implement the feature",

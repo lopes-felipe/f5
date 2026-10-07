@@ -8,6 +8,8 @@ export type WorkflowRetryContext =
       readonly kind: "retry";
       readonly reusedThread: boolean;
       readonly formatRepair?: true;
+      /** The previous attempt in this thread was cut off by a provider session error. */
+      readonly interrupted?: true;
       readonly priorFailure?: string | undefined;
     };
 
@@ -30,6 +32,27 @@ export function workflowRetryContextSection(
     : "";
   return `## Retry Context
 ${location}${failure}`;
+}
+
+/**
+ * Tells the model that an automatic retry continues an interrupted attempt in
+ * the same thread. Without it the retry prompt is byte-for-byte identical to
+ * the original, and the model may redo its research or assume it finished.
+ */
+// Keeps the interruption note within prompt overhead budgets.
+const INTERRUPTED_FAILURE_MAX_CHARS = 300;
+
+export function workflowInterruptedRetrySection(
+  retry: WorkflowRetryContext | undefined,
+): string | null {
+  if (retry?.kind !== "retry" || !retry.interrupted || !retry.reusedThread) return null;
+  const reported = retry.priorFailure?.trim().replace(/\s+/g, " ");
+  const failure = reported
+    ? ` The session reported: ${reported.length > INTERRUPTED_FAILURE_MAX_CHARS ? `${reported.slice(0, INTERRUPTED_FAILURE_MAX_CHARS)}…` : reported}`
+    : "";
+  return `## Resuming After an Interruption
+Your previous attempt in this thread was interrupted by a provider session error before it finished.${failure}
+Build on the research and findings already in this conversation instead of starting over. Anything you were writing when the interruption happened may not have been saved, so redo that step rather than assuming it completed. Then submit the complete result as requested above.`;
 }
 
 export const WORKFLOW_PLAN_REVIEW_RUBRIC_SECTION = `## Plan Review Rubric

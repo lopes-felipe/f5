@@ -7,6 +7,7 @@ import {
   planningWorkflowDocumentType,
 } from "@t3tools/shared/documentWorkflow";
 import {
+  workflowInterruptedRetrySection,
   workflowRetryContextSection,
   workflowUpstreamArtifactSection,
   type WorkflowRetryContext,
@@ -60,6 +61,7 @@ export function buildDocumentAuthorPrompt(input: Parameters<typeof buildAuthorPr
     writing(type),
     output(type),
     repair(input.retry),
+    workflowInterruptedRetrySection(input.retry),
   ]);
 }
 export function buildDocumentReviewPrompt(

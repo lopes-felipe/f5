@@ -135,6 +135,48 @@ const make = Effect.gen(function* () {
         Effect.mapError(mapError("ProviderTurnDelivery.getLatestByThread")),
       );
 
+  const listAcceptedTurnIdsByThread: ProviderTurnDeliveryRepositoryShape["listAcceptedTurnIdsByThread"] =
+    (threadId) =>
+      sql
+        .unsafe<{ readonly turnId: string }>(
+          `SELECT provider_turn_id AS "turnId" FROM provider_turn_deliveries
+           WHERE thread_id = ? AND state = 'accepted' AND provider_turn_id IS NOT NULL`,
+          [threadId],
+        )
+        .pipe(
+          Effect.map((rows) => rows.map((row) => TurnId.makeUnsafe(row.turnId))),
+          Effect.mapError(mapError("ProviderTurnDelivery.listAcceptedTurnIdsByThread")),
+        );
+
+  const getSupersedingPreSendTurnIds: ProviderTurnDeliveryRepositoryShape["getSupersedingPreSendTurnIds"] =
+    (deliveryId) =>
+      sql
+        .unsafe<{ readonly preSendTurnIds: string }>(
+          `SELECT newer.pre_send_turn_ids_json AS "preSendTurnIds"
+           FROM provider_turn_deliveries AS target
+           JOIN provider_turn_deliveries AS newer
+             ON newer.thread_id = target.thread_id
+            AND (
+              newer.created_at > target.created_at
+              OR (newer.created_at = target.created_at AND newer.rowid > target.rowid)
+            )
+           WHERE target.delivery_id = ?
+             AND (newer.state != 'pending' OR newer.attempt > 0)
+           ORDER BY newer.created_at, newer.rowid
+           LIMIT 1`,
+          [deliveryId],
+        )
+        .pipe(
+          Effect.flatMap((rows) =>
+            rows[0] === undefined
+              ? Effect.succeed(null)
+              : Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(TurnId)))(
+                  rows[0].preSendTurnIds,
+                ),
+          ),
+          Effect.mapError(mapError("ProviderTurnDelivery.getSupersedingPreSendTurnIds")),
+        );
+
   const claim: ProviderTurnDeliveryRepositoryShape["claim"] = (deliveryId, preSendTurnIds) =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
@@ -216,12 +258,16 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.mapError(mapError("ProviderTurnDelivery.retryTerminal")));
 
   const markAbandoned: ProviderTurnDeliveryRepositoryShape["markAbandoned"] = (deliveryId) =>
-    sql`
+    sql<{ readonly deliveryId: string }>`
       UPDATE provider_turn_deliveries
       SET state = 'abandoned', outcome_projected_at = ${new Date().toISOString()},
           updated_at = ${new Date().toISOString()}
       WHERE delivery_id = ${deliveryId} AND state IN ('rejected', 'ambiguous')
-    `.pipe(Effect.asVoid, Effect.mapError(mapError("ProviderTurnDelivery.markAbandoned")));
+      RETURNING delivery_id AS "deliveryId"
+    `.pipe(
+      Effect.map((rows) => rows.length > 0),
+      Effect.mapError(mapError("ProviderTurnDelivery.markAbandoned")),
+    );
 
   const markOutcomeProjected: ProviderTurnDeliveryRepositoryShape["markOutcomeProjected"] = (
     deliveryId,
@@ -239,6 +285,8 @@ const make = Effect.gen(function* () {
     getByCommandId,
     getLatestByThread,
     getUnresolvedByThread,
+    listAcceptedTurnIdsByThread,
+    getSupersedingPreSendTurnIds,
     claim,
     markAccepted,
     markRejected,

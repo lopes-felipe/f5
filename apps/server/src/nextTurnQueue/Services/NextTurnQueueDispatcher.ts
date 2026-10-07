@@ -10,6 +10,7 @@ import type { Effect, Scope, Stream } from "effect";
 
 import type { NextTurnQueueError } from "../Errors.ts";
 import type { ProviderTurnDeliveryOutcome } from "../../orchestration/Services/ProviderTurnDeliveryWorker.ts";
+import type { ProviderTurnDelivery } from "../../orchestration/Services/ProviderTurnDeliveryRepository.ts";
 
 export interface NextTurnQueueDispatcherShape {
   readonly scheduleUsageLimitResume: (input: {
@@ -51,6 +52,12 @@ export interface NextTurnQueueDispatcherShape {
   readonly refreshGate: (
     threadId: ThreadId,
   ) => Effect.Effect<NextTurnQueueSnapshot, NextTurnQueueError>;
+  /** The rejected or ambiguous delivery that queue recovery actions target. */
+  readonly getBlockingDelivery: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderTurnDelivery | null, NextTurnQueueError>;
+  /** Clears a delivery pause that no longer has a rejected or ambiguous delivery. */
+  readonly reconcileDeliveryPause: (threadId: ThreadId) => Effect.Effect<void, NextTurnQueueError>;
   readonly handleDeliveryOutcome: (
     outcome: ProviderTurnDeliveryOutcome,
   ) => Effect.Effect<void, NextTurnQueueError>;

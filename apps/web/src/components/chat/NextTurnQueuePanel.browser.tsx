@@ -147,6 +147,10 @@ describe("NextTurnQueuePanel", () => {
       reasonDetail: "The provider delivery outcome is unknown.",
       maxItems: 20,
       quarantinedCount: 0,
+      unresolvedDelivery: {
+        deliveryId: CommandId.makeUnsafe("ambiguous-command"),
+        state: "ambiguous" as const,
+      },
       items: [
         {
           itemId,
@@ -189,6 +193,40 @@ describe("NextTurnQueuePanel", () => {
       .element(page.getByRole("button", { name: "Retry", exact: true }))
       .toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "Discard" })).toBeInTheDocument();
+    await page.getByRole("button", { name: "Recheck" }).click();
+    expect(recheckDelivery).toHaveBeenCalledWith({ threadId });
+  });
+
+  it("keeps resume available when a delivery pause has nothing left to recover", async () => {
+    const threadId = ThreadId.makeUnsafe("stale-delivery-pause-thread");
+    const snapshot = {
+      threadId,
+      revision: 5,
+      paused: true,
+      blockedKind: "error" as const,
+      reasonCode: "delivery_ambiguous" as const,
+      reasonDetail: "The provider delivery outcome is unknown.",
+      maxItems: 20,
+      quarantinedCount: 0,
+      unresolvedDelivery: null,
+      items: [],
+    };
+    const recheckDelivery = vi.fn(async () => ({
+      ...snapshot,
+      revision: 6,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+    }));
+    nativeApiMock.current = { nextTurnQueue: { recheckDelivery } };
+    useNextTurnQueueStore.getState().applySnapshot(snapshot);
+    active = await render(<NextTurnQueuePanel threadId={threadId} />);
+
+    await expect.element(page.getByRole("button", { name: "Resume queue" })).toBeEnabled();
+    await expect.element(page.getByRole("button", { name: "Recheck" })).toBeInTheDocument();
+    expect(page.getByRole("button", { name: "Retry", exact: true }).elements()).toHaveLength(0);
+    expect(page.getByRole("button", { name: "Discard" }).elements()).toHaveLength(0);
     await page.getByRole("button", { name: "Recheck" }).click();
     expect(recheckDelivery).toHaveBeenCalledWith({ threadId });
   });

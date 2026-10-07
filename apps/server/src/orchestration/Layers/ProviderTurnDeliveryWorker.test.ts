@@ -45,6 +45,11 @@ let methodNotFound = false;
 let reconciliationFails = false;
 let extraReplayDelivery: ProviderTurnDelivery | null = null;
 let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
+let acceptedTurnIds: Array<TurnId> = [];
+let supersedingPreSendTurnIds: Array<TurnId> | null = null;
+let abandonApplies = true;
+let pendingTurnStartMessageId: MessageId | null = null;
+let pendingTurnStartDeletes = 0;
 
 function resetDelivery() {
   state = {
@@ -82,6 +87,11 @@ function resetDelivery() {
   reconciliationFails = false;
   extraReplayDelivery = null;
   providerTurns = [];
+  acceptedTurnIds = [];
+  supersedingPreSendTurnIds = null;
+  abandonApplies = true;
+  pendingTurnStartMessageId = null;
+  pendingTurnStartDeletes = 0;
 }
 
 const reconcile = (target: ThreadId) =>
@@ -105,6 +115,8 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
   getByCommandId: () => Effect.succeed(state),
   getLatestByThread: () => Effect.succeed(state),
   getUnresolvedByThread: () => Effect.succeed(state),
+  listAcceptedTurnIdsByThread: () => Effect.sync(() => acceptedTurnIds),
+  getSupersedingPreSendTurnIds: () => Effect.sync(() => supersedingPreSendTurnIds),
   claim: (_deliveryId: CommandId, preSendTurnIds: ReadonlyArray<never>) =>
     Effect.sync(() => {
       if (state.state !== "pending") return null;
@@ -143,7 +155,12 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
       state = { ...state, state: "pending" };
     }),
   retryTerminal: () => Effect.succeed(null),
-  markAbandoned: () => Effect.void,
+  markAbandoned: () =>
+    Effect.sync(() => {
+      if (!abandonApplies) return false;
+      state = { ...state, state: "abandoned" };
+      return true;
+    }),
   markOutcomeProjected: () =>
     Effect.sync(() => {
       outcomeProjected = true;
@@ -206,7 +223,16 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
       reconcileAcceptedPendingTurnStarts: ({ threadId: target }: { threadId: ThreadId }) =>
         reconcile(target),
       reconcileAllAcceptedPendingTurnStarts: Effect.suspend(() => reconcile(threadId)),
-      deletePendingTurnStartByThreadId: () => Effect.void,
+      getPendingTurnStartByThreadId: () =>
+        Effect.sync(() =>
+          pendingTurnStartMessageId === null
+            ? Option.none()
+            : Option.some({ threadId, messageId: pendingTurnStartMessageId }),
+        ),
+      deletePendingTurnStartByThreadId: () =>
+        Effect.sync(() => {
+          pendingTurnStartDeletes += 1;
+        }),
     } as never),
   ),
   Layer.provideMerge(
@@ -487,4 +513,97 @@ it.effect.each(["turn/start", "account/read"])(
       assert.equal(Boolean(state.usageLimit), method === "turn/start");
       assert.equal(requeueCount, 0);
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck does not claim a turn already attributed to a newer accepted delivery", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    // The ambiguous send never produced a turn; a later "continue" did.
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    providerTurns = [{ id: TurnId.makeUnsafe("continue-turn"), items: [] }];
+    acceptedTurnIds = [TurnId.makeUnsafe("continue-turn")];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(threadId, deliveryId);
+    assert.equal(delivery?.state, "ambiguous");
+    assert.equal(state.state, "ambiguous");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck ignores a target delivery from another thread", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(ThreadId.makeUnsafe("other-thread"), deliveryId);
+    assert.equal(delivery, null);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a turn start that reports a pre-existing provider turn is not accepted", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    acceptSend = true;
+    providerTurns = [{ id: TurnId.makeUnsafe("existing-turn"), items: [] }];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.start;
+    yield* worker.drain;
+    assert.equal(state.state, "ambiguous");
+    assert.equal(state.errorCode, "provider_turn_not_new");
+    assert.equal(state.providerTurnId, null);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck never credits an older delivery with a newer in-flight send's turn", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    // A newer send was claimed before any turn existed; its turn is not yet accepted.
+    supersedingPreSendTurnIds = [];
+    providerTurns = [{ id: TurnId.makeUnsafe("newer-in-flight-turn"), items: [] }];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(threadId, deliveryId);
+    assert.equal(delivery?.state, "ambiguous");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Recheck accepts a superseded delivery's turn that predates the newer send", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    supersedingPreSendTurnIds = [TurnId.makeUnsafe("older-turn")];
+    providerTurns = [
+      { id: TurnId.makeUnsafe("older-turn"), items: [] },
+      { id: TurnId.makeUnsafe("newer-turn"), items: [] },
+    ];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(threadId, deliveryId);
+    assert.equal(delivery?.state, "accepted");
+    assert.equal(state.providerTurnId, "older-turn");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("Discard keeps a newer send's pending turn start and fails if abandon lost a race", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    pendingTurnStartMessageId = MessageId.makeUnsafe("newer-message");
+    const worker = yield* ProviderTurnDeliveryWorker;
+    yield* worker.discard(threadId, deliveryId);
+    assert.equal(state.state, "abandoned");
+    assert.equal(pendingTurnStartDeletes, 0);
+
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    pendingTurnStartMessageId = messageId;
+    yield* worker.discard(threadId, deliveryId);
+    assert.equal(pendingTurnStartDeletes, 1);
+
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    pendingTurnStartMessageId = messageId;
+    abandonApplies = false;
+    const error = yield* worker.discard(threadId, deliveryId).pipe(Effect.flip);
+    assert.match(error.message, /can no longer be discarded/u);
+    assert.equal(pendingTurnStartDeletes, 0);
+  }).pipe(Effect.provide(testLayer)),
 );
