@@ -176,7 +176,9 @@ export const makeConversationRewind = Effect.gen(function* () {
           if (providerCwd !== worktreeCwd)
             return yield* fail("The provider workspace differs from the worktree.");
         }
-        const cursor = session?.resumeCursor as { resume?: string; threadId?: string } | undefined;
+        const cursor = session?.resumeCursor as
+          | { resume?: string; threadId?: string; rewindSourceThreadId?: string }
+          | undefined;
         const identity = cursor?.resume ?? cursor?.threadId ?? snapshot.threadId;
         const history = yield* listHistory(thread.id);
         if (!op) {
@@ -233,14 +235,18 @@ export const makeConversationRewind = Effect.gen(function* () {
         const verified = (ids: readonly string[]) =>
           JSON.stringify(ids) === JSON.stringify(expected);
         if (op.provider_session_id !== identity) {
-          // Claude replaces its native session when rolling back all turns.
-          // Recovery can adopt that identity only after proving the empty boundary;
-          // a prepared operation has not attempted rollback and must still match.
+          // A validated Codex fork and a zero-turn Claude rollback replace the
+          // native identity. Recovery must prove the retained boundary before
+          // adopting either replacement; a prepared operation sent nothing.
+          const replacementAllowed =
+            (thread.session?.providerName === "codex" &&
+              cursor?.rewindSourceThreadId === op.provider_session_id) ||
+            (thread.session?.providerName === "claudeAgent" &&
+              op.retained_count === 0 &&
+              expected.length === 0);
           if (
-            thread.session?.providerName !== "claudeAgent" ||
+            !replacementAllowed ||
             op.state === "prepared" ||
-            op.retained_count !== 0 ||
-            expected.length !== 0 ||
             !verified(snapshot.turns.map((turn) => turn.id))
           ) {
             // Kept in its current state on purpose: from `reconciliation-required` this
@@ -361,7 +367,7 @@ export const makeConversationRewind = Effect.gen(function* () {
             (session) => session.threadId === thread.id,
           );
           const confirmedCursor = confirmedSession?.resumeCursor as
-            | { resume?: string; threadId?: string }
+            | { resume?: string; threadId?: string; rewindSourceThreadId?: string }
             | undefined;
           const confirmedIdentity =
             confirmedCursor?.resume ?? confirmedCursor?.threadId ?? after.threadId;

@@ -31,7 +31,9 @@ describe("Codex client request audit", () => {
       items: CODEX_THREAD_ITEM_TYPES,
       clientRequests: allPreferred.filter((method) => method !== "thread/revert"),
     });
-    expect(report.clientRequests.unsupported).toEqual(["thread/revert | thread/rollback"]);
+    expect(report.clientRequests.unsupported).toEqual([
+      "thread/revert | thread/rollback | thread/fork",
+    ]);
     expect(report.hasDrift).toBe(true);
   });
 

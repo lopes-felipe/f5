@@ -49,6 +49,8 @@ export interface ProviderThreadSnapshot {
 
 export interface ProviderRollbackOptions {
   readonly beforeTurnId?: string;
+  /** Persist a changed native cursor before history hydration can fail. */
+  readonly onAdoptSession?: (session: ProviderSession) => Promise<void>;
 }
 
 export interface ProviderOneOffPromptInput {

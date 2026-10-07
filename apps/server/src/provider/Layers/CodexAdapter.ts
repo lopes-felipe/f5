@@ -2485,7 +2485,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       }
 
       return Effect.tryPromise({
-        try: () => manager.rollbackThread(threadId, numTurns, options?.beforeTurnId),
+        try: () =>
+          manager.rollbackThread(
+            threadId,
+            numTurns,
+            options?.beforeTurnId,
+            options?.onAdoptSession,
+          ),
         catch: (cause) =>
           toRequestError(
             threadId,

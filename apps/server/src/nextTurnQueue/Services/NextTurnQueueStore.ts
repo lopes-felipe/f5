@@ -120,6 +120,7 @@ export interface NextTurnQueueStoreShape {
     submissionId: CommandId,
   ) => Effect.Effect<NextTurnQueueSubmissionRecord | null, NextTurnQueueError>;
   readonly insertSubmission: (input: {
+    readonly submissionSource?: "human" | "automation";
     readonly submissionId: CommandId;
     readonly requestHash: string;
     readonly itemId: CommandId;

@@ -35,6 +35,7 @@ import {
 import type {
   ProviderAdapterShape,
   ProviderOneOffPromptInput,
+  ProviderRollbackOptions,
 } from "../Services/ProviderAdapter.ts";
 import type { ProviderAdapterSendTurnInput } from "../Services/ProviderAdapter.ts";
 import {
@@ -474,6 +475,46 @@ for (const driver of ["grok", "antigravity"] as const)
     },
   );
 
+it.effect("persists Codex fork adoption before a failed final read", () => {
+  const codex = makeFakeCodexAdapter();
+  const adapter = {
+    ...codex.adapter,
+    rollbackThread: (_threadId: ThreadId, _numTurns: number, options?: ProviderRollbackOptions) =>
+      Effect.gen(function* () {
+        const old = (yield* codex.listSessions())[0]!;
+        yield* Effect.promise(() =>
+          options!.onAdoptSession!({
+            ...old,
+            status: "ready",
+            resumeCursor: { threadId: "validated-fork", rewindSourceThreadId: "native-source" },
+          }),
+        );
+        return yield* new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread/read",
+          detail: "final read failed",
+        });
+      }),
+  };
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("fork-persist-before-read");
+    yield* provider.startSession(threadId, {
+      threadId,
+      provider: "codex",
+      runtimeMode: "full-access",
+    });
+    const result = yield* Effect.exit(provider.rollbackConversation({ threadId, numTurns: 1 }));
+    assert.equal(result._tag, "Failure");
+    const binding = yield* directory.getBinding(threadId);
+    assert.equal(Option.isSome(binding), true);
+    assert.deepEqual(Option.isSome(binding) ? binding.value.resumeCursor : undefined, {
+      threadId: "validated-fork",
+      rewindSourceThreadId: "native-source",
+    });
+  }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]))));
+});
 const routing = makeProviderServiceLayer();
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
   const codex = makeFakeCodexAdapter();

@@ -1583,11 +1583,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.thread_id": input.threadId,
             "provider.num_turns": input.numTurns,
           });
-          yield* routed.adapter.rollbackThread(
-            routed.threadId,
-            input.numTurns,
-            input.beforeTurnId !== undefined ? { beforeTurnId: input.beforeTurnId } : undefined,
-          );
+          yield* routed.adapter.rollbackThread(routed.threadId, input.numTurns, {
+            ...(input.beforeTurnId !== undefined ? { beforeTurnId: input.beforeTurnId } : {}),
+            onAdoptSession: (session) =>
+              Effect.runPromise(
+                directory.upsert({
+                  threadId: input.threadId,
+                  provider: routed.adapter.provider,
+                  providerInstanceId: routed.instanceId,
+                  status: "running",
+                  resumeCursor: session.resumeCursor,
+                  runtimePayload: toRuntimePayloadFromSession(session),
+                }),
+              ),
+          });
           const session = (yield* routed.adapter.listSessions()).find(
             (session) => session.threadId === input.threadId,
           );
