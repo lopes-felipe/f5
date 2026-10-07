@@ -29,7 +29,7 @@ import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,
 } from "./providerKind";
-import { TOOL_LIFECYCLE_ITEM_TYPES } from "./toolLifecycle";
+import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -697,6 +697,8 @@ export const CompactToolActivityPayload = Schema.Struct({
   mcpToolName: Schema.optional(TrimmedNonEmptyString),
   mcpInput: Schema.optional(Schema.String),
   mcpResult: Schema.optional(Schema.String),
+  /** Typed native result, present only on `tool.completed` activities. */
+  completion: Schema.optional(ToolCompletionEnvelope),
 });
 export type CompactToolActivityPayload = typeof CompactToolActivityPayload.Type;
 

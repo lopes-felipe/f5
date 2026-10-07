@@ -10,7 +10,9 @@ import {
   ProviderItemId,
   type ProviderRequestKind,
   type RuntimeItemStatus,
+  ToolCompletionEnvelope,
 } from "@t3tools/contracts";
+import { Schema } from "effect";
 import {
   deriveSearchSummaryFromPatternsAndTargets,
   formatLineRangeSummary,
@@ -727,9 +729,12 @@ function readMcpToolPayload(payload: UnknownRecord): Partial<CompactToolActivity
   };
 }
 
+const isToolCompletionEnvelope = Schema.is(ToolCompletionEnvelope);
+
 function compactToolPayload(payload: CompactToolActivityPayload): Record<string, unknown> {
   return {
     itemType: payload.itemType,
+    ...(payload.completion ? { completion: payload.completion } : {}),
     ...(payload.imagePath ? { imagePath: payload.imagePath } : {}),
     ...(payload.providerItemId ? { providerItemId: payload.providerItemId } : {}),
     ...(payload.status ? { status: payload.status } : {}),
@@ -892,9 +897,15 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
       : undefined;
   const subagentPayload = readSubagentPayload(record);
   const mcpPayload = readMcpToolPayload(record);
+  // Malformed envelopes are dropped rather than persisted half-valid.
+  const completion =
+    record.completion !== undefined && isToolCompletionEnvelope(record.completion)
+      ? record.completion
+      : undefined;
 
   return {
     itemType: record.itemType,
+    ...(completion ? { completion } : {}),
     ...(imagePath ? { imagePath } : {}),
     ...(providerItemId ? { providerItemId } : {}),
     ...(status ? { status } : {}),

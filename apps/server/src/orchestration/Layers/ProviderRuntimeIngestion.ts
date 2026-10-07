@@ -1178,6 +1178,10 @@ function buildCompactToolLifecyclePayload(
     ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
     ...(event.payload.requestKind ? { requestKind: event.payload.requestKind } : {}),
     ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+    // Persist the typed result once, on completion only.
+    ...(event.type === "item.completed" && event.payload.completion
+      ? { completion: event.payload.completion }
+      : {}),
     ...(fileChangeId ? { fileChangeId } : {}),
   };
 }

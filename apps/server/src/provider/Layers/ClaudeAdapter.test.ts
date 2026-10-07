@@ -3811,6 +3811,102 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("attaches a typed completion envelope to native Task tool results", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.completed" || event.type === "item.updated",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "tool-task-update-1",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "plan", attachments: [] });
+
+      const toolUse = (index: number, id: string, name: string, input: unknown) =>
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-tasks",
+          uuid: `stream-${id}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id, name, input },
+          },
+        } as unknown as SDKMessage);
+      const toolResult = (id: string, structured: unknown) =>
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-tasks",
+          uuid: `user-${id}`,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+          },
+          tool_use_result: structured,
+        } as unknown as SDKMessage);
+
+      toolUse(0, "tool-task-create-1", "TaskCreate", {
+        subject: "Run tests",
+        description: "Run the suite",
+        activeForm: "Running tests",
+      });
+      toolResult("tool-task-create-1", { task: { id: "1", subject: "Run tests" } });
+      toolUse(1, "tool-task-update-1", "TaskUpdate", { taskId: "9", status: "completed" });
+      toolResult("tool-task-update-1", {
+        success: false,
+        taskId: "9",
+        updatedFields: [],
+        error: "Task not found",
+      });
+
+      const events = Array.from(yield* Fiber.join(completedFiber));
+      const completions = events.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed",
+      );
+      const created = completions.find((event) => event.itemId === "tool-task-create-1");
+      assert.equal(created?.payload.itemType, "dynamic_tool_call");
+      assert.equal(created?.payload.status, "completed");
+      assert.deepEqual(created?.payload.completion, {
+        version: 1,
+        nativeCallId: "tool-task-create-1",
+        nativeSessionId: "sdk-session-tasks",
+        toolName: "TaskCreate",
+        input: { subject: "Run tests", description: "Run the suite", activeForm: "Running tests" },
+        structuredOutput: { task: { id: "1", subject: "Run tests" } },
+        transportError: false,
+        semanticSuccess: true,
+      });
+      const updated = completions.find((event) => event.itemId === "tool-task-update-1");
+      // Semantic failure without is_error is still a failed call.
+      assert.equal(updated?.payload.status, "failed");
+      assert.equal(updated?.payload.completion?.transportError, false);
+      assert.equal(updated?.payload.completion?.semanticSuccess, false);
+      assert.equal(updated?.payload.completion?.semanticError, "Task not found");
+      // The envelope is attached once, never to updates.
+      for (const event of events) {
+        if (event.type === "item.updated") {
+          assert.equal("completion" in event.payload, false);
+        }
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits TodoWrite task input updates while Claude streams tool JSON", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

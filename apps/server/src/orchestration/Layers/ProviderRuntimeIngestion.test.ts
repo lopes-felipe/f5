@@ -6470,6 +6470,52 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("persists the typed tool completion envelope once, on completion", async () => {
+    const harness = await createHarness();
+    const completion = {
+      version: 1 as const,
+      nativeCallId: "toolu-envelope-1",
+      nativeSessionId: "sdk-session-1",
+      toolName: "CustomTool",
+      input: { query: "x" },
+      structuredOutput: { success: true, rows: [1, 2] },
+      transportError: false,
+      semanticSuccess: true,
+    };
+    const lifecycle = (type: "item.updated" | "item.completed", id: string) =>
+      harness.emit({
+        type,
+        eventId: asEventId(id),
+        provider: "claudeAgent",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-envelope-1"),
+        itemId: asItemId("toolu-envelope-1"),
+        payload: {
+          itemType: "dynamic_tool_call",
+          status: type === "item.completed" ? "completed" : "inProgress",
+          title: "CustomTool",
+          data: { toolName: "CustomTool", input: { query: "x" } },
+          // An adapter bug must not leak envelopes onto updates.
+          completion,
+        },
+      });
+    lifecycle("item.updated", "evt-envelope-updated");
+    lifecycle("item.completed", "evt-envelope-completed");
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-envelope-completed",
+      ),
+    );
+    const payloadOf = (id: string) =>
+      thread.activities.find((activity: ProviderRuntimeTestActivity) => activity.id === id)
+        ?.payload as Record<string, unknown> | undefined;
+    expect(payloadOf("evt-envelope-completed")?.completion).toEqual(completion);
+    expect(payloadOf("evt-envelope-updated")).toBeDefined();
+    expect(payloadOf("evt-envelope-updated")?.completion).toBeUndefined();
+  });
+
   it("projects Codex subagent completion pairs with their identity and completed label", async () => {
     const harness = await createHarness();
     for (let index = 0; index < 2; index += 1) {

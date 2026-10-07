@@ -14,7 +14,7 @@ import {
 } from "./baseSchemas";
 import { ProviderKind, ProviderRequestKind, ProviderApprovalOption } from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
-import { TOOL_LIFECYCLE_ITEM_TYPES } from "./toolLifecycle";
+import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const UnknownRecordSchema = Schema.Record(Schema.String, Schema.Unknown);
@@ -408,6 +408,8 @@ export const ItemLifecyclePayload = Schema.Struct({
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   requestKind: Schema.optional(ProviderRequestKind),
   data: Schema.optional(Schema.Unknown),
+  /** Only on `item.completed`; never on starts, updates or deltas. */
+  completion: Schema.optional(ToolCompletionEnvelope),
 });
 export type ItemLifecyclePayload = typeof ItemLifecyclePayload.Type;
 

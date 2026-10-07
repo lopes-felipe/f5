@@ -1,5 +1,10 @@
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
+import {
+  buildClaudeToolCompletion,
+  isClaudeTaskToolName,
+  storeClaudeToolCompletionArtifact,
+} from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
   claudeMandatoryPolicyOptions,
@@ -752,7 +757,9 @@ function classifyToolItemType(
   }
 
   const normalized = toolName.toLowerCase();
-  if (normalized === "todowrite") {
+  // Task-tracking tools are bookkeeping, not file edits ("TaskCreate" would
+  // otherwise match the "create" heuristic below) and not sub-agent delegation.
+  if (normalized === "todowrite" || isClaudeTaskToolName(toolName)) {
     return "dynamic_tool_call";
   }
   if (normalized.includes("agent")) {
@@ -3413,7 +3420,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.turnState.items.push(message.message);
         }
 
-        for (const toolResult of toolResultBlocksFromUserMessage(message)) {
+        const toolResultBlocks = toolResultBlocksFromUserMessage(message);
+        for (const toolResult of toolResultBlocks) {
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
             continue;
@@ -3514,7 +3522,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             continue;
           }
 
-          const itemStatus = toolResult.isError ? "failed" : "completed";
+          const completionDraft = buildClaudeToolCompletion({
+            toolUseId: tool.itemId,
+            toolName: tool.toolName,
+            toolInput: tool.input,
+            structuredOutput: (message as { readonly tool_use_result?: unknown }).tool_use_result,
+            // `tool_use_result` is per message; attribute it only when unambiguous.
+            correlated: toolResultBlocks.length === 1,
+            isError: toolResult.isError,
+            nativeSessionId: message.session_id,
+          });
+          const completion = completionDraft.oversizeOutput
+            ? yield* Effect.tryPromise(() =>
+                storeClaudeToolCompletionArtifact({
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  threadId: context.session.threadId,
+                  draft: completionDraft,
+                }),
+              ).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("failed to store oversize Claude tool output", {
+                    threadId: context.session.threadId,
+                    toolUseId: tool.itemId,
+                    cause: toMessage(cause, "unknown error"),
+                  }).pipe(Effect.as(completionDraft.envelope)),
+                ),
+              )
+            : completionDraft.envelope;
+          const itemStatus = completion.semanticSuccess ? "completed" : "failed";
           const toolData = buildToolLifecycleData({
             toolName: tool.toolName,
             toolInput: tool.input,
@@ -3586,6 +3621,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...(tool.detail ? { detail: tool.detail } : {}),
               ...(tool.requestKind ? { requestKind: tool.requestKind } : {}),
               data: toolData,
+              completion,
             },
             providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
             raw: {
