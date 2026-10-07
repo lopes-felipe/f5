@@ -90,16 +90,19 @@ export function handledClaudeMessageCases(
       cases.add(node.expression.text);
     ts.forEachChild(node, visitCases);
   };
+  let found = false;
   const find = (node: ts.Node) => {
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.name.text === handler &&
       node.initializer
-    )
+    ) {
+      found = true;
       visitCases(node.initializer);
-    else ts.forEachChild(node, find);
+    } else ts.forEachChild(node, find);
   };
   find(source);
+  if (!found) throw new Error(`${handler} declaration is missing`);
   return cases;
 }

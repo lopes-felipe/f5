@@ -128,6 +128,41 @@ describe("Codex rewind fork fallback", () => {
     ]);
   });
 
+  it.each(["valid", "mismatch", "save-failure"])(
+    "validates changed revert identity before adoption: %s",
+    async (scenario) => {
+      const { manager, context, send } = harness();
+      send
+        .mockResolvedValueOnce({ thread: { id: "reloaded" } })
+        .mockResolvedValueOnce(page("keep", "drop"))
+        .mockResolvedValueOnce(page(scenario === "mismatch" ? "wrong" : "keep"));
+      const persist = vi.fn(async (session: ProviderSession) => {
+        expect(context.session.resumeCursor).toEqual({ threadId: "old", retainedMetadata: "keep" });
+        expect(session.resumeCursor).toMatchObject({
+          threadId: "reloaded",
+          rewindSourceThreadId: "old",
+        });
+        if (scenario === "save-failure") throw new Error("save failed");
+      });
+      if (scenario === "valid") {
+        expect(await manager.rollbackThread(id, 1, "drop", persist)).toEqual({
+          threadId: "reloaded",
+          turns: [{ id: "keep", items: [] }],
+        });
+        expect(context.session.resumeCursor).toMatchObject({
+          threadId: "reloaded",
+          rewindSourceThreadId: "old",
+        });
+      } else {
+        await expect(manager.rollbackThread(id, 1, "drop", persist)).rejects.toThrow(
+          scenario === "mismatch" ? "refusing adoption" : "save failed",
+        );
+        expect(context.session.resumeCursor).toEqual({ threadId: "old", retainedMetadata: "keep" });
+      }
+      expect(persist).toHaveBeenCalledTimes(scenario === "mismatch" ? 0 : 1);
+    },
+  );
+
   it.each([false, true])(
     "resolves an omitted boundary with cached flags (rollback absent=%s)",
     async (rollbackUnsupported) => {
@@ -184,6 +219,30 @@ describe("Codex rewind fork fallback", () => {
       "thread/fork",
       "thread/turns/list",
     ]);
+  });
+
+  it("reports event overflow as a possible orphan without adopting", async () => {
+    const { manager, context, send, notify } = harness();
+    context.revertUnsupported = context.rollbackUnsupported = true;
+    send
+      .mockResolvedValueOnce(page("keep", "drop"))
+      .mockImplementationOnce(async () => {
+        for (let i = 0; i < 513; i++)
+          notify("item/agentMessage/delta", {
+            threadId: "child",
+            turnId: "child-turn",
+            itemId: "child-item",
+            delta: "child",
+          });
+        return { thread: { id: "forked" } };
+      })
+      .mockResolvedValueOnce(page("keep"));
+    const persist = vi.fn();
+    await expect(manager.rollbackThread(id, 1, "drop", persist)).rejects.toThrow(
+      "possible orphan forked",
+    );
+    expect(persist).not.toHaveBeenCalled();
+    expect(context.session.resumeCursor).toEqual({ threadId: "old", retainedMetadata: "keep" });
   });
 
   it("blocks further rewinds after losing a fork response", async () => {

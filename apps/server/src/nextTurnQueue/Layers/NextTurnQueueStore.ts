@@ -940,6 +940,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             const at = now();
             const commandId = CommandId.makeUnsafe(randomUUID());
             const messageId = MessageId.makeUnsafe(randomUUID());
+            const source = yield* readSubmissionSource(item.command.commandId, item.threadId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            if (source)
+              yield* stampSubmissionSource(commandId, item.threadId, source).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
             const command: ThreadTurnStartCommand = {
               ...item.command,
               commandId,

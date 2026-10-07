@@ -282,6 +282,7 @@ interface ClaudeRuntimeWarningOptions {
 }
 
 interface ClaudeSessionContext {
+  replyOwned?: boolean | undefined;
   hostContractVersion?: string | undefined;
   hostContractMigrationMessageUuid?: string | undefined;
   hostContractInstructionText?: string | undefined;
@@ -1486,6 +1487,7 @@ function buildUserMessageEffect(
     });
     const text = dependencies.hostContractUpdate
       ? `# F5 host contract (session update)
+This block supersedes earlier transcript copies of the F5 host contract. Its mode, workflow and project context apply only to this session launch; on subsequent launches the current F5 system instructions replace it.
 <host-contract>
 ${dependencies.hostContractUpdate}
 </host-contract>
@@ -1994,7 +1996,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           try {
             instanceSettings = JSON.parse(await NodeFs.readFile(file, "utf8"));
           } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            if (error instanceof SyntaxError) {
+              await Effect.runPromise(
+                Effect.logWarning(
+                  "Invalid Claude settings JSON; using the server transcript retention default.",
+                ),
+              );
+            } else if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
           }
           return resolveClaudeCleanupPeriodDays(instanceSettings, environment);
         },
@@ -3738,10 +3746,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const resultUuids =
           message.user_message_uuids ??
           (message.user_message_uuid ? [message.user_message_uuid] : []);
-        if (ownedUuids && resultUuids.length > 0 && !resultUuids.some((id) => ownedUuids.has(id))) {
+        const unrelated =
+          ownedUuids &&
+          (resultUuids.length > 0
+            ? !resultUuids.some((id) => ownedUuids.has(id))
+            : context.replyOwned === false ||
+              (context.replyOwned !== true &&
+                (!!message.resume_reason ||
+                  (!!message.origin && message.origin.kind !== "human"))));
+        const sessionFailure =
+          message.is_error &&
+          /authentication|unauthorized|login|billing|account.on.hold/i.test(
+            resultUserFacingError(message) ?? "",
+          );
+        if (unrelated && !sessionFailure) {
           // Native continuations can finish while the next human request is queued.
           // Keep the native frame untouched in NDJSON; never settle or price that request.
-          context.lastTotalCostUsd = undefined;
+          if (Number.isFinite(message.total_cost_usd) && message.total_cost_usd > 0)
+            context.lastTotalCostUsd = message.total_cost_usd;
           yield* Effect.logDebug("Ignoring unrelated Claude result", {
             uuid: message.uuid,
             origin: message.origin,
@@ -4305,12 +4327,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               (message.user_message_uuid === context.hostContractMigrationMessageUuid ||
                 message.user_message_uuids?.includes(context.hostContractMigrationMessageUuid))))
         ) {
-          context.hostContractVersion = CLAUDE_SUPPLEMENT_VERSION;
+          context.hostContractVersion = "r0-legacy-update-1";
           context.hostContractMigrationMessageUuid = undefined;
         }
         const shouldContinue = yield* ensureThreadId(context, message);
         if (!shouldContinue) {
           return;
+        }
+
+        // First stamped reply frames bind later unstamped blocks to the same
+        // send. Preserve child-task handling; only fence top-level reply output.
+        if (
+          (message.type === "assistant" || message.type === "stream_event") &&
+          !message.parent_tool_use_id
+        ) {
+          const uuids =
+            message.user_message_uuids ??
+            (message.user_message_uuid ? [message.user_message_uuid] : []);
+          if (uuids.length && context.turnState?.userMessageUuids)
+            context.replyOwned = uuids.some((id) => context.turnState!.userMessageUuids?.has(id));
+          else if (message.resume_reason) context.replyOwned = false;
+          if (context.replyOwned === false) return;
         }
 
         // Native command bookkeeping has no user-facing turn lifecycle.
@@ -4345,6 +4382,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* handleSdkTelemetryMessage(context, message);
             return;
           case "conversation_reset":
+            if (message.trigger === "clear") context.lastTotalCostUsd = 0;
+            context.replyOwned = undefined;
             context.turnBoundaries.length = 0;
             context.lastAssistantUuid = undefined;
             context.turns.length = 0;
@@ -5235,6 +5274,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     payload: { toolName, input: toolInput },
                   },
                 });
+                const resolvedStamp = yield* makeEventStamp(context.session.threadId);
+                yield* offerRuntimeEvent({
+                  type: "request.resolved",
+                  eventId: resolvedStamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: resolvedStamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: { requestType, decision: "decline" },
+                  providerRefs: nativeProviderRefs(context, {
+                    providerItemId: callbackOptions.toolUseID,
+                  }),
+                });
                 return {
                   behavior: "deny",
                   message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
@@ -5531,10 +5586,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             : {}),
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
-          ...claudeMandatoryPolicyOptions({
-            workflowExecutionProfile: input.workflowExecutionProfile,
-            subagentsEnabled: providerOptions?.subagentsEnabled,
-          }),
+          ...claudeMandatoryPolicyOptions(
+            {
+              workflowExecutionProfile: input.workflowExecutionProfile,
+              subagentsEnabled: providerOptions?.subagentsEnabled,
+            },
+            undefined,
+            async (hook, signal) => {
+              // Reuse host question/plan/denial receipts even when native approval
+              // would skip canUseTool. The mandatory hook still returns deny.
+              await canUseTool(hook.tool_name, asUnknownRecord(hook.tool_input) ?? {}, {
+                signal,
+                toolUseID: hook.tool_use_id,
+                requestId: `mandatory:${hook.tool_use_id}`,
+              });
+            },
+          ),
           canUseTool,
           onUserDialog,
           supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
@@ -5914,7 +5981,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(activeModel ? { activeModel } : {}),
           allowsWorkspaceEdits,
           hostContractUpdate:
-            context.hostContractVersion !== CLAUDE_SUPPLEMENT_VERSION &&
+            context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
+            !context.hostContractVersion &&
             !context.hostContractMigrationMessageUuid &&
             !input.input?.trimStart().startsWith("/")
               ? context.hostContractInstructionText
@@ -5922,9 +5990,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
 
         yield* ensureLive;
+        context.replyOwned = undefined;
         if (message.uuid) turnState.userMessageUuids = new Set([message.uuid]);
         if (
-          context.hostContractVersion !== CLAUDE_SUPPLEMENT_VERSION &&
+          context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
+          !context.hostContractVersion &&
           !context.hostContractMigrationMessageUuid &&
           !input.input?.trimStart().startsWith("/")
         )

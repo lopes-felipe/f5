@@ -915,11 +915,6 @@ const make = Effect.gen(function* () {
       const persistedCwd = readPersistedCwd(persistedBinding?.runtimePayload);
       const persistedCwdMatches =
         persistedBinding !== undefined && persistedCwd === instructionContext.cwd;
-      const persistedWorkflowExecutionProfile = readPersistedInstructionContext(
-        persistedBinding?.runtimePayload,
-      )?.workflowExecutionProfile;
-      const persistedWorkflowExecutionProfileMatches =
-        persistedWorkflowExecutionProfile === options?.workflowExecutionProfile;
       const resumeCursorForStoppedSession =
         persistedProviderMatches &&
         persistedInstanceMatches &&

@@ -144,7 +144,6 @@ interface CodexSessionContext {
   rollbackUnsupported?: boolean;
   unsettledFork?: boolean;
   legacyHistoryThreadIds?: Set<string>;
-  pendingAdoptionThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
   /** Set when a count-based `thread/rollback` got no response and may still apply. */
@@ -1619,19 +1618,35 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         const revertedId = normalizeProviderThreadId(
           this.readString(this.readObject(response)?.thread, "id"),
         );
+        const { rewindSourceThreadId: _previousSource, ...currentCursor } =
+          this.readObject(context.session.resumeCursor) ?? {};
+        if (revertedId && revertedId !== providerThreadId) {
+          if (expectedRemainingTurnIds === undefined) await resolveBoundary();
+          const snapshot = await this.readPaginatedThread(context, revertedId);
+          if (
+            snapshot.turns.length !== expectedRemainingTurnIds!.length ||
+            snapshot.turns.some((turn, index) => turn.id !== expectedRemainingTurnIds![index])
+          )
+            throw new Error(
+              "thread/revert retained history does not match the rewind boundary; refusing adoption.",
+            );
+          const resumeCursor = {
+            ...currentCursor,
+            threadId: revertedId,
+            rewindSourceThreadId: providerThreadId,
+          };
+          const { activeTurnId: _activeTurnId, ...idleSession } = context.session;
+          await onAdoptSession?.({ ...idleSession, status: "ready", resumeCursor });
+          this.updateSession(context, { status: "ready", activeTurnId: undefined, resumeCursor });
+          return snapshot;
+        }
+        const { activeTurnId: _activeTurnId, ...idleSession } = context.session;
+        await onAdoptSession?.({ ...idleSession, status: "ready", resumeCursor: currentCursor });
         this.updateSession(context, {
           status: "ready",
           activeTurnId: undefined,
-          ...(revertedId && revertedId !== providerThreadId
-            ? {
-                resumeCursor: {
-                  ...this.readObject(context.session.resumeCursor),
-                  threadId: revertedId,
-                },
-              }
-            : {}),
+          ...(_previousSource ? { resumeCursor: currentCursor } : {}),
         });
-        await onAdoptSession?.(context.session);
         return this.readThread(threadId);
       }
     }
@@ -1701,10 +1716,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       );
       if (!forkedId || forkedId === providerThreadId)
         throw new Error("thread/fork returned an invalid fork id; refusing adoption.");
-      (context.pendingAdoptionThreadIds ??= new Set()).add(forkedId);
       const snapshot = await this.readPaginatedThread(context, forkedId);
+      if (context.forkNotificationOverflow) {
+        await this.runPromise(
+          Effect.logWarning("Codex rewind fork event buffer overflow; possible orphan", {
+            threadId,
+            forkedId,
+          }),
+        );
+        throw new Error(
+          `thread/fork event buffer overflow; refusing adoption of possible orphan ${forkedId}.`,
+        );
+      }
       if (
-        context.forkNotificationOverflow ||
         snapshot.turns.length !== expectedRemainingTurnIds!.length ||
         snapshot.turns.some((turn, index) => turn.id !== expectedRemainingTurnIds![index])
       ) {
@@ -1729,6 +1753,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           this.handleServerNotification(context, notification);
         }
       }
+      const auxiliaryCount = notifications.filter(
+        (notification) => readNotificationProviderThreadId(notification.params) !== forkedId,
+      ).length;
+      if (auxiliaryCount)
+        await this.runPromise(
+          Effect.logDebug("Ignoring buffered Codex auxiliary-thread notifications", {
+            threadId,
+            count: auxiliaryCount,
+          }),
+        );
       context.legacyHistoryThreadIds?.delete(providerThreadId);
       try {
         await this.sendRequest(context, "thread/unsubscribe", { threadId: providerThreadId });
@@ -1742,7 +1776,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
       return this.readThread(threadId);
     } finally {
-      if (forkedId) context.pendingAdoptionThreadIds?.delete(forkedId);
       context.forkNotifications = undefined;
       context.forkNotificationOverflow = false;
     }

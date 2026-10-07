@@ -60,6 +60,9 @@ jobs:
       - name: Audit Codex protocol
         run: bun run protocol:audit:baseline
 
+      - name: Run full test suite
+        run: bun run test:full
+
       - name: Fetch authoritative upstream history
         run: |
           git remote add upstream https://github.com/pingdotgg/t3code.git
@@ -69,9 +72,6 @@ jobs:
         env:
           F5_REQUIRE_UPSTREAM: "1"
         run: bun run upstream-ports:check
-
-      - name: Run full test suite
-        run: bun run test:full
 
       - name: Install Chromium for browser tests
         run: bun run --cwd apps/web test:browser:install

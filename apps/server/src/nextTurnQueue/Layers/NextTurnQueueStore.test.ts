@@ -113,6 +113,8 @@ layer("NextTurnQueueStore", (it) => {
       if (human.kind !== "created") return;
       const duplicate = yield* store.duplicate({ itemId: human.item.itemId });
       assert.equal(yield* readSubmissionSource(duplicate.command.commandId, threadId), "human");
+      const retried = yield* store.retry({ itemId: human.item.itemId });
+      assert.equal(yield* readSubmissionSource(retried.command.commandId, threadId), "human");
       yield* insert(store, 8802, threadId);
       assert.equal(
         yield* readSubmissionSource(command(8802, threadId).commandId, threadId),

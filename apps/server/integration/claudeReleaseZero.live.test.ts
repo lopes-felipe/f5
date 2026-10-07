@@ -97,6 +97,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")("Release 0 Claude certi
       JSON.stringify({ permissions: { allow: ["Bash(*)"] } }),
     );
     let attempts = 0;
+    let canUseToolReached = false;
     const policy = claudeMandatoryPolicyOptions({
       workflowExecutionProfile: "unattended-readonly",
     });
@@ -117,11 +118,13 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")("Release 0 Claude certi
           allowDangerouslySkipPermissions: true,
           ...policy,
           canUseTool: async () => {
+            canUseToolReached = true;
             throw new Error("Native allow rule should be stopped by PreToolUse before canUseTool");
           },
         },
       );
       expect(attempts).toBeGreaterThan(0);
+      expect(canUseToolReached).toBe(false);
       console.log("R0.2 project allow + full access denied by host PreToolUse");
     } finally {
       await rm(cwd, { recursive: true, force: true });

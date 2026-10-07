@@ -34,7 +34,7 @@ try {
       temporary,
       "--no-save",
       "--omit=optional",
-      "--fetch-retries=0",
+      "--fetch-retries=2",
       `@openai/codex@${PINNED_VERSION}`,
       `${platformPackage}@npm:@openai/codex@${PINNED_VERSION}-${process.platform}-${process.arch}`,
     ]);

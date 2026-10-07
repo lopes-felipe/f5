@@ -69,7 +69,64 @@ describe("mandatory Claude policy before native permissions", () => {
         { workflowExecutionProfile: "unattended-readonly" },
         "AskUserQuestion",
       ),
-    ).toContain("not permitted");
+    ).toContain("conservative default");
+  });
+  it.each([
+    "TodoWrite",
+    "ToolSearch",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskGet",
+    "TaskList",
+    "EnterPlanMode",
+    "Read",
+    "Glob",
+    "Grep",
+  ])("preserves non-workspace tools in read-only workflows: %s", (name) => {
+    expect(
+      evaluateClaudeMandatoryPolicy({ workflowExecutionProfile: "unattended-readonly" }, name),
+    ).toBeUndefined();
+  });
+  it("does not confuse MCP inspection with delegation", () => {
+    expect(
+      evaluateClaudeMandatoryPolicy({ subagentsEnabled: false }, "mcp__x__get_agent_status"),
+    ).toBeUndefined();
+  });
+  it("retains workflow guidance and receipts before returning a mandatory denial", async () => {
+    const calls: string[] = [];
+    const options = claudeMandatoryPolicyOptions(
+      { workflowExecutionProfile: "unattended-readonly" },
+      undefined,
+      async (input) => {
+        calls.push(input.tool_name);
+      },
+    );
+    const result = await options.hooks!.PreToolUse![0]!.hooks[0]!(
+      hookInput("ExitPlanMode"),
+      undefined,
+      { signal: new AbortController().signal },
+    );
+    expect(result).toMatchObject({
+      hookSpecificOutput: {
+        permissionDecision: "deny",
+        permissionDecisionReason: expect.stringContaining("captured your proposed plan"),
+      },
+    });
+    expect(calls).toEqual(["ExitPlanMode"]);
+  });
+  it("still denies if recording the host receipt fails", async () => {
+    const options = claudeMandatoryPolicyOptions(
+      { workflowExecutionProfile: "unattended-readonly" },
+      undefined,
+      async () => {
+        throw new Error("receipt unavailable");
+      },
+    );
+    expect(
+      await options.hooks!.PreToolUse![0]!.hooks[0]!(hookInput("Write"), undefined, {
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
   });
   it("disables all one-off tools including MCP and child-agent tools", () => {
     const options = claudeMandatoryPolicyOptions({ noTools: true });

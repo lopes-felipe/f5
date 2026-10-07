@@ -18,7 +18,13 @@ const pending = new Map<
 let nextId = 0;
 const lines = createInterface({ input: child.stdout });
 lines.on("line", (line) => {
-  const message = JSON.parse(line);
+  let message: any;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (!message || typeof message !== "object") return;
   const waiter = pending.get(message.id);
   if (!waiter) return;
   pending.delete(message.id);

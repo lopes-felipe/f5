@@ -58,7 +58,8 @@ model and effort changes, without requiring that RPC. Older cursors without a va
 leave the first positive resumed result unpriced while establishing a baseline. Zeroed crash
 results do not reset the baseline and remain unpriced.
 
-A lower positive total is treated as a reset, including `/clear` and legacy CLIs that restart
+An explicit `conversation_reset` with trigger `clear` resets the cost baseline to zero,
+matching the pinned SDK contract. A lower positive total is also treated as a reset for legacy CLIs that restart
 cost totals on resume. This is a heuristic: if the first post-reset total equals or exceeds the
 previous total, the delta under-counts spend by that previous total. An unexplained decrease is
 also treated as a reset and charges the new total. Cumulative results alone cannot distinguish
@@ -332,14 +333,16 @@ compacted before this fix regain that context on their next restart. Instruction
 now identify Claude supplement `v11`. Turn counters are omitted from this append so normal
 turns do not invalidate its prompt cache; date, model and effort update on relaunch.
 
-Older resumed cursors receive one delimited `# F5 host contract (session update)` block
-in their first ordinary user message. F5 records `hostContractVersion` after a native
-UUID acknowledgement, so later resumes do not repeat it. Slash commands defer that update
-until an ordinary message, preserving their native parsing. This conservative migration
-is retained because the authenticated snapshot-replacement spike could not run in the
-implementation environment: Claude returned **Not logged in**. Run
-`bun run --cwd apps/server test:claude:live` after authenticating to certify two resumes
-of a pre-existing session and native allow-rule policy enforcement.
+Transcript injection is disabled by default pending the authenticated snapshot-replacement
+spike: Claude returned **Not logged in** in the implementation environment. Operators
+who have confirmed stale recorded prompts can opt into a one-time legacy-session update
+with `F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE=1`. It adds a delimited block to the first
+ordinary message only for a cursor with no `hostContractVersion`; an acknowledged update
+records a fixed migration marker, independent of future supplement bumps. The block says
+that the current launch's system instructions supersede earlier transcript contracts.
+Slash commands defer it. This writes permanently to the native transcript, so enable it
+only after confirming the snapshot issue. Run `bun run --cwd apps/server test:claude:live`
+to certify two resumes of a pre-existing session and native allow-rule policy enforcement.
 
 Mandatory restrictions are enforced before native permission approval: one-off generation
 has no tools; disabled sub-agents exclude Agent and the legacy Task delegation tool;
@@ -348,13 +351,17 @@ read-only workflows use a host PreToolUse denial hook. The same evaluator also g
 loaded. Workflow-policy changes go through session restart; incompatible direct sends
 fail visibly. Human composer messages, steering and reliably attributed queued messages
 carry SDK human origin. Automation and legacy queue entries remain unattributed. Native
-message UUIDs fence unrelated background results from completing a human turn.
+reply UUIDs fence unrelated assistant/stream output and background results from human turns.
+Unstamped native results use the carried reply ownership, origin and resume reason. Observed
+unrelated costs advance the baseline without charging the human turn.
 
 ## Transcript retention
 
 F5 defaults Claude's `cleanupPeriodDays` to **3650**. Set the server environment variable
 `F5_CLAUDE_CLEANUP_PERIOD_DAYS` to another positive integer; an explicit value in the
-instance's isolated `settings.json` wins. Zero, negative and invalid values fail startup.
+instance's isolated `settings.json` wins. Zero, negative and invalid retention values fail
+the affected query launch; this is not a server-start validation. Malformed settings JSON
+logs a warning and falls back to the validated server default.
 Claude's managed-policy precedence remains native. The value is applied at the next
 natural session start and is excluded from launch fingerprints, so changing it does
 not restart running sessions.
@@ -378,6 +385,6 @@ The [official SDK changelog](https://github.com/anthropics/claude-agent-sdk-type
 confirms agent/task/run identity and persistent-approval suppression additions in
 0.3.292, interrupted-stream fixes in 0.3.287/0.3.290, and the in-process MCP removal
 fix in 0.3.287. Release 0 preserves these identities without adopting later-release UX.
-Conversation resets clear persisted rewind boundaries and context estimates. The live
-`/clear` cumulative-cost behavior remains unverified without credentials; F5 does not
-unconditionally reset its cost baseline on reset notifications.
+Conversation resets clear persisted rewind boundaries and context estimates. Explicit
+`clear` triggers also reset the cost baseline, as documented by SDK 0.3.292; other reset
+triggers preserve it. Authenticated live `/clear` observation remains unverified.

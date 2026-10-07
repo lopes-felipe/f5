@@ -95,6 +95,7 @@ try {
   if (process.env.F5_CODEX_RESUME_BINARY) {
     const cursor = manager.listSessions()[0]!.resumeCursor;
     manager.stopSession(threadId);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     await start(process.env.F5_CODEX_RESUME_BINARY, cursor);
   }
   methods.length = 0;

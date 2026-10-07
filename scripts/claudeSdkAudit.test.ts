@@ -17,6 +17,11 @@ const surface = (fixture: string) => {
 };
 
 describe("Claude SDK drift guardrail", () => {
+  it("reports a missing handler declaration", () => {
+    expect(() =>
+      handledClaudeMessageCases("const renamed = () => {};", "handleSdkMessage"),
+    ).toThrow("handleSdkMessage declaration is missing");
+  });
   it("classifies the positive declaration fixture", () =>
     expect(
       unclassifiedClaudeMessages(surface("positive.d.ts"), CLAUDE_SDK_MESSAGE_DISPOSITIONS),
