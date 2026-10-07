@@ -6,6 +6,7 @@ export interface ClaudeTurnBoundary {
 }
 
 export interface ClaudeResumeState {
+  readonly hostContractVersion?: string;
   readonly turnBoundaries?: ReadonlyArray<ClaudeTurnBoundary>;
   readonly threadId?: ThreadId;
   readonly resume?: string;
@@ -38,6 +39,7 @@ export function readClaudeResumeCandidate(resumeCursor: unknown): string | undef
 export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState | undefined {
   if (!resumeCursor || typeof resumeCursor !== "object") return undefined;
   const cursor = resumeCursor as {
+    hostContractVersion?: unknown;
     turnBoundaries?: unknown;
     threadId?: unknown;
     resumeSessionAt?: unknown;
@@ -96,6 +98,9 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
         .slice(-200)
     : undefined;
   return {
+    ...(typeof cursor.hostContractVersion === "string"
+      ? { hostContractVersion: cursor.hostContractVersion }
+      : {}),
     ...(turnBoundaries ? { turnBoundaries } : {}),
     ...(threadId ? { threadId } : {}),
     ...(resume ? { resume } : {}),

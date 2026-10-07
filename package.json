@@ -68,7 +68,10 @@
     "perf:compare": "bun scripts/performance.ts compare",
     "dist:cli:archive": "node scripts/build-cli-archive.ts",
     "dist:cli:manifest": "node scripts/merge-cli-release-manifests.ts",
-    "test:cli-smoke": "node scripts/cli-archive-smoke.ts"
+    "test:cli-smoke": "node scripts/cli-archive-smoke.ts",
+    "sdk:audit": "bun scripts/audit-claude-sdk.ts",
+    "protocol:audit:requests": "bun scripts/audit-codex-request-shapes.ts",
+    "protocol:audit:requests:baseline": "bun scripts/audit-codex-request-shapes.ts --install-baseline"
   },
   "devDependencies": {
     "@types/node": "catalog:",

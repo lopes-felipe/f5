@@ -1523,7 +1523,6 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       provider: "claudeAgent",
-      workflowExecutionProfileChanged: true,
       resumeCursor: { opaque: "cursor-1" },
     });
     expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("workflowExecutionProfile");
@@ -1581,7 +1580,6 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       provider: "claudeAgent",
       workflowExecutionProfile: "unattended-readonly",
-      workflowExecutionProfileChanged: true,
       resumeCursor: { opaque: "cursor-1" },
     });
   });

@@ -2292,6 +2292,7 @@ describe("thread checkpoint control", () => {
     const { manager, context, sendRequest, updateSession } = createThreadControlHarness();
     sendRequest
       .mockResolvedValueOnce(revertResponse("thread_reloaded"))
+      .mockResolvedValueOnce(page("turn_1"))
       .mockResolvedValueOnce(page());
 
     await manager.rollbackThread(asThreadId("thread_1"), 1, "turn_1");
@@ -2299,7 +2300,7 @@ describe("thread checkpoint control", () => {
     expect(updateSession).toHaveBeenCalledWith(context, {
       status: "ready",
       activeTurnId: undefined,
-      resumeCursor: { threadId: "thread_reloaded" },
+      resumeCursor: { threadId: "thread_reloaded", rewindSourceThreadId: "thread_1" },
     });
   });
 

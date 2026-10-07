@@ -206,7 +206,8 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
   ["turn/steer"],
   ["turn/interrupt"],
   ["thread/turns/list", "thread/read"],
-  ["thread/revert", "thread/rollback"],
+  ["thread/revert", "thread/rollback", "thread/fork"],
+  ["thread/unsubscribe"],
   ["model/list"],
   ["skills/list"],
   ["account/read"],
@@ -267,7 +268,15 @@ function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
+// Runtime compatibility beyond the still-pinned 0.144.3 surface. Re-baselining
+// the complete protocol is Release 1; the existing adapter already handles this.
+export const CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS = {
+  "thread/reverted": "canonical",
+} as const;
+
 export function codexNotificationDisposition(method: string): CodexProtocolDisposition | undefined {
+  if (hasOwn(CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS, method))
+    return CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS[method];
   return hasOwn(CODEX_NOTIFICATION_DISPOSITIONS, method)
     ? CODEX_NOTIFICATION_DISPOSITIONS[method]
     : undefined;

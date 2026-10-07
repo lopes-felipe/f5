@@ -1,3 +1,4 @@
+import { stampSubmissionSource } from "./provider/submissionProvenance.ts";
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
@@ -1245,6 +1246,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   }) =>
     Effect.gen(function* () {
       const prepared = yield* prepareTurnStartCommand({ command: input.command });
+      yield* stampSubmissionSource(
+        prepared.command.commandId,
+        prepared.command.threadId,
+        "human",
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       const result = yield* input.worktreeSetup
         .start({
           command: prepared.command,
@@ -1299,6 +1305,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
   }) {
     const prepared = yield* prepareTurnStartCommand({ command: input.command });
+    yield* stampSubmissionSource(
+      prepared.command.commandId,
+      prepared.command.threadId,
+      "human",
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     let rolledBack: BootstrapThreadDisposition | null = null;
     return yield* dispatchBootstrapTurnStart({
       command: prepared.command,
@@ -1386,6 +1397,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return yield* new RouteRequestError({
         message: "Steers must be submitted through the durable queue.",
       });
+    if (input.command.type === "thread.user-input.respond") {
+      yield* stampSubmissionSource(
+        CommandId.makeUnsafe(`answer-delivery:${input.command.commandId}`),
+        input.command.threadId,
+        "human",
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    }
     if (input.command.type === "thread.user-input.respond" && input.command.attachments?.length) {
       const command = input.command;
       const prepared = yield* prepareTurnStartCommand({
@@ -1414,6 +1432,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return input.command as OrchestrationCommand;
     }
     const prepared = yield* prepareTurnStartCommand({ command: input.command });
+    yield* stampSubmissionSource(
+      prepared.command.commandId,
+      prepared.command.threadId,
+      "human",
+    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     return yield* persistPreparedTurnStartCommand(prepared);
   });
 
@@ -4744,6 +4767,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             requestHash,
             itemId,
             command: queuedCommand,
+            submissionSource: "human",
             supersedeUsageResume: body.intent !== "queue-tail",
             atHead: body.intent === "queue-head" || body.intent === "steer",
           })

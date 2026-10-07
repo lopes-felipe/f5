@@ -78,7 +78,6 @@ export const ProviderSessionStartInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
-  workflowExecutionProfileChanged: Schema.optional(Schema.Boolean),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
@@ -88,6 +87,8 @@ export const ProviderSessionStartInput = Schema.Struct({
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
+  /** Server-controlled attribution; never accepts native SDK origin objects. */
+  submissionSource: Schema.optional(Schema.Literals(["human", "automation"])),
   threadId: ThreadId,
   deliveryId: Schema.optional(CommandId),
   expectedTurnId: Schema.optional(TurnId),

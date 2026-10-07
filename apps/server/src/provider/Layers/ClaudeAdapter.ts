@@ -1,3 +1,9 @@
+import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
+import { randomUUID } from "node:crypto";
+import {
+  claudeMandatoryPolicyOptions,
+  evaluateClaudeMandatoryPolicy,
+} from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
 import type { RuntimeUsageLimit } from "@t3tools/contracts";
@@ -112,8 +118,8 @@ import {
 } from "../providerContext.ts";
 import {
   buildClaudeAssistantInstructions,
-  buildClaudeWorkflowExecutionProfileUpdate,
   buildInstructionProfile,
+  CLAUDE_SUPPLEMENT_VERSION,
   INSTRUCTION_PROFILE_CONFIG_KEY,
 } from "../sharedAssistantContract.ts";
 import {
@@ -175,6 +181,7 @@ type PromptQueueItem =
     };
 
 interface ClaudeTurnState {
+  userMessageUuids?: Set<string>;
   readonly synthetic?: boolean;
   readonly turnId: TurnId;
   readonly startedAt: string;
@@ -275,6 +282,11 @@ interface ClaudeRuntimeWarningOptions {
 }
 
 interface ClaudeSessionContext {
+  replyOwned?: boolean | undefined;
+  hostContractVersion?: string | undefined;
+  hostContractMigrationMessageUuid?: string | undefined;
+  hostContractInstructionText?: string | undefined;
+  workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
   readonly startInput: ProviderSessionStartInput;
   readonly turnBoundaries: Array<{ turnId: string; assistantUuid: string }>;
@@ -373,23 +385,12 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly close: () => void;
 }
 
-interface ClaudeAppendSystemPromptConfig {
-  readonly type: "preset";
-  readonly preset: "claude_code";
-  readonly append: string;
-}
-
-type ClaudeQueryOptionsWithAppend = Omit<ClaudeQueryOptions, "effort"> & {
-  readonly effort?: ClaudeSdkEffort;
-  readonly appendSystemPrompt?: ClaudeAppendSystemPromptConfig;
-};
-
 export interface ClaudeAdapterLiveOptions {
   readonly oneOffProviderOptions?: ProviderStartOptions["claudeAgent"];
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly createQuery?: (input: {
     readonly prompt: AsyncIterable<SDKUserMessage>;
-    readonly options: ClaudeQueryOptionsWithAppend;
+    readonly options: ClaudeQueryOptions;
   }) => ClaudeQueryRuntime;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -818,23 +819,6 @@ function isReadOnlyToolName(toolName: string): boolean {
     normalized.includes("glob") ||
     normalized.includes("search")
   );
-}
-
-function isReadOnlyWorkflowTool(toolName: string): boolean {
-  // This is an authorization boundary, so match only SDK-owned capabilities
-  // whose semantics are known. In particular, do not infer safety from words
-  // such as "read" or "search" in an MCP tool name, and do not attempt to
-  // authorize shell source text by parsing prefixes.
-  switch (toolName.trim().toLowerCase()) {
-    case "read":
-    case "glob":
-    case "grep":
-    case "notebookread":
-    case "todoread":
-      return true;
-    default:
-      return false;
-  }
 }
 
 function classifyRequestType(toolName: string): CanonicalRequestType {
@@ -1457,11 +1441,14 @@ function buildPromptText(
 
 function buildUserMessage(input: {
   readonly sdkContent: Array<Record<string, unknown>>;
+  readonly submissionSource?: ProviderAdapterSendTurnInput["submissionSource"];
 }): SDKUserMessage {
   return {
     type: "user",
+    uuid: randomUUID(),
     session_id: "",
     parent_tool_use_id: null,
+    ...(input.submissionSource === "human" ? { origin: { kind: "human" } } : {}),
     message: {
       role: "user",
       content: input.sdkContent,
@@ -1490,13 +1477,23 @@ function buildUserMessageEffect(
     readonly attachmentsDir: string;
     readonly activeModel?: string;
     readonly allowsWorkspaceEdits: boolean;
+    readonly hostContractUpdate?: string | undefined;
   },
 ): Effect.Effect<SDKUserMessage, ProviderAdapterRequestError> {
   return Effect.gen(function* () {
-    const text = buildPromptText(input, {
+    const promptText = buildPromptText(input, {
       ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
       allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
     });
+    const text = dependencies.hostContractUpdate
+      ? `# F5 host contract (session update)
+This block supersedes earlier transcript copies of the F5 host contract. Its mode, workflow and project context apply only to this session launch; on subsequent launches the current F5 system instructions replace it.
+<host-contract>
+${dependencies.hostContractUpdate}
+</host-contract>
+
+${promptText}`
+      : promptText;
     const sdkContent: Array<Record<string, unknown>> = [];
 
     for (const attachment of input.attachments ?? []) {
@@ -1554,7 +1551,7 @@ function buildUserMessageEffect(
     if (text.length > 0) {
       sdkContent.push({ type: "text", text });
     }
-    return buildUserMessage({ sdkContent });
+    return buildUserMessage({ sdkContent, submissionSource: input.submissionSource });
   });
 }
 
@@ -1989,15 +1986,33 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?.createQuery ??
       ((input: {
         readonly prompt: AsyncIterable<SDKUserMessage>;
-        readonly options: ClaudeQueryOptionsWithAppend;
-      }) =>
-        // Claude Code added `xhigh` for Opus 4.7 before the installed SDK
-        // typings caught up, so we widen the local type here and cast only at
-        // the SDK boundary.
-        query({
-          prompt: input.prompt,
-          options: input.options as ClaudeQueryOptions,
-        }) as ClaudeQueryRuntime);
+        readonly options: ClaudeQueryOptions;
+      }) => query(input));
+    const transcriptRetention = (environment: NodeJS.ProcessEnv, cwd?: string) =>
+      Effect.tryPromise({
+        try: async () => {
+          const file = NodePath.join(resolveClaudeConfigDir(environment, cwd), "settings.json");
+          let instanceSettings: unknown;
+          try {
+            instanceSettings = JSON.parse(await NodeFs.readFile(file, "utf8"));
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              await Effect.runPromise(
+                Effect.logWarning(
+                  "Invalid Claude settings JSON; using the server transcript retention default.",
+                ),
+              );
+            } else if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          return resolveClaudeCleanupPeriodDays(instanceSettings, environment);
+        },
+        catch: (cause) =>
+          new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: toMessage(cause, "Invalid Claude transcript retention settings."),
+          }),
+      });
     const probeResumableClaudeSession =
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
@@ -2242,6 +2257,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
           turnBoundaries: context.turnBoundaries.slice(-200),
+          ...(context.hostContractVersion
+            ? { hostContractVersion: context.hostContractVersion }
+            : {}),
           ...(context.lastTotalCostUsd !== undefined
             ? { lastTotalCostUsd: context.lastTotalCostUsd }
             : {}),
@@ -3724,6 +3742,35 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
         if (context.lifecycle.seenResults.has(message.uuid)) return;
+        const ownedUuids = context.turnState?.userMessageUuids;
+        const resultUuids =
+          message.user_message_uuids ??
+          (message.user_message_uuid ? [message.user_message_uuid] : []);
+        const unrelated =
+          ownedUuids &&
+          (resultUuids.length > 0
+            ? !resultUuids.some((id) => ownedUuids.has(id))
+            : context.replyOwned === false ||
+              (context.replyOwned !== true &&
+                (!!message.resume_reason ||
+                  (!!message.origin && message.origin.kind !== "human"))));
+        const sessionFailure =
+          message.is_error &&
+          /authentication|unauthorized|login|billing|account.on.hold/i.test(
+            resultUserFacingError(message) ?? "",
+          );
+        if (unrelated && !sessionFailure) {
+          // Native continuations can finish while the next human request is queued.
+          // Keep the native frame untouched in NDJSON; never settle or price that request.
+          if (Number.isFinite(message.total_cost_usd) && message.total_cost_usd > 0)
+            context.lastTotalCostUsd = message.total_cost_usd;
+          yield* Effect.logDebug("Ignoring unrelated Claude result", {
+            uuid: message.uuid,
+            origin: message.origin,
+          });
+          return;
+        }
+
         if (!context.turnState) {
           if (turnStatusFromResult(message) === "failed") {
             recordClaudeResult(context.lifecycle, message);
@@ -3844,12 +3891,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
-        const taskUpdated = readClaudeTaskUpdatedMessage(message);
-        if (taskUpdated) {
-          yield* handleTaskUpdatedMessage(context, message, taskUpdated);
-          return;
-        }
-
         const stamp = yield* makeEventStamp(context.session.threadId);
         const base = {
           eventId: stamp.eventId,
@@ -3884,6 +3925,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "memory_recall":
           case "elicitation_complete":
             return;
+          case "model_refusal_no_fallback":
           case "model_refusal_fallback":
             yield* offerRuntimeEvent({
               ...base,
@@ -3945,6 +3987,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         switch (message.subtype) {
+          case "task_updated": {
+            const taskUpdated = readClaudeTaskUpdatedMessage(message);
+            if (taskUpdated) yield* handleTaskUpdatedMessage(context, message, taskUpdated);
+            return;
+          }
+
           case "init":
             {
               const previousModel = getClaudeSessionModel(context);
@@ -4121,6 +4169,30 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             });
             return;
+          case "permission_denied":
+            yield* emitRuntimeWarning(
+              context,
+              `${message.tool_name} was denied: ${message.message}`,
+              {
+                detail: {
+                  decision_reason_type: message.decision_reason_type,
+                  tool_use_id: message.tool_use_id,
+                  agent_id: message.agent_id,
+                },
+              },
+            );
+            return;
+          case "informational":
+            if (message.level === "warning" || message.level === "notice") {
+              yield* emitRuntimeWarning(context, message.content);
+            } else {
+              yield* Effect.logDebug("Claude informational message", { detail: message });
+            }
+            return;
+          case "worker_shutting_down":
+          case "control_request_progress":
+          case "mirror_error":
+            return;
           case "thinking_tokens":
             // Live thinking-token estimate (approximate progress for spinners/
             // pills, not authoritative billed output tokens). Surfaced as a
@@ -4137,8 +4209,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           default:
-            yield* emitRuntimeWarning(
-              context,
+            yield* Effect.logDebug(
               `Unhandled Claude system message subtype '${message.subtype}'.`,
               { detail: message },
             );
@@ -4249,9 +4320,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       Effect.gen(function* () {
         if (context.stopped || sessions.get(context.session.threadId) !== context) return;
         yield* logNativeSdkMessage(context, message);
+        if (
+          context.hostContractMigrationMessageUuid &&
+          ((message.type === "user" && message.uuid === context.hostContractMigrationMessageUuid) ||
+            (message.type === "result" &&
+              (message.user_message_uuid === context.hostContractMigrationMessageUuid ||
+                message.user_message_uuids?.includes(context.hostContractMigrationMessageUuid))))
+        ) {
+          context.hostContractVersion = "r0-legacy-update-1";
+          context.hostContractMigrationMessageUuid = undefined;
+        }
         const shouldContinue = yield* ensureThreadId(context, message);
         if (!shouldContinue) {
           return;
+        }
+
+        // First stamped reply frames bind later unstamped blocks to the same
+        // send. Preserve child-task handling; only fence top-level reply output.
+        if (
+          (message.type === "assistant" || message.type === "stream_event") &&
+          !message.parent_tool_use_id
+        ) {
+          const uuids =
+            message.user_message_uuids ??
+            (message.user_message_uuid ? [message.user_message_uuid] : []);
+          if (uuids.length && context.turnState?.userMessageUuids)
+            context.replyOwned = uuids.some((id) => context.turnState!.userMessageUuids?.has(id));
+          else if (message.resume_reason) context.replyOwned = false;
+          if (context.replyOwned === false) return;
         }
 
         // Native command bookkeeping has no user-facing turn lifecycle.
@@ -4285,12 +4381,33 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "rate_limit_event":
             yield* handleSdkTelemetryMessage(context, message);
             return;
+          case "conversation_reset":
+            if (message.trigger === "clear") context.lastTotalCostUsd = 0;
+            context.replyOwned = undefined;
+            context.turnBoundaries.length = 0;
+            context.lastAssistantUuid = undefined;
+            context.turns.length = 0;
+            context.approximateConversationChars = 0;
+            context.compactionRecommendationEmitted = false;
+            // ensureThreadId already adopted the harness-reported session_id.
+            yield* updateResumeCursor(context);
+            const resetStamp = yield* makeEventStamp(context.session.threadId);
+            yield* offerRuntimeEvent({
+              type: "thread.state.changed",
+              eventId: resetStamp.eventId,
+              provider: PROVIDER,
+              createdAt: resetStamp.createdAt,
+              threadId: context.session.threadId,
+              resumeCursor: context.session.resumeCursor,
+              payload: { state: "idle" },
+              providerRefs: nativeProviderRefs(context),
+            });
+            return;
           case "prompt_suggestion":
             return;
           default:
-            yield* emitRuntimeWarning(
-              context,
-              `Unhandled Claude SDK message type '${message.type}'.`,
+            yield* Effect.logDebug(
+              `Unhandled Claude SDK message type '${sdkMessageType(message)}'.`,
               { detail: message },
             );
             return;
@@ -4576,7 +4693,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const providerOptions = input.modelSelection
           ? { ...options?.oneOffProviderOptions, ...input.providerOptions?.claudeAgent }
           : input.providerOptions?.claudeAgent;
-        const permissionMode = toPermissionMode(providerOptions?.permissionMode);
+        const permissionMode = toPermissionMode(providerOptions?.permissionMode) ?? "default";
         const queryEnvironment = buildClaudeQueryEnv(
           providerOptions,
           options?.processEnvironment ?? process.env,
@@ -4588,7 +4705,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             })
           : undefined;
         const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
-        const settings = traits ? claudeRuntimeSettings(traits) : {};
+        const settings = {
+          cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
+          ...(traits ? claudeRuntimeSettings(traits) : {}),
+        };
         const promptText = input.modelSelection
           ? applyClaudeModelPromptEffort(
               input.prompt,
@@ -4638,6 +4758,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   return filtered ? { extraArgs: filtered } : {};
                 })(),
                 includePartialMessages: true,
+                ...claudeMandatoryPolicyOptions({ noTools: true }),
                 canUseTool: async () =>
                   ({
                     behavior: "deny",
@@ -4645,7 +4766,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       "This one-off prompt requires plain-text output only. Tool calls are not allowed.",
                   }) satisfies PermissionResult,
                 env: queryEnvironment,
-              },
+              } satisfies ClaudeQueryOptions,
             }),
           catch: (cause) =>
             new ProviderAdapterProcessError({
@@ -4997,6 +5118,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
+              const mandatoryDenial = evaluateClaudeMandatoryPolicy(
+                {
+                  subagentsEnabled: providerOptions?.subagentsEnabled,
+                },
+                toolName,
+              );
+              if (mandatoryDenial)
+                return { behavior: "deny", message: mandatoryDenial } satisfies PermissionResult;
+
               // Handle AskUserQuestion: surface clarifying questions to the
               // user via the user-input runtime event channel, regardless of
               // runtime mode (plan mode relies on this heavily).
@@ -5108,7 +5238,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (input.workflowExecutionProfile) {
-                if (isReadOnlyWorkflowTool(toolName)) {
+                if (
+                  !evaluateClaudeMandatoryPolicy(
+                    { workflowExecutionProfile: input.workflowExecutionProfile },
+                    toolName,
+                  )
+                ) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
                 }
                 const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
@@ -5139,23 +5274,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     payload: { toolName, input: toolInput },
                   },
                 });
+                const resolvedStamp = yield* makeEventStamp(context.session.threadId);
+                yield* offerRuntimeEvent({
+                  type: "request.resolved",
+                  eventId: resolvedStamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: resolvedStamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: { requestType, decision: "decline" },
+                  providerRefs: nativeProviderRefs(context, {
+                    providerItemId: callbackOptions.toolUseID,
+                  }),
+                });
                 return {
                   behavior: "deny",
                   message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
                 } satisfies PermissionResult;
               }
-
-              if (
-                providerOptions?.subagentsEnabled === false &&
-                classifyToolItemType(toolName) === "collab_agent_tool_call"
-              ) {
-                return {
-                  behavior: "deny",
-                  message:
-                    "Sub-agents are disabled for this project. Complete the work in the main conversation instead.",
-                } satisfies PermissionResult;
-              }
-
               const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
               switch (runtimeMode) {
                 case "full-access":
@@ -5330,6 +5469,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
         const settings = {
+          cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(providerOptions?.autoCompactWindow
             ? { autoCompactWindow: providerOptions.autoCompactWindow }
             : {}),
@@ -5356,53 +5496,41 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           }),
         } satisfies Record<string, unknown>;
 
-        const appendInstructionText =
-          existingResumeSessionId === undefined
-            ? buildClaudeAssistantInstructions({
-                ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
-                ...(input.threadTitle ? { threadTitle: input.threadTitle } : {}),
-                ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
-                ...(input.priorWorkSummary ? { priorWorkSummary: input.priorWorkSummary } : {}),
-                ...(input.preservedTranscriptBefore
-                  ? { preservedTranscriptBefore: input.preservedTranscriptBefore }
-                  : {}),
-                ...(input.preservedTranscriptAfter
-                  ? { preservedTranscriptAfter: input.preservedTranscriptAfter }
-                  : {}),
-                ...(input.restoredRecentFileRefs
-                  ? { restoredRecentFileRefs: input.restoredRecentFileRefs }
-                  : {}),
-                ...(input.restoredActivePlan
-                  ? { restoredActivePlan: input.restoredActivePlan }
-                  : {}),
-                ...(input.restoredTasks ? { restoredTasks: input.restoredTasks } : {}),
-                ...(input.sessionNotes ? { sessionNotes: input.sessionNotes } : {}),
-                ...(input.projectMemories ? { projectMemories: input.projectMemories } : {}),
-                ...(input.cwd ? { cwd: input.cwd } : {}),
-                runtimeMode: input.runtimeMode,
-                ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-                ...(input.workflowExecutionProfile
-                  ? { workflowExecutionProfile: input.workflowExecutionProfile }
-                  : {}),
-                currentDate: new Date().toISOString().slice(0, 10),
-                ...(selectedModel ? { model: selectedModel } : {}),
-                ...(effectiveEffort ? { effort: effectiveEffort } : {}),
-              })
-            : input.workflowExecutionProfileChanged
-              ? buildClaudeWorkflowExecutionProfileUpdate(input)
-              : undefined;
-
-        const appendSystemPrompt: ClaudeAppendSystemPromptConfig | undefined = appendInstructionText
-          ? {
-              type: "preset",
-              preset: "claude_code",
-              append: appendInstructionText,
-            }
-          : undefined;
-        // Ordinary resume flows must not append again, or the shared host
-        // prompt would be duplicated. A workflow-profile transition is the
-        // exception: the conversation is resumed and receives only the small
-        // replacement contract for the new profile.
+        const appendInstructionText = buildClaudeAssistantInstructions({
+          ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
+          ...(input.threadTitle ? { threadTitle: input.threadTitle } : {}),
+          ...(input.priorWorkSummary ? { priorWorkSummary: input.priorWorkSummary } : {}),
+          ...(input.preservedTranscriptBefore
+            ? { preservedTranscriptBefore: input.preservedTranscriptBefore }
+            : {}),
+          ...(input.preservedTranscriptAfter
+            ? { preservedTranscriptAfter: input.preservedTranscriptAfter }
+            : {}),
+          ...(input.restoredRecentFileRefs
+            ? { restoredRecentFileRefs: input.restoredRecentFileRefs }
+            : {}),
+          ...(input.restoredActivePlan ? { restoredActivePlan: input.restoredActivePlan } : {}),
+          ...(input.restoredTasks ? { restoredTasks: input.restoredTasks } : {}),
+          ...(input.sessionNotes ? { sessionNotes: input.sessionNotes } : {}),
+          ...(input.projectMemories ? { projectMemories: input.projectMemories } : {}),
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+          runtimeMode: input.runtimeMode,
+          ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+          ...(input.workflowExecutionProfile
+            ? { workflowExecutionProfile: input.workflowExecutionProfile }
+            : {}),
+          currentDate: new Date().toISOString().slice(0, 10),
+          ...(selectedModel ? { model: selectedModel } : {}),
+          ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+        });
+        // Rebuild on every launch: Claude appends are not persisted developer
+        // instructions. Omit turnCount to preserve the prompt cache on resumes.
+        const systemPrompt = {
+          type: "preset",
+          preset: "claude_code",
+          append: appendInstructionText,
+          snapshot: false,
+        } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
 
         const sdkExecutableOptions = yield* Effect.try({
           try: () =>
@@ -5420,7 +5548,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               cause,
             }),
         });
-        const queryOptions: ClaudeQueryOptionsWithAppend = {
+        const queryOptions: ClaudeQueryOptions = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(runtimeModelSelection.apiModel ? { model: runtimeModelSelection.apiModel } : {}),
           ...sdkExecutableOptions,
@@ -5439,7 +5567,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // pass — the settings-page parser already blocks reserved keys, but
           // persisted values from older builds can still land here. Values
           // are free-form; safe only because the SDK spawns claude via
-          // execFile/argv-array rather than a shell string (verify this on
+          // spawn(command, args) with an argv array and no shell (verify this on
           // each SDK bump).
           ...(() => {
             const filtered = filterReservedClaudeLaunchArgs(providerOptions?.launchArgs);
@@ -5458,13 +5586,29 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             : {}),
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
+          ...claudeMandatoryPolicyOptions(
+            {
+              workflowExecutionProfile: input.workflowExecutionProfile,
+              subagentsEnabled: providerOptions?.subagentsEnabled,
+            },
+            undefined,
+            async (hook, signal) => {
+              // Reuse host question/plan/denial receipts even when native approval
+              // would skip canUseTool. The mandatory hook still returns deny.
+              await canUseTool(hook.tool_name, asUnknownRecord(hook.tool_input) ?? {}, {
+                signal,
+                toolUseID: hook.tool_use_id,
+                requestId: `mandatory:${hook.tool_use_id}`,
+              });
+            },
+          ),
           canUseTool,
           onUserDialog,
           supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
           env: queryEnvironment,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
-          ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
-        };
+          systemPrompt,
+        } satisfies ClaudeQueryOptions;
         if (translatedMcpServers) {
           queryOptions.mcpServers = translatedMcpServers as NonNullable<
             ClaudeQueryOptions["mcpServers"]
@@ -5520,6 +5664,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const context: ClaudeSessionContext = {
           startInput: input,
           turnBoundaries: [...(resumeState?.turnBoundaries ?? [])],
+          hostContractVersion: existingResumeSessionId
+            ? resumeState?.hostContractVersion
+            : CLAUDE_SUPPLEMENT_VERSION,
+          hostContractInstructionText: appendInstructionText,
+          workflowExecutionProfile: input.workflowExecutionProfile,
           session,
           providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
@@ -5665,6 +5814,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             : Effect.void,
         );
         yield* ensureLive;
+        if (
+          input.workflowExecutionProfile !== undefined &&
+          input.workflowExecutionProfile !== context.workflowExecutionProfile
+        ) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "turn/start",
+            detail: "The workflow policy changed. Restart the session before sending this turn.",
+          });
+        }
 
         if (context.turnState && !context.turnState.synthetic) {
           return yield* new ProviderAdapterRequestError({
@@ -5821,9 +5980,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           attachmentsDir: serverConfig.attachmentsDir,
           ...(activeModel ? { activeModel } : {}),
           allowsWorkspaceEdits,
+          hostContractUpdate:
+            context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
+            !context.hostContractVersion &&
+            !context.hostContractMigrationMessageUuid &&
+            !input.input?.trimStart().startsWith("/")
+              ? context.hostContractInstructionText
+              : undefined,
         });
 
         yield* ensureLive;
+        context.replyOwned = undefined;
+        if (message.uuid) turnState.userMessageUuids = new Set([message.uuid]);
+        if (
+          context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
+          !context.hostContractVersion &&
+          !context.hostContractMigrationMessageUuid &&
+          !input.input?.trimStart().startsWith("/")
+        )
+          context.hostContractMigrationMessageUuid = message.uuid;
         yield* Queue.offer(context.promptQueue, {
           type: "message",
           message,
@@ -5869,6 +6044,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               detail: "The turn ended before steering.",
             });
           }
+          if (message.uuid) (context.turnState.userMessageUuids ??= new Set()).add(message.uuid);
           yield* Queue.offer(context.promptQueue, { type: "message", message });
           return { threadId: input.threadId, turnId: input.expectedTurnId };
         }),

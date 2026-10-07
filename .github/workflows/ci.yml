@@ -51,8 +51,17 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Audit Claude SDK
+        run: bun run sdk:audit
+
+      - name: Audit pinned Codex request shapes
+        run: bun run protocol:audit:requests:baseline
+
       - name: Audit Codex protocol
         run: bun run protocol:audit:baseline
+
+      - name: Run full test suite
+        run: bun run test:full
 
       - name: Fetch authoritative upstream history
         run: |
@@ -63,9 +72,6 @@ jobs:
         env:
           F5_REQUIRE_UPSTREAM: "1"
         run: bun run upstream-ports:check
-
-      - name: Run full test suite
-        run: bun run test:full
 
       - name: Install Chromium for browser tests
         run: bun run --cwd apps/web test:browser:install

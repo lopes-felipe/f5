@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildClaudeAssistantInstructions,
-  buildClaudeWorkflowExecutionProfileUpdate,
   buildCodexAssistantInstructions,
   buildInstructionProfile,
   buildSharedAssistantContractText,
@@ -268,7 +267,7 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("Current date: 2026-04-03");
     expect(text).toContain('Project title: "F3 Code"');
     expect(text).toContain('Thread title: "Prompt improvements"');
-    expect(text).toContain("Recorded turns in this thread before this session: 3");
+    expect(text).not.toContain("Recorded turns in this thread");
     expect(text).toContain('Working directory: "/tmp/f3-code"');
     expect(text).toContain("Runtime mode: full-access");
     expect(text).toContain("Active model: claude-sonnet-4-6");
@@ -321,22 +320,6 @@ describe("sharedAssistantContract", () => {
     });
     expect(text).toContain("overrides any Collaboration Mode instruction to ask questions");
     expect(text).toContain("AskUserQuestion");
-  });
-
-  it("keeps the profile update contract after the mode block", () => {
-    const update = buildClaudeWorkflowExecutionProfileUpdate({
-      interactionMode: "plan",
-      workflowExecutionProfile: "unattended-readonly",
-    });
-    const modeIndex = update.indexOf("Plan Mode (Conversational)");
-    // The preamble names the contract heading verbatim, so anchor on the last
-    // occurrence to find the actual section rather than that reference.
-    const contractIndex = update.lastIndexOf("# Workflow Read-Only Host Contract");
-    expect(modeIndex).toBeGreaterThanOrEqual(0);
-    expect(contractIndex).toBeGreaterThan(modeIndex);
-    expect(
-      update.indexOf("If the stage request specifies the artifact's structure"),
-    ).toBeGreaterThan(modeIndex);
   });
 
   it("delimits restored thread content as untrusted literal data", () => {
@@ -423,7 +406,7 @@ describe("sharedAssistantContract", () => {
   it("exposes stable version metadata", () => {
     expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v4");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v10");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v11");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
       contractVersion: "v4",
       providerSupplementVersion: "v4",
@@ -431,7 +414,7 @@ describe("sharedAssistantContract", () => {
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
       contractVersion: "v4",
-      providerSupplementVersion: "v10",
+      providerSupplementVersion: "v11",
       strategy: "claude.append_system_prompt",
     });
   });

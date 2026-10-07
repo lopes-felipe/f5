@@ -31,7 +31,7 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
-F5 pins Claude Agent SDK 0.3.280, which bundles Claude Code v2.1.280. Claude Fable 5.1
+F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
@@ -58,7 +58,8 @@ model and effort changes, without requiring that RPC. Older cursors without a va
 leave the first positive resumed result unpriced while establishing a baseline. Zeroed crash
 results do not reset the baseline and remain unpriced.
 
-A lower positive total is treated as a reset, including `/clear` and legacy CLIs that restart
+An explicit `conversation_reset` with trigger `clear` resets the cost baseline to zero,
+matching the pinned SDK contract. A lower positive total is also treated as a reset for legacy CLIs that restart
 cost totals on resume. This is a heuristic: if the first post-reset total equals or exceeds the
 previous total, the delta under-counts spend by that previous total. An unexplained decrease is
 also treated as a reset and charges the new total. Cumulative results alone cannot distinguish
@@ -321,3 +322,69 @@ refresh feels slow.
 ### Isolated profiles
 
 Use [Profiles](../profiles.md) for independent managed Claude accounts and in-app login. Isolated profiles use the certified bundled executable and a complete home environment on Windows. The real-provider release gate includes macOS keychain separation.
+
+## Host instructions
+
+Release 0 sends F5's full host contract through the type-checked Claude Code preset
+`systemPrompt.append`, with `snapshot: false`, on every start and resume. The previous
+`appendSystemPrompt` option was ignored by the SDK. The append includes workflow policy,
+project memory, preserved transcript and post-compaction prior-work context. Threads
+compacted before this fix regain that context on their next restart. Instruction profiles
+now identify Claude supplement `v11`. Turn counters are omitted from this append so normal
+turns do not invalidate its prompt cache; date, model and effort update on relaunch.
+
+Transcript injection is disabled by default pending the authenticated snapshot-replacement
+spike: Claude returned **Not logged in** in the implementation environment. Operators
+who have confirmed stale recorded prompts can opt into a one-time legacy-session update
+with `F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE=1`. It adds a delimited block to the first
+ordinary message only for a cursor with no `hostContractVersion`; an acknowledged update
+records a fixed migration marker, independent of future supplement bumps. The block says
+that the current launch's system instructions supersede earlier transcript contracts.
+Slash commands defer it. This writes permanently to the native transcript, so enable it
+only after confirming the snapshot issue. Run `bun run --cwd apps/server test:claude:live`
+to certify two resumes of a pre-existing session and native allow-rule policy enforcement.
+
+Mandatory restrictions are enforced before native permission approval: one-off generation
+has no tools; disabled sub-agents exclude Agent and the legacy Task delegation tool;
+read-only workflows use a host PreToolUse denial hook. The same evaluator also guards
+`canUseTool`. Permitting hook results do not grant approval, and project hooks remain
+loaded. Workflow-policy changes go through session restart; incompatible direct sends
+fail visibly. Human composer messages, steering and reliably attributed queued messages
+carry SDK human origin. Automation and legacy queue entries remain unattributed. Native
+reply UUIDs fence unrelated assistant/stream output and background results from human turns.
+Unstamped native results use the carried reply ownership, origin and resume reason. Observed
+unrelated costs advance the baseline without charging the human turn.
+
+## Transcript retention
+
+F5 defaults Claude's `cleanupPeriodDays` to **3650**. Set the server environment variable
+`F5_CLAUDE_CLEANUP_PERIOD_DAYS` to another positive integer; an explicit value in the
+instance's isolated `settings.json` wins. Zero, negative and invalid retention values fail
+the affected query launch; this is not a server-start validation. Malformed settings JSON
+logs a warning and falls back to the validated server default.
+Claude's managed-policy precedence remains native. The value is applied at the next
+natural session start and is excluded from launch fingerprints, so changing it does
+not restart running sessions.
+
+StorageMaintenance and per-profile Claude config directories now retain transcripts
+for the intended lifetime of F5 threads. This consumes local disk; monitor profile
+storage. Permanent thread deletion will own native transcript cleanup in Release 2;
+that hook is not part of Release 0. Already swept transcripts cannot be recovered and
+continue using F5's prior-work summary fallback. Full alpha `sessionStore` backups are
+not enabled.
+
+## Release 0 runtime verification
+
+The pinned SDK's options and message union are checked by `bun run sdk:audit`; real SDK
+query transport probes inspect initialization and spawn arguments without model access.
+The bundled SDK uses `spawn(command, args)` with no shell, preserving extra-argument
+values as argv. `get_task_output` added in 0.3.292 belongs to the SDK control protocol,
+not the SDKMessage stream union.
+
+The [official SDK changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
+confirms agent/task/run identity and persistent-approval suppression additions in
+0.3.292, interrupted-stream fixes in 0.3.287/0.3.290, and the in-process MCP removal
+fix in 0.3.287. Release 0 preserves these identities without adopting later-release UX.
+Conversation resets clear persisted rewind boundaries and context estimates. Explicit
+`clear` triggers also reset the cost baseline, as documented by SDK 0.3.292; other reset
+triggers preserve it. Authenticated live `/clear` observation remains unverified.
