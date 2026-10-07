@@ -1,4 +1,5 @@
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
+import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
 import { randomUUID } from "node:crypto";
 import {
   claudeMandatoryPolicyOptions,
@@ -77,6 +78,7 @@ import {
   supportsClaudeContextWindow,
   supportsClaudeFastMode,
   supportsClaudeThinkingToggle,
+  claudeModelSupportsAdaptiveThinking,
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
@@ -371,7 +373,6 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly interrupt: () => Promise<unknown>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
-  readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly applyFlagSettings: (settings: ClaudeRuntimeFlagSettings) => Promise<void>;
   readonly initializationResult?: () => Promise<unknown>;
   readonly supportedModels?: () => Promise<ReadonlyArray<unknown>>;
@@ -1129,6 +1130,33 @@ function claudeRuntimeSettings(traits: {
   return {
     ...(traits.fastMode ? { fastMode: true } : {}),
     ...(typeof traits.thinking === "boolean" ? { alwaysThinkingEnabled: traits.thinking } : {}),
+  };
+}
+
+/**
+ * Launch-time thinking for every SDK path. The per-turn toggle (`traits.thinking`)
+ * also feeds `alwaysThinkingEnabled` through `claudeRuntimeSettings`, which the
+ * resolver keeps consistent with the `thinking` option.
+ */
+function resolveClaudeLaunchThinking(
+  providerOptions: ProviderStartOptions["claudeAgent"] | undefined,
+  traits: { readonly thinking?: boolean } | undefined,
+  model: string | undefined,
+): ClaudeThinkingResolution {
+  return claudeThinkingConfig({
+    toggle: traits?.thinking,
+    typed: providerOptions?.thinking,
+    legacyMaxThinkingTokens: providerOptions?.maxThinkingTokens,
+    supportsAdaptive: claudeModelSupportsAdaptiveThinking(model),
+    model,
+  });
+}
+
+function claudeThinkingConfiguredFields(resolution: ClaudeThinkingResolution) {
+  return {
+    ...(resolution.thinking ? { thinking: resolution.thinking } : {}),
+    thinkingSource: resolution.source,
+    ...(resolution.fallback ? { thinkingFallback: resolution.fallback } : {}),
   };
 }
 
@@ -4705,6 +4733,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             })
           : undefined;
         const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
+        const thinkingResolution = yield* Effect.try({
+          try: () =>
+            resolveClaudeLaunchThinking(
+              providerOptions,
+              traits,
+              selection?.baseModel ?? input.model,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "runOneOffPrompt",
+              issue: toMessage(cause, "Invalid Claude thinking configuration."),
+            }),
+        });
         const settings = {
           cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(traits ? claudeRuntimeSettings(traits) : {}),
@@ -4747,9 +4789,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ),
                 settingSources: [...CLAUDE_SETTING_SOURCES],
                 ...(permissionMode ? { permissionMode } : {}),
-                ...(providerOptions?.maxThinkingTokens !== undefined
-                  ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-                  : {}),
+                ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
                 ...(() => {
                   const filtered = filterReservedClaudeLaunchArgs(
                     providerOptions?.launchArgs,
@@ -5468,6 +5508,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
+        const thinkingResolution = yield* Effect.try({
+          try: () =>
+            resolveClaudeLaunchThinking(
+              providerOptions,
+              typeof thinking === "boolean" ? { thinking } : undefined,
+              selectedModel,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: toMessage(cause, "Invalid Claude thinking configuration."),
+            }),
+        });
         const settings = {
           cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(providerOptions?.autoCompactWindow
@@ -5486,9 +5540,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ? { context_window: runtimeModelSelection.contextWindow }
             : {}),
           ...(permissionMode ? { permissionMode } : {}),
-          ...(providerOptions?.maxThinkingTokens !== undefined
-            ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-            : {}),
+          ...claudeThinkingConfiguredFields(thinkingResolution),
           ...(fastMode ? { fastMode: true } : {}),
           ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
           [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({
@@ -5558,9 +5610,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }
             : {}),
-          ...(providerOptions?.maxThinkingTokens !== undefined
-            ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-            : {}),
+          ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
           // `extraArgs` is forwarded by the SDK to the Claude CLI *after* its
           // own required flags, so user-supplied duplicates win last. We run
           // through `filterReservedClaudeLaunchArgs` as a defense-in-depth

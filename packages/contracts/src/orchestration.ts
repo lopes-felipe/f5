@@ -19,7 +19,12 @@ import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
 import { UsageTurnFact } from "./usage";
-export { ClaudeProviderStartOptions, ProviderStartOptions } from "./providerStartOptions";
+export {
+  ClaudeProviderStartOptions,
+  ClaudeThinkingDisplay,
+  ClaudeThinkingOption,
+  ProviderStartOptions,
+} from "./providerStartOptions";
 import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,

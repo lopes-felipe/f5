@@ -524,6 +524,16 @@ export function supportsClaudeAdaptiveReasoning(model: string | null | undefined
   return getClaudeReasoningEffortOptions(model).length > 0;
 }
 
+/**
+ * Adaptive-thinking support for thinking resolution: `undefined` when F5 has no
+ * metadata for the model, so explicit configs are left to the runtime.
+ */
+export function claudeModelSupportsAdaptiveThinking(
+  model: string | null | undefined,
+): boolean | undefined {
+  return getClaudeModelMetadata(model) ? supportsClaudeAdaptiveReasoning(model) : undefined;
+}
+
 export function supportsClaudeMaxEffort(model: string | null | undefined): boolean {
   return getClaudeReasoningEffortOptions(model).includes("max");
 }

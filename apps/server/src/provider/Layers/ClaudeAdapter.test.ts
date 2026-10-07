@@ -61,7 +61,6 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly interruptCalls: Array<void> = [];
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
-  public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
   public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
   public closeCalls = 0;
   public onClose: (() => void) | undefined;
@@ -158,10 +157,6 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
     this.setPermissionModeCalls.push(mode);
-  };
-
-  readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
-    this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
   };
 
   readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
@@ -1597,7 +1592,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
-    "forwards launchArgs, permissionMode, and maxThinkingTokens for one-off prompt queries",
+    "forwards launchArgs, permissionMode, and legacy maxThinkingTokens as typed thinking for one-off prompt queries",
     () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -1631,7 +1626,9 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(queryOptions?.pathToClaudeCodeExecutable, process.execPath);
         assert.equal(queryOptions?.permissionMode, "bypassPermissions");
         assert.equal(queryOptions?.allowDangerouslySkipPermissions, undefined);
-        assert.equal(queryOptions?.maxThinkingTokens, 321);
+        // Unknown model: the deprecated input maps to a fixed budget, never sent as-is.
+        assert.equal(queryOptions?.maxThinkingTokens, undefined);
+        assert.deepEqual(queryOptions?.thinking, { type: "enabled", budgetTokens: 321 });
         assert.deepEqual(queryOptions?.extraArgs, {
           "--verbose": null,
         });
@@ -1745,6 +1742,117 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "high");
       assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650, fastMode: true });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("maps legacy maxThinkingTokens to adaptive thinking on adaptive models", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+        ),
+        providerOptions: { claudeAgent: { maxThinkingTokens: 2048 } },
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.thinking, { type: "adaptive" });
+      assert.equal(options?.maxThinkingTokens, undefined);
+      const [configured] = Array.from(yield* Fiber.join(configuredFiber));
+      const config =
+        configured?.type === "session.configured" ? configured.payload.config : undefined;
+      assert.deepEqual(config?.thinking, { type: "adaptive" });
+      assert.equal(config?.thinkingSource, "legacy");
+      assert.match(String(config?.thinkingFallback), /ignore fixed budgets/);
+      assert.equal(config?.maxThinkingTokens, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("prefers typed thinking over legacy maxThinkingTokens", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        providerOptions: {
+          claudeAgent: { maxThinkingTokens: 0, thinking: { type: "adaptive", display: "omitted" } },
+        },
+        runtimeMode: "full-access",
+      });
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.thinking, {
+        type: "adaptive",
+        display: "omitted",
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the per-turn toggle and launch thinking consistent", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-haiku-4-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-haiku-4-5",
+          [{ id: "thinking", value: false }],
+        ),
+        providerOptions: { claudeAgent: { maxThinkingTokens: 4096 } },
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.thinking, { type: "disabled" });
+      assert.equal(
+        (options?.settings as { alwaysThinkingEnabled?: boolean } | undefined)
+          ?.alwaysThinkingEnabled,
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects explicit adaptive thinking on a model without adaptive support", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: "claude-haiku-4-5",
+          providerOptions: { claudeAgent: { thinking: { type: "adaptive" } } },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(
+        String((error as { issue?: string }).issue),
+        /Adaptive thinking is not supported/,
+      );
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

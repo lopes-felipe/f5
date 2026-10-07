@@ -388,3 +388,38 @@ fix in 0.3.287. Release 0 preserves these identities without adopting later-rele
 Conversation resets clear persisted rewind boundaries and context estimates. Explicit
 `clear` triggers also reset the cost baseline, as documented by SDK 0.3.292; other reset
 triggers preserve it. Authenticated live `/clear` observation remains unverified.
+
+## Thinking configuration
+
+Claude provider options accept a typed `thinking` value mirroring the Agent SDK:
+`{ "type": "adaptive" }`, `{ "type": "enabled", "budgetTokens": 8000 }` or
+`{ "type": "disabled" }`, with an optional `display` of `summarized` or `omitted`.
+The deprecated `maxThinkingTokens` is still read and is never rewritten in saved
+settings, but F5 no longer sends it to the SDK.
+
+One resolver (`claudeThinkingConfig` in `apps/server/src/provider/claudeProviderOptions.ts`)
+serves sessions, one-off prompts and git text generation. Precedence:
+
+1. The composer's per-turn thinking toggle (only on models that offer it). Off sends
+   `disabled`. On keeps the shape chosen by a lower layer, but never sends `disabled`.
+2. Typed `thinking`.
+3. Legacy `maxThinkingTokens`: `0` → `disabled`; a positive value → `adaptive` on
+   adaptive models (the budget is ignored, and the session reports
+   `thinkingFallback`), otherwise `{ enabled, budgetTokens }`.
+4. Native defaults (no `thinking` option).
+
+`thinking` and `alwaysThinkingEnabled` are never sent with conflicting values. An explicit
+`adaptive` config for a model F5 knows lacks adaptive thinking is rejected before
+launch; unknown models are passed through for the runtime to validate. The effective
+mode and its source appear in the session configuration (`thinking`, `thinkingSource`).
+
+Launch identity: settings that use only `maxThinkingTokens` keep their exact
+environment key and launch fingerprint, so upgrading restarts nothing. Typed `thinking`
+adds an extra fingerprint component and applies at the next session start.
+
+Live finding (Claude Code 2.1.292, Haiku 4.5, 2026-10-07): a mid-session
+`applyFlagSettings({ alwaysThinkingEnabled })` did not change thinking in either
+direction, with or without a launch `thinking` option. F5 still sends it on model
+changes, but in practice a thinking toggle change takes effect at the next session
+start. This predates Release 1. The deprecated `setMaxThinkingTokens` control was
+removed from F5's runtime interface; it was never called.
