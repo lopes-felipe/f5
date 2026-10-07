@@ -1,3 +1,5 @@
+import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
+import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
 import { ForgeAccounts } from "./sourceControl/accountRouting.ts";
 import { PrHubExtensions } from "./prHub/PrHubExtensions.ts";
@@ -2777,10 +2779,74 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case USAGE_WS_METHODS.consumeResetCredit: {
-        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
-        return yield* usageService
-          .consumeResetCredit(stripRequestTag(request.body))
+        const { usageService, nextTurnQueueDispatcher, orchestrationEngine } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const after = new Date().toISOString();
+        const result = yield* usageService
+          .consumeResetCredit(body)
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        const limitKeys = new Map(
+          (yield* orchestrationEngine.getReadModel()).threads
+            .filter(
+              (thread) =>
+                thread.session?.usageLimit?.providerInstanceId === body.providerInstanceId,
+            )
+            .map((thread) => [thread.id, usageLimitKey(thread.session)]),
+        );
+        const refreshResumes = (): Effect.Effect<void> =>
+          Effect.gen(function* () {
+            const refreshed = yield* usageService.refreshAccount(body.providerInstanceId);
+            if (!refreshed.fresh || !refreshed.snapshot) {
+              const retryAt = Date.parse(refreshed.nextAllowedAt ?? "");
+              if (
+                (result.outcome === "reset" || result.outcome === "alreadyRedeemed") &&
+                Number.isFinite(retryAt) &&
+                retryAt > Date.now()
+              )
+                yield* Effect.sleep(retryAt - Date.now()).pipe(
+                  Effect.andThen(Effect.suspend(refreshResumes)),
+                  Effect.forkIn(subscriptionsScope),
+                );
+              return;
+            }
+            if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed") return;
+            for (const thread of (yield* orchestrationEngine.getReadModel()).threads) {
+              const limit = thread.session?.usageLimit;
+              const key = usageLimitKey(thread.session);
+              if (
+                !limit ||
+                !key ||
+                limitKeys.get(thread.id) !== key ||
+                limit.providerInstanceId !== body.providerInstanceId
+              )
+                continue;
+              const snapshot = yield* nextTurnQueueDispatcher.getSnapshot(thread.id);
+              const target = usageResumeTargetAfterCredit(
+                limit,
+                refreshed.snapshot,
+                after,
+                Date.now(),
+              );
+              if (!target) continue;
+              const current = (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === thread.id,
+              );
+              if (usageLimitKey(current?.session) !== key) continue;
+              const changed = yield* nextTurnQueueStore.rescheduleByInstance(
+                body.providerInstanceId,
+                target,
+                { limitKey: key, revision: snapshot.revision },
+              );
+              for (const id of changed) yield* nextTurnQueueDispatcher.notify(id);
+            }
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("failed to update usage resumes after reset credit", { cause }),
+            ),
+          );
+        yield* refreshResumes();
+        return result;
       }
       case USAGE_WS_METHODS.getAccounts: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
@@ -4678,6 +4744,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             requestHash,
             itemId,
             command: queuedCommand,
+            supersedeUsageResume: body.intent !== "queue-tail",
             atHead: body.intent === "queue-head" || body.intent === "steer",
           })
           .pipe(
@@ -4852,6 +4919,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));
       }
 
+      case WS_METHODS.nextTurnQueueScheduleUsageLimitResume: {
+        const body = stripRequestTag(request.body);
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .scheduleUsageLimitResume({ ...body, source: "manual" })
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
+      case WS_METHODS.nextTurnQueueCancelUsageLimitResume: {
+        const body = stripRequestTag(request.body);
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .cancelUsageLimitResume(body)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
+      case WS_METHODS.nextTurnQueueRefreshUsageLimitResume: {
+        const body = stripRequestTag(request.body);
+        const { nextTurnQueueDispatcher } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* nextTurnQueueDispatcher
+          .refreshUsageLimitResume(body)
+          .pipe(Effect.mapError(mapNextTurnQueueRouteError));
+      }
       case WS_METHODS.nextTurnQueueSetPaused: {
         const body = stripRequestTag(request.body);
         yield* nextTurnQueueStore

@@ -1,9 +1,9 @@
-import { CommandId, TurnId } from "@t3tools/contracts";
+import { CommandId, TurnId, type OrchestrationUsageLimit } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Duration, Effect, Layer, PubSub, Schema, Stream } from "effect";
 
 import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
-import { ProviderTurnDeliveryError } from "../../provider/Errors.ts";
+import { ProviderTurnDeliveryError, ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -52,19 +52,21 @@ const make = Effect.gen(function* () {
     readonly errorDetail: string;
     readonly certainty: "not_sent" | "unknown";
     readonly ambiguous: boolean;
+    readonly usageLimit?: OrchestrationUsageLimit | undefined;
   }) =>
-    repository.markRejected(input).pipe(
-      Effect.andThen(
-        PubSub.publish(outcomes, {
-          deliveryId: input.deliveryId,
-          commandId: input.commandId,
-          threadId: input.threadId,
-          state: input.ambiguous ? "ambiguous" : "rejected",
-          detail: input.errorDetail,
-        }),
-      ),
-      Effect.asVoid,
-    );
+    Effect.gen(function* () {
+      const occurredAt = new Date().toISOString();
+      yield* repository.markRejected({ ...input, occurredAt });
+      yield* PubSub.publish(outcomes, {
+        deliveryId: input.deliveryId,
+        commandId: input.commandId,
+        threadId: input.threadId,
+        state: input.ambiguous ? "ambiguous" : "rejected",
+        detail: input.errorDetail,
+        occurredAt,
+        ...(input.usageLimit ? { usageLimit: input.usageLimit } : {}),
+      });
+    });
 
   const processDelivery = (deliveryId: CommandId) =>
     Effect.gen(function* () {
@@ -122,7 +124,16 @@ const make = Effect.gen(function* () {
           rejected = true;
         nested = "cause" in nested ? nested.cause : undefined;
       }
-      const notSent = typedDeliveryError?.certainty === "not_sent" || (steering && rejected);
+      // Only a structured usage rejection at the turn-start call boundary proves
+      // the provider refused this send. Transport text alone never does.
+      const requestError = Schema.is(ProviderAdapterRequestError)(error) ? error : null;
+      const rejectedLimit =
+        typedDeliveryError?.usageLimit ??
+        (requestError?.method === "turn/start" ? requestError.usageLimit : undefined);
+      const notSent =
+        Boolean(rejectedLimit) ||
+        typedDeliveryError?.certainty === "not_sent" ||
+        (steering && rejected);
       if (
         exit._tag === "Failure" &&
         (typedDeliveryError === null || typedDeliveryError.certainty === "unknown")
@@ -135,8 +146,15 @@ const make = Effect.gen(function* () {
       }
       const detail =
         typedDeliveryError?.message ??
+        requestError?.message ??
         "The provider delivery outcome is unknown. Recheck provider history before retrying.";
-      if (!steering && notSent && typedDeliveryError?.retryable === true && claimed.attempt < 3) {
+      if (
+        !steering &&
+        notSent &&
+        typedDeliveryError?.retryable === true &&
+        !typedDeliveryError.usageLimit &&
+        claimed.attempt < 3
+      ) {
         const delayMs = Math.min(30_000, 1_000 * 2 ** Math.max(0, claimed.attempt - 1));
         yield* repository.requeue({
           deliveryId,
@@ -158,6 +176,14 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
+      const thread = rejectedLimit
+        ? (yield* engine.getReadModel()).threads.find((entry) => entry.id === claimed.threadId)
+        : undefined;
+      const instanceId = thread?.session?.providerInstanceId ?? thread?.modelSelection?.instanceId;
+      const usageLimit =
+        notSent && rejectedLimit && instanceId
+          ? { ...rejectedLimit, providerInstanceId: instanceId, turnId: null, deliveryId }
+          : undefined;
       yield* markRejected({
         deliveryId,
         commandId: claimed.commandId,
@@ -167,6 +193,7 @@ const make = Effect.gen(function* () {
         errorDetail: detail,
         certainty: notSent ? "not_sent" : "unknown",
         ambiguous: !notSent,
+        ...(usageLimit ? { usageLimit } : {}),
       });
     }).pipe(
       Effect.catchCause((cause) =>
@@ -255,6 +282,8 @@ const make = Effect.gen(function* () {
                 threadId: delivery.threadId,
                 state: delivery.state as "accepted" | "rejected" | "ambiguous",
                 detail: delivery.errorDetail,
+                occurredAt: delivery.updatedAt,
+                ...(delivery.usageLimit ? { usageLimit: delivery.usageLimit } : {}),
               }),
             ),
           ),

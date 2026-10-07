@@ -384,6 +384,8 @@ export function makeServerOrchestrationRuntimeLayer() {
   // One gate instance is shared by the queue dispatcher and the setup service.
   const worktreeSetupGateLayer = WorktreeSetupGateLive;
   const nextTurnQueueDispatcherLayer = NextTurnQueueDispatcherLive.pipe(
+    Layer.provideMerge(ServerSecretStoreLive),
+    Layer.provideMerge(usageServiceLayer),
     Layer.provideMerge(worktreeSetupGateLayer),
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(ProjectionThreadRepositoryLive),
@@ -408,6 +410,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(textGenerationLayer),
   );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
+    Layer.provideMerge(usageServiceLayer),
     Layer.provideMerge(runtimeServicesLayer),
   );
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(

@@ -1,4 +1,4 @@
-import { OrchestrationEvent, TurnId } from "@t3tools/contracts";
+import { OrchestrationEvent, OrchestrationUsageLimit, TurnId } from "@t3tools/contracts";
 import { Effect, Layer, Schema, Struct } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -13,6 +13,7 @@ const DbRow = ProviderTurnDelivery.mapFields(
   Struct.assign({
     preSendTurnIds: Schema.fromJsonString(Schema.Array(TurnId)),
     event: Schema.fromJsonString(OrchestrationEvent),
+    usageLimit: Schema.NullOr(Schema.fromJsonString(OrchestrationUsageLimit)),
   }),
 );
 
@@ -31,7 +32,7 @@ const make = Effect.gen(function* () {
       delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
       message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
       pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-      error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+      error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
       not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
       outcome_projected_at AS "outcomeProjectedAt"
     FROM provider_turn_deliveries ${where}
@@ -64,7 +65,7 @@ const make = Effect.gen(function* () {
             SELECT delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
               message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
               pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-              error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+              error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
               not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
               outcome_projected_at AS "outcomeProjectedAt"
             FROM provider_turn_deliveries WHERE command_id = ? LIMIT 1
@@ -88,7 +89,7 @@ const make = Effect.gen(function* () {
              command_id AS "commandId", message_id AS "messageId", state,
              provider_turn_id AS "providerTurnId", attempt,
              pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-             error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+             error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
              not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
              outcome_projected_at AS "outcomeProjectedAt"
            FROM provider_turn_deliveries AS delivery
@@ -119,7 +120,7 @@ const make = Effect.gen(function* () {
              command_id AS "commandId", message_id AS "messageId", state,
              provider_turn_id AS "providerTurnId", attempt,
              pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-             error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+             error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
              not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
              outcome_projected_at AS "outcomeProjectedAt"
            FROM provider_turn_deliveries
@@ -145,7 +146,7 @@ const make = Effect.gen(function* () {
         RETURNING delivery_id AS "deliveryId", thread_id AS "threadId", command_id AS "commandId",
           message_id AS "messageId", state, provider_turn_id AS "providerTurnId", attempt,
           pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-          error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+          error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
           not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
           outcome_projected_at AS "outcomeProjectedAt"
       `,
@@ -162,7 +163,7 @@ const make = Effect.gen(function* () {
           yield* sql`
       UPDATE provider_turn_deliveries
       SET state = 'accepted', provider_turn_id = ${input.providerTurnId}, certainty = NULL,
-          error_code = NULL, error_detail = NULL, not_before = NULL,
+          error_code = NULL, error_detail = NULL, usage_limit_json = NULL, not_before = NULL,
           outcome_projected_at = NULL, updated_at = ${new Date().toISOString()}
       WHERE delivery_id = ${input.deliveryId}
         AND state IN ('sending', 'rejected', 'ambiguous')
@@ -178,7 +179,8 @@ const make = Effect.gen(function* () {
       SET state = ${input.ambiguous ? "ambiguous" : "rejected"},
           error_code = ${input.errorCode}, error_detail = ${input.errorDetail},
           certainty = ${input.certainty}, not_before = NULL,
-          outcome_projected_at = NULL, updated_at = ${new Date().toISOString()}
+          usage_limit_json = ${input.usageLimit ? JSON.stringify(input.usageLimit) : null},
+          outcome_projected_at = NULL, updated_at = ${input.occurredAt ?? new Date().toISOString()}
       WHERE delivery_id = ${input.deliveryId} AND state = 'sending'
     `.pipe(Effect.asVoid, Effect.mapError(mapError("ProviderTurnDelivery.markRejected")));
 
@@ -196,7 +198,7 @@ const make = Effect.gen(function* () {
       const rows = yield* sql.unsafe<Record<string, unknown>>(
         `UPDATE provider_turn_deliveries
          SET state = 'pending', attempt = 0, provider_turn_id = NULL, not_before = NULL,
-             error_code = NULL, error_detail = NULL, certainty = NULL,
+             error_code = NULL, error_detail = NULL, usage_limit_json = NULL, certainty = NULL,
              outcome_projected_at = NULL, updated_at = ?
          WHERE delivery_id = ?
            AND (state = 'rejected' OR (state = 'ambiguous' AND ? = 1))
@@ -204,7 +206,7 @@ const make = Effect.gen(function* () {
            command_id AS "commandId", message_id AS "messageId", state,
            provider_turn_id AS "providerTurnId", attempt,
            pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
-           error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+           error_code AS "errorCode", error_detail AS "errorDetail", usage_limit_json AS "usageLimit", certainty,
            not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
            outcome_projected_at AS "outcomeProjectedAt"`,
         [new Date().toISOString(), input.deliveryId, input.allowPossibleDuplicate ? 1 : 0],

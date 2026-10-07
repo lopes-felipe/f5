@@ -1782,7 +1782,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         if (!enabled) continue;
         const continuation =
           yield* sql`SELECT c.continuation_id FROM restart_continuations c LEFT JOIN provider_turn_deliveries d ON d.delivery_id = c.continuation_id WHERE c.thread_id = ${session.threadId} AND (c.provider_turn_id = ${session.activeTurnId} OR d.provider_turn_id = ${session.activeTurnId} OR d.state = 'sending' OR EXISTS (SELECT 1 FROM projection_turns t WHERE t.thread_id = c.thread_id AND t.turn_id = ${session.activeTurnId} AND t.pending_message_id = c.continuation_id))`;
-        if (continuation.length) continue;
+        const recovery =
+          yield* sql`SELECT pending_message_id FROM projection_turns WHERE thread_id = ${session.threadId} AND turn_id = ${session.activeTurnId} AND pending_message_id LIKE 'usage-resume:%'`;
+        if (continuation.length || recovery.length) continue;
         const continuationId = `resume:${session.threadId}:${session.activeTurnId}`;
         yield* sql`INSERT INTO restart_turn_markers VALUES (${session.threadId}, ${session.activeTurnId}, ${new Date().toISOString()}, ${continuationId}) ON CONFLICT(thread_id) DO UPDATE SET turn_id = excluded.turn_id, marked_at = excluded.marked_at, continuation_id = excluded.continuation_id`;
       }

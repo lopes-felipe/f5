@@ -1,4 +1,4 @@
-import type { CommandId, ThreadId } from "@t3tools/contracts";
+import type { CommandId, ThreadId, OrchestrationUsageLimit } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect, Scope, Stream } from "effect";
 import type { ProviderTurnDelivery } from "./ProviderTurnDeliveryRepository.ts";
@@ -9,6 +9,8 @@ export interface ProviderTurnDeliveryOutcome {
   readonly threadId: ThreadId;
   readonly state: "accepted" | "rejected" | "ambiguous";
   readonly detail: string | null;
+  readonly occurredAt?: string | undefined;
+  readonly usageLimit?: OrchestrationUsageLimit | undefined;
 }
 
 export interface ProviderTurnDeliveryWorkerShape {

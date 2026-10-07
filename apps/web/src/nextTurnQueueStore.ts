@@ -207,3 +207,24 @@ export function useNextTurnQueueBadge(threadId: ThreadId): "none" | "queued" | "
       : "none";
   });
 }
+
+export function getNextTurnQueueScheduledResumeAt(
+  state: Pick<NextTurnQueueStoreState, "byThreadId" | "summary">,
+  threadId: ThreadId,
+): string | null {
+  const local = state.byThreadId[threadId]?.snapshot;
+  if (local) {
+    if (local.paused) return null;
+    return (
+      local.items.find(
+        (item) => item.scheduleReason === "usage_limit_reset" && item.status === "queued",
+      )?.notBefore ?? null
+    );
+  }
+  const summary = state.summary.threads.find((entry) => entry.threadId === threadId);
+  return !summary || summary.paused ? null : (summary.scheduledResumeAt ?? null);
+}
+
+export function useNextTurnQueueScheduledResumeAt(threadId: ThreadId): string | null {
+  return useNextTurnQueueStore((state) => getNextTurnQueueScheduledResumeAt(state, threadId));
+}

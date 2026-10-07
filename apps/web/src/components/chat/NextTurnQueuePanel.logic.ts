@@ -2,6 +2,8 @@ import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3too
 
 import { deriveDisplayedUserMessageState } from "~/lib/terminalContext";
 
+export const USAGE_LIMIT_RESUME_LABEL = "Continues after usage limit resets";
+
 export function buildQueueRowDisplay(item: NextTurnQueueItem) {
   const displayed = deriveDisplayedUserMessageState(item.command.message.text);
   const imageCount = item.command.message.attachments.filter(
@@ -47,6 +49,10 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
       return "Waiting for the previous turn to start.";
     case "dispatch_in_flight":
       return "Sending the next turn.";
+    case "usage_limit_reset":
+      return "Waiting for the usage limit to reset.";
+    case "usage_limit_context_changed":
+      return "Provider changed since the limit; review before continuing.";
     case "delivery_retrying":
       return "Retrying delivery shortly.";
     case "manual_pause":

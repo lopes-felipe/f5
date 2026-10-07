@@ -1295,8 +1295,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const queueSourced = command.dispatchSource === "next-turn-queue";
-      const effectiveRuntimeMode = queueSourced ? command.runtimeMode : targetThread.runtimeMode;
-      const effectiveInteractionMode = queueSourced
+      const continuation = command.presentation === "continuation";
+      const restoreQueuedSettings = queueSourced && !continuation;
+      const effectiveModel = continuation ? targetThread.model : command.model;
+      const effectiveModelSelection = continuation
+        ? targetThread.modelSelection
+        : command.modelSelection;
+      const effectiveWorkflowExecutionProfile = continuation
+        ? (targetThread.latestTurn?.workflowExecutionProfile ??
+          targetThread.session?.workflowExecutionProfile)
+        : command.workflowExecutionProfile;
+      const effectiveRuntimeMode = restoreQueuedSettings
+        ? command.runtimeMode
+        : targetThread.runtimeMode;
+      const effectiveInteractionMode = restoreQueuedSettings
         ? command.interactionMode
         : targetThread.interactionMode;
       const settingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
@@ -1309,7 +1321,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           }),
         );
       }
-      if (queueSourced && effectiveRuntimeMode !== targetThread.runtimeMode) {
+      if (restoreQueuedSettings && effectiveRuntimeMode !== targetThread.runtimeMode) {
         settingEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1325,7 +1337,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           },
         });
       }
-      if (queueSourced && effectiveInteractionMode !== targetThread.interactionMode) {
+      if (restoreQueuedSettings && effectiveInteractionMode !== targetThread.interactionMode) {
         settingEvents.push({
           ...withEventBase({
             aggregateKind: "thread",
@@ -1345,7 +1357,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.modelSelection !== undefined &&
         JSON.stringify(command.modelSelection) !== JSON.stringify(targetThread.modelSelection);
       if (
-        queueSourced &&
+        restoreQueuedSettings &&
         ((command.model !== undefined && command.model !== targetThread.model) ||
           modelSelectionChanged)
       ) {
@@ -1396,7 +1408,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.threadId,
       );
       const selectedInstanceId =
-        command.modelSelection?.instanceId ?? targetThread.modelSelection?.instanceId;
+        effectiveModelSelection?.instanceId ?? targetThread.modelSelection?.instanceId;
       const selectedDriver = providerInstances.find(
         (instance) => instance.instanceId === selectedInstanceId,
       )?.driver;
@@ -1450,9 +1462,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           messageId: command.message.messageId,
           ...(command.provider !== undefined ? { provider: command.provider } : {}),
-          ...(command.model !== undefined ? { model: command.model } : {}),
-          ...(command.modelSelection !== undefined
-            ? { modelSelection: command.modelSelection }
+          ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+          ...(effectiveModelSelection !== undefined
+            ? { modelSelection: effectiveModelSelection }
             : {}),
           ...(command.titleGenerationModel !== undefined
             ? { titleGenerationModel: command.titleGenerationModel }
@@ -1470,8 +1482,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           assistantDeliveryMode: command.assistantDeliveryMode ?? DEFAULT_ASSISTANT_DELIVERY_MODE,
           runtimeMode: effectiveRuntimeMode,
           interactionMode: effectiveInteractionMode,
-          ...(command.workflowExecutionProfile !== undefined
-            ? { workflowExecutionProfile: command.workflowExecutionProfile }
+          ...(effectiveWorkflowExecutionProfile !== undefined
+            ? { workflowExecutionProfile: effectiveWorkflowExecutionProfile }
             : documentWorkflow
               ? { workflowExecutionProfile: "attended-readonly" as const }
               : {}),
@@ -1707,7 +1719,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.session.set": {
-      yield* requireThread({
+      const previous = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1723,7 +1735,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: {
+            ...command.session,
+            usageLimit:
+              command.session.usageLimit !== undefined
+                ? command.session.usageLimit
+                : previous.session?.lastErrorId === command.session.lastErrorId &&
+                    (!command.session.activeTurnId ||
+                      command.session.activeTurnId === previous.session?.usageLimit?.turnId)
+                  ? (previous.session?.usageLimit ?? null)
+                  : null,
+          },
           ...(command.settledTurnId !== undefined ? { settledTurnId: command.settledTurnId } : {}),
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),
         },

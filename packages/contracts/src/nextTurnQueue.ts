@@ -41,6 +41,8 @@ export const QueueReasonCode = Schema.Literals([
   "turn_never_started",
   "turn_interrupted",
   "delivery_retrying",
+  "usage_limit_reset",
+  "usage_limit_context_changed",
   "delivery_rejected",
   "delivery_ambiguous",
   "thread_archived",
@@ -68,6 +70,9 @@ export const NextTurnQueueItem = Schema.Struct({
   command: ThreadTurnStartCommand,
   attemptCount: NonNegativeInt,
   notBefore: Schema.NullOr(IsoDateTime),
+  scheduleReason: Schema.optional(Schema.NullOr(Schema.Literal("usage_limit_reset"))).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   dispatchStartedAt: Schema.NullOr(IsoDateTime),
   lastErrorCode: Schema.NullOr(Schema.String),
   lastErrorDetail: Schema.NullOr(Schema.String),
@@ -86,6 +91,24 @@ export const NextTurnQueueSnapshot = Schema.Struct({
   reasonDetail: Schema.NullOr(Schema.String),
   maxItems: NonNegativeInt,
   quarantinedCount: NonNegativeInt,
+  usageLimitResume: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        limitKey: Schema.String,
+        resetsAt: Schema.NullOr(IsoDateTime),
+        source: Schema.Literals(["manual", "auto"]),
+        state: Schema.Literals([
+          "scheduled",
+          "cancelled",
+          "superseded",
+          "revoked",
+          "gave_up",
+          "completed",
+        ]),
+        itemId: Schema.NullOr(CommandId),
+      }),
+    ),
+  ).pipe(Schema.withDecodingDefault(() => null)),
 });
 export type NextTurnQueueSnapshot = typeof NextTurnQueueSnapshot.Type;
 
@@ -94,6 +117,9 @@ export const NextTurnQueueThreadSummary = Schema.Struct({
   queuedCount: NonNegativeInt,
   dispatchingCount: NonNegativeInt,
   failedCount: NonNegativeInt,
+  scheduledResumeAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   paused: Schema.Boolean,
 });
 export type NextTurnQueueThreadSummary = typeof NextTurnQueueThreadSummary.Type;
@@ -244,3 +270,24 @@ export type NextTurnQueueRetryDeliveryInput = typeof NextTurnQueueRetryDeliveryI
 
 export const NextTurnQueueDiscardDeliveryInput = Schema.Struct({ threadId: ThreadId });
 export type NextTurnQueueDiscardDeliveryInput = typeof NextTurnQueueDiscardDeliveryInput.Type;
+
+export const NextTurnQueueScheduleUsageLimitResumeInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedLimitKey: Schema.String,
+  notBefore: Schema.optional(IsoDateTime),
+});
+export type NextTurnQueueScheduleUsageLimitResumeInput =
+  typeof NextTurnQueueScheduleUsageLimitResumeInput.Type;
+export const NextTurnQueueCancelUsageLimitResumeInput = Schema.Struct({
+  threadId: ThreadId,
+  itemId: CommandId,
+  expectedRevision: NonNegativeInt,
+});
+export type NextTurnQueueCancelUsageLimitResumeInput =
+  typeof NextTurnQueueCancelUsageLimitResumeInput.Type;
+export const NextTurnQueueRefreshUsageLimitResumeInput = Schema.Struct({
+  threadId: ThreadId,
+  expectedLimitKey: Schema.String,
+});
+export type NextTurnQueueRefreshUsageLimitResumeInput =
+  typeof NextTurnQueueRefreshUsageLimitResumeInput.Type;

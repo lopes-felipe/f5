@@ -8,18 +8,22 @@ import type { ProviderDriverKind, ProviderInstanceEnvironment } from "@t3tools/c
 // invalidates cached identities for instances with sensitive environment.
 const sensitiveFingerprintKey = randomBytes(32);
 
-function sensitiveValueFingerprint(value: string): string {
-  return `hmac:${createHmac("sha256", sensitiveFingerprintKey).update(value).digest("hex")}`;
+function sensitiveValueFingerprint(
+  value: string,
+  key: Uint8Array = sensitiveFingerprintKey,
+): string {
+  return `hmac:${createHmac("sha256", key).update(value).digest("hex")}`;
 }
 
 export function fingerprintableProviderEnvironment(
   environment: ProviderInstanceEnvironment | undefined,
+  key?: Uint8Array,
 ): ReadonlyArray<{ readonly name: string; readonly sensitive: boolean; readonly value: string }> {
   return [...(environment ?? [])]
     .map((variable) => ({
       name: variable.name,
       sensitive: variable.sensitive,
-      value: variable.sensitive ? sensitiveValueFingerprint(variable.value) : variable.value,
+      value: variable.sensitive ? sensitiveValueFingerprint(variable.value, key) : variable.value,
     }))
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
@@ -27,6 +31,7 @@ export function fingerprintableProviderEnvironment(
 export function fingerprintableProviderConfig(
   driver: ProviderDriverKind,
   config: unknown,
+  key?: Uint8Array,
 ): unknown {
   if (driver !== "opencode" || !config || typeof config !== "object" || Array.isArray(config)) {
     return config;
@@ -36,7 +41,7 @@ export function fingerprintableProviderConfig(
   return {
     ...record,
     ...(typeof serverPassword === "string" && serverPassword.length > 0
-      ? { serverPassword: sensitiveValueFingerprint(serverPassword) }
+      ? { serverPassword: sensitiveValueFingerprint(serverPassword, key) }
       : {}),
   };
 }

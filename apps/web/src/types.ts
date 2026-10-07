@@ -212,6 +212,7 @@ export interface ThreadSession {
   lastError?: string;
   lastErrorId?: string | null;
   lastErrorOccurredAt?: string | null;
+  usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null;
   tokenUsageSource?: "provider" | "estimated";
   orchestrationStatus: OrchestrationSessionStatus;
 }

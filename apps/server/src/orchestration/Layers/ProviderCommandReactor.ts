@@ -2164,18 +2164,39 @@ const make = Effect.gen(function* () {
       ),
       Effect.mapError((error) => {
         if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
+        let rejectedUsageLimit: import("@t3tools/contracts").RuntimeUsageLimit | undefined;
+        let rejectedMessage: string | undefined;
+        let nested: unknown = error;
+        const seen = new Set<unknown>();
+        while (nested && typeof nested === "object" && !seen.has(nested)) {
+          seen.add(nested);
+          if (
+            Schema.is(ProviderAdapterRequestError)(nested) &&
+            nested.usageLimit &&
+            nested.method === "turn/start"
+          ) {
+            rejectedUsageLimit = nested.usageLimit;
+            rejectedMessage = nested.message;
+            break;
+          }
+          nested = "cause" in nested ? nested.cause : undefined;
+        }
         const definitelyNotSent =
+          !!rejectedUsageLimit ||
           Schema.is(ProviderValidationError)(error) ||
           Schema.is(ProviderSessionNotFoundError)(error) ||
           Schema.is(ProviderUnsupportedError)(error) ||
           Schema.is(ProviderAdapterValidationError)(error);
-        const detail = definitelyNotSent
-          ? error instanceof Error
-            ? error.message
-            : "The provider rejected the turn before it was sent."
-          : "The provider delivery outcome is unknown. Recheck provider history before retrying.";
+        const detail =
+          rejectedMessage ??
+          (definitelyNotSent
+            ? error instanceof Error
+              ? error.message
+              : "The provider rejected the turn before it was sent."
+            : "The provider delivery outcome is unknown. Recheck provider history before retrying.");
         return new ProviderTurnDeliveryError({
           certainty: definitelyNotSent ? "not_sent" : "unknown",
+          ...(rejectedUsageLimit ? { usageLimit: rejectedUsageLimit } : {}),
           retryable: false,
           detail,
           cause: error,

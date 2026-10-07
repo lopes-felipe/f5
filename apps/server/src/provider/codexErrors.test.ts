@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { formatCodexUnsupportedModelError, isUnsupportedCodexModelError } from "./codexErrors.ts";
+import {
+  detectCodexUsageLimit,
+  formatCodexUnsupportedModelError,
+  isUnsupportedCodexModelError,
+} from "./codexErrors.ts";
 
 describe("Codex unsupported model errors", () => {
   it.each([
@@ -25,4 +29,51 @@ describe("Codex unsupported model errors", () => {
       "The model cache directory does not exist",
     );
   });
+});
+
+it("accepts an exhausted provider update from the current turn, but excludes previous-turn caches", () => {
+  const input = {
+    message: "usage limit reached",
+    errorInfo: "usageLimitReached",
+    at: "2026-10-01T00:00:03Z",
+    snapshotNotBefore: "2026-10-01T00:00:01Z",
+    snapshots: [
+      {
+        observedAt: "2026-10-01T00:00:02Z",
+        snapshot: {
+          primary: { usedPercent: 100, resetsAt: Date.parse("2026-10-02T00:00:00Z") / 1000 },
+        },
+      },
+    ],
+  };
+  expect(detectCodexUsageLimit(input)?.resetsAt).toBe("2026-10-02T00:00:00.000Z");
+  expect(
+    detectCodexUsageLimit({ ...input, snapshotNotBefore: "2026-10-01T00:00:02.500Z" })?.resetsAt,
+  ).toBeNull();
+  const { snapshotNotBefore: _, ...withoutCurrentTurn } = input;
+  expect(detectCodexUsageLimit(withoutCurrentTurn)?.resetsAt).toBeNull();
+});
+
+it("ignores stale workspace blocks while retaining fresh spend-block suppression", () => {
+  const input = {
+    message: "usage limit reached",
+    errorInfo: "usageLimitReached",
+    at: "2026-10-01T00:00:03Z",
+    snapshotNotBefore: "2026-10-01T00:00:01Z",
+    snapshots: [
+      {
+        observedAt: "2026-10-01T00:00:00Z",
+        snapshot: { limitId: "workspace", rateLimitReachedType: "credits_depleted" },
+      },
+      {
+        observedAt: "2026-10-01T00:00:02Z",
+        snapshot: {
+          limitId: "codex",
+          primary: { usedPercent: 100, resetsAt: Date.parse("2026-10-02T00:00:00Z") / 1000 },
+        },
+      },
+    ],
+  };
+  expect(detectCodexUsageLimit(input)?.resetsAt).toBe("2026-10-02T00:00:00.000Z");
+  expect(detectCodexUsageLimit({ ...input, snapshotNotBefore: "2026-09-30T00:00:00Z" })).toBeNull();
 });

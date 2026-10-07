@@ -65,6 +65,9 @@ export function GeneralSettings() {
   const resumeActiveTurnsAfterRestart = useSettings(
     (settings) => settings.resumeActiveTurnsAfterRestart,
   );
+  const autoResumeUsageLimitedThreads = useSettings(
+    (settings) => settings.autoResumeUsageLimitedThreads,
+  );
   const defaultMergeMethod = useSettings((settings) => settings.prHubDefaultMergeMethod);
   const { updateSettings: updateServerSettings } = useUpdateSettings();
   const setDefaultMergeMethod = (value: "merge" | "squash" | "rebase" | null) => {
@@ -259,6 +262,19 @@ export function GeneralSettings() {
                 checked={resumeActiveTurnsAfterRestart}
                 onCheckedChange={(value) =>
                   void updateServerSettings({ resumeActiveTurnsAfterRestart: value })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="Auto-continue after usage limits"
+            description="When a Codex or Claude usage limit stops a thread, send continue automatically after the limit resets."
+            control={
+              <Switch
+                aria-label="Auto-continue after usage limits"
+                checked={autoResumeUsageLimitedThreads}
+                onCheckedChange={(value) =>
+                  void updateServerSettings({ autoResumeUsageLimitedThreads: value })
                 }
               />
             }

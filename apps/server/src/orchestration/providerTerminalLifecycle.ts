@@ -2,6 +2,8 @@ import {
   CommandId,
   type OrchestrationCommand,
   type OrchestrationThread,
+  type OrchestrationUsageLimit,
+  type RuntimeUsageLimit,
   type ProviderRuntimeEvent,
   TurnId,
   type UsageTurnFact,
@@ -107,15 +109,27 @@ export function makeCompletedTurnUsageFact(input: {
     projectId: input.thread.projectId,
     provider: input.event.provider,
     providerInstanceId:
-      input.event.providerInstanceId ??
-      input.thread.session?.providerInstanceId ??
-      input.thread.modelSelection?.instanceId ??
-      null,
+      input.event.providerInstanceId ?? input.thread.session?.providerInstanceId ?? null,
     model: input.thread.model || null,
     ...normalizeTurnUsage(input.event),
     completedAt: input.event.createdAt,
     sourceEventId: input.event.eventId,
   };
+}
+
+/** Correlate terminal reports by provider instance and turn, rather than event id. */
+export function toOrchestrationUsageLimit(
+  limit: RuntimeUsageLimit | undefined,
+  event: ProviderRuntimeEvent,
+  thread: OrchestrationThread,
+): OrchestrationUsageLimit | null {
+  if (!limit) return null;
+  const providerInstanceId = event.providerInstanceId ?? thread.session?.providerInstanceId ?? null;
+  const turnId = event.turnId
+    ? TurnId.makeUnsafe(String(event.turnId))
+    : (thread.session?.activeTurnId ?? null);
+  if (!providerInstanceId || !turnId) return null;
+  return { ...limit, providerInstanceId, turnId, deliveryId: null };
 }
 
 export function makeTurnCompletedSessionSetCommand(input: {
@@ -155,10 +169,14 @@ export function makeTurnCompletedSessionSetCommand(input: {
       threadId: thread.id,
       status,
       providerName: event.provider,
+      providerInstanceId: event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
       runtimeMode: thread.session?.runtimeMode ?? "full-access",
       activeTurnId: null,
       lastError,
       lastErrorId: failed ? event.eventId : null,
+      usageLimit: failed
+        ? toOrchestrationUsageLimit(event.payload?.usageLimit, event, thread)
+        : null,
       lastErrorOccurredAt: failed ? createdAt : null,
       ...(event.payload?.totalCostUsd !== undefined
         ? { turnCostUsd: event.payload.totalCostUsd }

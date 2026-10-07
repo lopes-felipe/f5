@@ -26,6 +26,7 @@ export const ensureProviderTurnDeliveriesSchema = Effect.gen(function* () {
       event_json TEXT NOT NULL,
       error_code TEXT,
       error_detail TEXT,
+      usage_limit_json TEXT,
       certainty TEXT CHECK (certainty IS NULL OR certainty IN ('not_sent', 'unknown')),
       not_before TEXT,
       created_at TEXT NOT NULL,
@@ -37,6 +38,9 @@ export const ensureProviderTurnDeliveriesSchema = Effect.gen(function* () {
   const columns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info('provider_turn_deliveries')
   `;
+  if (!columns.some((column) => column.name === "usage_limit_json")) {
+    yield* sql`ALTER TABLE provider_turn_deliveries ADD COLUMN usage_limit_json TEXT`;
+  }
   if (!columns.some((column) => column.name === "outcome_projected_at")) {
     yield* sql`ALTER TABLE provider_turn_deliveries ADD COLUMN outcome_projected_at TEXT`;
   }

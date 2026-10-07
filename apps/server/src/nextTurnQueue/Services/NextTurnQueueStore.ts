@@ -48,7 +48,64 @@ export interface NextTurnQueueClaim {
   readonly leaseOwner: string;
 }
 
+export interface UsageResumeLedger {
+  limitKey: string;
+  state: "scheduled" | "cancelled" | "superseded" | "revoked" | "gave_up" | "completed";
+  source: "manual" | "auto";
+  itemId: CommandId | null;
+  notBefore: string | null;
+  autoCount: number;
+  previousTarget?: string | null;
+}
 export interface NextTurnQueueStoreShape {
+  readonly scheduleUsageLimitResume: (input: {
+    command: ThreadTurnStartCommand;
+    itemId: CommandId;
+    submissionId: CommandId;
+    requestHash: string;
+    limitKey: string;
+    providerInstanceId: string;
+    source: "manual" | "auto";
+    notBefore: string;
+    providerFingerprint?: string | undefined;
+  }) => Effect.Effect<
+    "created" | "rebound" | "already_scheduled" | "suppressed" | "gave_up" | "busy",
+    NextTurnQueueError
+  >;
+  readonly getUsageResumeLedger: (
+    threadId: ThreadId,
+  ) => Effect.Effect<UsageResumeLedger | null, NextTurnQueueError>;
+  readonly recordUsageResumeFailure: (
+    threadId: ThreadId,
+    limitKey: string,
+    eligible: boolean,
+  ) => Effect.Effect<void, NextTurnQueueError>;
+  readonly revokeAutoResumes: (
+    threadIds?: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, NextTurnQueueError>;
+  readonly rescheduleByInstance: (
+    instanceId: string,
+    notBefore: string,
+    guard?: { limitKey?: string; revision?: number },
+  ) => Effect.Effect<ReadonlyArray<ThreadId>, NextTurnQueueError>;
+  readonly resetUsageResumeStreak: (threadId: ThreadId) => Effect.Effect<void, NextTurnQueueError>;
+  readonly markUsageResumeEligible: (
+    threadId: ThreadId,
+    limitKey: string,
+  ) => Effect.Effect<void, NextTurnQueueError>;
+  readonly pruneUsageResumeLedger: (before: string) => Effect.Effect<void, NextTurnQueueError>;
+  readonly completeUsageResume: (threadId: ThreadId) => Effect.Effect<void, NextTurnQueueError>;
+  readonly getUsageResumeContext: (itemId: CommandId) => Effect.Effect<
+    {
+      limitKey: string;
+      providerInstanceId: string;
+      source: "manual" | "auto";
+      fingerprint: string | null;
+      state: UsageResumeLedger["state"];
+    } | null,
+    NextTurnQueueError
+  >;
+
   readonly listByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<NextTurnQueueThreadData, NextTurnQueueError>;
@@ -68,6 +125,11 @@ export interface NextTurnQueueStoreShape {
     readonly itemId: CommandId;
     readonly command: ThreadTurnStartCommand;
     readonly atHead: boolean;
+    readonly notBefore?: string | undefined;
+    readonly scheduleReason?: "usage_limit_reset" | undefined;
+    readonly scheduleLimitKey?: string | undefined;
+    readonly scheduleProviderInstanceId?: string | undefined;
+    readonly supersedeUsageResume?: boolean | undefined;
     /** Holds the turn for a running worktree setup, written atomically with the insert. */
     readonly worktreeBlockToken?: string | undefined;
   }) => Effect.Effect<
@@ -109,6 +171,7 @@ export interface NextTurnQueueStoreShape {
   readonly replacePositions: (input: {
     readonly threadId: ThreadId;
     readonly orderedItemIds: ReadonlyArray<CommandId>;
+    readonly clearScheduleItemId?: CommandId | undefined;
     readonly expectedRevision: number;
   }) => Effect.Effect<void, NextTurnQueueError>;
   /**
@@ -178,6 +241,7 @@ export interface NextTurnQueueStoreShape {
   }) => Effect.Effect<NextTurnQueueItem | null, NextTurnQueueError>;
   readonly softDelete: (input: {
     readonly itemId: CommandId;
+    readonly expectedRevision?: number | undefined;
     readonly expectedUpdatedAt?: string | undefined;
   }) => Effect.Effect<NextTurnQueueItem, NextTurnQueueError>;
   readonly clear: (input: {

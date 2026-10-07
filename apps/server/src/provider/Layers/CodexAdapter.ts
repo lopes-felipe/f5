@@ -1,6 +1,7 @@
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   formatCodexUsageError,
+  detectCodexUsageLimit,
   mergeCodexLimitSnapshot,
   type CodexLimitSnapshot,
 } from "../codexErrors.ts";
@@ -152,6 +153,16 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
     provider: PROVIDER,
     method,
     detail: toMessage(cause, `${method} failed`),
+    ...(method === "turn/start"
+      ? (() => {
+          const usageLimit = detectCodexUsageLimit({
+            message: toMessage(cause, ""),
+            errorInfo: asObject(asObject(cause)?.data)?.codexErrorInfo,
+            at: new Date().toISOString(),
+          });
+          return usageLimit ? { usageLimit } : {};
+        })()
+      : {}),
     cause,
   });
 }
@@ -1054,6 +1065,8 @@ function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
   limits?: CodexLimitSnapshot,
+  snapshots?: ReadonlyArray<{ snapshot: CodexLimitSnapshot; observedAt: string }>,
+  snapshotNotBefore?: string,
 ): ReadonlyArray<ProviderRuntimeEvent> {
   const payload = asObject(event.payload);
   const turn = asObject(payload?.turn);
@@ -1289,6 +1302,17 @@ function mapToRuntimeEvents(
 
   if (event.method === "turn/completed") {
     const rawErrorMessage = asString(asObject(turn?.error)?.message);
+    const usageLimit =
+      toTurnStatus(turn?.status) === "failed"
+        ? detectCodexUsageLimit({
+            message: rawErrorMessage ?? "",
+            errorInfo: asObject(turn?.error)?.codexErrorInfo,
+            snapshots: snapshots ?? (limits ? [limits] : []),
+            ...(snapshotNotBefore ? { snapshotNotBefore } : {}),
+            at: event.createdAt,
+            deferMessageReset: true,
+          })
+        : null;
     const errorMessage = rawErrorMessage
       ? formatCodexUsageError(
           rawErrorMessage,
@@ -1310,6 +1334,7 @@ function mapToRuntimeEvents(
             ? { totalCostUsd: asNumber(turn?.totalCostUsd) }
             : {}),
           ...(errorMessage ? { errorMessage } : {}),
+          ...(usageLimit ? { usageLimit } : {}),
         },
       },
     ];
@@ -2092,6 +2117,16 @@ function mapToRuntimeEvents(
     const message =
       asString(asObject(payload?.error)?.message) ?? event.message ?? "Provider runtime error";
     const willRetry = payload?.willRetry === true;
+    const usageLimit = willRetry
+      ? null
+      : detectCodexUsageLimit({
+          message,
+          errorInfo: asObject(payload?.error)?.codexErrorInfo,
+          snapshots: snapshots ?? (limits ? [limits] : []),
+          ...(snapshotNotBefore ? { snapshotNotBefore } : {}),
+          at: event.createdAt,
+          deferMessageReset: true,
+        });
     return [
       {
         type: willRetry ? "runtime.warning" : "runtime.error",
@@ -2106,6 +2141,7 @@ function mapToRuntimeEvents(
                 asObject(payload?.error)?.codexErrorInfo,
               ),
           ...(!willRetry ? { class: "provider_error" as const } : {}),
+          ...(usageLimit ? { usageLimit } : {}),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
@@ -2563,7 +2599,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       });
 
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
-    const limitsByThread = new Map<ThreadId, CodexLimitSnapshot>();
+    const turnStartedAtByThread = new Map<ThreadId, string>();
+    const limitsByThread = new Map<
+      ThreadId,
+      Map<string, { snapshot: CodexLimitSnapshot; observedAt: string }>
+    >();
 
     yield* Effect.acquireRelease(
       Effect.gen(function* () {
@@ -2582,23 +2622,32 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               return;
             }
             yield* writeNativeEvent(event);
+            if (event.method === "turn/started")
+              turnStartedAtByThread.set(event.threadId, event.createdAt);
             if (event.method === "account/rateLimits/updated") {
               const snapshot = asObject(asObject(event.payload)?.rateLimits);
               if (snapshot) {
+                const buckets = limitsByThread.get(event.threadId) ?? new Map();
+                const key = typeof snapshot.limitId === "string" ? snapshot.limitId : "codex";
                 const merged = mergeCodexLimitSnapshot(
-                  limitsByThread.get(event.threadId),
+                  buckets.get(key)?.snapshot,
                   snapshot as CodexLimitSnapshot,
                 );
-                if (merged) limitsByThread.set(event.threadId, merged);
+                if (merged) buckets.set(key, { snapshot: merged, observedAt: event.createdAt });
+                limitsByThread.set(event.threadId, buckets);
               }
             }
             const runtimeEvents = mapToRuntimeEvents(
               event,
               event.threadId,
-              limitsByThread.get(event.threadId),
+              limitsByThread.get(event.threadId)?.get("codex")?.snapshot,
+              [...(limitsByThread.get(event.threadId)?.values() ?? [])],
+              turnStartedAtByThread.get(event.threadId),
             );
-            if (event.method === "session/exited" || event.method === "session/closed")
+            if (event.method === "session/exited" || event.method === "session/closed") {
               limitsByThread.delete(event.threadId);
+              turnStartedAtByThread.delete(event.threadId);
+            }
             if (runtimeEvents.length === 0) {
               yield* Effect.logDebug("ignoring unhandled Codex provider event", {
                 method: event.method,

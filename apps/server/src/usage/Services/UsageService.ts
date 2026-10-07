@@ -5,6 +5,8 @@ import type {
   UsageAccounts,
   UsageGetSummaryInput,
   UsageSummary,
+  ProviderInstanceId,
+  UsageAccount,
 } from "@t3tools/contracts";
 import { Schema, ServiceMap } from "effect";
 import type { Effect } from "effect";
@@ -16,6 +18,12 @@ export class UsageQueryError extends Schema.TaggedErrorClass<UsageQueryError>()(
 }) {}
 
 export interface UsageServiceShape {
+  readonly refreshAccount: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<
+    { snapshot: UsageAccount | null; fresh: boolean; nextAllowedAt?: string },
+    UsageQueryError
+  >;
   readonly consumeResetCredit: (
     input: UsageConsumeResetCreditInput,
   ) => Effect.Effect<UsageConsumeResetCreditResult, UsageQueryError>;

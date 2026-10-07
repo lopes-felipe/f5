@@ -1,3 +1,4 @@
+import { RuntimeUsageLimit } from "@t3tools/contracts";
 import { Schema } from "effect";
 
 import type { CheckpointServiceError } from "../checkpointing/Errors.ts";
@@ -59,6 +60,7 @@ export class ProviderAdapterRequestError extends Schema.TaggedErrorClass<Provide
   {
     provider: Schema.String,
     method: Schema.String,
+    usageLimit: Schema.optional(RuntimeUsageLimit),
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect),
   },
@@ -166,6 +168,7 @@ export class ProviderTurnDeliveryError extends Schema.TaggedErrorClass<ProviderT
   {
     certainty: Schema.Literals(["not_sent", "unknown"]),
     retryable: Schema.Boolean,
+    usageLimit: Schema.optional(RuntimeUsageLimit),
     detail: Schema.String,
     cause: Schema.optional(Schema.Defect),
   },

@@ -272,6 +272,7 @@ const StorageCleanupSettingsPatch = Schema.Struct({
 });
 
 export const ProjectSettingsOverrides = Schema.Struct({
+  autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
@@ -290,6 +291,7 @@ export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 export const ServerSettings = Schema.Struct({
   usagePriceOverrides: Schema.Array(UsagePriceOverride).pipe(Schema.withDecodingDefault(() => [])),
+  autoResumeUsageLimitedThreads: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   resumeActiveTurnsAfterRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultRuntimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => "full-access" as const)),
   worktreeSubmodules: WorktreeSubmodules.pipe(
@@ -438,6 +440,7 @@ const PrHubSettingsPatch = Schema.Struct({
 
 export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(Schema.Array(UsagePriceOverride)),
+  autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
@@ -494,6 +497,7 @@ export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "resumeActiveTurnsAfterRestart",
+  "autoResumeUsageLimitedThreads",
   "defaultRuntimeMode",
   "defaultThreadEnvMode",
   "worktreeSubmodules",

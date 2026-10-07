@@ -75,6 +75,8 @@ export default mergeConfig(
         "src/components/chat/ExpandedImagePreview.browser.tsx",
         "src/components/chat/MessagesTimeline.browser.tsx",
         "src/components/chat/NextTurnQueuePanel.browser.tsx",
+        "src/components/chat/UsageLimitResumeAction.browser.tsx",
+        "src/components/chat/NextTurnQueueRow.browser.tsx",
         "src/components/chat/AsyncUserInputPanel.browser.tsx",
         "src/components/chat/ProviderInstanceModelPicker.browser.tsx",
         "src/components/chat/ProviderModelPicker.browser.tsx",

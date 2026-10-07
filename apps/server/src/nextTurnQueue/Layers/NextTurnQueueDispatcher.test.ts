@@ -1,3 +1,5 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
+import type { OrchestrationThread } from "@t3tools/contracts";
 import path from "node:path";
 import os from "node:os";
 import { GitCommandError } from "../../git/Errors.ts";
@@ -28,7 +30,11 @@ import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
 
-const makeDependencies = (worktreePath: string | null) =>
+const makeDependencies = (
+  worktreePath: string | null,
+  resumeThread?: OrchestrationThread,
+  beforeSessionRead: Effect.Effect<void> = Effect.void,
+) =>
   Layer.mergeAll(
     Layer.succeed(ProjectionThreadRepository, {
       getById: ({ threadId }: { threadId: ThreadId }) =>
@@ -44,7 +50,16 @@ const makeDependencies = (worktreePath: string | null) =>
         ),
     } as never),
     Layer.succeed(ProjectionThreadSessionRepository, {
-      getByThreadId: () => Effect.succeed(Option.none()),
+      getByThreadId: () =>
+        beforeSessionRead.pipe(
+          Effect.andThen(
+            Effect.succeed(
+              resumeThread?.session
+                ? Option.some({ ...resumeThread.session, threadId: resumeThread.id })
+                : Option.none(),
+            ),
+          ),
+        ),
     } as never),
     Layer.succeed(OrchestrationCommandReceiptRepository, {
       getByCommandId: () => Effect.succeed(Option.none()),
@@ -60,6 +75,7 @@ const makeDependencies = (worktreePath: string | null) =>
         }),
       getReadModel: () =>
         Effect.succeed({
+          threads: resumeThread ? [resumeThread] : [],
           projects: [
             { id: ProjectId.makeUnsafe("queue-dispatcher-project"), workspaceRoot: process.cwd() },
           ],
@@ -80,12 +96,20 @@ const storeLayer = NextTurnQueueStoreLive.pipe(Layer.provideMerge(persistence));
 const makeTestLayer = (
   git: GitCoreShape = makeFakeGitCore().service,
   worktreePath: string | null = null,
+  resumeThread?: OrchestrationThread,
+  automatic?: boolean,
+  beforeSessionRead?: Effect.Effect<void>,
 ) =>
   NextTurnQueueDispatcherLive.pipe(
     Layer.provide(Layer.succeed(GitCore, git)),
     Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(persistence))),
     Layer.provideMerge(storeLayer),
-    Layer.provideMerge(makeDependencies(worktreePath)),
+    Layer.provideMerge(makeDependencies(worktreePath, resumeThread, beforeSessionRead)),
+    Layer.provideMerge(
+      automatic === undefined
+        ? Layer.empty
+        : ServerSettingsService.layerTest({ autoResumeUsageLimitedThreads: automatic }),
+    ),
   );
 const layer = it.layer(makeTestLayer());
 
@@ -455,3 +479,213 @@ for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] a
     );
   });
 }
+
+for (const automatic of [false, true]) {
+  it.effect(`schedules reset recovery at startup only when opted in: ${automatic}`, () => {
+    const threadId = ThreadId.makeUnsafe(`recovery-startup-${automatic}`);
+    const resetsAt = new Date(Date.now() + 2000).toISOString();
+    const thread = {
+      id: threadId,
+      projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+      deletedAt: null,
+      archivedAt: null,
+      model: "gpt-5.1-codex",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      pendingUserInputs: [],
+      session: {
+        threadId,
+        providerInstanceId: "codex",
+        status: "error",
+        activeTurnId: null,
+        lastError: "Usage limit reached",
+        updatedAt: new Date().toISOString(),
+        usageLimit: {
+          providerInstanceId: "codex",
+          turnId: "blocked-turn",
+          deliveryId: null,
+          windows: [{ id: "five_hour", label: "5-hour", resetsAt }],
+          resetsAt,
+          resetSource: "provider",
+          evidence: "typed",
+        },
+      },
+    } as unknown as OrchestrationThread;
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const store = yield* NextTurnQueueStore;
+        yield* seedThread(threadId);
+        yield* dispatcher.start;
+        yield* dispatcher.drain;
+        const snapshot = yield* dispatcher.getSnapshot(threadId);
+        assert.equal(snapshot.items.length, automatic ? 1 : 0);
+        if (!automatic) return;
+        assert.equal(snapshot.reasonCode, "usage_limit_reset");
+        assert.equal(
+          snapshot.items[0]?.notBefore,
+          new Date(Date.parse(resetsAt) + 60_000).toISOString(),
+        );
+        assert.equal(snapshot.items[0]?.command.message.text, "continue");
+        assert.equal(snapshot.items[0]?.command.expectedTurnId, undefined);
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal((yield* store.listByThread(threadId)).items.length, 1);
+        const result = yield* dispatcher.cancelUsageLimitResume({
+          threadId,
+          itemId: snapshot.items[0]!.itemId,
+          expectedRevision: (yield* store.listByThread(threadId)).state.revision,
+        });
+        assert.equal(result.kind, "cancelled");
+        assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "cancelled");
+      }),
+    ).pipe(Effect.provide(makeTestLayer(makeFakeGitCore().service, null, thread, automatic)));
+  });
+}
+
+it.effect("does not undo a recovery scheduled while a stale auto-pause gate is being read", () =>
+  Effect.gen(function* () {
+    const gateEntered = yield* Deferred.make<void>();
+    const releaseGate = yield* Deferred.make<void>();
+    let firstRead = true;
+    const beforeSessionRead = Effect.gen(function* () {
+      if (!firstRead) return;
+      firstRead = false;
+      yield* Deferred.succeed(gateEntered, undefined);
+      yield* Deferred.await(releaseGate);
+    });
+    const threadId = ThreadId.makeUnsafe("recovery-stale-auto-pause");
+    const resetsAt = new Date(Date.now() + 60_000).toISOString();
+    const thread = {
+      id: threadId,
+      projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+      deletedAt: null,
+      archivedAt: null,
+      model: "gpt-5.1-codex",
+      runtimeMode: "approval-required",
+      interactionMode: "default",
+      pendingUserInputs: [],
+      session: {
+        threadId,
+        providerInstanceId: "codex",
+        status: "error",
+        activeTurnId: null,
+        lastError: "Usage limit reached",
+        updatedAt: new Date().toISOString(),
+        usageLimit: {
+          providerInstanceId: "codex",
+          turnId: "blocked-turn",
+          deliveryId: null,
+          windows: [],
+          resetsAt,
+          resetSource: "provider",
+          evidence: "typed",
+        },
+      },
+    } as unknown as OrchestrationThread;
+    yield* Effect.gen(function* () {
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      yield* seedThread(threadId);
+      yield* insert(901, threadId);
+      const original = (yield* store.listByThread(threadId)).items[0]!;
+      yield* dispatcher.notify(threadId);
+      yield* Deferred.await(gateEntered);
+      // The dispatcher has read the old queue revision, but its session read
+      // cannot finish until this recovery transaction commits.
+      const recoveryId = CommandId.makeUnsafe("stale-pause-recovery");
+      yield* store.scheduleUsageLimitResume({
+        itemId: recoveryId,
+        submissionId: recoveryId,
+        requestHash: "stale-pause-recovery",
+        command: {
+          ...original.command,
+          commandId: recoveryId,
+          message: {
+            ...original.command.message,
+            messageId: MessageId.makeUnsafe("stale-pause-recovery-message"),
+            text: "continue",
+          },
+          presentation: "continuation",
+        },
+        limitKey: "instance:codex:turn:blocked-turn",
+        providerInstanceId: "codex",
+        source: "manual",
+        notBefore: resetsAt,
+      });
+      yield* Deferred.succeed(releaseGate, undefined);
+      yield* dispatcher.drain;
+      const queue = yield* store.listByThread(threadId);
+      assert.equal(queue.state.paused, false);
+      assert.equal(queue.items[0]?.itemId, recoveryId);
+      assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, "usage_limit_reset");
+    }).pipe(
+      Effect.provide(
+        makeTestLayer(makeFakeGitCore().service, null, thread, undefined, beforeSessionRead),
+      ),
+    );
+  }).pipe(Effect.scoped),
+);
+
+it.effect("promotes reset recovery once and returns already-sending on cancellation", () => {
+  const threadId = ThreadId.makeUnsafe("recovery-promote");
+  const resetsAt = new Date(Date.now() + 60_000).toISOString();
+  const thread = {
+    id: threadId,
+    projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+    deletedAt: null,
+    archivedAt: null,
+    model: "gpt-5.1-codex",
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    pendingUserInputs: [],
+    session: {
+      threadId,
+      providerInstanceId: "codex",
+      status: "error",
+      activeTurnId: null,
+      lastError: "Usage limit reached",
+      updatedAt: new Date().toISOString(),
+      usageLimit: {
+        providerInstanceId: "codex",
+        turnId: "blocked-turn",
+        deliveryId: null,
+        windows: [],
+        resetsAt,
+        resetSource: "provider",
+        evidence: "typed",
+      },
+    },
+  } as unknown as OrchestrationThread;
+  return Effect.gen(function* () {
+    dispatched.length = 0;
+    const dispatcher = yield* NextTurnQueueDispatcher;
+    const store = yield* NextTurnQueueStore;
+    yield* seedThread(threadId);
+    const snapshot = yield* dispatcher.scheduleUsageLimitResume({
+      threadId,
+      expectedLimitKey: "instance:codex:turn:blocked-turn",
+      source: "manual",
+    });
+    yield* dispatcher.drain;
+    assert.equal(dispatched.length, 0);
+    yield* dispatcher.promote({
+      itemId: snapshot.items[0]!.itemId,
+      expectedRevision: (yield* store.listByThread(threadId)).state.revision,
+      interruptActive: false,
+    });
+    yield* dispatcher.drain;
+    assert.equal(dispatched.length, 1);
+    const queue = yield* store.listByThread(threadId);
+    assert.equal(queue.items[0]?.notBefore, null);
+    const cancelled = yield* dispatcher.cancelUsageLimitResume({
+      threadId,
+      itemId: queue.items[0]!.itemId,
+      expectedRevision: queue.state.revision,
+    });
+    assert.equal(cancelled.kind, "already_sending");
+    yield* dispatcher.notify(threadId);
+    yield* dispatcher.drain;
+    assert.equal(dispatched.length, 1);
+  }).pipe(Effect.provide(makeTestLayer(makeFakeGitCore().service, null, thread)));
+});

@@ -1,3 +1,4 @@
+import { ensureUsageLimitResumeSchema } from "./103_UsageLimitResume.ts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -56,6 +57,10 @@ export const ensureNextTurnQueueSchema = Effect.gen(function* () {
         CHECK (status IN ('queued', 'dispatching', 'failed')),
       attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
       not_before TEXT,
+      schedule_reason TEXT,
+      schedule_limit_key TEXT,
+      schedule_provider_instance_id TEXT,
+      schedule_provider_fingerprint TEXT,
       lease_owner TEXT,
       lease_expires_at TEXT,
       dispatch_started_at TEXT,
@@ -124,4 +129,5 @@ export const ensureNextTurnQueueSchema = Effect.gen(function* () {
     CREATE INDEX IF NOT EXISTS idx_turn_submissions_thread_settled
     ON turn_submissions(thread_id, settled_at)
   `;
+  yield* ensureUsageLimitResumeSchema;
 });

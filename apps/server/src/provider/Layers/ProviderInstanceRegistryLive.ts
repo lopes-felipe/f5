@@ -1,3 +1,4 @@
+import { stableFingerprintValue } from "../providerConfigurationFingerprint.ts";
 import { ServerConfig } from "../../config";
 /**
  * ProviderInstanceRegistryLive — runtime implementation of
@@ -99,20 +100,6 @@ const decodedConfigEnabled = (config: unknown): boolean | undefined => {
   return typeof enabled === "boolean" ? enabled : undefined;
 };
 
-function sortForStableJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortForStableJson);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .toSorted(([left], [right]) => left.localeCompare(right))
-        .map(([key, nested]) => [key, sortForStableJson(nested)]),
-    );
-  }
-  return value;
-}
-
 function providerConfigurationFingerprint(input: {
   readonly entry: ProviderInstanceConfig;
   readonly decodedConfig: unknown;
@@ -120,7 +107,7 @@ function providerConfigurationFingerprint(input: {
   return createHash("sha256")
     .update(
       JSON.stringify(
-        sortForStableJson({
+        stableFingerprintValue({
           version: 1,
           driver: input.entry.driver,
           displayName: input.entry.displayName ?? null,

@@ -60,6 +60,11 @@ export class NextTurnQueueClaimLostError extends Schema.TaggedErrorClass<NextTur
   QueueErrorFields,
 ) {}
 
+export class NextTurnQueueUsageLimitStateError extends Schema.TaggedErrorClass<NextTurnQueueUsageLimitStateError>()(
+  "NextTurnQueueUsageLimitStateError",
+  { ...QueueErrorFields, reason: Schema.Literals(["ineligible", "transient"]) },
+) {}
+
 export type NextTurnQueueError =
   | NextTurnQueueItemNotFoundError
   | NextTurnQueueThreadNotFoundError
@@ -71,7 +76,8 @@ export type NextTurnQueueError =
   | NextTurnQueueBootstrapNotAllowedError
   | NextTurnQueueIdempotencyConflictError
   | NextTurnQueueStorageError
-  | NextTurnQueueClaimLostError;
+  | NextTurnQueueClaimLostError
+  | NextTurnQueueUsageLimitStateError;
 
 export function toNextTurnQueueStorageError(
   cause: unknown,

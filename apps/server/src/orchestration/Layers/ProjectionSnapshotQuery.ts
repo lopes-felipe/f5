@@ -164,7 +164,11 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
-const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
+const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
+  Struct.assign({
+    usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+  }),
+);
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
   Struct.assign({
     files: Schema.fromJsonString(Schema.Array(OrchestrationCheckpointFile)),
@@ -1192,6 +1196,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           active_turn_id AS "activeTurnId",
           last_error AS "lastError",
           last_error_id AS "lastErrorId",
+          usage_limit_json AS "usageLimit",
           last_error_occurred_at AS "lastErrorOccurredAt",
           last_error_retryability AS "lastErrorRetryability",
           estimated_context_tokens AS "estimatedContextTokens",
@@ -2516,6 +2521,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           activeTurnId: row.activeTurnId,
           lastError: row.lastError,
           lastErrorId: row.lastErrorId,
+          usageLimit: row.usageLimit ?? null,
+          providerInstanceId: row.providerInstanceId ?? null,
           lastErrorOccurredAt: row.lastErrorOccurredAt,
           lastErrorRetryability: row.lastErrorRetryability,
           ...(row.estimatedContextTokens !== null

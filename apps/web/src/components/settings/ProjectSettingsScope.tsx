@@ -265,6 +265,18 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
             }
           />
           <ProjectSettingRow
+            title="Auto-continue after usage limits"
+            source={badge("autoResumeUsageLimitedThreads")}
+            control={
+              <Switch
+                aria-label="Auto-continue after usage limits"
+                disabled={saving}
+                checked={settings.autoResumeUsageLimitedThreads}
+                onCheckedChange={(checked) => set("autoResumeUsageLimitedThreads", checked)}
+              />
+            }
+          />
+          <ProjectSettingRow
             title="Enable agent browser access"
             source={badge("enableAgentBrowserAccess")}
             control={

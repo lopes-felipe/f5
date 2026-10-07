@@ -202,6 +202,9 @@ import type {
   NextTurnQueueDiscardDeliveryInput,
   NextTurnQueueRetryInput,
   NextTurnQueueSetPausedInput,
+  NextTurnQueueScheduleUsageLimitResumeInput,
+  NextTurnQueueCancelUsageLimitResumeInput,
+  NextTurnQueueRefreshUsageLimitResumeInput,
   NextTurnQueueSnapshot,
   NextTurnQueueSubmitInput,
   NextTurnQueueSummary,
@@ -757,6 +760,16 @@ export interface NativeApi {
     promote: (input: NextTurnQueuePromoteInput) => Promise<NextTurnQueueSnapshot>;
     steer: (input: NextTurnQueueSteerInput) => Promise<NextTurnQueueSnapshot>;
     setPaused: (input: NextTurnQueueSetPausedInput) => Promise<NextTurnQueueSnapshot>;
+    scheduleUsageLimitResume: (
+      input: NextTurnQueueScheduleUsageLimitResumeInput,
+    ) => Promise<NextTurnQueueSnapshot>;
+    cancelUsageLimitResume: (input: NextTurnQueueCancelUsageLimitResumeInput) => Promise<{
+      readonly kind: "cancelled" | "already_sending";
+      readonly snapshot: NextTurnQueueSnapshot;
+    }>;
+    refreshUsageLimitResume: (
+      input: NextTurnQueueRefreshUsageLimitResumeInput,
+    ) => Promise<NextTurnQueueSnapshot>;
     duplicate: (input: NextTurnQueueDuplicateInput) => Promise<NextTurnQueueSnapshot>;
     refreshGate: (input: NextTurnQueueRefreshGateInput) => Promise<NextTurnQueueSnapshot>;
     clear: (input: NextTurnQueueClearInput) => Promise<NextTurnQueueMutationResult>;

@@ -1,3 +1,4 @@
+import { RuntimeUsageLimit } from "./usageLimit";
 import { Schema } from "effect";
 import {
   EventId,
@@ -358,6 +359,7 @@ const TurnStartedPayload = Schema.Struct({
 export type TurnStartedPayload = typeof TurnStartedPayload.Type;
 
 const TurnCompletedPayload = Schema.Struct({
+  usageLimit: Schema.optional(RuntimeUsageLimit),
   state: RuntimeTurnState,
   stopReason: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
   usage: Schema.optional(Schema.Unknown),
@@ -667,6 +669,7 @@ const RuntimeWarningPayload = Schema.Struct({
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
 const RuntimeErrorPayload = Schema.Struct({
+  usageLimit: Schema.optional(RuntimeUsageLimit),
   message: TrimmedNonEmptyStringSchema,
   class: Schema.optional(RuntimeErrorClass),
   detail: Schema.optional(Schema.Unknown),

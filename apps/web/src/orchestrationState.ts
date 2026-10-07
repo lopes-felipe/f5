@@ -124,6 +124,7 @@ export function mapSessionFromReadModel(
     providerInstanceId: incoming.providerInstanceId ?? null,
     status: toLegacySessionStatus(incoming.status),
     orchestrationStatus: incoming.status,
+    usageLimit: incoming.usageLimit ?? null,
     activeTurnId: incoming.activeTurnId ?? undefined,
     createdAt: incoming.updatedAt,
     updatedAt: incoming.updatedAt,
@@ -149,6 +150,7 @@ export function mapSessionFromReadModel(
     previous.lastError === next.lastError &&
     previous.lastErrorId === next.lastErrorId &&
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
+    areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
     previous.tokenUsageSource === next.tokenUsageSource
   ) {
     return previous;

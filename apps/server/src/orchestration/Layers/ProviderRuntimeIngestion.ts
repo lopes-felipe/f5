@@ -1,3 +1,7 @@
+import { parseCodexTryAgainAt } from "../../provider/codexErrors.ts";
+import { UsageService } from "../../usage/Services/UsageService.ts";
+import { resolveAccountUsageLimit } from "../../provider/usageLimitMessages.ts";
+import { toOrchestrationUsageLimit } from "../providerTerminalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings";
 import { readProjectSettings } from "../../project/projectSettings";
 import { createHash } from "node:crypto";
@@ -22,6 +26,7 @@ import {
   TurnId,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
 import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -145,6 +150,12 @@ type ItemLifecycleRuntimeEvent = Extract<
 >;
 
 type RuntimeIngestionInput =
+  | {
+      source: "usage-limit-resolved";
+      threadId: ThreadId;
+      limit: OrchestrationUsageLimit;
+      event: ProviderRuntimeEvent;
+    }
   | {
       source: "runtime";
       event: ProviderRuntimeEvent;
@@ -2028,6 +2039,12 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const serverSettings = yield* ServerSettingsService;
   const providerService = yield* ProviderService;
+  const usageService = yield* Effect.serviceOption(UsageService);
+  const ingestionScope = yield* Effect.scope;
+  // Runtime error and terminal reports share one refresh, without blocking the serial worker.
+  const refreshedUsageFailures = new Map<ThreadId, string>();
+  let enqueueResolvedUsageLimit: (input: RuntimeIngestionInput) => Effect.Effect<void> = () =>
+    Effect.void;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
@@ -3142,11 +3159,32 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
+  const processRuntimeEvent = (incomingEvent: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      let event = incomingEvent;
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) return;
+      const previousLimit = thread.session?.usageLimit;
+      if (
+        (event.type === "runtime.error" || event.type === "turn.completed") &&
+        event.payload?.usageLimit &&
+        !event.payload.usageLimit.resetsAt &&
+        event.turnId &&
+        previousLimit?.turnId === event.turnId &&
+        previousLimit.resetsAt
+      ) {
+        const usageLimit = {
+          windows: previousLimit.windows,
+          resetsAt: previousLimit.resetsAt,
+          resetSource: previousLimit.resetSource,
+          evidence: event.payload.usageLimit.evidence,
+        };
+        event =
+          event.type === "runtime.error"
+            ? { ...event, payload: { ...event.payload, usageLimit } }
+            : { ...event, payload: { ...event.payload, usageLimit } };
+      }
 
       yield* threadBackgroundWork.recordProviderEvent(event).pipe(
         Effect.catchCause((cause) =>
@@ -3545,6 +3583,8 @@ const make = Effect.gen(function* () {
                 threadId: thread.id,
                 status,
                 providerName: event.provider,
+                providerInstanceId:
+                  event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
                 runtimeMode: thread.session?.runtimeMode ?? "full-access",
                 ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
                 activeTurnId: nextActiveTurnId,
@@ -3641,6 +3681,8 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             status: "stopped",
             providerName: event.provider,
+            providerInstanceId:
+              event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
             runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
             activeTurnId: null,
             lastError: null,
@@ -3670,6 +3712,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: thread.session?.status ?? "ready",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
@@ -3704,6 +3748,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: thread.session?.status ?? "ready",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
@@ -4281,10 +4327,13 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: "error",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
               lastErrorId: event.eventId,
+              usageLimit: toOrchestrationUsageLimit(event.payload.usageLimit, event, thread),
               lastErrorOccurredAt: now,
               updatedAt: now,
             },
@@ -4364,6 +4413,8 @@ const make = Effect.gen(function* () {
               threadId: thread.id,
               status: thread.session?.status ?? "ready",
               providerName: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
@@ -4396,6 +4447,8 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             status: thread.session?.status ?? "ready",
             providerName: event.provider,
+            providerInstanceId:
+              event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
             runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
             activeTurnId: thread.session?.activeTurnId ?? null,
             lastError: thread.session?.lastError ?? null,
@@ -4482,6 +4535,53 @@ const make = Effect.gen(function* () {
       if (isProviderTerminalRuntimeEvent(event)) {
         yield* providerTerminalEventRepository.markApplied(event.eventId);
       }
+      if (
+        (event.type === "runtime.error" || event.type === "turn.completed") &&
+        event.payload?.usageLimit &&
+        !event.payload.usageLimit.resetsAt
+      ) {
+        const limit = toOrchestrationUsageLimit(event.payload.usageLimit, event, thread);
+        if (limit) {
+          const key = `${limit.providerInstanceId}:${limit.turnId}`;
+          if (refreshedUsageFailures.get(thread.id) !== key) {
+            refreshedUsageFailures.set(thread.id, key);
+            const failure = event;
+            yield* Effect.forkIn(
+              Effect.gen(function* () {
+                let resolved = failure.payload!.usageLimit!;
+                if (Option.isSome(usageService)) {
+                  const refreshed = yield* usageService.value
+                    .refreshAccount(limit.providerInstanceId)
+                    .pipe(Effect.catchCause(() => Effect.succeed(null)));
+                  if (refreshed?.fresh && refreshed.snapshot) {
+                    resolved = resolveAccountUsageLimit(
+                      resolved,
+                      refreshed.snapshot,
+                      failure.createdAt,
+                    );
+                  }
+                }
+                if (!resolved.resetsAt && failure.provider === "codex") {
+                  const message =
+                    failure.type === "runtime.error"
+                      ? failure.payload.message
+                      : (failure.payload.errorMessage ?? "");
+                  const reset = parseCodexTryAgainAt(message, failure.createdAt);
+                  if (reset) resolved = { ...resolved, resetsAt: reset, resetSource: "message" };
+                }
+                if (resolved.resetsAt)
+                  yield* enqueueResolvedUsageLimit({
+                    source: "usage-limit-resolved",
+                    threadId: thread.id,
+                    limit: { ...limit, ...resolved },
+                    event: failure,
+                  });
+              }),
+              ingestionScope,
+            );
+          }
+        }
+      }
     });
 
   const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
@@ -4521,13 +4621,40 @@ const make = Effect.gen(function* () {
     );
 
   const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime"
-      ? processRuntimeEvent(input.event)
-      : input.source === "domain"
-        ? processDomainEvent(input.event)
-        : input.source === "command-output-flush"
-          ? flushCommandExecutionOutput(input.commandExecutionId).pipe(Effect.asVoid)
-          : flushAllCommandExecutionOutput();
+    input.source === "usage-limit-resolved"
+      ? Effect.gen(function* () {
+          const model = yield* orchestrationEngine.getReadModel();
+          const thread = model.threads.find((entry) => entry.id === input.threadId);
+          const session = thread?.session;
+          const current = session?.usageLimit;
+          // Apply through the same worker, so later turns and unrelated errors cannot be overwritten.
+          if (
+            !session ||
+            !current ||
+            current.turnId !== input.limit.turnId ||
+            current.providerInstanceId !== input.limit.providerInstanceId ||
+            !session.lastError ||
+            current.resetsAt ||
+            session.status === "running" ||
+            session.status === "starting" ||
+            (session.activeTurnId !== null && session.activeTurnId !== input.limit.turnId)
+          )
+            return;
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(input.event, "usage-limit-reset-resolved"),
+            threadId: input.threadId,
+            session: { ...session, usageLimit: input.limit },
+            createdAt: new Date().toISOString(),
+          });
+        })
+      : input.source === "runtime"
+        ? processRuntimeEvent(input.event)
+        : input.source === "domain"
+          ? processDomainEvent(input.event)
+          : input.source === "command-output-flush"
+            ? flushCommandExecutionOutput(input.commandExecutionId).pipe(Effect.asVoid)
+            : flushAllCommandExecutionOutput();
 
   const processInputSafely = (input: RuntimeIngestionInput) =>
     processInput(input).pipe(
@@ -4575,6 +4702,7 @@ const make = Effect.gen(function* () {
     );
 
   const worker = yield* makeDrainableWorker(processInputSafely);
+  enqueueResolvedUsageLimit = worker.enqueue;
   enqueueCommandOutputFlush = (commandExecutionId) => {
     void Effect.runPromise(worker.enqueue({ source: "command-output-flush", commandExecutionId }));
   };

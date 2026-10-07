@@ -81,6 +81,16 @@ export class ThreadTurnAlreadyActiveError extends Schema.TaggedErrorClass<Thread
   }
 }
 
+/** Readiness changed between the queue gate and command acceptance; retry the same identity. */
+export class ThreadTurnNotReadyError extends Schema.TaggedErrorClass<ThreadTurnNotReadyError>()(
+  "ThreadTurnNotReadyError",
+  { threadId: Schema.String, detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedErrorClass<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -113,6 +123,7 @@ export type OrchestrationDispatchError =
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | ThreadTurnAlreadyActiveError
+  | ThreadTurnNotReadyError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;
 

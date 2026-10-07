@@ -54,6 +54,75 @@ function gate(overrides: Record<string, unknown> = {}) {
 }
 
 describe("resolveNextTurnQueueGate", () => {
+  it("allows only the recovery that owns the current failed turn", () => {
+    const usageLimit = {
+      providerInstanceId: "codex",
+      turnId: "limited",
+      deliveryId: null,
+      windows: [],
+      resetsAt: null,
+      resetSource: null,
+      evidence: "typed",
+    };
+    const recovery = { ...item, scheduleReason: "usage_limit_reset" };
+    const session = {
+      status: "error",
+      lastError: "Usage limit reached",
+      activeTurnId: null,
+      updatedAt: now,
+      usageLimit,
+      providerInstanceId: "codex",
+    };
+    expect(
+      gate({
+        item: recovery,
+        session,
+        scheduleLimitKey: "instance:codex:turn:limited",
+        scheduleProviderInstanceId: "codex",
+      }),
+    ).toEqual({ kind: "ready" });
+    expect(
+      gate({
+        item: recovery,
+        session,
+        scheduleLimitKey: "instance:codex:turn:other",
+        scheduleProviderInstanceId: "codex",
+      }),
+    ).toEqual(expect.objectContaining({ kind: "drop", reasonCode: "usage_limit_context_changed" }));
+    expect(
+      gate({
+        item: recovery,
+        session: { ...session, usageLimit: null },
+        scheduleLimitKey: "instance:codex:turn:limited",
+      }),
+    ).toEqual(expect.objectContaining({ kind: "drop", reasonCode: "usage_limit_context_changed" }));
+  });
+  it("reports the reset wait separately from transport backoff", () => {
+    const future = "2026-01-02T00:00:00.000Z";
+    expect(
+      gate({ item: { ...item, scheduleReason: "usage_limit_reset", notBefore: future } }),
+    ).toEqual({ kind: "wait", reasonCode: "usage_limit_reset" });
+    expect(
+      gate({
+        item: { ...item, scheduleReason: "usage_limit_reset", notBefore: future, attemptCount: 1 },
+      }),
+    ).toEqual({ kind: "wait", reasonCode: "delivery_retrying" });
+  });
+  it("pauses when the provider changes while preserving manual pauses", () => {
+    const recovery = { ...item, scheduleReason: "usage_limit_reset" };
+    expect(gate({ item: recovery, providerContextChanged: true })).toEqual({
+      kind: "autoPause",
+      reasonCode: "usage_limit_context_changed",
+    });
+    expect(
+      gate({
+        item: recovery,
+        providerContextChanged: true,
+        state: { ...state, paused: true, pauseReasonCode: "manual_pause" },
+      }),
+    ).toEqual({ kind: "wait", reasonCode: "manual_pause" });
+  });
+
   it("is ready without a session row", () => {
     expect(gate()).toEqual({ kind: "ready" });
   });

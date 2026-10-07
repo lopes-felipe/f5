@@ -1623,6 +1623,49 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("attaches subscription evidence only to terminal Codex failures", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      for (const method of ["error", "turn/completed"] as const) {
+        const first = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+        lifecycleManager.emit("event", {
+          id: asEventId(`usage-${method}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-10-01T00:00:00Z",
+          method,
+          turnId: asTurnId("usage-turn"),
+          payload:
+            method === "error"
+              ? {
+                  error: {
+                    message: "Usage limit reached",
+                    codexErrorInfo: { usageLimitExceeded: {} },
+                  },
+                  willRetry: false,
+                }
+              : {
+                  turn: {
+                    id: "usage-turn",
+                    status: "failed",
+                    error: { message: "Usage limit reached", codexErrorInfo: "usageLimitReached" },
+                  },
+                },
+        } satisfies ProviderEvent);
+        const event = yield* Fiber.join(first);
+        assert.equal(event._tag, "Some");
+        if (
+          event._tag === "Some" &&
+          (event.value.type === "runtime.error" || event.value.type === "turn.completed")
+        ) {
+          assert.equal(event.value.payload.usageLimit?.evidence, "typed");
+          assert.equal(event.value.payload.usageLimit?.resetsAt, null);
+        } else assert.fail("Expected terminal usage failure");
+      }
+    }),
+  );
+
   it.effect("maps hook/started notifications to hook.started runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

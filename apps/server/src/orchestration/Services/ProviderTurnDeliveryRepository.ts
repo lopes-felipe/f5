@@ -1,5 +1,6 @@
 import {
   CommandId,
+  OrchestrationUsageLimit,
   MessageId,
   NonNegativeInt,
   OrchestrationEvent,
@@ -33,6 +34,7 @@ export const ProviderTurnDelivery = Schema.Struct({
   event: OrchestrationEvent,
   errorCode: Schema.NullOr(Schema.String),
   errorDetail: Schema.NullOr(Schema.String),
+  usageLimit: Schema.optional(Schema.NullOr(OrchestrationUsageLimit)),
   certainty: Schema.NullOr(Schema.Literals(["not_sent", "unknown"])),
   notBefore: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
@@ -79,6 +81,8 @@ export interface ProviderTurnDeliveryRepositoryShape {
     readonly errorDetail: string;
     readonly certainty: "not_sent" | "unknown";
     readonly ambiguous: boolean;
+    readonly occurredAt?: string | undefined;
+    readonly usageLimit?: OrchestrationUsageLimit | undefined;
   }) => Effect.Effect<void, ProviderTurnDeliveryRepositoryError>;
   readonly requeue: (input: {
     readonly deliveryId: CommandId;
