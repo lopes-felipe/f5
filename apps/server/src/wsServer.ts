@@ -1,3 +1,4 @@
+import { simulateDevelopmentUsageLimit } from "./developmentUsageLimit.ts";
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
@@ -2347,6 +2348,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
+      yield* simulateDevelopmentUsageLimit(orchestrationEngine, serverConfig).pipe(
+        Effect.ignoreCause({ log: true }),
+      );
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
         threadBackgroundWork,
