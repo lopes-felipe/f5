@@ -157,6 +157,26 @@ function ListToggleRow(props: { label: string; onSelect: () => void }) {
   );
 }
 
+/**
+ * Static group heading ("Workflows" / "Threads") that separates workflow
+ * entries from standalone threads inside a project. Matches the type scale of
+ * {@link SectionToggleRow}; the optional top border divides the two groups.
+ */
+function GroupLabelRow(props: { label: string; divided?: boolean }) {
+  return (
+    <SidebarMenuSubItem className="w-full">
+      <div
+        className={cn(
+          "flex min-h-6 items-center px-2 text-2xs font-medium text-faint-foreground select-none",
+          props.divided && "mt-1.5 border-t border-border/60 pt-1",
+        )}
+      >
+        {props.label}
+      </div>
+    </SidebarMenuSubItem>
+  );
+}
+
 /** Collapsible "Snoozed (n)" / "Archived" section label. */
 function SectionToggleRow(props: { label: ReactNode; expanded: boolean; onToggle: () => void }) {
   return (
@@ -244,6 +264,8 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
       ? archivedSidebarItems
       : archivedSidebarItems.slice(0, threadPreviewLimit);
   const hasHiddenActiveThreads = activeThreads.length > threadPreviewLimit;
+  // Only label the groups when both are present; a lone list needs no heading.
+  const showGroupLabels = projectWorkflows.length > 0 && visibleActiveThreads.length > 0;
   const hasHiddenArchivedItems = archivedSidebarItems.length > threadPreviewLimit;
   const orderedProjectThreadIds = [
     ...visibleActiveThreads
@@ -433,6 +455,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
               >
                 {/* One tree level: the guide line sits under the project's folder icon. */}
                 <SidebarMenuSub className={SIDEBAR_TREE_LEVEL_CLASS_NAME}>
+                  {showGroupLabels ? <GroupLabelRow label="Workflows" /> : null}
                   {projectWorkflows.map((entry) => {
                     const meta = sidebarLists.workflowMetaByKey.get(workflowEntryKey(entry));
                     return (
@@ -453,6 +476,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       />
                     );
                   })}
+                  {showGroupLabels ? <GroupLabelRow label="Threads" divided /> : null}
                   {visibleActiveThreads.map((thread) => {
                     const isDraftThread = isDraftThreadId(
                       thread.id,
