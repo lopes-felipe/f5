@@ -1648,7 +1648,7 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(queryOptions?.permissionMode, "bypassPermissions");
         assert.equal(queryOptions?.allowDangerouslySkipPermissions, undefined);
         // Unknown model: the deprecated input maps to a fixed budget, never sent as-is.
-        assert.equal(queryOptions?.maxThinkingTokens, undefined);
+        assert.equal("maxThinkingTokens" in (queryOptions ?? {}), false);
         assert.deepEqual(queryOptions?.thinking, { type: "enabled", budgetTokens: 321 });
         assert.deepEqual(queryOptions?.extraArgs, {
           "--verbose": null,
@@ -1790,7 +1790,7 @@ describe("ClaudeAdapterLive", () => {
       });
       const options = harness.getLastCreateQueryInput()?.options;
       assert.deepEqual(options?.thinking, { type: "adaptive" });
-      assert.equal(options?.maxThinkingTokens, undefined);
+      assert.equal("maxThinkingTokens" in (options ?? {}), false);
       const [configured] = Array.from(yield* Fiber.join(configuredFiber));
       const config =
         configured?.type === "session.configured" ? configured.payload.config : undefined;

@@ -494,6 +494,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
             status: "in_progress",
           },
         ],
+        tasksTracking: null,
         tasksTurnId: asTurnId("turn-1"),
         tasksUpdatedAt: "2026-04-01T09:00:06.500Z",
         sessionNotes: {
@@ -1234,6 +1235,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
               status: "in_progress",
             },
           ],
+          tasksTracking: null,
           tasksTurnId: asTurnId("turn-1"),
           tasksUpdatedAt: "2026-04-01T09:00:06.500Z",
           sessionNotes: {
