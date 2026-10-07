@@ -3,17 +3,24 @@ import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 
+/** Read object-shaped JSON without accepting arrays as transcript envelopes. */
 export function transcriptRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
 }
 
-export async function findClaudeTranscript(home: string, sessionId: string): Promise<string> {
+/** Locate the session in the CLI store, including hashed project directory names. */
+export async function findClaudeTranscript(
+  home: string,
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<string> {
   if (!/^[a-f0-9-]+$/i.test(sessionId)) throw new Error("Invalid Claude session ID.");
   const projects = path.join(home, "projects");
   const matches: string[] = [];
   for (const entry of await readdir(projects)) {
+    signal?.throwIfAborted();
     const candidate = path.join(projects, entry, `${sessionId}.jsonl`);
     try {
       if ((await stat(candidate)).isFile()) matches.push(candidate);
@@ -25,16 +32,26 @@ export async function findClaudeTranscript(home: string, sessionId: string): Pro
   return matches[0]!;
 }
 
-export async function readClaudeTranscript(file: string, includePayload = true) {
+/** Stream a UUID index; repair may quarantine malformed records reported by line number. */
+export async function readClaudeTranscript(
+  file: string,
+  includePayload = true,
+  options?: { skipMalformed?: boolean; onMalformed?: (line: number) => void; signal?: AbortSignal },
+) {
   const entries = new Map<string, Record<string, unknown>>();
-  const input = createReadStream(file, { encoding: "utf8" });
+  const input = createReadStream(file, {
+    encoding: "utf8",
+    ...(options?.signal ? { signal: options.signal } : {}),
+  });
   const lines = readline.createInterface({
     input,
     crlfDelay: Infinity,
   });
   let malformedTail = false;
+  let lineNumber = 0;
   try {
     for await (const line of lines) {
+      lineNumber++;
       if (!line.trim()) continue;
       if (malformedTail)
         throw new Error(
@@ -44,7 +61,8 @@ export async function readClaudeTranscript(file: string, includePayload = true) 
       try {
         entry = transcriptRecord(JSON.parse(line));
       } catch {
-        malformedTail = true;
+        options?.onMalformed?.(lineNumber);
+        malformedTail = !options?.skipMalformed;
         continue;
       }
       if (typeof entry?.uuid === "string")

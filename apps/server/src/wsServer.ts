@@ -1,11 +1,8 @@
-import { makeClaudeEnvironment } from "./provider/Drivers/ClaudeHome.ts";
-import { readClaudeResumeState } from "./provider/claudeResumeState.ts";
 import {
-  beginClaudeTranscriptMaintenance,
-  findClaudeTranscript,
-} from "./provider/claudeTranscript.ts";
-import { resolveClaudeConfigDir } from "./provider/Layers/ClaudeAdapter.ts";
-import { repairClaudeResumePoint, undoClaudeResumeRepair } from "./maintenance/StuckTurnRepair.ts";
+  getClaudeTranscriptMaintenance,
+  runClaudeTranscriptMaintenance,
+  claudeMaintenanceErrorMessage,
+} from "./maintenance/ClaudeTranscriptMaintenance.ts";
 import { usageResumeTargetAfterCredit } from "./usage/usageResumeAfterCredit.ts";
 import { usageLimitKey } from "./nextTurnQueue/usageLimitResume.ts";
 import { awaitActivation, waitForActivation, reportActive } from "./distribution/activation";
@@ -5016,106 +5013,47 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         };
       }
 
-      case WS_METHODS.serverGetClaudeTranscriptRepair: {
-        const body = stripRequestTag(request.body);
-        const { providerSessionDirectory } = yield* awaitOrchestrationRuntimeForRoute;
-        const binding = yield* providerSessionDirectory.getBinding(body.threadId);
-        if (Option.isNone(binding)) return null;
-        const cursor = binding.value.resumeCursor as { transcriptRepairBackupId?: unknown } | null;
-        return typeof cursor?.transcriptRepairBackupId === "string"
-          ? { backupId: cursor.transcriptRepairBackupId }
-          : null;
-      }
+      case WS_METHODS.serverGetClaudeTranscriptRepair:
       case WS_METHODS.serverRepairClaudeTranscript:
       case WS_METHODS.serverUndoClaudeTranscriptRepair: {
         const body = stripRequestTag(request.body);
         const { providerSessionDirectory } = yield* awaitOrchestrationRuntimeForRoute;
-        const binding = yield* providerSessionDirectory.getBinding(body.threadId);
-        if (Option.isNone(binding) || binding.value.provider !== "claudeAgent") {
-          return yield* new RouteRequestError({
-            code: "TranscriptRepairError",
-            message: "No Claude session is available for this thread.",
-          });
-        }
-        const sessions = yield* providerService.listSessions();
-        const live = sessions.find((session) => session.threadId === body.threadId);
-        if (live?.status === "running")
-          return yield* new RouteRequestError({
-            code: "TranscriptRepairError",
-            message: "Stop the active turn before repairing its transcript.",
-          });
-        const cursor = readClaudeResumeState(binding.value.resumeCursor);
-        if (!cursor?.resume)
-          return yield* new RouteRequestError({
-            code: "TranscriptRepairError",
-            message: "No Claude resume session is available.",
-          });
-        const raw = binding.value.resumeCursor as { missingResumePoint?: string };
-        const target =
-          raw?.missingResumePoint ??
-          cursor.resumeSessionAt ??
-          cursor.turnBoundaries?.at(-1)?.assistantUuid;
-        if (!target)
-          return yield* new RouteRequestError({
-            code: "TranscriptRepairError",
-            message: "No Claude resume point is available.",
-          });
-        const account = yield* Effect.tryPromise(() =>
-          accountService.resolve(
-            binding.value.providerInstanceId ?? ProviderInstanceId.makeUnsafe("claudeAgent"),
-          ),
-        );
-        const release = yield* Effect.try({
-          try: () => beginClaudeTranscriptMaintenance(cursor.resume!),
-          catch: (error) =>
-            new RouteRequestError({ code: "TranscriptRepairError", message: String(error) }),
-        });
-        return yield* Effect.gen(function* () {
-          if (live) yield* providerService.stopSession({ threadId: body.threadId });
-          const env = yield* makeClaudeEnvironment(
-            { homePath: account.config.homePath ?? "" },
-            process.env,
+        const input = {
+          threadId: body.threadId,
+          directory: providerSessionDirectory,
+          service: providerService,
+          resolveAccount: (id: ProviderInstanceId) => accountService.resolve(id),
+          providerLogsDir: serverConfig.providerLogsDir,
+        };
+        const mapMaintenanceError = <A, E>(effect: Effect.Effect<A, E>) =>
+          effect.pipe(
+            Effect.catchCause((cause) => {
+              const reason = Cause.squash(cause);
+              return Effect.logWarning("Claude transcript maintenance failed", {
+                threadId: body.threadId,
+                cause: Cause.pretty(cause),
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new RouteRequestError({
+                      code: "TranscriptRepairError",
+                      message: claudeMaintenanceErrorMessage(reason),
+                    }),
+                  ),
+                ),
+              );
+            }),
           );
-          const result = yield* Effect.tryPromise(async () => {
-            const file = await findClaudeTranscript(resolveClaudeConfigDir(env), cursor.resume!);
-            if ("backupId" in body) {
-              const restoredCursor = await undoClaudeResumeRepair(file, String(body.backupId));
-              return { restoredCursor };
-            }
-            return await repairClaudeResumePoint({
-              file,
-              target,
-              sessionId: cursor.resume!,
-              threadId: body.threadId,
-              providerLogsDir: serverConfig.providerLogsDir,
-              resumeCursor: binding.value.resumeCursor,
-            });
-          }).pipe(
-            Effect.mapError(
-              (error) =>
-                new RouteRequestError({
-                  code: "TranscriptRepairError",
-                  message: error.cause instanceof Error ? error.cause.message : String(error.cause),
-                }),
-            ),
-          );
-          const previous =
-            "restoredCursor" in result ? result.restoredCursor : binding.value.resumeCursor;
-          const recoveredCursor: Record<string, unknown> = {
-            ...(previous as Record<string, unknown>),
-            resumeRecoveryGeneration: crypto.randomUUID(),
-          };
-          if (!("restoredCursor" in result)) {
-            delete recoveredCursor.missingResumePoint;
-            recoveredCursor.resumeSessionAt = result.resumeSessionAt;
-            recoveredCursor.transcriptRepairBackupId = result.backupId;
-          }
-          yield* providerSessionDirectory.upsert({
-            ...binding.value,
-            resumeCursor: recoveredCursor,
-          });
-          return "restoredCursor" in result ? undefined : result;
-        }).pipe(Effect.ensuring(Effect.sync(release)));
+        const operation: Effect.Effect<unknown, RouteRequestError> =
+          request.body._tag === WS_METHODS.serverGetClaudeTranscriptRepair
+            ? mapMaintenanceError(getClaudeTranscriptMaintenance(input))
+            : mapMaintenanceError(
+                runClaudeTranscriptMaintenance(
+                  input,
+                  "backupId" in body ? String(body.backupId) : undefined,
+                ),
+              );
+        return yield* operation;
       }
 
       case WS_METHODS.nextTurnQueueRecheckDelivery: {

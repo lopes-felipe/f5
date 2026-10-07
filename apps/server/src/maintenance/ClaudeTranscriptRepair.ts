@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from "node:crypto";
-import { readFile, writeFile, copyFile, rename, readdir } from "node:fs/promises";
+import { readFile, writeFile, copyFile, rename, readdir, chmod, unlink } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import readline from "node:readline";
 import path from "node:path";
@@ -10,10 +10,16 @@ import {
 } from "../provider/claudeTranscript.ts";
 
 export async function inspectClaudeResumePoint(file: string, target: string) {
+  const malformed: number[] = [];
+  const entries = await readClaudeTranscript(file, true, {
+    skipMalformed: true,
+    onMalformed: (line) => malformed.push(line),
+  });
   return {
-    reason: hasClaudeParentChain(await readClaudeTranscript(file), target)
-      ? "eligible"
-      : "missing_resume_point",
+    reason:
+      malformed.length === 0 && hasClaudeParentChain(entries, target)
+        ? "eligible"
+        : "missing_resume_point",
   } as const;
 }
 
@@ -30,16 +36,29 @@ export async function repairClaudeResumePoint(input: {
   resumeCursor?: unknown;
 }) {
   const original = await readFile(input.file, "utf8");
-  const persisted = await readClaudeTranscript(input.file);
-  if (hasClaudeParentChain(persisted, input.target))
-    throw new Error("The resume point is already persisted and valid.");
-  const template = [...persisted.values()].find(
-    (entry) => entry.type === "assistant" && entry.sessionId === input.sessionId,
-  );
-  if (!template)
-    throw new Error(
-      "No persisted assistant envelope is available; transcript cannot be repaired safely.",
-    );
+  const malformed: number[] = [];
+  const persisted = await readClaudeTranscript(input.file, true, {
+    skipMalformed: true,
+    onMalformed: (line) => malformed.push(line),
+  });
+  if (hasClaudeParentChain(persisted, input.target)) {
+    if (malformed.length === 0)
+      return {
+        status: "validated" as const,
+        restoredMessages: 0,
+        resumeSessionAt: input.target,
+        resumeCursor: {
+          ...record(input.resumeCursor),
+          resumeSessionAt: input.target,
+          resumeRecoveryGeneration: randomUUID(),
+        },
+      };
+    const repaired = original
+      .split("\n")
+      .filter((_, index) => !malformed.includes(index + 1))
+      .join("\n");
+    return await writeTranscriptRepair(input, original, repaired, input.target, 0, malformed);
+  }
   const events: Array<Record<string, unknown>> = [];
   for (const name of await readdir(input.providerLogsDir)) {
     if (name !== `${input.threadId}.log` && !name.startsWith(`${input.threadId}.log.`)) continue;
@@ -59,6 +78,7 @@ export async function repairClaudeResumePoint(input: {
           payload?.session_id === input.sessionId &&
           payload.parent_tool_use_id == null &&
           (event.method === "claude/assistant" ||
+            event.method === "claude/user" ||
             record(payload.event)?.type === "content_block_start" ||
             record(payload.event)?.type === "content_block_stop")
         )
@@ -71,6 +91,10 @@ export async function repairClaudeResumePoint(input: {
   events.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const assistants = new Map<string, Record<string, unknown>>();
   const assistantTimes = new Map<string, string>();
+  const toolResults = new Map<
+    string,
+    { payload: Record<string, unknown>; block: Record<string, unknown>; createdAt: string }
+  >();
   const incompleteTools = new Set<string>();
   const blocks = new Map<number, string>();
   for (const native of events) {
@@ -79,6 +103,19 @@ export async function repairClaudeResumePoint(input: {
     if (native.method === "claude/assistant" && typeof payload.uuid === "string") {
       assistants.set(payload.uuid, payload);
       assistantTimes.set(payload.uuid, String(native.createdAt));
+    }
+    if (native.method === "claude/user") {
+      const content = record(payload.message)?.content;
+      if (Array.isArray(content))
+        for (const value of content) {
+          const block = record(value);
+          if (block?.type === "tool_result" && typeof block.tool_use_id === "string")
+            toolResults.set(block.tool_use_id, {
+              payload,
+              block,
+              createdAt: String(native.createdAt),
+            });
+        }
     }
     const event = record(payload.event);
     if (event?.type === "content_block_start") {
@@ -105,11 +142,38 @@ export async function repairClaudeResumePoint(input: {
     .toReversed()
     .find((uuid) => hasClaudeParentChain(persisted, uuid));
   if (!parent) throw new Error("No intact parent chain is available to anchor the repair.");
+  const anchor = persisted.get(parent)!;
+  const assistantEnvelope = [...persisted.values()]
+    .toReversed()
+    .find((entry) => entry.type === "assistant" && entry.sessionId === input.sessionId);
+  if (!assistantEnvelope)
+    throw new Error(
+      "No persisted assistant envelope is available; transcript cannot be repaired safely.",
+    );
+  const template: Record<string, unknown> = {};
+  for (const field of [
+    "cwd",
+    "sessionId",
+    "version",
+    "gitBranch",
+    "isSidechain",
+    "userType",
+  ] as const) {
+    const value = anchor[field] ?? assistantEnvelope[field];
+    if (value !== undefined) template[field] = value;
+  }
+  const targetTime = assistantTimes.get(input.target) ?? persisted.get(input.target)?.timestamp;
+  const anchorTime = String(anchor.timestamp ?? "");
+  if (targetTime && anchorTime > String(targetTime))
+    throw new Error(
+      "The repair target predates newer saved work. Recheck the current thread before repairing.",
+    );
+
   if (!assistants.has(input.target)) {
     assistants.set(input.target, {
       uuid: input.target,
       message: record(persisted.get(input.target)?.message) ?? {
-        ...record(template.message),
+        ...record(assistantEnvelope.message),
         id: `msg_repair_${randomUUID()}`,
         role: "assistant",
         content: [],
@@ -143,6 +207,23 @@ export async function repairClaudeResumePoint(input: {
   };
   const closeTools = () => {
     if (!pendingTools.size) return;
+    for (const id of [...pendingTools]) {
+      const result = toolResults.get(id);
+      if (!result || (targetTime && result.createdAt > String(targetTime))) continue;
+      const uuid =
+        typeof result.payload.uuid === "string" && !restored.has(result.payload.uuid)
+          ? result.payload.uuid
+          : randomUUID();
+      append({
+        ...template,
+        type: "user",
+        uuid,
+        parentUuid: parent,
+        timestamp: result.payload.timestamp ?? result.createdAt,
+        message: { role: "user", content: [result.block] },
+      });
+    }
+    if (!pendingTools.size) return;
     append({
       ...template,
       type: "user",
@@ -161,10 +242,6 @@ export async function repairClaudeResumePoint(input: {
       },
     });
   };
-  const anchorTime = String(persisted.get(parent!)?.timestamp ?? "");
-  const targetTime = events.find(
-    (event) => record(event.payload)?.uuid === input.target,
-  )?.createdAt;
   for (const [uuid, payload] of assistants) {
     const eventTime = assistantTimes.get(uuid);
     if (
@@ -186,6 +263,7 @@ export async function repairClaudeResumePoint(input: {
       if (tools.length) {
         append({
           ...template,
+          type: "assistant",
           uuid: randomUUID(),
           parentUuid: parent,
           timestamp: new Date().toISOString(),
@@ -199,6 +277,7 @@ export async function repairClaudeResumePoint(input: {
     }
     append({
       ...template,
+      type: "assistant",
       uuid,
       parentUuid: parent,
       timestamp: payload.timestamp ?? new Date().toISOString(),
@@ -211,61 +290,197 @@ export async function repairClaudeResumePoint(input: {
   // An unresolved tool at the cursor must be closed before the next user turn.
   closeTools();
   const replaced = new Set(additions.map((entry) => String(entry.uuid)));
-  const originalLines = original.trimEnd().split("\n");
-  try {
-    JSON.parse(originalLines.at(-1)!);
-  } catch {
-    originalLines.pop();
-  }
-  const preserved = originalLines
-    .join("\n")
+  const preserved = original
     .split("\n")
-    .filter((line) => !line.trim() || !replaced.has(String(record(JSON.parse(line))?.uuid)))
+    .filter((line, index) => {
+      if (malformed.includes(index + 1)) return false;
+      return !line.trim() || !replaced.has(String(record(JSON.parse(line))?.uuid));
+    })
     .join("\n");
   const repaired =
     preserved.trimEnd() + "\n" + additions.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
-  const backup = `${input.file}.bak-before-repair-${randomUUID()}`;
-  await copyFile(input.file, backup);
-  if ((await readFile(input.file, "utf8")) !== original)
-    throw new Error("Transcript changed during repair; retry after the session stops.");
-  await writeFile(
-    `${backup}.receipt`,
-    JSON.stringify({ repairedHash: digest(repaired), resumeCursor: input.resumeCursor }),
-    {
-      flag: "wx",
-      mode: 0o600,
-    },
+  return await writeTranscriptRepair(
+    input,
+    original,
+    repaired,
+    input.target,
+    additions.length,
+    malformed,
   );
-  const temporary = `${backup}.pending`;
-  await writeFile(temporary, repaired, { flag: "wx", mode: 0o600 });
-  await rename(temporary, input.file);
-  if (!hasClaudeParentChain(await readClaudeTranscript(input.file), input.target)) {
-    await copyFile(backup, input.file);
-    throw new Error("Transcript verification failed; restored the backup.");
-  }
+}
 
+interface RepairReceipt {
+  originalHash: string;
+  repairedHash: string;
+  resumeCursor?: unknown;
+  recoveredCursor: Record<string, unknown>;
+  quarantinedLines: number[];
+  createdAt: string;
+  undo?: { previousCursor?: unknown; recoveredCursor: Record<string, unknown>; createdAt: string };
+}
+
+/** Write a recoverable receipt before replacing bytes; backups stay available for explicit undo. */
+async function writeTranscriptRepair(
+  input: { file: string; target: string; resumeCursor?: unknown },
+  original: string,
+  repaired: string,
+  target: string,
+  restoredMessages: number,
+  quarantinedLines: number[],
+) {
+  const backup = `${input.file}.bak-before-repair-${randomUUID()}`;
+  const temporary = `${backup}.pending`;
+  const recoveredCursor = {
+    ...record(input.resumeCursor),
+    resumeSessionAt: target,
+    resumeRecoveryGeneration: randomUUID(),
+    transcriptRepairBackupId: path.basename(backup),
+  };
+  delete (recoveredCursor as Record<string, unknown>).missingResumePoint;
+  let replaced = false;
+  try {
+    await copyFile(input.file, backup);
+    await chmod(backup, 0o600);
+    if ((await readFile(input.file, "utf8")) !== original)
+      throw new Error("Transcript changed during repair; retry after the session stops.");
+    await writeFile(
+      `${backup}.receipt`,
+      JSON.stringify({
+        originalHash: digest(original),
+        repairedHash: digest(repaired),
+        resumeCursor: input.resumeCursor,
+        recoveredCursor,
+        quarantinedLines,
+        createdAt: new Date().toISOString(),
+      } satisfies RepairReceipt),
+      { flag: "wx", mode: 0o600 },
+    );
+    await writeFile(temporary, repaired, { flag: "wx", mode: 0o600 });
+    // Fence again after preparing the replacement, including external writers.
+    if ((await readFile(input.file, "utf8")) !== original)
+      throw new Error("Transcript changed during repair; retry after the session stops.");
+    await rename(temporary, input.file);
+    replaced = true;
+    if (!hasClaudeParentChain(await readClaudeTranscript(input.file), target)) {
+      await copyFile(backup, input.file);
+      replaced = false;
+      throw new Error("Transcript verification failed; restored the backup.");
+    }
+  } finally {
+    await unlink(temporary).catch(() => {});
+    if (!replaced) {
+      await unlink(`${backup}.receipt`).catch(() => {});
+      await unlink(backup).catch(() => {});
+    }
+  }
   return {
+    status: "repaired" as const,
     backupId: path.basename(backup),
-    restoredMessages: additions.length,
-    resumeSessionAt: parent!,
+    restoredMessages,
+    resumeSessionAt: target,
+    resumeCursor: recoveredCursor,
   };
 }
 
-export async function undoClaudeResumeRepair(file: string, backupId: string) {
+/** Reconcile an interrupted file/cursor commit only when its hashes and old cursor still match. */
+export async function recoverClaudeTranscriptCursor(
+  file: string,
+  cursor: unknown,
+): Promise<unknown> {
+  const hash = digest(await readFile(file, "utf8"));
+  const names = (await readdir(path.dirname(file))).filter(
+    (name) =>
+      name.startsWith(`${path.basename(file)}.bak-before-repair-`) && name.endsWith(".receipt"),
+  );
+  const receipts: RepairReceipt[] = [];
+  for (const name of names) {
+    try {
+      receipts.push(
+        JSON.parse(await readFile(path.join(path.dirname(file), name), "utf8")) as RepairReceipt,
+      );
+    } catch {
+      /* Incomplete preparation never authorizes a cursor change. */
+    }
+  }
+  receipts.sort((a, b) =>
+    String(b.undo?.createdAt ?? b.createdAt).localeCompare(
+      String(a.undo?.createdAt ?? a.createdAt),
+    ),
+  );
+  for (const receipt of receipts) {
+    const undo = receipt.undo;
+    if (undo && hash === receipt.originalHash && sameRecoveryPoint(cursor, undo.previousCursor))
+      return undo.recoveredCursor;
+    if (!undo && hash === receipt.repairedHash && sameRecoveryPoint(cursor, receipt.resumeCursor))
+      return receipt.recoveredCursor;
+  }
+  return cursor;
+}
+
+function sameRecoveryPoint(left: unknown, right: unknown): boolean {
+  const a = record(left);
+  const b = record(right);
+  return (
+    a?.resume === b?.resume &&
+    a?.resumeSessionAt === b?.resumeSessionAt &&
+    a?.resumeRecoveryGeneration === b?.resumeRecoveryGeneration
+  );
+}
+
+/** Expose undo only while the complete transcript still matches the verified replacement. */
+export async function canUndoClaudeResumeRepair(file: string, backupId: string): Promise<boolean> {
+  try {
+    const receipt = await readRepairReceipt(file, backupId);
+    return digest(await readFile(file, "utf8")) === receipt.repairedHash;
+  } catch {
+    return false;
+  }
+}
+
+async function readRepairReceipt(file: string, backupId: string): Promise<RepairReceipt> {
   if (
     path.basename(backupId) !== backupId ||
     !backupId.startsWith(`${path.basename(file)}.bak-before-repair-`)
   )
     throw new Error("Invalid transcript backup.");
-  const backup = path.join(path.dirname(file), backupId);
-  const receipt = JSON.parse(await readFile(`${backup}.receipt`, "utf8")) as {
-    repairedHash: string;
-    resumeCursor?: unknown;
-  };
+  return JSON.parse(
+    await readFile(path.join(path.dirname(file), `${backupId}.receipt`), "utf8"),
+  ) as RepairReceipt;
+}
+
+/** Restore exact backup bytes, journaling the cursor change and refusing newer transcript writes. */
+export async function undoClaudeResumeRepair(
+  file: string,
+  backupId: string,
+  previousCursor?: unknown,
+) {
+  const receipt = await readRepairReceipt(file, backupId);
   if (digest(await readFile(file, "utf8")) !== receipt.repairedHash)
     throw new Error("Transcript changed after repair; undo would discard newer work.");
+  const backup = path.join(path.dirname(file), backupId);
+  if (digest(await readFile(backup, "utf8")) !== receipt.originalHash)
+    throw new Error("Transcript backup changed; undo cannot safely restore it.");
   const temporary = `${backup}.undo-${randomUUID()}`;
-  await copyFile(backup, temporary);
-  await rename(temporary, file);
-  return receipt.resumeCursor;
+  const recoveredCursor = {
+    ...record(receipt.resumeCursor),
+    resumeRecoveryGeneration: randomUUID(),
+  };
+  receipt.undo = {
+    previousCursor: previousCursor ?? receipt.recoveredCursor,
+    recoveredCursor,
+    createdAt: new Date().toISOString(),
+  };
+  const receiptTemporary = `${temporary}.receipt`;
+  try {
+    await writeFile(receiptTemporary, JSON.stringify(receipt), { flag: "wx", mode: 0o600 });
+    await rename(receiptTemporary, `${backup}.receipt`);
+    await copyFile(backup, temporary);
+    if (digest(await readFile(file, "utf8")) !== receipt.repairedHash)
+      throw new Error("Transcript changed after repair; undo would discard newer work.");
+    await rename(temporary, file);
+  } finally {
+    await unlink(temporary).catch(() => {});
+    await unlink(receiptTemporary).catch(() => {});
+  }
+  return previousCursor === undefined ? receipt.resumeCursor : recoveredCursor;
 }

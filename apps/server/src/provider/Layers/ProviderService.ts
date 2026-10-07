@@ -1,3 +1,5 @@
+import { withProviderThreadAccess } from "../providerThreadAccess.ts";
+import { readClaudeRecoveryMetadata } from "../claudeResumeState.ts";
 import { Cause } from "effect";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -400,6 +402,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           return;
         }
 
+        if (
+          binding.provider === "claudeAgent" &&
+          readClaudeRecoveryMetadata(binding.resumeCursor).resumeRecoveryGeneration !==
+            readClaudeRecoveryMetadata(event.resumeCursor).resumeRecoveryGeneration
+        ) {
+          yield* Effect.logInfo("ignored Claude cursor from an earlier recovery generation", {
+            threadId: event.threadId,
+            eventType: event.type,
+          });
+          return;
+        }
         yield* directory.upsert({
           threadId: event.threadId,
           provider: binding.provider,
@@ -407,6 +420,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           resumeCursor: event.resumeCursor,
         });
       }).pipe(
+        (effect) => withProviderThreadAccess(event.threadId, effect),
         Effect.catch((cause) =>
           Effect.logWarning("failed to persist provider runtime resume cursor", {
             provider: event.provider,
@@ -1835,16 +1849,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     );
 
     return {
-      startSession,
-      sendTurn,
-      interruptTurn,
-      respondToRequest,
-      respondToUserInput,
+      startSession: (threadId, input) =>
+        withProviderThreadAccess(threadId, startSession(threadId, input)),
+      sendTurn: (input) => withProviderThreadAccess(input.threadId, sendTurn(input)),
+      interruptTurn: (input) => withProviderThreadAccess(input.threadId, interruptTurn(input)),
+      respondToRequest: (input) =>
+        withProviderThreadAccess(input.threadId, respondToRequest(input)),
+      respondToUserInput: (input) =>
+        withProviderThreadAccess(input.threadId, respondToUserInput(input)),
       stopSession,
       listSessions,
       getCapabilities,
-      readThread,
-      rollbackConversation,
+      readThread: (threadId) => withProviderThreadAccess(threadId, readThread(threadId)),
+      rollbackConversation: (input) =>
+        withProviderThreadAccess(input.threadId, rollbackConversation(input)),
       runOneOffPrompt,
       compactConversation,
       reloadMcpConfigForProject,

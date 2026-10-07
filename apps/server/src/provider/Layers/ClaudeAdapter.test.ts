@@ -6379,12 +6379,84 @@ describe("ClaudeAdapterLive", () => {
           threadId: THREAD_ID,
           provider: "claudeAgent",
           runtimeMode: "full-access",
-          resumeCursor: cursor,
+          resumeCursor: { ...cursor, missingResumePoint: "obsolete-target" },
         });
         assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
         assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, saved);
         assert.equal((session.resumeCursor as Record<string, unknown>).missingResumePoint, missing);
         assert.equal((yield* adapter.readThread(THREAD_ID)).turns.length, 2);
+      }).pipe(Effect.provide(harness.layer));
+    });
+    for (const checkpoint of ["mid-turn", "boundary-only", "unavailable"] as const) {
+      it.effect(`preserves the full saved conversation for ${checkpoint} resumes`, () => {
+        const harness = makeHarness({
+          readResumeTranscript: async () => {
+            if (checkpoint === "unavailable") throw new Error("storage unavailable");
+            return new Map([[saved, { uuid: saved, parentUuid: null }]]);
+          },
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            resumeCursor: {
+              resume: sessionId,
+              ...(checkpoint === "boundary-only" ? {} : { resumeSessionAt: saved }),
+              turnBoundaries:
+                checkpoint === "mid-turn" ? [] : [{ turnId: "old", assistantUuid: saved }],
+            },
+          });
+          assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
+          assert.isUndefined(harness.getLastCreateQueryInput()?.options.resumeSessionAt);
+        }).pipe(Effect.provide(harness.layer));
+      });
+    }
+    it.effect("retries a missing checkpoint during startup before any prompt has been sent", () => {
+      const harness = makeHarness({
+        readResumeTranscript: async () =>
+          new Map([
+            [saved, { uuid: saved, parentUuid: null }],
+            [missing, { uuid: missing, parentUuid: saved }],
+          ]),
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const observed: ProviderRuntimeEvent[] = [];
+        yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              observed.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          resumeCursor: cursor,
+        });
+        harness.queries[0]!.emit({
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [`No message found with message.uuid of: ${missing}`],
+          session_id: sessionId,
+          uuid: "startup-error",
+        } as unknown as SDKMessage);
+        while (
+          !observed.some(
+            (event) =>
+              event.type === "runtime.warning" && event.payload.message.includes("Retrying once"),
+          )
+        )
+          yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        while (harness.getCreateQueryInputs().length < 2) yield* Effect.yieldNow;
+        assert.equal(harness.getLastCreateQueryInput()?.options.resumeSessionAt, saved);
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, sessionId);
       }).pipe(Effect.provide(harness.layer));
     });
     it.effect("retries a missing resume point once, isolates stdin and caps total launches", () => {
@@ -6491,6 +6563,16 @@ describe("ClaudeAdapterLive", () => {
         );
         assert.equal(reset._tag, "Success");
         assert.equal(harness.getCreateQueryInputs().length, 1);
+        yield* adapter.stopSession(THREAD_ID);
+        assert.equal((yield* Effect.exit(start(undefined)))._tag, "Failure");
+        // A fresh launch does not consume or inherit the broken resume cap.
+        const fresh = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        assert.equal(fresh.status, "ready");
+        assert.isUndefined(harness.getLastCreateQueryInput()?.options.resume);
       }).pipe(Effect.provide(harness.layer));
     });
   });

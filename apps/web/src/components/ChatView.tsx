@@ -6607,9 +6607,7 @@ export default function ChatView({
         <TranscriptRepairAction
           key={activeThread.id}
           threadId={activeThread.id}
-          canRepair={Boolean(
-            activeThread.error && /resume|transcript|no message found/i.test(activeThread.error),
-          )}
+          refreshKey={`${activeThread.session.status}:${activeThread.latestTurn?.turnId}:${activeThread.latestTurn?.state}`}
         />
       ),
     });

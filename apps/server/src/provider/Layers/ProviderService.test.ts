@@ -400,6 +400,45 @@ function makeProviderServiceLayerForAdapters(
   );
 }
 
+it.effect("ignores a delayed Claude exit cursor from before transcript repair", () => {
+  const claude = makeFakeCodexAdapter("claudeAgent");
+  const layer = makeProviderServiceLayerForAdapters(new Map([["claudeAgent", claude.adapter]]));
+  return Effect.gen(function* () {
+    const provider = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("thread-delayed-claude-exit");
+    const oldCursor = { resume: "session", resumeSessionAt: "missing" };
+    const repairedCursor = {
+      resume: "session",
+      resumeSessionAt: "restored",
+      resumeRecoveryGeneration: "repair-generation",
+    };
+    yield* provider.startSession(threadId, {
+      threadId,
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+      resumeCursor: oldCursor,
+    });
+    yield* directory.upsert({ threadId, provider: "claudeAgent", resumeCursor: repairedCursor });
+    const observed = yield* Stream.runHead(
+      Stream.filter(provider.streamEvents, (event) => event.type === "session.exited"),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    claude.emit({
+      type: "session.exited",
+      eventId: asEventId("delayed-exit"),
+      provider: "claudeAgent",
+      threadId,
+      createdAt: new Date().toISOString(),
+      resumeCursor: oldCursor,
+      payload: { reason: "process-exit" },
+    } as unknown as LegacyProviderRuntimeEvent);
+    yield* Fiber.join(observed);
+    const binding = yield* directory.getBinding(threadId);
+    assert.deepEqual(Option.getOrThrow(binding).resumeCursor, repairedCursor);
+  }).pipe(Effect.provide(layer));
+});
+
 for (const driver of ["grok", "antigravity"] as const)
   it.effect(
     `rejects a custom-named ${driver} instance before opening a read-only workflow session`,
