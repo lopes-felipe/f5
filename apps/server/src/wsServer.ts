@@ -2786,15 +2786,41 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const result = yield* usageService
           .consumeResetCredit(body)
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        {
-          yield* Effect.gen(function* () {
+        const limitKeys = new Map(
+          (yield* orchestrationEngine.getReadModel()).threads
+            .filter(
+              (thread) =>
+                thread.session?.usageLimit?.providerInstanceId === body.providerInstanceId,
+            )
+            .map((thread) => [thread.id, usageLimitKey(thread.session)]),
+        );
+        const refreshResumes = (): Effect.Effect<void> =>
+          Effect.gen(function* () {
             const refreshed = yield* usageService.refreshAccount(body.providerInstanceId);
-            if (!refreshed.fresh || !refreshed.snapshot) return;
+            if (!refreshed.fresh || !refreshed.snapshot) {
+              const retryAt = Date.parse(refreshed.nextAllowedAt ?? "");
+              if (
+                (result.outcome === "reset" || result.outcome === "alreadyRedeemed") &&
+                Number.isFinite(retryAt) &&
+                retryAt > Date.now()
+              )
+                yield* Effect.sleep(retryAt - Date.now()).pipe(
+                  Effect.andThen(Effect.suspend(refreshResumes)),
+                  Effect.forkIn(subscriptionsScope),
+                );
+              return;
+            }
             if (result.outcome !== "reset" && result.outcome !== "alreadyRedeemed") return;
             for (const thread of (yield* orchestrationEngine.getReadModel()).threads) {
               const limit = thread.session?.usageLimit;
               const key = usageLimitKey(thread.session);
-              if (!limit || !key || limit.providerInstanceId !== body.providerInstanceId) continue;
+              if (
+                !limit ||
+                !key ||
+                limitKeys.get(thread.id) !== key ||
+                limit.providerInstanceId !== body.providerInstanceId
+              )
+                continue;
               const snapshot = yield* nextTurnQueueDispatcher.getSnapshot(thread.id);
               const target = usageResumeTargetAfterCredit(
                 limit,
@@ -2803,6 +2829,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 Date.now(),
               );
               if (!target) continue;
+              const current = (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === thread.id,
+              );
+              if (usageLimitKey(current?.session) !== key) continue;
               const changed = yield* nextTurnQueueStore.rescheduleByInstance(
                 body.providerInstanceId,
                 target,
@@ -2815,7 +2845,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               Effect.logWarning("failed to update usage resumes after reset credit", { cause }),
             ),
           );
-        }
+        yield* refreshResumes();
         return result;
       }
       case USAGE_WS_METHODS.getAccounts: {

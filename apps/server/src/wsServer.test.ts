@@ -15,7 +15,18 @@ import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Data, Effect, Exit, Layer, Option, PlatformError, PubSub, Scope, Stream } from "effect";
+import {
+  Data,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  PlatformError,
+  PubSub,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect";
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { createServer, readWebSocketRequestId, resolveWorkspaceReadPath } from "./wsServer";
 import WebSocket from "ws";
@@ -1018,9 +1029,16 @@ describe("WebSocket Server", () => {
     expect(response.result).not.toHaveProperty("codexAccount");
   });
 
-  it.each(["reset", "alreadyRedeemed", "nothingToReset", "noCredit"] as const)(
-    "refreshes once after reset-credit outcome %s with the real account throttle",
-    async (outcome) => {
+  it.each([
+    ["reset", false],
+    ["alreadyRedeemed", false],
+    ["nothingToReset", false],
+    ["noCredit", false],
+    ["reset", true],
+    ["alreadyRedeemed", true],
+  ] as const)(
+    "refreshes after reset-credit outcome %s (recent refresh: %s) with the real account throttle",
+    async (outcome, recentRefresh) => {
       const instanceId = ProviderInstanceId.makeUnsafe("claudeAgent-credit-test");
       let refreshCalls = 0;
       let probeCalls = 0;
@@ -1075,7 +1093,11 @@ describe("WebSocket Server", () => {
             adapter: {} as ProviderInstance["adapter"],
             textGeneration: {} as ProviderInstance["textGeneration"],
             enabled: true,
-            consumeResetCredit: () => Effect.succeed({ outcome }),
+            consumeResetCredit: () =>
+              Effect.gen(function* () {
+                if (recentRefresh) yield* capability.refreshAccount!(yield* Semaphore.make(2));
+                return { outcome };
+              }),
             accountUsage: {
               ...capability,
               refreshAccount: (permits) => {
@@ -1109,7 +1131,14 @@ describe("WebSocket Server", () => {
       expect(response.result).toEqual({ outcome });
       expect(refreshCalls).toBe(1);
       expect(probeCalls).toBe(1);
+      if (recentRefresh) {
+        // The response arrives while the real capability is throttled. The
+        // scoped retry must perform a second probe after its five-second gate.
+        await vi.waitFor(() => expect(probeCalls).toBe(2), { timeout: 7000 });
+        expect(refreshCalls).toBe(2);
+      }
     },
+    15000,
   );
 
   it("writes rpc and websocket observability records when enabled", async () => {
