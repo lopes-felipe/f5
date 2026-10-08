@@ -327,6 +327,47 @@ export function latestAssistantFeedback(
   return null;
 }
 
+export function reviewFeedbackForPinnedTurn(
+  thread: Omit<Parameters<typeof latestAssistantFeedback>[0], "messages"> & {
+    readonly messages: ReadonlyArray<
+      Parameters<typeof latestAssistantFeedback>[0]["messages"][number] & {
+        readonly turnId?: string | null;
+      }
+    >;
+    readonly proposedPlans?: ReadonlyArray<{
+      readonly turnId: string | null;
+      readonly planMarkdown: string;
+    }>;
+  },
+  turnId: string | null,
+  messageId: string | null,
+) {
+  const pinnedMessageId =
+    messageId ??
+    (turnId
+      ? thread.messages.findLast(
+          (message) => message.turnId === turnId && message.role === "assistant",
+        )?.id
+      : null);
+  const feedback =
+    turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
+  const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
+  const pinnedMessage = thread.messages.find((message) => message.id === pinnedMessageId);
+  // Compare the plan with the reply alone. Reasoning is attached to whichever
+  // side wins, so counting it here would let a short summary with long
+  // reasoning displace a full report submitted as a plan.
+  const replyLength =
+    pinnedMessage?.role === "assistant"
+      ? pinnedMessage.text.trim().length
+      : (feedback?.text.length ?? 0);
+  return plan && plan.planMarkdown.length > replyLength
+    ? formatAssistantFeedback({
+        text: plan.planMarkdown,
+        reasoningText: pinnedMessage?.reasoningText,
+      })
+    : feedback;
+}
+
 export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000): string {
   if (text.length <= maxChars) {
     return text;
