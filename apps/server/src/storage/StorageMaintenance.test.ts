@@ -1567,3 +1567,234 @@ it.layer(
     }),
   );
 });
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const daysAgo = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString();
+
+it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it) => {
+  it.effect("purges threads past their deletion or archive age, and nothing newer", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const deletedOld = ThreadId.makeUnsafe("auto-deleted-old");
+        const deletedRecent = ThreadId.makeUnsafe("auto-deleted-recent");
+        const archivedOld = ThreadId.makeUnsafe("auto-archived-old");
+        const archivedRecent = ThreadId.makeUnsafe("auto-archived-recent");
+        const live = ThreadId.makeUnsafe("auto-live");
+        yield* seedThread({ sql, threadId: deletedOld, deletedAt: daysAgo(10) });
+        yield* seedThread({ sql, threadId: deletedRecent, deletedAt: daysAgo(1) });
+        yield* seedThread({ sql, threadId: archivedOld, archivedAt: daysAgo(40), deletedAt: null });
+        yield* seedThread({
+          sql,
+          threadId: archivedRecent,
+          archivedAt: daysAgo(5),
+          deletedAt: null,
+        });
+        yield* seedThread({ sql, threadId: live, deletedAt: null });
+        yield* sql`
+          INSERT INTO orchestration_event_compaction (
+            thread_id, compacted_through_sequence, compacted_at
+          ) VALUES (${deletedOld}, 1, ${daysAgo(20)}), (${live}, 1, ${daysAgo(20)})
+        `;
+
+        const result = yield* storage.purgeThreads({
+          operationId: "automatic-purge",
+          deletedBefore: daysAgo(7),
+          archivedBefore: daysAgo(30),
+          maxThreads: 10,
+        });
+
+        assert.deepStrictEqual([...result.purgedThreadIds].toSorted(), [archivedOld, deletedOld]);
+        assert.deepStrictEqual(result.archivedThreadIds, [archivedOld]);
+        for (const kept of [deletedRecent, archivedRecent, live]) {
+          assert.equal(yield* countRows(sql, "projection_threads", kept), 1);
+        }
+        for (const purged of [deletedOld, archivedOld]) {
+          assert.equal(yield* countRows(sql, "projection_threads", purged), 0);
+        }
+        const watermarks = yield* sql<{ readonly threadId: string }>`
+          SELECT thread_id AS "threadId" FROM orchestration_event_compaction
+        `;
+        assert.deepStrictEqual(watermarks, [{ threadId: live }]);
+
+        // Archived threads are left alone unless a cutoff is given, and a
+        // capped pass takes the oldest deletions first.
+        yield* seedThread({
+          sql,
+          threadId: ThreadId.makeUnsafe("auto-archived-old-2"),
+          archivedAt: daysAgo(400),
+          deletedAt: null,
+        });
+        const deletedOldest = ThreadId.makeUnsafe("auto-deleted-oldest");
+        yield* seedThread({ sql, threadId: deletedOldest, deletedAt: daysAgo(90) });
+        const capped = yield* storage.purgeThreads({
+          operationId: "automatic-purge-capped",
+          deletedBefore: daysAgo(0),
+          archivedBefore: null,
+          maxThreads: 1,
+        });
+        assert.deepStrictEqual(capped.purgedThreadIds, [deletedOldest]);
+        assert.deepStrictEqual(capped.archivedThreadIds, []);
+        assert.equal(yield* countRows(sql, "projection_threads", deletedRecent), 1);
+      }),
+    ),
+  );
+
+  it.effect("prunes old logs of archived, deleted and unknown threads only", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const config = yield* ServerConfig;
+        const sql = yield* SqlClient.SqlClient;
+        const archived = ThreadId.makeUnsafe("logs-archived");
+        const live = ThreadId.makeUnsafe("logs-live");
+        yield* seedThread({ sql, threadId: archived, archivedAt: daysAgo(1), deletedAt: null });
+        yield* seedThread({ sql, threadId: live, deletedAt: null });
+        const logPath = (name: string) => NodePath.join(config.providerLogsDir, `${name}.log`);
+        const write = async (name: string, ageDays: number) => {
+          await writeFile(logPath(name), "log");
+          const when = new Date(Date.now() - ageDays * DAY_MS);
+          await NodeFS.utimes(logPath(name), when, when);
+        };
+        yield* Effect.promise(async () => {
+          await write(toSafeThreadAttachmentSegment(archived)!, 20);
+          await write(toSafeThreadAttachmentSegment(live)!, 20);
+          await write("logs-unknown-thread", 20);
+          await write("logs-unknown-recent", 1);
+        });
+
+        const archivedLog = `${toSafeThreadAttachmentSegment(archived)}.log`;
+        const exists = (name: string) => Effect.promise(() => pathExists(logPath(name)));
+        // Archived threads can be unarchived: their logs are kept unless asked.
+        const listed = yield* storage.listTerminalThreadLogs({
+          modifiedBefore: daysAgo(14),
+          includeArchived: false,
+        });
+        assert.deepStrictEqual(
+          listed.map((file) => file.name),
+          ["logs-unknown-thread.log"],
+        );
+        const result = yield* storage.pruneTerminalThreadLogs({
+          operationId: "terminal-logs",
+          modifiedBefore: daysAgo(14),
+          includeArchived: false,
+        });
+        assert.equal(result.perTargetReclaimed.length, 1);
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(live)!));
+        assert.isTrue(yield* exists("logs-unknown-recent"));
+        assert.isFalse(yield* exists("logs-unknown-thread"));
+
+        // A thread unarchived after a preview listed its log keeps the log:
+        // the prune lists again under the maintenance lock.
+        const preview = yield* storage.listTerminalThreadLogs({
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.deepStrictEqual(
+          preview.map((file) => file.name),
+          [archivedLog],
+        );
+        yield* sql`UPDATE projection_threads SET archived_at = NULL WHERE thread_id = ${archived}`;
+        const afterUnarchive = yield* storage.pruneTerminalThreadLogs({
+          operationId: "terminal-logs-unarchived",
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.equal(afterUnarchive.perTargetReclaimed.length, 0);
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+
+        yield* sql`
+          UPDATE projection_threads SET archived_at = ${daysAgo(1)} WHERE thread_id = ${archived}
+        `;
+        const withArchived = yield* storage.pruneTerminalThreadLogs({
+          operationId: "terminal-logs-archived",
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.equal(withArchived.perTargetReclaimed.length, 1);
+        assert.isFalse(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+      }),
+    ),
+  );
+
+  it.effect("does not let threads that keep failing hold every purge slot", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const stuck = ThreadId.makeUnsafe("purge-stuck");
+        const busy = ThreadId.makeUnsafe("purge-busy");
+        const purgeable = ThreadId.makeUnsafe("purge-ok");
+        // Oldest: checkpoint refs but no workspace to delete them from.
+        yield* seedThread({ sql, threadId: stuck, deletedAt: daysAgo(30) });
+        yield* sql`
+          UPDATE projection_threads SET project_id = 'project-gone' WHERE thread_id = ${stuck}
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, state, requested_at, checkpoint_turn_count, checkpoint_ref,
+            checkpoint_files_json
+          ) VALUES (
+            ${stuck}, 'turn-stuck', 'completed', ${daysAgo(30)}, 1, 'refs/t3/checkpoints/stuck', '[]'
+          )
+        `;
+        // Next: a deleted thread whose session is still running.
+        yield* seedThread({ sql, threadId: busy, deletedAt: daysAgo(20) });
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_session_id, provider_thread_id,
+            active_turn_id, last_error, updated_at
+          ) VALUES (
+            ${busy}, 'running', 'codex', 'session-busy', 'thread-busy', NULL, NULL, ${daysAgo(0)}
+          )
+        `;
+        yield* seedThread({ sql, threadId: purgeable, deletedAt: daysAgo(10) });
+        const pass = (operationId: string) =>
+          storage.purgeThreads({
+            operationId,
+            deletedBefore: daysAgo(7),
+            archivedBefore: null,
+            maxThreads: 1,
+          });
+
+        // The busy thread is never selected; the stuck one fails once...
+        const first = yield* pass("purge-first");
+        assert.deepStrictEqual(first.purgedThreadIds, []);
+        assert.equal(yield* countRows(sql, "projection_threads", stuck), 1);
+        // ...and then waits behind the thread that can be purged.
+        const second = yield* pass("purge-second");
+        assert.deepStrictEqual(second.purgedThreadIds, [purgeable]);
+        assert.equal(yield* countRows(sql, "projection_threads", busy), 1);
+      }),
+    ),
+  );
+
+  it.effect("returns free pages of an incremental database in steps", () =>
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const sql = yield* SqlClient.SqlClient;
+      const autoVacuum = yield* sql<{ readonly auto_vacuum: number }>`PRAGMA auto_vacuum`;
+      assert.equal(autoVacuum[0]?.auto_vacuum, 2);
+      yield* sql`CREATE TABLE filler (value TEXT)`;
+      yield* sql`
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+        INSERT INTO filler SELECT printf('%.4000c', 'x') FROM n
+      `;
+      yield* sql`DELETE FROM filler`;
+      const before = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+      assert.isAbove(before[0]!.freelist_count, 1_000);
+
+      const result = yield* storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 });
+      assert.equal(result.action, "incremental");
+      assert.isAbove(result.reclaimedBytes, 0);
+      const after = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
+      assert.equal(after[0]!.freelist_count, 0);
+      assert.deepStrictEqual(yield* storage.reclaimDatabaseSpace({ maxDurationMs: 10_000 }), {
+        action: "none",
+        reclaimedBytes: 0,
+      });
+    }),
+  );
+});

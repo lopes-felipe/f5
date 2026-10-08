@@ -14,6 +14,9 @@ export const StorageAutomationJob = Schema.Literals([
   "provider-logs",
   "auto-pull",
   "codex-marketplace-staging",
+  "event-compaction",
+  "thread-purge",
+  "database-vacuum",
 ]);
 export type StorageAutomationJob = typeof StorageAutomationJob.Type;
 

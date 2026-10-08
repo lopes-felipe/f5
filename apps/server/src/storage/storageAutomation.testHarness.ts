@@ -24,6 +24,11 @@ import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurn
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager, type TerminalSessionSummary } from "../terminal/Services/Manager.ts";
+import {
+  type AutomaticThreadPurgeResult,
+  type DatabaseSpaceResult,
+  StorageMaintenance,
+} from "./StorageMaintenance.ts";
 
 type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
@@ -38,6 +43,12 @@ export interface AutomationWorld {
   pendingTurnStarts: Set<string>;
   /** Incremented on every read-model read, so race tests can tell when a pass reached removal. */
   readModelReads: number;
+  /** Calls the worker made to the stubbed StorageMaintenance. */
+  maintenanceCalls: Array<{ readonly method: string; readonly input: unknown }>;
+  /** Result the stubbed `purgeThreads` returns. */
+  purgeResult: AutomaticThreadPurgeResult;
+  /** Result the stubbed `reclaimDatabaseSpace` returns. */
+  spaceResult: DatabaseSpaceResult;
 }
 
 export const makeWorld = (): AutomationWorld => ({
@@ -48,6 +59,9 @@ export const makeWorld = (): AutomationWorld => ({
   queuedThreadIds: new Set(),
   pendingTurnStarts: new Set(),
   readModelReads: 0,
+  maintenanceCalls: [],
+  purgeResult: { purgedThreadIds: [], archivedThreadIds: [], reclaimedBytes: 0, warnings: [] },
+  spaceResult: { action: "none", reclaimedBytes: 0 },
 });
 
 export function git(cwd: string, ...args: string[]): string {
@@ -172,6 +186,25 @@ export function automationLayer(
         world.pendingTurnStarts.has(threadId) ? Option.some({ threadId }) : Option.none(),
       ),
   } as never);
+  const call = <A>(method: string, input: unknown, result: () => A) =>
+    Effect.sync(() => {
+      world.maintenanceCalls.push({ method, input });
+      return result();
+    });
+  const maintenance = Layer.succeed(StorageMaintenance, {
+    purgeThreads: (input: unknown) => call("purgeThreads", input, () => world.purgeResult),
+    reclaimDatabaseSpace: (input: unknown) =>
+      call("reclaimDatabaseSpace", input, () => world.spaceResult),
+    listTerminalThreadLogs: (input: unknown) => call("listTerminalThreadLogs", input, () => []),
+    pruneTerminalThreadLogs: (input: unknown) =>
+      call("pruneTerminalThreadLogs", input, () => ({
+        categoryId: "providerLogsForTerminalThreads",
+        status: "Skipped",
+        reclaimedBytes: 0,
+        perTargetReclaimed: [],
+        warnings: [],
+      })),
+  } as never);
   return Layer.mergeAll(
     GitCoreLive.pipe(Layer.provideMerge(GitServiceLive)),
     engine,
@@ -179,6 +212,7 @@ export function automationLayer(
     providers,
     queue,
     turns,
+    maintenance,
     ServerSettingsService.layerTest(isolatedSettings as never),
     SqlitePersistenceMemory,
   ).pipe(

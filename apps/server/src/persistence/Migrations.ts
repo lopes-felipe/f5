@@ -1,3 +1,4 @@
+import Migration0107 from "./Migrations/107_DatabaseCompaction.ts";
 import Migration0106 from "./Migrations/106_StorageAutomationAuditCodexStaging.ts";
 import Migration0104 from "./Migrations/104_ProviderSubmissionProvenance.ts";
 import Migration0105 from "./Migrations/105_ProjectionThreadTaskTracking.ts";
@@ -144,6 +145,7 @@ export const MIGRATIONS = {
   "104_ProviderSubmissionProvenance": Migration0104,
   // 105 is taken by ProjectionThreadTaskTracking in PR #84, which must land first.
   "106_StorageAutomationAuditCodexStaging": Migration0106,
+  "107_DatabaseCompaction": Migration0107,
   "103_UsageLimitResume": Migration0103,
   "101_UsageResetCreditRequests": Migration0101,
   "100_ProjectionThreadTitleState": Migration0100,

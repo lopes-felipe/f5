@@ -2250,6 +2250,12 @@ export const ThreadCommandExecutionOutputAppendedPayload = Schema.Struct({
   commandExecutionId: OrchestrationCommandExecutionId,
   chunk: Schema.String,
   updatedAt: IsoDateTime,
+  /**
+   * Set when event compaction replaced this command's output events with one
+   * head-and-tail copy, so a projection rebuilt from events still marks the
+   * output as truncated.
+   */
+  outputTruncated: Schema.optional(Schema.Boolean),
 });
 
 export const ThreadFileChangeRecordedPayload = Schema.Struct({
