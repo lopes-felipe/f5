@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { requestComposerFocus } from "../../composerFocusRequestStore";
 import { useCreateProjectBackedDraftThread } from "../../hooks/useCreateProjectBackedDraftThread";
+import { useDiskSpaceStatus } from "../../hooks/useDiskSpaceStatus";
 import { groupThreadsByActivity } from "../../lib/activityGrouping";
 import { QUEUE_PAUSED_REASON_TAG, resolveAttentionReasonTag } from "../../lib/attentionReason";
 import {
@@ -34,6 +35,7 @@ import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { resolveThreadStatusForThread, type ThreadStatus } from "../../threadStatus";
 import type { Project, Thread } from "../../types";
 import { resolvePrimaryNewThreadProjectId } from "../Sidebar.logic";
+import { LowDiskSpaceBanner } from "../chat/LowDiskSpaceBanner";
 import { ProjectIcon } from "../ProjectIcon";
 import { Kbd } from "../ui/kbd";
 import { SectionLabel } from "../ui/section-label";
@@ -283,6 +285,7 @@ export function HomeMissionControl() {
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const pinnedThreadIds = useMemo(() => orderedPinnedThreadIds(threads), [threads]);
   const queueSummary = useNextTurnQueueStore((state) => state.summary);
+  const diskSpaceStatus = useDiskSpaceStatus();
   const pausedQueueThreadIds = useMemo(
     () =>
       new Set(
@@ -615,6 +618,13 @@ export function HomeMissionControl() {
         />
         {quickStartChips.length > 0 ? <QuickStartChips chips={quickStartChips} /> : null}
       </div>
+
+      <LowDiskSpaceBanner
+        status={diskSpaceStatus}
+        onOpenStorage={() => {
+          void navigate({ to: "/settings", search: { category: "storage" } });
+        }}
+      />
 
       {smartResume && !smartResumeDismissed && mostRecentThread ? (
         <SmartResumeBanner

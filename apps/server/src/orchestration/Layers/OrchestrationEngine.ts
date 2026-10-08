@@ -43,6 +43,7 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { DiskSpaceMonitor } from "../../storage/DiskSpaceMonitor.ts";
 import { makeStorageMaintenanceLock } from "../../storage/StorageMaintenanceLock.ts";
 import { withStartupPhaseTiming } from "../../startupTiming.ts";
 
@@ -104,6 +105,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const maintenanceLock = yield* makeStorageMaintenanceLock;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -237,6 +239,24 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             return yield* new OrchestrationCommandInvariantError({
               commandType: envelope.command.type,
               detail: "A conversation rewind is awaiting completion or reconciliation.",
+            });
+          }
+        }
+        if (envelope.command.type === "thread.turn.start" && diskSpaceMonitor._tag === "Some") {
+          // A CLI that runs out of disk mid-turn drops transcript entries and
+          // the thread cannot resume, so a new turn waits for free space.
+          // Queued turns retry on their own; anything else is rejected for
+          // good and must be sent again.
+          const hold = yield* diskSpaceMonitor.value.turnStartHold;
+          if (hold !== null) {
+            if (envelope.command.dispatchSource === "next-turn-queue")
+              return yield* new ThreadTurnNotReadyError({
+                threadId: envelope.command.threadId,
+                detail: `${hold} The queued turn starts once there is room.`,
+              });
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: envelope.command.type,
+              detail: `${hold} Then send the turn again.`,
             });
           }
         }

@@ -209,6 +209,49 @@ export const StorageInvalidatedPayload = Schema.Struct({
 });
 export type StorageInvalidatedPayload = typeof StorageInvalidatedPayload.Type;
 
+// ── Free disk space on the volumes F5 and its providers write to ─────────
+
+/** `low`: warn. `critical`: new turns are held until space is freed. */
+export const DiskSpaceLevel = Schema.Literals(["ok", "low", "critical"]);
+export type DiskSpaceLevel = typeof DiskSpaceLevel.Type;
+
+export const DiskSpaceVolumeRole = Schema.Literals(["userdata", "claudeHome", "codexHome"]);
+export type DiskSpaceVolumeRole = typeof DiskSpaceVolumeRole.Type;
+
+export const DiskSpaceVolume = Schema.Struct({
+  /** One watched path on the volume; others on the same volume are folded in. */
+  path: TrimmedNonEmptyString,
+  roles: Schema.Array(DiskSpaceVolumeRole),
+  freeBytes: NonNegativeInt,
+  totalBytes: NonNegativeInt,
+  level: DiskSpaceLevel,
+});
+export type DiskSpaceVolume = typeof DiskSpaceVolume.Type;
+
+export const DiskSpaceReclaimableItem = Schema.Struct({
+  categoryId: StorageCleanupCategoryId,
+  title: TrimmedNonEmptyString,
+  bytes: NonNegativeInt,
+});
+export type DiskSpaceReclaimableItem = typeof DiskSpaceReclaimableItem.Type;
+
+export const DiskSpaceStatus = Schema.Struct({
+  /** The lowest level across the watched volumes. */
+  level: DiskSpaceLevel,
+  checkedAt: IsoDateTime,
+  lowThresholdBytes: NonNegativeInt,
+  criticalThresholdBytes: NonNegativeInt,
+  volumes: Schema.Array(DiskSpaceVolume),
+  /** Largest reclaimable storage categories, biggest first. Empty while space is ok. */
+  reclaimable: Schema.Array(DiskSpaceReclaimableItem),
+});
+export type DiskSpaceStatus = typeof DiskSpaceStatus.Type;
+
+export const StorageGetDiskSpaceRequest = Schema.Struct({
+  force: Schema.optional(Schema.Boolean),
+});
+export type StorageGetDiskSpaceRequest = typeof StorageGetDiskSpaceRequest.Type;
+
 export const StorageCleanupCategoryResultStatus = Schema.Literals([
   "Cleaned",
   "Skipped",

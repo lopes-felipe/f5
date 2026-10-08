@@ -333,6 +333,8 @@ import {
 import { supportsClaudeTraitsControls } from "./chat/ClaudeTraitsPicker";
 
 import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
+import { LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
+import { useDiskSpaceStatus } from "../hooks/useDiskSpaceStatus";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
 import { UsageLimitResumeAction } from "./chat/UsageLimitResumeAction";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
@@ -651,6 +653,7 @@ export default function ChatView({
   const { settings } = useAppSettings();
   const unifiedSettings = useSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const diskSpaceStatus = useDiskSpaceStatus();
   const timestampFormat = settings.timestampFormat;
   const tasksPanelAutoOpen = settings.tasksPanelAutoOpen;
   const tasksPanelAutoOpenRef = useRef(tasksPanelAutoOpen);
@@ -6619,6 +6622,23 @@ export default function ChatView({
   }
 
   const threadNotices: ThreadNotice[] = [];
+  let lowDiskSpaceNotice: ThreadNotice | null = null;
+  if (diskSpaceStatus && diskSpaceStatus.level !== "ok") {
+    const notice: ThreadNotice = {
+      id: "low-disk-space",
+      content: (
+        <LowDiskSpaceBanner
+          status={diskSpaceStatus}
+          onOpenStorage={() => {
+            void navigate({ to: "/settings", search: { category: "storage" } });
+          }}
+        />
+      ),
+    };
+    // Held turns explain why nothing sends, so that notice stays in view.
+    if (diskSpaceStatus.level === "critical") threadNotices.push(notice);
+    else lowDiskSpaceNotice = notice;
+  }
   if (activeThread.error) {
     threadNotices.push({
       id: "thread-error",
@@ -6692,6 +6712,7 @@ export default function ChatView({
       ),
     });
   }
+  if (lowDiskSpaceNotice) threadNotices.push(lowDiskSpaceNotice);
 
   const composerPendingInteraction: ComposerPendingInteraction = {
     activePendingApproval,

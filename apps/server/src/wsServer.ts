@@ -250,6 +250,7 @@ import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import {
   StorageCleanupWorker,
@@ -868,6 +869,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
   const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
+  const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
   const prHub = yield* PrHubService;
   const prHubAdvisory = yield* PrHubAdvisoryService;
   const git = yield* GitCore;
@@ -2211,6 +2213,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Stream.runForEach(codexMcpEventBus.streamStatusUpdates, (event) =>
     pushBus.publishAll(WS_CHANNELS.mcpStatusUpdated, event),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  if (diskSpaceMonitor._tag === "Some")
+    yield* Stream.runForEach(diskSpaceMonitor.value.changes, (status) =>
+      pushBus.publishAll(WS_CHANNELS.storageDiskSpaceUpdated, status),
+    ).pipe(Effect.forkIn(subscriptionsScope));
 
   const runtimeServices = yield* Effect.services<
     ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path | SqlClient.SqlClient
@@ -2383,6 +2389,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
       yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
+      if (diskSpaceMonitor._tag === "Some")
+        yield* Scope.provide(
+          diskSpaceMonitor.value.start({
+            estimateReclaimable: storageMaintenance.summarizeReclaimable,
+          }),
+          subscriptionsScope,
+        );
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
@@ -4586,6 +4599,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               operationId: body.operationId,
             }),
           ),
+          // Freed space releases held turns and clears the banner right away,
+          // including when the cleanup failed or was cancelled partway.
+          Effect.ensuring(
+            diskSpaceMonitor._tag === "Some"
+              ? diskSpaceMonitor.value.noteStorageChanged
+              : Effect.void,
+          ),
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -4594,6 +4614,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         );
         return result;
+      }
+
+      case WS_METHODS.storageGetDiskSpace: {
+        if (diskSpaceMonitor._tag === "None") {
+          return yield* new RouteRequestError({
+            message: "Free disk space monitoring is unavailable.",
+          });
+        }
+        const body = stripRequestTag(request.body);
+        return yield* diskSpaceMonitor.value.getStatus({ force: body.force ?? false });
       }
 
       case WS_METHODS.storageCancelCleanup: {

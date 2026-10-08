@@ -172,6 +172,10 @@
       "types": "./src/byteSize.ts",
       "import": "./src/byteSize.ts"
     },
+    "./diskSpace": {
+      "types": "./src/diskSpace.ts",
+      "import": "./src/diskSpace.ts"
+    },
     "./downloadFilename": {
       "types": "./src/downloadFilename.ts",
       "import": "./src/downloadFilename.ts"

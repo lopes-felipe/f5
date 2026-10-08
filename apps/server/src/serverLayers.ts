@@ -1,6 +1,7 @@
 import { WorktreeSetupLive } from "./project/Layers/WorktreeSetup.ts";
 import { DefaultBranchAutoPullLive } from "./git/DefaultBranchAutoPull.ts";
 import { StorageCleanupWorkerLive } from "./storage/StorageCleanupWorker.ts";
+import { DiskSpaceMonitor, DiskSpaceMonitorLive } from "./storage/DiskSpaceMonitor.ts";
 import { WorktreeSetupGateLive } from "./project/Services/WorktreeSetupGate.ts";
 import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
 import { PrHubRepositoryLive } from "./prHub/Layers/PrHubRepository.ts";
@@ -154,7 +155,8 @@ export function makeServerProviderLayer(): Layer.Layer<
   | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
   | ProviderAdapterRegistry
-  | ServerSettingsService,
+  | ServerSettingsService
+  | DiskSpaceMonitor,
   | ProviderUnsupportedError
   | PlatformError.PlatformError
   | PreviewMcpHttpServerError
@@ -256,6 +258,7 @@ export function makeServerProviderLayer(): Layer.Layer<
     );
     return Layer.mergeAll(
       serverSettingsLayer,
+      DiskSpaceMonitorLive.pipe(Layer.provide(serverSettingsLayer)),
       providerServiceLayer,
       harnessValidationLayer,
       providerInstanceRegistryLayer,

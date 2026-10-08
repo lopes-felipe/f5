@@ -6,6 +6,7 @@ import * as Path from "node:path";
 import {
   type CheckpointRef,
   CommandId,
+  type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
   type StorageCleanupCategoryResult,
   type StorageCleanupCategoryUsage,
@@ -111,6 +112,15 @@ export interface StorageMaintenanceShape {
   readonly inspect: (
     request?: StorageGetUsageRequest,
   ) => Effect.Effect<StorageUsageReport, StorageMaintenanceError>;
+  /**
+   * Reclaimable categories from the same scan as `inspect`, biggest first.
+   * Issues no confirmation nonce, so a scan open in the Storage settings
+   * stays valid. For the low-disk banner.
+   */
+  readonly summarizeReclaimable: Effect.Effect<
+    ReadonlyArray<DiskSpaceReclaimableItem>,
+    StorageMaintenanceError
+  >;
   readonly cleanup: (
     request: StorageCleanupRequest,
     context?: StorageCleanupContext,
@@ -1223,21 +1233,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
       };
     });
 
-  const buildReport = (force: boolean) =>
+  /** The read-only scan behind a usage report, without its confirmation nonce. */
+  const scanUsage = () =>
     Effect.gen(function* () {
       const nowMs = Date.now();
-      if (
-        !force &&
-        cachedReport &&
-        cachedReport.stateDir === config.stateDir &&
-        nowMs - cachedReport.createdAtMs < USAGE_CACHE_TTL_MS &&
-        activeNonce &&
-        !activeNonce.used &&
-        activeNonce.expiresAtMs > nowMs
-      ) {
-        return cachedReport.report;
-      }
-
       const warnings: StoragePathWarning[] = [];
       const allThreads = yield* queryThreadRows();
       const archivedThreadCutoffIso = new Date(nowMs - ARCHIVED_THREAD_RETENTION_MS).toISOString();
@@ -1684,28 +1683,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         );
       }
 
-      const readyCategoryIds = categories
-        .filter((category) => category.availability === "ready")
-        .map((category) => category.id);
-      const scanId = Crypto.randomUUID();
-      const confirmationNonce = Crypto.randomUUID();
-      const nonceExpiresAtMs = nowMs + NONCE_TTL_MS;
-      activeNonce = {
-        scanId,
-        nonce: confirmationNonce,
-        expiresAtMs: nonceExpiresAtMs,
-        categories: new Map(
-          categories
-            .filter((category) => readyCategoryIds.includes(category.id))
-            .map((category) => [category.id, category]),
-        ),
-        used: false,
-      };
-
-      const report: StorageUsageReport = {
-        scanId,
-        confirmationNonce,
-        nonceExpiresAt: new Date(nonceExpiresAtMs).toISOString(),
+      const usage: Omit<StorageUsageReport, "scanId" | "confirmationNonce" | "nonceExpiresAt"> = {
         scannedAt: nowIso(),
         stateDir: config.stateDir,
         totalUsedBytes: sumNonOverlappingPathUsages([
@@ -1733,9 +1711,63 @@ const makeStorageMaintenance = Effect.gen(function* () {
         categories,
         warnings,
       };
+      return usage;
+    });
+
+  const buildReport = (force: boolean) =>
+    Effect.gen(function* () {
+      const nowMs = Date.now();
+      if (
+        !force &&
+        cachedReport &&
+        cachedReport.stateDir === config.stateDir &&
+        nowMs - cachedReport.createdAtMs < USAGE_CACHE_TTL_MS &&
+        activeNonce &&
+        !activeNonce.used &&
+        activeNonce.expiresAtMs > nowMs
+      ) {
+        return cachedReport.report;
+      }
+
+      const usage = yield* scanUsage();
+      const scanId = Crypto.randomUUID();
+      const confirmationNonce = Crypto.randomUUID();
+      const nonceExpiresAtMs = Date.now() + NONCE_TTL_MS;
+      activeNonce = {
+        scanId,
+        nonce: confirmationNonce,
+        expiresAtMs: nonceExpiresAtMs,
+        categories: new Map(
+          usage.categories
+            .filter((category) => category.availability === "ready")
+            .map((category) => [category.id, category]),
+        ),
+        used: false,
+      };
+
+      const report: StorageUsageReport = {
+        scanId,
+        confirmationNonce,
+        nonceExpiresAt: new Date(nonceExpiresAtMs).toISOString(),
+        ...usage,
+      };
       cachedReport = { stateDir: config.stateDir, createdAtMs: nowMs, report };
       return report;
     });
+
+  const summarizeReclaimable: StorageMaintenanceShape["summarizeReclaimable"] = scanUsage().pipe(
+    Effect.map((usage) =>
+      usage.categories
+        .filter((category) => category.availability === "ready" && category.reclaimableBytes > 0)
+        .map((category) => ({
+          categoryId: category.id,
+          title: category.title,
+          bytes: category.reclaimableBytes,
+        }))
+        .toSorted((left, right) => right.bytes - left.bytes),
+    ),
+    Effect.mapError(toStorageMaintenanceError("StorageMaintenance.summarizeReclaimable")),
+  );
 
   const inspect: StorageMaintenanceShape["inspect"] = (request = {}) =>
     buildReport(request.force ?? false).pipe(
@@ -3390,6 +3422,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   return {
     inspect,
+    summarizeReclaimable,
     cleanup,
     cancel,
     purgeThreads,
