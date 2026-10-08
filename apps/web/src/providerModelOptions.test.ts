@@ -6,6 +6,7 @@ import {
   providerSelectionsToModelOptions,
 } from "./providerModelOptions";
 import {
+  createReportedCodexModelCapabilities,
   resolveCodexReasoningEffortForModel,
   normalizeCodexModelOptions,
 } from "@t3tools/shared/model";
@@ -23,6 +24,21 @@ describe("providerModelOptions", () => {
     expect(resolveCodexReasoningEffortForModel("gpt-6.1-sol", defaults?.reasoningEffort)).toBe(
       "high",
     );
+  });
+  it("keeps High when the model reports a different default effort", () => {
+    // Sol can report "low" as its default; omitting "high" would fall back to it.
+    const reported = createReportedCodexModelCapabilities({
+      model: "gpt-6.1-sol",
+      supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "high" }],
+      defaultReasoningEffort: "low",
+    });
+    const codex = normalizeCodexModelOptions("gpt-6.1-sol", { reasoningEffort: "high" }, reported);
+    expect(normalizeProviderModelOptions({ codex })).toEqual({
+      codex: { reasoningEffort: "high" },
+    });
+    expect(providerModelOptionsToSelections("codex", { codex })).toEqual([
+      { id: "reasoningEffort", value: "high" },
+    ]);
   });
   it("normalizes non-default Codex reasoning efforts from the shared effort options", () => {
     expect(
