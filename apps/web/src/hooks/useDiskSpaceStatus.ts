@@ -23,7 +23,12 @@ export function useDiskSpaceStatus(): DiskSpaceStatus | null {
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: diskSpaceQueryKey,
-    queryFn: () => ensureNativeApi().storage.getDiskSpace(),
+    // A fetch can resolve after a newer push landed; keep the push then.
+    queryFn: async () =>
+      newerDiskSpaceStatus(
+        queryClient.getQueryData<DiskSpaceStatus>(diskSpaceQueryKey),
+        await ensureNativeApi().storage.getDiskSpace(),
+      ),
     staleTime: 60_000,
     refetchInterval: 5 * 60_000,
     retry: false,

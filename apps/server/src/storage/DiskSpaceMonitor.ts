@@ -10,7 +10,9 @@ import {
   diskSpaceHoldDetail,
   inspectVolumes,
   LOW_DISK_SPACE_BYTES,
+  readVolumeStat,
   resolveWatchedPaths,
+  shareInFlightProbes,
   type VolumeStatReader,
   worstDiskSpaceLevel,
 } from "./diskSpace.ts";
@@ -24,7 +26,11 @@ import {
 export interface DiskSpaceMonitorShape {
   /** The latest status, checked again when older than a few seconds or when forced. */
   readonly getStatus: (input?: { readonly force?: boolean }) => Effect.Effect<DiskSpaceStatus>;
-  /** Why new turns are held, or null when they may start. Never fails: an unreadable disk does not block turns. */
+  /**
+   * Why new turns are held, or null when they may start. Never fails and
+   * never waits long: an unreadable disk does not block turns, and a check
+   * that runs long falls back to the last known status.
+   */
   readonly turnStartHold: Effect.Effect<string | null>;
   /** A status whenever its level, a volume's free space, or the reclaimable list changes. */
   readonly changes: Stream.Stream<DiskSpaceStatus>;
@@ -49,6 +55,11 @@ export class DiskSpaceMonitor extends ServiceMap.Service<DiskSpaceMonitor, DiskS
 
 /** A turn start reuses a check this recent; statfs is cheap, but turns can burst. */
 const STATUS_MAX_AGE_MS = 5_000;
+/**
+ * Turn starts run on the engine's single command worker. Probes are bounded
+ * per path, but the hold must not stall every thread's commands either way.
+ */
+const TURN_START_CHECK_TIMEOUT = "3 seconds";
 const CHECK_INTERVAL = "1 minute";
 /**
  * The reclaimable scan walks userdata and worktrees and sizes purgeable
@@ -82,6 +93,7 @@ export function isSignificantDiskSpaceChange(
 
 export const makeDiskSpaceMonitor = (options?: {
   readonly readStat?: VolumeStatReader;
+  readonly probeTimeoutMs?: number;
   readonly now?: () => number;
 }) =>
   Effect.gen(function* () {
@@ -91,6 +103,7 @@ export const makeDiskSpaceMonitor = (options?: {
     const now = options?.now ?? Date.now;
     const changesPubSub = yield* PubSub.unbounded<DiskSpaceStatus>();
     const checkSemaphore = yield* Semaphore.make(1);
+    const readStat = shareInFlightProbes(options?.readStat ?? readVolumeStat);
 
     let current: { readonly status: DiskSpaceStatus; readonly checkedAtMs: number } | null = null;
     let reclaimable: {
@@ -119,11 +132,21 @@ export const makeDiskSpaceMonitor = (options?: {
         profile: config.profile,
       }).pipe(Effect.provideService(Path.Path, path));
       const volumes = yield* Effect.promise(() =>
-        inspectVolumes({ watched, ...(options?.readStat ? { readStat: options.readStat } : {}) }),
+        inspectVolumes({
+          watched,
+          readStat,
+          ...(options?.probeTimeoutMs !== undefined
+            ? { probeTimeoutMs: options.probeTimeoutMs }
+            : {}),
+        }),
       );
       const checkedAtMs = now();
       const level = worstDiskSpaceLevel(volumes.map((volume) => volume.level));
-      if (level === "ok") reclaimable = null;
+      if (level === "ok") {
+        reclaimable = null;
+        // An estimate already running would store the pre-recovery list.
+        reclaimableGeneration += 1;
+      }
       const status: DiskSpaceStatus = {
         level,
         checkedAt: new Date(checkedAtMs).toISOString(),
@@ -159,7 +182,14 @@ export const makeDiskSpaceMonitor = (options?: {
       );
 
     const turnStartHold: DiskSpaceMonitorShape["turnStartHold"] = getStatus().pipe(
-      Effect.map(diskSpaceHoldDetail),
+      Effect.timeoutOrElse({
+        duration: TURN_START_CHECK_TIMEOUT,
+        onTimeout: () =>
+          Effect.logWarning("free disk space check timed out; using the last known status").pipe(
+            Effect.andThen(Effect.sync(() => current?.status ?? null)),
+          ),
+      }),
+      Effect.map((status) => (status === null ? null : diskSpaceHoldDetail(status))),
       Effect.catchCause((cause) =>
         Effect.logWarning("free disk space check failed; not holding the turn", {
           cause: Cause.pretty(cause),

@@ -15,6 +15,7 @@ import {
   LOW_DISK_SPACE_BYTES,
   readVolumeStat,
   resolveWatchedPaths,
+  shareInFlightProbes,
   worstDiskSpaceLevel,
 } from "./diskSpace.ts";
 
@@ -79,6 +80,42 @@ describe("inspectVolumes", () => {
     ]);
   });
 
+  it("skips a path whose probe does not settle", async () => {
+    const volumes = await inspectVolumes({
+      watched: [
+        { path: "/data", role: "userdata" },
+        { path: "/stalled-mount", role: "codexHome" },
+      ],
+      readStat: (target) =>
+        target === "/stalled-mount"
+          ? new Promise(() => {})
+          : Promise.resolve({ device: 1, freeBytes: 50 * GB, totalBytes: 500 * GB }),
+      probeTimeoutMs: 10,
+    });
+    expect(volumes.map((volume) => volume.path)).toEqual(["/data"]);
+  });
+
+  it("reuses a probe still pending for the same path", async () => {
+    let probes = 0;
+    let settle: (stat: {
+      device: number;
+      freeBytes: number;
+      totalBytes: number;
+    }) => void = () => {};
+    const readStat = shareInFlightProbes(() => {
+      probes += 1;
+      return new Promise((resolve) => (settle = resolve));
+    });
+    const first = readStat("/stalled-mount");
+    const second = readStat("/stalled-mount");
+    expect(probes).toBe(1);
+    settle({ device: 1, freeBytes: GB, totalBytes: GB });
+    expect(await second).toEqual(await first);
+    // Once it settles, the next check probes again.
+    void readStat("/stalled-mount");
+    expect(probes).toBe(2);
+  });
+
   it("reads the nearest existing ancestor of a home that does not exist yet", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-disk-space-"));
     roots.push(root);
@@ -115,9 +152,12 @@ describe("resolveWatchedPaths", () => {
     );
   });
 
-  it("skips a disabled Claude instance and still watches userdata without settings", async () => {
+  it("skips disabled instances and still watches userdata without settings", async () => {
     const settings = decodeSettings({
-      providers: { claudeAgent: { enabled: false, homePath: "/homes/claude" } },
+      providers: {
+        claudeAgent: { enabled: false, homePath: "/homes/claude" },
+        codex: { enabled: false, homePath: "/homes/codex" },
+      },
     });
     const disabled = await Effect.runPromise(
       resolveWatchedPaths({
@@ -127,7 +167,7 @@ describe("resolveWatchedPaths", () => {
         profile: undefined,
       }).pipe(Effect.provide(NodeServices.layer)),
     );
-    expect(disabled.some((entry) => entry.role === "claudeHome")).toBe(false);
+    expect(disabled.map((entry) => entry.role)).toEqual(["userdata", "userdata"]);
     const withoutSettings = await Effect.runPromise(
       resolveWatchedPaths({
         stateDir: "/state",

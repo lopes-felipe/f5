@@ -1,3 +1,4 @@
+import type { DiskSpaceReclaimableItem } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Fiber, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
@@ -11,9 +12,11 @@ const MB = 1024 ** 2;
 
 /** A monitor on one fake volume whose free space and clock the test controls. */
 function harness() {
-  const disk = { freeBytes: 50 * GB, readable: true };
+  const disk = { freeBytes: 50 * GB, readable: true, stalled: false, probes: 0 };
   const clock = { nowMs: Date.parse("2026-10-08T00:00:00.000Z") };
   const readStat = async (): Promise<VolumeStat> => {
+    disk.probes += 1;
+    if (disk.stalled) return new Promise(() => {});
     if (!disk.readable) throw new Error("EIO");
     return { device: 1, freeBytes: disk.freeBytes, totalBytes: 500 * GB };
   };
@@ -26,7 +29,7 @@ function harness() {
     ) => Effect.Effect<A, E, import("effect").Scope.Scope>,
   ) =>
     Effect.runPromise(
-      makeDiskSpaceMonitor({ readStat, now: () => clock.nowMs }).pipe(
+      makeDiskSpaceMonitor({ readStat, probeTimeoutMs: 20, now: () => clock.nowMs }).pipe(
         Effect.flatMap(body),
         Effect.scoped,
         Effect.provide(layer),
@@ -62,6 +65,52 @@ describe("DiskSpaceMonitor", () => {
         const unreadable = yield* monitor.getStatus();
         expect(unreadable.volumes).toEqual([]);
         expect(yield* monitor.turnStartHold).toBeNull();
+      }),
+    );
+  });
+
+  it("does not wait on a volume that stops answering, or probe it again while stalled", async () => {
+    const { disk, clock, run } = harness();
+    await run((monitor) =>
+      Effect.gen(function* () {
+        disk.stalled = true;
+        // Probes are per watched path (userdata and worktrees here).
+        expect(yield* monitor.turnStartHold).toBeNull();
+        const stalledProbes = disk.probes;
+        clock.nowMs += 10_000;
+        expect((yield* monitor.getStatus()).volumes).toEqual([]);
+        expect(disk.probes).toBe(stalledProbes);
+      }),
+    );
+  });
+
+  it("drops a reclaimable estimate that finishes after space recovered", async () => {
+    const { disk, run } = harness();
+    disk.freeBytes = 1 * GB;
+    let finishEstimate: () => void = () => {};
+    let estimates = 0;
+    await run((monitor) =>
+      Effect.gen(function* () {
+        yield* monitor.start({
+          estimateReclaimable: Effect.callback<ReadonlyArray<DiskSpaceReclaimableItem>>(
+            (resume) => {
+              estimates += 1;
+              finishEstimate = () =>
+                resume(
+                  Effect.succeed([
+                    { categoryId: "codexMarketplaceStaging", title: "Stale", bytes: GB },
+                  ]),
+                );
+            },
+          ),
+        });
+        while (estimates === 0) yield* Effect.sleep("5 millis");
+        disk.freeBytes = 50 * GB;
+        expect((yield* monitor.getStatus({ force: true })).level).toBe("ok");
+        finishEstimate();
+        yield* Effect.sleep("5 millis");
+        disk.freeBytes = 1 * GB;
+        expect((yield* monitor.getStatus({ force: true })).reclaimable).toEqual([]);
       }),
     );
   });

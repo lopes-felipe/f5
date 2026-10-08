@@ -284,12 +284,14 @@ describe("OrchestrationEngine", () => {
       const direct = await system.run(Effect.flip(engine.dispatch(turnStart("cmd-disk-direct"))));
       expect(direct._tag).toBe("OrchestrationCommandInvariantError");
       expect(direct.message).toContain("Only 1 GB of disk space is free.");
+      expect(direct.message).toContain("send the turn again");
 
       // The queue retries a not-ready turn on its own, without spending an attempt.
       const queued = await system.run(
         Effect.flip(engine.dispatch(turnStart("cmd-disk-queued", "next-turn-queue"))),
       );
       expect(queued._tag).toBe("ThreadTurnNotReadyError");
+      expect(queued.message).toContain("starts once there is room");
 
       // A held turn records nothing, so the same command goes through once space is free.
       hold.current = null;
@@ -299,6 +301,10 @@ describe("OrchestrationEngine", () => {
       expect(thread?.messages.map((message) => message.id)).toEqual([
         asMessageId("cmd-disk-queued-message"),
       ]);
+
+      // A held direct start is rejected for good, as its message says.
+      const replayed = await system.run(Effect.flip(engine.dispatch(turnStart("cmd-disk-direct"))));
+      expect(replayed._tag).toBe("OrchestrationCommandPreviouslyRejectedError");
     } finally {
       await system.dispose();
     }

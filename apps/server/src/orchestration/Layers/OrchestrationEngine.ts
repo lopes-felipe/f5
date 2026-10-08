@@ -245,17 +245,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         if (envelope.command.type === "thread.turn.start" && diskSpaceMonitor._tag === "Some") {
           // A CLI that runs out of disk mid-turn drops transcript entries and
           // the thread cannot resume, so a new turn waits for free space.
-          // Queued turns retry on their own; anything else reports why.
+          // Queued turns retry on their own; anything else is rejected for
+          // good and must be sent again.
           const hold = yield* diskSpaceMonitor.value.turnStartHold;
           if (hold !== null) {
             if (envelope.command.dispatchSource === "next-turn-queue")
               return yield* new ThreadTurnNotReadyError({
                 threadId: envelope.command.threadId,
-                detail: hold,
+                detail: `${hold} The queued turn starts once there is room.`,
               });
             return yield* new OrchestrationCommandInvariantError({
               commandType: envelope.command.type,
-              detail: hold,
+              detail: `${hold} Then send the turn again.`,
             });
           }
         }

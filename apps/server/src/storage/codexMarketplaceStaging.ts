@@ -48,12 +48,15 @@ const CODEX_DRIVER = ProviderDriverKind.make("codex");
  * Codex homes F5 launches Codex processes against, from the current settings:
  * every configured Codex instance's `homePath` (or the `CODEX_HOME` its
  * process environment inherits, or `~/.codex`), plus any shadow home.
+ * Includes disabled instances unless `enabledOnly`: cleanup still sweeps
+ * what they left behind.
  */
 export function resolveCodexLaunchHomes(input: {
   readonly settings: ServerSettings;
   readonly profile: ActiveProfile | undefined;
   readonly stateDir: string;
   readonly baseEnv?: NodeJS.ProcessEnv;
+  readonly enabledOnly?: boolean;
 }): ReadonlyArray<string> {
   const homes = new Set<string>();
   const managed = input.profile !== undefined && !input.profile.isDefault;
@@ -61,6 +64,7 @@ export function resolveCodexLaunchHomes(input: {
     if (entry.driver !== CODEX_DRIVER) continue;
     const decoded = CodexSettingsFromUnknown(entry.config ?? {});
     if (decoded._tag === "None") continue;
+    if (input.enabledOnly && !decoded.value.enabled) continue;
     let inheritedCodexHome: string | undefined;
     try {
       inheritedCodexHome = buildAccountExecutionEnvironment({

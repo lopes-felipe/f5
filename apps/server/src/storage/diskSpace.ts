@@ -119,10 +119,12 @@ export const resolveWatchedPaths = Effect.fn("resolveWatchedPaths")(function* (i
   })) {
     watched.push({ path, role: "claudeHome" });
   }
+  // A disabled instance launches nothing, so its volume must not hold turns.
   for (const path of codexHomesOrNone({
     settings: input.settings,
     profile: input.profile,
     stateDir: input.stateDir,
+    enabledOnly: true,
   })) {
     watched.push({ path, role: "codexHome" });
   }
@@ -140,6 +142,12 @@ async function nearestExistingPath(target: string): Promise<string> {
   }
 }
 
+/**
+ * Free space as `statfs` reports it. On macOS this leaves out APFS purgeable
+ * space (local snapshots, evictable iCloud files), which the OS frees on
+ * demand, so it can read lower than Finder's "available" figure. Node has no
+ * API for the larger figure; erring low only holds turns early.
+ */
 export const readVolumeStat: VolumeStatReader = async (target) => {
   const existing = await nearestExistingPath(target);
   const [stat, volume] = await Promise.all([FS.stat(existing), FS.statfs(existing)]);
@@ -149,6 +157,42 @@ export const readVolumeStat: VolumeStatReader = async (target) => {
     totalBytes: volume.blocks * volume.bsize,
   };
 };
+
+/**
+ * A probe on a stalled mount (an unresponsive NFS or SMB share or external
+ * disk) may never settle. Past this, the path is skipped for the check.
+ */
+export const VOLUME_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Reuses a probe still pending for the same path instead of starting another.
+ * Each stalled `fs` call pins a libuv threadpool thread, so re-probing a hung
+ * mount every check would starve the server's other file I/O.
+ */
+export function shareInFlightProbes(readStat: VolumeStatReader): VolumeStatReader {
+  const inFlight = new Map<string, Promise<VolumeStat>>();
+  return (target) => {
+    const pending = inFlight.get(target);
+    if (pending !== undefined) return pending;
+    const probe = readStat(target).finally(() => inFlight.delete(target));
+    inFlight.set(target, probe);
+    return probe;
+  };
+}
+
+/** The probe's result, or null when it fails or does not settle in time. */
+function probeWithTimeout(probe: Promise<VolumeStat>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    probe.then(
+      (stat) => stat,
+      () => null,
+    ),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 export function diskSpaceLevel(freeBytes: number): DiskSpaceLevel {
   if (freeBytes < CRITICAL_DISK_SPACE_BYTES) return "critical";
@@ -169,24 +213,29 @@ const ROLE_ORDER: ReadonlyArray<DiskSpaceVolumeRole> = ["userdata", "claudeHome"
 
 /**
  * One entry per volume, labelled with the first watched path on it. A path
- * that cannot be inspected is skipped: it must not hide the volumes that can.
+ * that cannot be inspected, or does not answer within
+ * {@link VOLUME_PROBE_TIMEOUT_MS}, is skipped: it must not hide or stall the
+ * volumes that can.
  */
 export async function inspectVolumes(input: {
   readonly watched: ReadonlyArray<WatchedPath>;
   readonly readStat?: VolumeStatReader;
+  readonly probeTimeoutMs?: number;
 }): Promise<ReadonlyArray<DiskSpaceVolume>> {
   const readStat = input.readStat ?? readVolumeStat;
+  const probeTimeoutMs = input.probeTimeoutMs ?? VOLUME_PROBE_TIMEOUT_MS;
   const byDevice = new Map<
     number,
     { path: string; roles: Set<DiskSpaceVolumeRole>; freeBytes: number; totalBytes: number }
   >();
   const stats = await Promise.all(
-    input.watched.map((entry) =>
-      readStat(entry.path).then(
-        (stat) => ({ entry, stat }),
-        () => null,
-      ),
-    ),
+    input.watched.map(async (entry) => {
+      const stat = await probeWithTimeout(
+        Promise.resolve().then(() => readStat(entry.path)),
+        probeTimeoutMs,
+      );
+      return stat === null ? null : { entry, stat };
+    }),
   );
   for (const result of stats) {
     if (result === null) continue;
@@ -224,6 +273,6 @@ export function diskSpaceHoldDetail(status: DiskSpaceStatus): string | null {
     `Only ${formatByteSize(critical.freeBytes)} of disk space is free on the volume holding ` +
     `${describeDiskSpaceRoles(critical.roles)} (${critical.path}). New turns are held below ` +
     `${formatByteSize(status.criticalThresholdBytes)} so the agent cannot lose transcript ` +
-    `entries. Free up space (Settings > Storage) and the turn will start.`
+    `entries. Free up space in Settings > Storage.`
   );
 }

@@ -4558,8 +4558,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               operationId: body.operationId,
             }),
           ),
-          // Freed space releases held turns and clears the banner right away.
-          Effect.tap(() =>
+          // Freed space releases held turns and clears the banner right away,
+          // including when the cleanup failed or was cancelled partway.
+          Effect.ensuring(
             diskSpaceMonitor._tag === "Some"
               ? diskSpaceMonitor.value.noteStorageChanged
               : Effect.void,

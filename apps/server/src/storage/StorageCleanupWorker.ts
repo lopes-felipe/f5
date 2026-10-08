@@ -45,6 +45,7 @@ import {
   removeCodexMarketplaceLeftover,
   resolveCodexLaunchHomes,
 } from "./codexMarketplaceStaging.ts";
+import { DiskSpaceMonitor } from "./DiskSpaceMonitor.ts";
 import { compactThreadEvents } from "./eventCompaction.ts";
 import { StorageMaintenance } from "./StorageMaintenance.ts";
 
@@ -161,6 +162,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
   const git = yield* GitCore;
   const gitManager = yield* Effect.serviceOption(GitManager);
   const storageMaintenance = yield* StorageMaintenance;
+  const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
 
   const canonical = (value: string) =>
     Effect.tryPromise(() => canonicalWorktreePath(value)).pipe(
@@ -791,6 +793,11 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         : Effect.logWarning("storage cleanup pass failed", { cause: Cause.pretty(cause) }).pipe(
             Effect.as([] as StorageAutomationTarget[]),
           ),
+    ),
+    // Space a pass freed, even partway, releases held turns without waiting
+    // for the next periodic disk check.
+    Effect.ensuring(
+      diskSpaceMonitor._tag === "Some" ? diskSpaceMonitor.value.noteStorageChanged : Effect.void,
     ),
   );
 
