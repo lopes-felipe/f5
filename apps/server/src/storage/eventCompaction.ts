@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ORCHESTRATION_PROJECTOR_NAMES } from "../orchestration/Layers/ProjectionPipeline.ts";
@@ -16,8 +16,11 @@ import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
  * - Streamed messages. A message streams as many `message-sent` deltas. Once
  *   the message is final, its deltas collapse into one non-streaming event
  *   with the folded text, which replays to the same message.
- * - Command receipts of the removed events, which only guard against a command
- *   being dispatched twice.
+ * - Command receipts of removed output events. Output commands get a random
+ *   ID each (`provider:cmd-output:<uuid>`), so no redelivery can reuse one.
+ *   Message receipts are kept: delta command IDs derive from provider event
+ *   IDs, some of them stable, and the receipt is what stops a redelivered
+ *   delta from being appended twice.
  *
  * A thread is compacted once it has been idle for an hour and has no active
  * turn, and only when every projector has applied all of its events, so the
@@ -25,17 +28,29 @@ import { truncateMiddleByBytes } from "../orchestration/outputTruncation.ts";
  * log from the start (a projector rebuild) still yields every message and
  * command, with command output reduced to the compacted copy.
  *
- * The SQLite connection is shared and synchronous, so the scan is paged and
- * every write transaction covers a bounded number of events.
+ * The SQLite connection is shared and synchronous, so the scan is paged, every
+ * write transaction covers at most {@link MAX_EVENTS_PER_TRANSACTION} events
+ * (a large group is split, its kept event rewritten first), and the time
+ * budget is checked between pages and transactions. Work stopped by the
+ * budget resumes on the next pass: compacted groups are no longer eligible. A
+ * group whose payloads cannot be parsed is skipped; a thread that fails is
+ * retried after {@link FAILED_THREAD_RETRY_MS}.
+ *
+ * Each visit scans the thread from the start, not from its watermark: a group
+ * left alone earlier (a command or message still open then) can continue past
+ * the watermark, and must be compacted as a whole. Events before the watermark
+ * are already compacted, so the rescan reads small payloads.
  */
 
 export const EVENT_COMPACTION_IDLE_MS = 60 * 60 * 1_000;
 /** Size of the copy of a command's output kept in the event log. */
-export const COMPACTED_COMMAND_OUTPUT_MAX_BYTES = 16 * 1024;
-const COMPACTED_COMMAND_OUTPUT_HEAD_BYTES = 8 * 1024;
+export const COMPACTED_COMMAND_OUTPUT_MAX_BYTES = 16 * 1_024;
+export const MAX_EVENTS_PER_TRANSACTION = 2_000;
+export const FAILED_THREAD_RETRY_MS = 24 * 60 * 60 * 1_000;
+const COMPACTED_COMMAND_OUTPUT_HEAD_BYTES = 8 * 1_024;
 const SCAN_PAGE_SIZE = 1_000;
-const GROUPS_PER_TRANSACTION = 100;
 const SEQUENCES_PER_STATEMENT = 500;
+const OUTPUT_COMMAND_ID_PREFIX = "provider:cmd-output:";
 
 const OUTPUT_EVENT = "thread.command-execution-output-appended";
 const MESSAGE_EVENT = "thread.message-sent";
@@ -48,7 +63,11 @@ export interface EventCompactionResult {
   readonly receiptsRemoved: number;
   /** Approximate payload bytes removed from the event log. */
   readonly bytesRemoved: number;
-  /** False when the time budget ran out before every candidate thread was visited. */
+  /** Groups left alone because a payload could not be parsed. */
+  readonly groupsSkipped: number;
+  /** Threads that failed; each is retried after a day. */
+  readonly threadsFailed: number;
+  /** False when the time budget ran out before every candidate thread was finished. */
   readonly complete: boolean;
 }
 
@@ -117,12 +136,65 @@ export function foldMessagePayloads(payloads: ReadonlyArray<MessagePayload>): Me
   return folded as MessagePayload;
 }
 
+class MalformedEventPayload extends Data.TaggedError("MalformedEventPayload")<{
+  readonly sequence: number;
+  readonly cause: unknown;
+}> {}
+
+const parsePayload = <T>(
+  sequence: number,
+  payloadJson: string,
+  isValid: (value: Record<string, unknown>) => boolean,
+) =>
+  Effect.try({
+    try: () => {
+      const value: unknown = JSON.parse(payloadJson);
+      if (
+        typeof value !== "object" ||
+        value === null ||
+        !isValid(value as Record<string, unknown>)
+      ) {
+        throw new Error("unexpected payload shape");
+      }
+      return value as T;
+    },
+    catch: (cause) => new MalformedEventPayload({ sequence, cause }),
+  });
+
+const isOutputPayload = (value: Record<string, unknown>) => typeof value.chunk === "string";
+const isMessagePayload = (value: Record<string, unknown>) =>
+  typeof value.text === "string" &&
+  typeof value.streaming === "boolean" &&
+  typeof value.createdAt === "string" &&
+  (value.reasoningText === undefined || typeof value.reasoningText === "string");
+
 interface EventGroup {
   readonly kind: "output" | "message";
   readonly id: string;
   readonly sequences: number[];
+  /** Payload bytes of every event in the group, from the scan. */
+  bytes: number;
   lastStreaming: boolean;
   lastPayloadBytes: number;
+}
+
+/**
+ * One write of a group's compaction. A group's rewrite always precedes its
+ * deletes, so a pass stopped between transactions leaves a log that the next
+ * pass finishes and that still replays every message.
+ */
+type WriteOp =
+  | { readonly kind: "rewrite"; readonly sequence: number; readonly payloadJson: string }
+  | {
+      readonly kind: "delete";
+      readonly sequences: ReadonlyArray<number>;
+      /** Also delete the receipts of output commands among these events. */
+      readonly outputReceipts: boolean;
+    };
+
+interface PreparedGroup {
+  readonly ops: ReadonlyArray<WriteOp>;
+  readonly bytesRemoved: number;
 }
 
 function chunks<T>(items: ReadonlyArray<T>, size: number): T[][] {
@@ -133,15 +205,25 @@ function chunks<T>(items: ReadonlyArray<T>, size: number): T[][] {
   return result;
 }
 
+const deleteOps = (sequences: ReadonlyArray<number>, outputReceipts: boolean): WriteOp[] =>
+  chunks(sequences, SEQUENCES_PER_STATEMENT).map((batch) => ({
+    kind: "delete",
+    sequences: batch,
+    outputReceipts,
+  }));
+
+const opCost = (op: WriteOp) => (op.kind === "rewrite" ? 1 : op.sequences.length);
+
 export const compactThreadEvents = (input: {
   readonly nowMs: number;
-  /** Stop visiting new threads after this long. */
+  /** Stop starting new work after this long. */
   readonly maxDurationMs: number;
   readonly maxThreads?: number;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const startedAtMs = Date.now();
+    const deadlineMs = Date.now() + input.maxDurationMs;
+    const outOfTime = () => Date.now() > deadlineMs;
     const totals = {
       threadsCompacted: 0,
       commandOutputsCompacted: 0,
@@ -149,6 +231,8 @@ export const compactThreadEvents = (input: {
       eventsRemoved: 0,
       receiptsRemoved: 0,
       bytesRemoved: 0,
+      groupsSkipped: 0,
+      threadsFailed: 0,
     };
 
     // Events above the slowest projector's cursor are still to be projected.
@@ -161,6 +245,7 @@ export const compactThreadEvents = (input: {
       ...projectorNames.map((name) => cursorByProjector.get(name) ?? 0),
     );
 
+    const nowIso = new Date(input.nowMs).toISOString();
     const idleCutoff = new Date(input.nowMs - EVENT_COMPACTION_IDLE_MS).toISOString();
     const candidates = yield* sql<{ readonly threadId: string }>`
       SELECT thread.thread_id AS "threadId"
@@ -171,6 +256,7 @@ export const compactThreadEvents = (input: {
         ON session.thread_id = thread.thread_id
       WHERE thread.deleted_at IS NULL
         AND thread.last_interaction_at < ${idleCutoff}
+        AND (compaction.retry_after IS NULL OR compaction.retry_after <= ${nowIso})
         AND (
           session.thread_id IS NULL
           OR (session.active_turn_id IS NULL AND session.status NOT IN ('starting', 'running'))
@@ -185,48 +271,36 @@ export const compactThreadEvents = (input: {
       LIMIT ${input.maxThreads ?? 1_000}
     `;
 
-    const removeEvents = (sequences: ReadonlyArray<number>) =>
+    const applyOp = (op: WriteOp) =>
       Effect.gen(function* () {
-        const commandIds: string[] = [];
-        for (const batch of chunks(sequences, SEQUENCES_PER_STATEMENT)) {
-          const removed = yield* sql<{
-            readonly commandId: string | null;
-            readonly bytes: number;
-          }>`
-            DELETE FROM orchestration_events
-            WHERE sequence IN ${sql.in(batch)}
-            RETURNING command_id AS "commandId", LENGTH(payload_json) AS "bytes"
+        if (op.kind === "rewrite") {
+          yield* sql`
+            UPDATE orchestration_events SET payload_json = ${op.payloadJson}
+            WHERE sequence = ${op.sequence}
           `;
-          totals.eventsRemoved += removed.length;
-          for (const row of removed) {
-            totals.bytesRemoved += row.bytes;
-            if (row.commandId !== null) commandIds.push(row.commandId);
-          }
+          return;
         }
-        for (const batch of chunks(commandIds, SEQUENCES_PER_STATEMENT)) {
+        if (op.outputReceipts) {
           const receipts = yield* sql<{ readonly commandId: string }>`
             DELETE FROM orchestration_command_receipts
-            WHERE command_id IN ${sql.in(batch)}
-              AND NOT EXISTS (
-                SELECT 1 FROM orchestration_events AS event
-                WHERE event.command_id = orchestration_command_receipts.command_id
-              )
+            WHERE command_id IN (
+              SELECT command_id FROM orchestration_events
+              WHERE sequence IN ${sql.in(op.sequences)}
+                AND command_id LIKE ${`${OUTPUT_COMMAND_ID_PREFIX}%`}
+            )
             RETURNING command_id AS "commandId"
           `;
           totals.receiptsRemoved += receipts.length;
         }
-      });
-
-    const rewritePayload = (sequence: number, payloadJson: string, previousBytes: number) =>
-      Effect.gen(function* () {
-        yield* sql`
-          UPDATE orchestration_events SET payload_json = ${payloadJson}
-          WHERE sequence = ${sequence}
+        const removed = yield* sql<{ readonly sequence: number }>`
+          DELETE FROM orchestration_events
+          WHERE sequence IN ${sql.in(op.sequences)}
+          RETURNING sequence
         `;
-        totals.bytesRemoved += previousBytes - payloadJson.length;
+        totals.eventsRemoved += removed.length;
       });
 
-    const compactOutputGroup = (group: EventGroup) =>
+    const prepareOutputGroup = (group: EventGroup) =>
       Effect.gen(function* () {
         const rows = yield* sql<{
           readonly output: string;
@@ -247,51 +321,69 @@ export const compactThreadEvents = (input: {
         if (row === undefined) {
           // No projected command (reverted away, or never recorded): its output
           // events change nothing, during replay included.
-          yield* removeEvents(group.sequences);
-          totals.commandOutputsCompacted += 1;
-          return;
+          return {
+            ops: deleteOps(group.sequences, true),
+            bytesRemoved: group.bytes,
+          } satisfies PreparedGroup;
         }
-        if (row.completedAt === null || row.lastUpdatedSequence < lastSequence) return;
+        if (row.completedAt === null || row.lastUpdatedSequence < lastSequence) return null;
         const lastRows = yield* sql<{ readonly payloadJson: string }>`
           SELECT payload_json AS "payloadJson" FROM orchestration_events
           WHERE sequence = ${lastSequence}
         `;
         const last = lastRows[0];
-        if (last === undefined) return;
+        if (last === undefined) return null;
+        const payload = yield* parsePayload<Record<string, unknown>>(
+          lastSequence,
+          last.payloadJson,
+          isOutputPayload,
+        );
         const copy = compactCommandOutputCopy(row.output);
-        const payload = JSON.parse(last.payloadJson) as Record<string, unknown>;
         payload.chunk = copy.chunk;
         delete payload.outputTruncated;
         if (row.outputTruncated !== 0 || copy.truncated) payload.outputTruncated = true;
-        yield* rewritePayload(lastSequence, JSON.stringify(payload), last.payloadJson.length);
-        yield* removeEvents(group.sequences.slice(0, -1));
-        totals.commandOutputsCompacted += 1;
+        const payloadJson = JSON.stringify(payload);
+        return {
+          ops: [
+            { kind: "rewrite", sequence: lastSequence, payloadJson },
+            ...deleteOps(group.sequences.slice(0, -1), true),
+          ],
+          bytesRemoved: group.bytes - Buffer.byteLength(payloadJson, "utf8"),
+        } satisfies PreparedGroup;
       });
 
-    const compactMessageGroup = (group: EventGroup) =>
+    const prepareMessageGroup = (group: EventGroup) =>
       Effect.gen(function* () {
-        const payloads: Array<{ readonly sequence: number; readonly payloadJson: string }> = [];
+        const parsed: MessagePayload[] = [];
         for (const batch of chunks(group.sequences, SEQUENCES_PER_STATEMENT)) {
           const rows = yield* sql<{ readonly sequence: number; readonly payloadJson: string }>`
             SELECT sequence, payload_json AS "payloadJson" FROM orchestration_events
             WHERE sequence IN ${sql.in(batch)}
             ORDER BY sequence ASC
           `;
-          payloads.push(...rows);
+          for (const row of rows) {
+            parsed.push(
+              yield* parsePayload<MessagePayload>(row.sequence, row.payloadJson, isMessagePayload),
+            );
+          }
         }
-        if (payloads.length !== group.sequences.length) return;
-        const parsed = payloads.map((row) => JSON.parse(row.payloadJson) as MessagePayload);
-        if (parsed[parsed.length - 1]!.streaming) return;
-        const last = payloads[payloads.length - 1]!;
-        yield* rewritePayload(
-          last.sequence,
-          JSON.stringify(foldMessagePayloads(parsed)),
-          last.payloadJson.length,
-        );
-        yield* removeEvents(group.sequences.slice(0, -1));
-        totals.messagesCompacted += 1;
+        if (parsed.length !== group.sequences.length) return null;
+        if (parsed[parsed.length - 1]!.streaming) return null;
+        const payloadJson = JSON.stringify(foldMessagePayloads(parsed));
+        return {
+          ops: [
+            {
+              kind: "rewrite",
+              sequence: group.sequences[group.sequences.length - 1]!,
+              payloadJson,
+            },
+            ...deleteOps(group.sequences.slice(0, -1), false),
+          ],
+          bytesRemoved: group.bytes - Buffer.byteLength(payloadJson, "utf8"),
+        } satisfies PreparedGroup;
       });
 
+    /** Returns false when the time budget stopped the thread before it was finished. */
     const compactThread = (threadId: string) =>
       Effect.gen(function* () {
         const heads = yield* sql<{ readonly head: number | null }>`
@@ -299,27 +391,34 @@ export const compactThreadEvents = (input: {
           WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
         `;
         const head = heads[0]?.head ?? null;
-        if (head === null || head > projectedThrough) return;
+        if (head === null || head > projectedThrough) return true;
 
         const groups = new Map<string, EventGroup>();
         let cursor = 0;
         while (true) {
+          if (outOfTime()) return false;
           const page = yield* sql<{
             readonly sequence: number;
             readonly eventType: string;
             readonly groupId: string | null;
             readonly streaming: number | null;
             readonly payloadBytes: number;
+            readonly valid: number;
           }>`
             SELECT
               sequence,
               event_type AS "eventType",
-              CASE event_type
-                WHEN ${OUTPUT_EVENT} THEN json_extract(payload_json, '$.commandExecutionId')
+              CASE
+                WHEN NOT json_valid(payload_json) THEN NULL
+                WHEN event_type = ${OUTPUT_EVENT}
+                  THEN json_extract(payload_json, '$.commandExecutionId')
                 ELSE json_extract(payload_json, '$.messageId')
               END AS "groupId",
-              json_extract(payload_json, '$.streaming') AS streaming,
-              LENGTH(CAST(payload_json AS BLOB)) AS "payloadBytes"
+              CASE WHEN json_valid(payload_json)
+                THEN json_extract(payload_json, '$.streaming')
+              END AS streaming,
+              LENGTH(CAST(payload_json AS BLOB)) AS "payloadBytes",
+              json_valid(payload_json) AS valid
             FROM orchestration_events
             WHERE aggregate_kind = 'thread'
               AND stream_id = ${threadId}
@@ -330,6 +429,14 @@ export const compactThreadEvents = (input: {
             LIMIT ${SCAN_PAGE_SIZE}
           `;
           for (const row of page) {
+            // An event that is not JSON cannot be attributed to a group, so no
+            // group around it can be compacted safely: back the thread off.
+            if (row.valid !== 1) {
+              return yield* new MalformedEventPayload({
+                sequence: row.sequence,
+                cause: "payload is not valid JSON",
+              });
+            }
             if (row.groupId === null) continue;
             const kind = row.eventType === OUTPUT_EVENT ? "output" : "message";
             const key = `${kind}:${row.groupId}`;
@@ -339,12 +446,14 @@ export const compactThreadEvents = (input: {
                 kind,
                 id: row.groupId,
                 sequences: [],
+                bytes: 0,
                 lastStreaming: false,
                 lastPayloadBytes: 0,
               };
               groups.set(key, group);
             }
             group.sequences.push(row.sequence);
+            group.bytes += row.payloadBytes;
             group.lastStreaming = row.streaming === 1;
             group.lastPayloadBytes = row.payloadBytes;
           }
@@ -359,43 +468,109 @@ export const compactThreadEvents = (input: {
               group.lastPayloadBytes > COMPACTED_COMMAND_OUTPUT_MAX_BYTES + 1_024
             : group.sequences.length > 1 && !group.lastStreaming,
         );
-        for (const batch of chunks(eligible, GROUPS_PER_TRANSACTION)) {
-          yield* sql.withTransaction(
-            Effect.forEach(
-              batch,
-              (group) =>
-                group.kind === "output" ? compactOutputGroup(group) : compactMessageGroup(group),
-              { discard: true },
+
+        // Writes are packed into transactions of at most
+        // MAX_EVENTS_PER_TRANSACTION events; a larger delete is split.
+        let pending: WriteOp[] = [];
+        let pendingCost = 0;
+        const flush = Effect.gen(function* () {
+          if (pending.length === 0) return;
+          const batch = pending;
+          pending = [];
+          pendingCost = 0;
+          yield* sql.withTransaction(Effect.forEach(batch, applyOp, { discard: true }));
+          yield* Effect.yieldNow;
+        });
+
+        for (const group of eligible) {
+          if (outOfTime()) {
+            yield* flush;
+            return false;
+          }
+          const prepared = yield* (
+            group.kind === "output" ? prepareOutputGroup(group) : prepareMessageGroup(group)
+          ).pipe(
+            Effect.catchTag("MalformedEventPayload", (error) =>
+              Effect.logWarning("event compaction skipped a group with a malformed payload", {
+                threadId,
+                groupId: group.id,
+                sequence: error.sequence,
+              }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    totals.groupsSkipped += 1;
+                  }),
+                ),
+                Effect.as(null),
+              ),
             ),
           );
-          yield* Effect.yieldNow;
+          if (prepared === null) continue;
+          for (const op of prepared.ops) {
+            if (pendingCost > 0 && pendingCost + opCost(op) > MAX_EVENTS_PER_TRANSACTION) {
+              yield* flush;
+              if (outOfTime()) return false;
+            }
+            pending.push(op);
+            pendingCost += opCost(op);
+          }
+          totals.bytesRemoved += prepared.bytesRemoved;
+          if (group.kind === "output") totals.commandOutputsCompacted += 1;
+          else totals.messagesCompacted += 1;
         }
+        yield* flush;
 
         yield* sql`
           INSERT INTO orchestration_event_compaction (
-            thread_id, compacted_through_sequence, compacted_at
-          ) VALUES (${threadId}, ${head}, ${new Date().toISOString()})
+            thread_id, compacted_through_sequence, compacted_at, retry_after
+          ) VALUES (${threadId}, ${head}, ${new Date().toISOString()}, NULL)
           ON CONFLICT (thread_id) DO UPDATE SET
             compacted_through_sequence = excluded.compacted_through_sequence,
-            compacted_at = excluded.compacted_at
+            compacted_at = excluded.compacted_at,
+            retry_after = NULL
         `;
         totals.threadsCompacted += 1;
+        return true;
       });
+
+    // Backs a failing thread off so it cannot take the budget every pass.
+    const recordFailure = (threadId: string) =>
+      sql`
+        INSERT INTO orchestration_event_compaction (
+          thread_id, compacted_through_sequence, compacted_at, retry_after
+        ) VALUES (
+          ${threadId}, 0, ${new Date().toISOString()},
+          ${new Date(Date.now() + FAILED_THREAD_RETRY_MS).toISOString()}
+        )
+        ON CONFLICT (thread_id) DO UPDATE SET retry_after = excluded.retry_after
+      `.pipe(Effect.ignore);
 
     let complete = true;
     for (const candidate of candidates) {
-      if (Date.now() - startedAtMs > input.maxDurationMs) {
+      if (outOfTime()) {
         complete = false;
         break;
       }
-      yield* compactThread(candidate.threadId).pipe(
+      const finished = yield* compactThread(candidate.threadId).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("event compaction failed for a thread", {
             threadId: candidate.threadId,
             cause,
-          }),
+          }).pipe(
+            Effect.andThen(recordFailure(candidate.threadId)),
+            Effect.tap(() =>
+              Effect.sync(() => {
+                totals.threadsFailed += 1;
+              }),
+            ),
+            Effect.as(true),
+          ),
         ),
       );
+      if (!finished) {
+        complete = false;
+        break;
+      }
     }
     return { ...totals, complete } satisfies EventCompactionResult;
   });

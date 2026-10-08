@@ -2,7 +2,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -11,6 +11,7 @@ import {
   AUTO_VACUUM_INCREMENTAL,
   incrementalVacuum,
   readDatabasePages,
+  vacuumFreeSpaceShortfall,
   vacuumToIncremental,
 } from "./databaseSpace.ts";
 
@@ -59,4 +60,50 @@ it.layer(SqliteClient.layer({ filename }))("databaseSpace", (it) => {
       ),
     ),
   );
+});
+
+describe("vacuumFreeSpaceShortfall", () => {
+  const GB = 1024 ** 3;
+  const dbPath = NodePath.join(NodeOS.tmpdir(), "state.sqlite");
+  const statfsWith = (freeByPath: Record<string, number>) => async (path: string) => ({
+    bavail: freeByPath[path] ?? 0,
+    bsize: 1,
+  });
+
+  it("counts both copies against one volume when the temp dir shares it", async () => {
+    const tempDirectory = NodeOS.tmpdir();
+    const statfs = statfsWith({ [tempDirectory]: 21 * GB });
+    assert.isNull(
+      await vacuumFreeSpaceShortfall({ dbPath, liveBytes: 9 * GB, statfs, tempDirectory }),
+    );
+    assert.match(
+      (await vacuumFreeSpaceShortfall({ dbPath, liveBytes: 10 * GB, statfs, tempDirectory }))!,
+      /below 2\.2x/,
+    );
+  });
+
+  it("checks the temp directory's own volume when it differs", async () => {
+    // `/dev` is a separate file system from the temp directory on macOS and Linux.
+    const tempDirectory = "/dev";
+    if (NodeFS.statSync(tempDirectory).dev === NodeFS.statSync(NodeOS.tmpdir()).dev) return;
+    const enough = statfsWith({ [NodeOS.tmpdir()]: 12 * GB, [tempDirectory]: 12 * GB });
+    assert.isNull(
+      await vacuumFreeSpaceShortfall({
+        dbPath,
+        liveBytes: 10 * GB,
+        statfs: enough,
+        tempDirectory,
+      }),
+    );
+    const smallTemp = statfsWith({ [NodeOS.tmpdir()]: 100 * GB, [tempDirectory]: 1 * GB });
+    assert.match(
+      (await vacuumFreeSpaceShortfall({
+        dbPath,
+        liveBytes: 10 * GB,
+        statfs: smallTemp,
+        tempDirectory,
+      }))!,
+      /temp directory/,
+    );
+  });
 });

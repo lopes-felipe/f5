@@ -496,10 +496,15 @@ describe("StorageCleanupWorker Codex marketplace staging", () => {
         expect(Math.abs(Date.parse(purge.deletedBefore) - (Date.now() - 7 * DAY_MS))).toBeLessThan(
           60_000,
         );
-        const logs = calls.get("pruneTerminalThreadLogs") as { readonly modifiedBefore: string };
+        const logs = calls.get("pruneTerminalThreadLogs") as {
+          readonly modifiedBefore: string;
+          readonly includeArchived: boolean;
+        };
         expect(Math.abs(Date.parse(logs.modifiedBefore) - (Date.now() - 14 * DAY_MS))).toBeLessThan(
           60_000,
         );
+        // Archived threads can be unarchived: their logs stay while cleanup is off.
+        expect(logs.includeArchived).toBe(false);
         expect(calls.has("reclaimDatabaseSpace")).toBe(true);
 
         const audit = yield* listStorageAutomationAudit(10);

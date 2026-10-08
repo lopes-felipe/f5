@@ -1592,6 +1592,11 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
           deletedAt: null,
         });
         yield* seedThread({ sql, threadId: live, deletedAt: null });
+        yield* sql`
+          INSERT INTO orchestration_event_compaction (
+            thread_id, compacted_through_sequence, compacted_at
+          ) VALUES (${deletedOld}, 1, ${daysAgo(20)}), (${live}, 1, ${daysAgo(20)})
+        `;
 
         const result = yield* storage.purgeThreads({
           operationId: "automatic-purge",
@@ -1608,6 +1613,10 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
         for (const purged of [deletedOld, archivedOld]) {
           assert.equal(yield* countRows(sql, "projection_threads", purged), 0);
         }
+        const watermarks = yield* sql<{ readonly threadId: string }>`
+          SELECT thread_id AS "threadId" FROM orchestration_event_compaction
+        `;
+        assert.deepStrictEqual(watermarks, [{ threadId: live }]);
 
         // Archived threads are left alone unless a cutoff is given, and a
         // capped pass takes the oldest deletions first.
@@ -1655,25 +1664,109 @@ it.layer(makeStorageTestLayer())("StorageMaintenance automatic maintenance", (it
           await write("logs-unknown-recent", 1);
         });
 
-        const listed = yield* storage.listTerminalThreadLogs({ modifiedBefore: daysAgo(14) });
-        assert.deepStrictEqual(listed.map((file) => file.name).toSorted(), [
-          `${toSafeThreadAttachmentSegment(archived)}.log`,
-          "logs-unknown-thread.log",
-        ]);
+        const archivedLog = `${toSafeThreadAttachmentSegment(archived)}.log`;
+        const exists = (name: string) => Effect.promise(() => pathExists(logPath(name)));
+        // Archived threads can be unarchived: their logs are kept unless asked.
+        const listed = yield* storage.listTerminalThreadLogs({
+          modifiedBefore: daysAgo(14),
+          includeArchived: false,
+        });
+        assert.deepStrictEqual(
+          listed.map((file) => file.name),
+          ["logs-unknown-thread.log"],
+        );
         const result = yield* storage.pruneTerminalThreadLogs({
           operationId: "terminal-logs",
           modifiedBefore: daysAgo(14),
+          includeArchived: false,
         });
-        assert.equal(result.perTargetReclaimed.length, 2);
-        assert.equal(
-          yield* Effect.promise(() => pathExists(logPath(toSafeThreadAttachmentSegment(live)!))),
-          true,
+        assert.equal(result.perTargetReclaimed.length, 1);
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(live)!));
+        assert.isTrue(yield* exists("logs-unknown-recent"));
+        assert.isFalse(yield* exists("logs-unknown-thread"));
+
+        // A thread unarchived after a preview listed its log keeps the log:
+        // the prune lists again under the maintenance lock.
+        const preview = yield* storage.listTerminalThreadLogs({
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.deepStrictEqual(
+          preview.map((file) => file.name),
+          [archivedLog],
         );
-        assert.equal(yield* Effect.promise(() => pathExists(logPath("logs-unknown-recent"))), true);
-        assert.equal(
-          yield* Effect.promise(() => pathExists(logPath("logs-unknown-thread"))),
-          false,
-        );
+        yield* sql`UPDATE projection_threads SET archived_at = NULL WHERE thread_id = ${archived}`;
+        const afterUnarchive = yield* storage.pruneTerminalThreadLogs({
+          operationId: "terminal-logs-unarchived",
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.equal(afterUnarchive.perTargetReclaimed.length, 0);
+        assert.isTrue(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+
+        yield* sql`
+          UPDATE projection_threads SET archived_at = ${daysAgo(1)} WHERE thread_id = ${archived}
+        `;
+        const withArchived = yield* storage.pruneTerminalThreadLogs({
+          operationId: "terminal-logs-archived",
+          modifiedBefore: daysAgo(14),
+          includeArchived: true,
+        });
+        assert.equal(withArchived.perTargetReclaimed.length, 1);
+        assert.isFalse(yield* exists(toSafeThreadAttachmentSegment(archived)!));
+      }),
+    ),
+  );
+
+  it.effect("does not let threads that keep failing hold every purge slot", () =>
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const storage = yield* StorageMaintenance;
+        const sql = yield* SqlClient.SqlClient;
+        const stuck = ThreadId.makeUnsafe("purge-stuck");
+        const busy = ThreadId.makeUnsafe("purge-busy");
+        const purgeable = ThreadId.makeUnsafe("purge-ok");
+        // Oldest: checkpoint refs but no workspace to delete them from.
+        yield* seedThread({ sql, threadId: stuck, deletedAt: daysAgo(30) });
+        yield* sql`
+          UPDATE projection_threads SET project_id = 'project-gone' WHERE thread_id = ${stuck}
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, state, requested_at, checkpoint_turn_count, checkpoint_ref,
+            checkpoint_files_json
+          ) VALUES (
+            ${stuck}, 'turn-stuck', 'completed', ${daysAgo(30)}, 1, 'refs/t3/checkpoints/stuck', '[]'
+          )
+        `;
+        // Next: a deleted thread whose session is still running.
+        yield* seedThread({ sql, threadId: busy, deletedAt: daysAgo(20) });
+        yield* sql`
+          INSERT INTO projection_thread_sessions (
+            thread_id, status, provider_name, provider_session_id, provider_thread_id,
+            active_turn_id, last_error, updated_at
+          ) VALUES (
+            ${busy}, 'running', 'codex', 'session-busy', 'thread-busy', NULL, NULL, ${daysAgo(0)}
+          )
+        `;
+        yield* seedThread({ sql, threadId: purgeable, deletedAt: daysAgo(10) });
+        const pass = (operationId: string) =>
+          storage.purgeThreads({
+            operationId,
+            deletedBefore: daysAgo(7),
+            archivedBefore: null,
+            maxThreads: 1,
+          });
+
+        // The busy thread is never selected; the stuck one fails once...
+        const first = yield* pass("purge-first");
+        assert.deepStrictEqual(first.purgedThreadIds, []);
+        assert.equal(yield* countRows(sql, "projection_threads", stuck), 1);
+        // ...and then waits behind the thread that can be purged.
+        const second = yield* pass("purge-second");
+        assert.deepStrictEqual(second.purgedThreadIds, [purgeable]);
+        assert.equal(yield* countRows(sql, "projection_threads", busy), 1);
       }),
     ),
   );

@@ -6,7 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  *
  * - `orchestration_event_compaction` records, per thread, the event sequence
  *   up to which event compaction has run, so an hourly pass only revisits
- *   threads with newer events.
+ *   threads with newer events, and until when a thread that failed waits.
  * - The storage automation audit accepts the new jobs: event compaction,
  *   automatic thread purges and incremental vacuum. The table is rebuilt under
  *   its own name for the same reasons as migration 106.
@@ -17,7 +17,8 @@ export default Effect.gen(function* () {
     CREATE TABLE IF NOT EXISTS orchestration_event_compaction (
       thread_id TEXT PRIMARY KEY,
       compacted_through_sequence INTEGER NOT NULL,
-      compacted_at TEXT NOT NULL
+      compacted_at TEXT NOT NULL,
+      retry_after TEXT
     )
   `;
   yield* sql.withTransaction(

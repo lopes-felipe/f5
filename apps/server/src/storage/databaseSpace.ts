@@ -1,3 +1,7 @@
+import * as FS from "node:fs/promises";
+import * as OS from "node:os";
+import * as Path from "node:path";
+
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -8,7 +12,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  * size until a VACUUM. A full VACUUM rewrites the whole database: SQLite
  * copies the live pages to a temporary database and then back through the
  * WAL, so it needs about twice the live data in free disk, and it blocks every
- * other query while it runs. With `auto_vacuum = INCREMENTAL`, freed pages can
+ * other query while it runs. Nothing can tell that a user is about to come
+ * back, so the automatic conversion picks a quiet moment and may still make
+ * the app wait for a few minutes once. With `auto_vacuum = INCREMENTAL`, freed pages can
  * instead be returned in bounded steps with `PRAGMA incremental_vacuum(N)`.
  *
  * New databases are created incremental (the pragma runs before the first
@@ -17,9 +23,55 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
  */
 
 export const AUTO_VACUUM_INCREMENTAL = 2;
-/** Free disk a full VACUUM needs, as a multiple of the live (non-free) data. */
-export const VACUUM_FREE_SPACE_FACTOR = 2.2;
+/**
+ * Free space one copy of the live (non-free) data needs during a full VACUUM.
+ * There are two copies: the temporary database, in SQLite's temp directory,
+ * and the rebuilt pages written back through the WAL, next to the database.
+ */
+const VACUUM_COPY_FACTOR = 1.1;
 const INCREMENTAL_VACUUM_STEP_PAGES = 2_048;
+
+type Statfs = (path: string) => Promise<{ bavail: number; bsize: number }>;
+
+/** Where SQLite builds VACUUM's temporary database on Unix. */
+export const sqliteTempDirectory = () =>
+  process.env.SQLITE_TMPDIR || process.env.TMPDIR || OS.tmpdir();
+
+/**
+ * Why a full VACUUM would not fit on disk, or null when it does. Checks the
+ * database's volume and the temp directory's, and adds both copies up when
+ * they are the same volume.
+ */
+export async function vacuumFreeSpaceShortfall(input: {
+  readonly dbPath: string;
+  readonly liveBytes: number;
+  readonly statfs: Statfs;
+  readonly tempDirectory?: string;
+}): Promise<string | null> {
+  const copyBytes = input.liveBytes * VACUUM_COPY_FACTOR;
+  const dbDirectory = Path.dirname(input.dbPath);
+  const tempDirectory = input.tempDirectory ?? sqliteTempDirectory();
+  const free = async (path: string) => {
+    const stat = await input.statfs(path);
+    return stat.bavail * stat.bsize;
+  };
+  const [dbStat, tempStat] = await Promise.all([
+    FS.stat(dbDirectory),
+    FS.stat(tempDirectory).catch(() => null),
+  ]);
+  if (tempStat === null || tempStat.dev === dbStat.dev) {
+    return (await free(dbDirectory)) < copyBytes * 2
+      ? `free disk is below ${VACUUM_COPY_FACTOR * 2}x the database's live data`
+      : null;
+  }
+  if ((await free(dbDirectory)) < copyBytes) {
+    return `free disk next to the database is below ${VACUUM_COPY_FACTOR}x its live data`;
+  }
+  if ((await free(tempDirectory)) < copyBytes) {
+    return `free space in the temp directory (${tempDirectory}) is below ${VACUUM_COPY_FACTOR}x the database's live data`;
+  }
+  return null;
+}
 
 export interface DatabasePages {
   readonly pageSize: number;

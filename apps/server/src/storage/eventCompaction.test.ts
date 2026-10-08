@@ -24,6 +24,7 @@ import {
   COMPACTED_COMMAND_OUTPUT_MAX_BYTES,
   compactThreadEvents,
   foldMessagePayloads,
+  MAX_EVENTS_PER_TRANSACTION,
 } from "./eventCompaction.ts";
 
 const layer = OrchestrationProjectionPipelineLive.pipe(
@@ -60,6 +61,10 @@ const threadEvent = (event: {
 }) =>
   ({
     ...base(),
+    // Output commands get random IDs in production, so their receipts can go.
+    ...(event.type === "thread.command-execution-output-appended"
+      ? { commandId: CommandId.makeUnsafe(`provider:cmd-output:${counter}`) }
+      : {}),
     aggregateKind: "thread",
     aggregateId: threadId,
     ...event,
@@ -257,7 +262,9 @@ it.layer(layer)("compactThreadEvents", (it) => {
         commandOutputsCompacted: 1,
         messagesCompacted: 1,
         eventsRemoved: 5,
-        receiptsRemoved: 5,
+        // Only the two removed output events' receipts: message receipts stay
+        // to deduplicate redelivered deltas.
+        receiptsRemoved: 2,
         complete: true,
       });
       assert.equal(yield* eventCount("thread.command-execution-output-appended"), 1);
@@ -266,7 +273,7 @@ it.layer(layer)("compactThreadEvents", (it) => {
       const receiptsAfter = yield* sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM orchestration_command_receipts
       `;
-      assert.equal(receiptsAfter[0]!.count, receiptsBefore[0]!.count - 5);
+      assert.equal(receiptsAfter[0]!.count, receiptsBefore[0]!.count - 2);
 
       const output = yield* sql<{ readonly payloadJson: string }>`
         SELECT payload_json AS "payloadJson" FROM orchestration_events
@@ -336,4 +343,117 @@ it.layer(layer)("compactThreadEvents", (it) => {
       assert.equal(result.threadsCompacted, 0);
     }),
   );
+
+  it.effect("splits a group larger than one transaction and finishes it", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      yield* seed;
+      const store = yield* OrchestrationEventStore;
+      const extra = MAX_EVENTS_PER_TRANSACTION + 50;
+      for (let index = 0; index < extra; index += 1) {
+        yield* store.append(
+          threadEvent({
+            type: "thread.command-execution-output-appended",
+            payload: { threadId, commandExecutionId, chunk: "x\n", updatedAt: at },
+          }),
+        );
+      }
+      yield* (yield* OrchestrationProjectionPipeline).bootstrap;
+
+      const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(result, {
+        threadsCompacted: 1,
+        commandOutputsCompacted: 1,
+        eventsRemoved: 3 + extra - 1 + 3,
+        // Only the seeded output events have receipts.
+        receiptsRemoved: 3,
+        complete: true,
+      });
+      assert.equal(yield* eventCount("thread.command-execution-output-appended"), 1);
+    }),
+  );
+
+  it.effect("stops at the time budget without recording the thread as done", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* reset;
+      yield* seed;
+      const result = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: -1 });
+      assert.deepInclude(result, { threadsCompacted: 0, eventsRemoved: 0, complete: false });
+      const watermarks = yield* sql`SELECT * FROM orchestration_event_compaction`;
+      assert.equal(watermarks.length, 0);
+    }),
+  );
+
+  it.effect("skips a malformed group, and backs a thread with invalid JSON off for a day", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* reset;
+      yield* seed;
+      const badMessage = JSON.stringify({ threadId, messageId: "bad-message", streaming: false });
+      yield* insertRawMessageEvent(badMessage);
+      yield* insertRawMessageEvent(badMessage);
+      yield* markAllProjected;
+
+      const skipped = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(skipped, {
+        threadsCompacted: 1,
+        groupsSkipped: 1,
+        messagesCompacted: 1,
+        commandOutputsCompacted: 1,
+        threadsFailed: 0,
+      });
+
+      yield* insertRawMessageEvent("not json");
+      yield* markAllProjected;
+      const failed = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(failed, { threadsCompacted: 0, threadsFailed: 1 });
+      const rows = yield* sql<{ readonly retryAfter: string | null }>`
+        SELECT retry_after AS "retryAfter" FROM orchestration_event_compaction
+      `;
+      assert.isAbove(Date.parse(rows[0]!.retryAfter!), Date.now() + 23 * 60 * 60 * 1_000);
+      const waiting = yield* compactThreadEvents({ nowMs: Date.now(), maxDurationMs: 60_000 });
+      assert.deepInclude(waiting, { threadsCompacted: 0, threadsFailed: 0 });
+    }),
+  );
+});
+
+const reset = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const table of [
+    "orchestration_events",
+    "orchestration_command_receipts",
+    "orchestration_event_compaction",
+    "projection_threads",
+    "projection_thread_messages",
+    "projection_thread_command_executions",
+  ]) {
+    yield* sql.unsafe(`DELETE FROM ${table}`);
+  }
+});
+
+/** Appends a message event the decoder would reject, bypassing the event store. */
+const insertRawMessageEvent = (payloadJson: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    counter += 1;
+    yield* sql`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+        command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+      ) VALUES (
+        ${`raw-event-${counter}`}, 'thread', ${threadId},
+        (SELECT MAX(stream_version) + 1 FROM orchestration_events WHERE stream_id = ${threadId}),
+        'thread.message-sent', ${at}, NULL, NULL, NULL, 'server', ${payloadJson}, '{}'
+      )
+    `;
+  });
+
+/** Moves every projector past events it could not decode. */
+const markAllProjected = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    UPDATE projection_state
+    SET last_applied_sequence = (SELECT MAX(sequence) FROM orchestration_events)
+  `;
 });

@@ -45,7 +45,7 @@ import {
   incrementalVacuum,
   liveDatabaseBytes,
   readDatabasePages,
-  VACUUM_FREE_SPACE_FACTOR,
+  vacuumFreeSpaceShortfall,
   vacuumToIncremental,
 } from "./databaseSpace.ts";
 import { enumerateFiles, recursiveSize, sizeIfExists, type EnumeratedFile } from "./diskUsage.ts";
@@ -66,6 +66,7 @@ const AUTO_CONVERT_MIN_FREE_BYTES = 256 * 1024 * 1024;
 const AUTO_CONVERT_MIN_FREE_FRACTION = 0.2;
 /** The full VACUUM blocks the server, so it waits until nobody has used a thread for this long. */
 const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
+export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 const TYPED_CONFIRM_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 const WORKTREE_SCAN_MAX_DEPTH = 4;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
@@ -120,7 +121,10 @@ export interface StorageMaintenanceShape {
    * before `deletedBefore`, and threads archived at or before `archivedBefore`
    * (soft-deleted first, guarded on their archive time). Null skips a kind.
    * Same per-thread steps and safety checks as the manual purge. Takes the
-   * oldest `maxThreads` threads; the rest wait for the next call.
+   * oldest `maxThreads` threads that are not busy; the rest wait for the
+   * next call. A thread this skipped or failed to purge goes to the back of
+   * the order for {@link PURGE_FAILURE_BACKOFF_MS}, so a few stuck threads
+   * cannot hold every slot.
    * `reclaimedBytes` counts files only: sizing the rows would read every
    * deleted thread's events.
    */
@@ -141,16 +145,21 @@ export interface StorageMaintenanceShape {
   }) => Effect.Effect<DatabaseSpaceResult, StorageMaintenanceError>;
   /**
    * Per-thread provider logs last written before `modifiedBefore` whose
-   * thread is deleted, archived or gone, and not busy. Live threads keep their
-   * logs: transcript repair rebuilds from them.
+   * thread is deleted or gone (or archived, with `includeArchived`), and not
+   * busy. Live threads keep their logs: transcript repair rebuilds from them.
    */
   readonly listTerminalThreadLogs: (input: {
     readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
   }) => Effect.Effect<ReadonlyArray<EnumeratedFile>, StorageMaintenanceError>;
-  /** Deletes the logs {@link StorageMaintenanceShape.listTerminalThreadLogs} lists. */
+  /**
+   * Deletes the logs {@link StorageMaintenanceShape.listTerminalThreadLogs}
+   * lists, re-listing them under the maintenance lock.
+   */
   readonly pruneTerminalThreadLogs: (input: {
     readonly operationId: string;
     readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
   }) => Effect.Effect<StorageCleanupCategoryResult, StorageMaintenanceError>;
 }
 
@@ -586,6 +595,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
   let activeNonce: UsageNonceState | null = null;
   const cancelledOperations = new Set<string>();
   let activeOperationId: string | null = null;
+  /** Threads the automatic purge could not remove, and when to try them first again. */
+  const purgeRetryAtMs = new Map<string, number>();
 
   const queryThreadRows = () =>
     sql<ThreadRow>`
@@ -965,11 +976,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return busySegments;
     });
 
-  const computeProviderLogCandidates = (allThreads: ReadonlyArray<ThreadRow>) =>
+  const computeProviderLogCandidates = (
+    allThreads: ReadonlyArray<ThreadRow>,
+    options?: {
+      /** Keep archived threads' logs: they can be unarchived. */
+      readonly archivedAlive?: boolean;
+    },
+  ) =>
     Effect.gen(function* () {
       const aliveSegments = new Set(
         allThreads
-          .filter(isActiveStorageThread)
+          .filter((thread) =>
+            options?.archivedAlive ? thread.deletedAt === null : isActiveStorageThread(thread),
+          )
           .map((thread) => toSafeThreadAttachmentSegment(thread.threadId))
           .filter((segment): segment is string => segment !== null),
       );
@@ -2049,6 +2068,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 `;
               }
               yield* eventStore.deleteForThreadStream(thread.threadId);
+              yield* sql`DELETE FROM orchestration_event_compaction WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_threads WHERE thread_id = ${thread.threadId}`;
             }),
           ),
@@ -2773,11 +2793,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
           message: "Filesystem free-space inspection is unavailable.",
         });
       }
-      const freeSpace = yield* Effect.tryPromise({
-        try: async () => {
-          const stat = await statfs(Path.dirname(config.dbPath));
-          return stat.bavail * stat.bsize;
-        },
+      // VACUUM copies only live pages, so free pages need no room.
+      const pages = yield* readPages;
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
         catch: (cause) =>
           new StorageMaintenanceError({
             operation: "StorageMaintenance.cleanup.databaseVacuum.statfs",
@@ -2785,18 +2809,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
             cause,
           }),
       });
-      // VACUUM copies only live pages, so free pages need no room.
-      const pages = yield* readPages;
-      if (freeSpace < liveDatabaseBytes(pages) * VACUUM_FREE_SPACE_FACTOR) {
+      if (shortfall !== null) {
         return resultFor({
           categoryId: "databaseVacuum",
           status: "Skipped",
-          warnings: [
-            warningFor(
-              config.dbPath,
-              `Skipped VACUUM because available disk space is below ${VACUUM_FREE_SPACE_FACTOR}x the database's live data.`,
-            ),
-          ],
+          warnings: [warningFor(config.dbPath, `Skipped VACUUM because ${shortfall}.`)],
           message: "Not enough free disk space to compact the database.",
         });
       }
@@ -3177,17 +3194,31 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const purgeThreads: StorageMaintenanceShape["purgeThreads"] = (input) =>
     Effect.gen(function* () {
       const allThreads = yield* queryThreadRows();
+      const busySegments = yield* readBusyThreadSegments(allThreads);
+      const nowMs = Date.now();
+      for (const [threadId, retryAtMs] of purgeRetryAtMs) {
+        if (retryAtMs <= nowMs) purgeRetryAtMs.delete(threadId);
+      }
       const { deletedBefore, archivedBefore } = input;
-      // Oldest first, and at most `maxThreads` in total: the purge holds the
-      // maintenance lock, which pauses command dispatch until it finishes.
+      const purgeable = (thread: ThreadRow) => {
+        const segment = toSafeThreadAttachmentSegment(thread.threadId);
+        return segment === null || !busySegments.has(segment);
+      };
+      // Threads that failed recently go last, then oldest first.
+      const order = (at: (thread: ThreadRow) => string) => (left: ThreadRow, right: ThreadRow) =>
+        Number(purgeRetryAtMs.has(left.threadId)) - Number(purgeRetryAtMs.has(right.threadId)) ||
+        at(left).localeCompare(at(right));
+      // At most `maxThreads` in total: the purge holds the maintenance lock,
+      // which pauses command dispatch until it finishes.
       const deleted = (
         deletedBefore === null
           ? []
           : allThreads.filter(
-              (thread) => thread.deletedAt !== null && thread.deletedAt <= deletedBefore,
+              (thread) =>
+                thread.deletedAt !== null && thread.deletedAt <= deletedBefore && purgeable(thread),
             )
       )
-        .toSorted((left, right) => left.deletedAt!.localeCompare(right.deletedAt!))
+        .toSorted(order((thread) => thread.deletedAt!))
         .slice(0, input.maxThreads);
       const archived = (
         archivedBefore === null
@@ -3196,10 +3227,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
               (thread) =>
                 thread.deletedAt === null &&
                 thread.archivedAt !== null &&
-                thread.archivedAt <= archivedBefore,
+                thread.archivedAt <= archivedBefore &&
+                purgeable(thread),
             )
       )
-        .toSorted((left, right) => left.archivedAt!.localeCompare(right.archivedAt!))
+        .toSorted(order((thread) => thread.archivedAt!))
         .slice(0, Math.max(0, input.maxThreads - deleted.length));
       if (deleted.length === 0 && archived.length === 0) {
         return { purgedThreadIds: [], archivedThreadIds: [], reclaimedBytes: 0, warnings: [] };
@@ -3231,8 +3263,17 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
         ),
       );
+      const purgedThreadIds = result.perTargetReclaimed.map((target) =>
+        ThreadId.makeUnsafe(target.id),
+      );
+      const purged = new Set<string>(purgedThreadIds);
+      for (const thread of [...deleted, ...archived]) {
+        if (!purged.has(thread.threadId)) {
+          purgeRetryAtMs.set(thread.threadId, Date.now() + PURGE_FAILURE_BACKOFF_MS);
+        }
+      }
       return {
-        purgedThreadIds: result.perTargetReclaimed.map((target) => ThreadId.makeUnsafe(target.id)),
+        purgedThreadIds,
         archivedThreadIds: archivedDeletes.deletedThreadIds,
         reclaimedBytes: result.reclaimedBytes,
         warnings: result.warnings,
@@ -3280,11 +3321,13 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
       });
       if (!statfs) return skipped("free disk space cannot be inspected");
-      const freeDisk = yield* Effect.tryPromise({
-        try: async () => {
-          const stat = await statfs(Path.dirname(config.dbPath));
-          return stat.bavail * stat.bsize;
-        },
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
         catch: (cause) =>
           new StorageMaintenanceError({
             operation: "StorageMaintenance.reclaimDatabaseSpace.statfs",
@@ -3292,9 +3335,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
             cause,
           }),
       });
-      if (freeDisk < liveDatabaseBytes(pages) * VACUUM_FREE_SPACE_FACTOR) {
-        return skipped(`free disk is below ${VACUUM_FREE_SPACE_FACTOR}x the database's live data`);
-      }
+      if (shortfall !== null) return skipped(shortfall);
       const beforeBytes = yield* Effect.promise(() => fileSizeIfExists(config.dbPath));
       const lockScope = yield* engine.acquireMaintenanceLock();
       yield* vacuumIncremental.pipe(
@@ -3308,25 +3349,40 @@ const makeStorageMaintenance = Effect.gen(function* () {
       } satisfies DatabaseSpaceResult;
     }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.reclaimDatabaseSpace")));
 
-  const listTerminalThreadLogs: StorageMaintenanceShape["listTerminalThreadLogs"] = (input) =>
+  const terminalThreadLogs = (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) =>
     Effect.gen(function* () {
       const cutoffMs = Date.parse(input.modifiedBefore);
-      const candidates = yield* computeProviderLogCandidates(yield* queryThreadRows());
+      const candidates = yield* computeProviderLogCandidates(yield* queryThreadRows(), {
+        archivedAlive: !input.includeArchived,
+      });
       return candidates.files.filter((file) => file.mtimeMs < cutoffMs);
-    }).pipe(
+    });
+
+  const listTerminalThreadLogs: StorageMaintenanceShape["listTerminalThreadLogs"] = (input) =>
+    terminalThreadLogs(input).pipe(
       Effect.mapError(toStorageMaintenanceError("StorageMaintenance.listTerminalThreadLogs")),
     );
 
   const pruneTerminalThreadLogs: StorageMaintenanceShape["pruneTerminalThreadLogs"] = (input) =>
     Effect.gen(function* () {
-      const files = yield* listTerminalThreadLogs(input);
-      const result = yield* deleteProviderLogFiles(
-        { operationId: input.operationId },
-        undefined,
-        "providerLogsForTerminalThreads",
-        files,
-      );
-      if (files.length > 0) cachedReport = null;
+      // Listed and deleted under the maintenance lock, which holds back every
+      // command: no thread can be unarchived or resumed between the check
+      // and the delete.
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      const result = yield* Effect.gen(function* () {
+        const files = yield* terminalThreadLogs(input);
+        const deleted = yield* deleteProviderLogFiles(
+          { operationId: input.operationId },
+          undefined,
+          "providerLogsForTerminalThreads",
+          files,
+        );
+        if (files.length > 0) cachedReport = null;
+        return deleted;
+      }).pipe(Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)));
       return result;
     }).pipe(
       Effect.mapError(toStorageMaintenanceError("StorageMaintenance.pruneTerminalThreadLogs")),

@@ -266,9 +266,10 @@ export const StorageCleanupSettings = Schema.Struct({
    */
   deletedThreadsPurgeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => 7)),
   /**
-   * Delete per-thread provider logs of deleted and archived threads once they
-   * have not been written for this many days. Runs even when `enabled` is
-   * off; live threads keep their logs for transcript repair. Null keeps them.
+   * Delete per-thread provider logs of deleted threads once they have not
+   * been written for this many days, even when `enabled` is off. Archived
+   * threads can be unarchived, so their logs are included only when `enabled`
+   * is on. Live threads keep their logs for transcript repair. Null keeps them.
    */
   terminalThreadLogsAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => 14)),
 });

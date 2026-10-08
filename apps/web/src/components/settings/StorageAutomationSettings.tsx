@@ -183,13 +183,14 @@ export function StorageAutomationSettings() {
         </label>
         <label className="flex items-center justify-between gap-4 py-2 text-sm">
           <span>
-            Delete logs of deleted and archived threads after
+            Delete logs of deleted threads after
             <span className="block text-xs text-muted-foreground">
-              Days since the log was last written. Empty keeps them.
+              Days since the log was last written. With automatic cleanup on, archived threads' logs
+              go too. Empty keeps them.
             </span>
           </span>
           <RetentionDaysInput
-            label="Delete logs of deleted and archived threads after"
+            label="Delete logs of deleted threads after"
             value={storageCleanup.terminalThreadLogsAfterDays}
             onCommit={(terminalThreadLogsAfterDays) => saveCleanup({ terminalThreadLogsAfterDays })}
           />

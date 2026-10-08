@@ -58,8 +58,8 @@ import { StorageMaintenance } from "./StorageMaintenance.ts";
  * - Codex marketplace upgrade clones that Codex app-servers F5 spawned left
  *   behind (see `codexMarketplaceStaging.ts`).
  * - Purging threads deleted more than `deletedThreadsPurgeAfterDays` ago.
- * - Provider logs of deleted and archived threads past
- *   `terminalThreadLogsAfterDays`.
+ * - Provider logs of deleted threads past `terminalThreadLogsAfterDays`.
+ *   Archived threads can be unarchived, so their logs go only with cleanup on.
  * - Event compaction (`eventCompaction.ts`) and returning free database pages
  *   to the file system (`databaseSpace.ts`).
  *
@@ -104,6 +104,10 @@ export function redactHomePath(value: string, home: string = OS.homedir()): stri
     ? Path.join("~", relative)
     : value;
 }
+
+/** Archived threads can be unarchived, so their logs go only with cleanup on. */
+const terminalLogsLabel = (includeArchived: boolean) =>
+  includeArchived ? "deleted and archived thread logs" : "deleted thread logs";
 
 const CODEX_LEFTOVER_MIN_AGE_HOURS = CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS / (60 * 60 * 1_000);
 
@@ -611,9 +615,11 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     Effect.gen(function* () {
       const days = settings.storageCleanup.terminalThreadLogsAfterDays;
       if (days === null) return;
+      const includeArchived = settings.storageCleanup.enabled;
       const result = yield* storageMaintenance.pruneTerminalThreadLogs({
         operationId,
         modifiedBefore: daysAgoIso(days),
+        includeArchived,
       });
       const removed = result.perTargetReclaimed.length;
       if (removed === 0 && result.warnings.length === 0) return;
@@ -621,7 +627,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         {
           operationId,
           job: "provider-logs",
-          target: "deleted and archived thread logs",
+          target: terminalLogsLabel(includeArchived),
           result: result.warnings.length === 0 ? "removed" : "failed",
           reason: `removed ${removed} file(s) (${result.reclaimedBytes} bytes) not written for ${days} days${
             result.warnings.length > 0 ? `; ${result.warnings.length} could not be removed` : ""
@@ -645,6 +651,18 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           result: "removed",
           reason: `compacted ${compaction.commandOutputsCompacted} command output(s) and ${compaction.messagesCompacted} message(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
         });
+      }
+      if (compaction.threadsFailed > 0 || compaction.groupsSkipped > 0) {
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "event-compaction",
+            target: "orchestration events",
+            result: "failed",
+            reason: `${compaction.threadsFailed} thread(s) failed and wait a day; ${compaction.groupsSkipped} group(s) with malformed payloads were left alone`,
+          },
+          { skipIfRepeated: true },
+        );
       }
       const space = yield* storageMaintenance.reclaimDatabaseSpace({
         maxDurationMs: INCREMENTAL_VACUUM_BUDGET_MS,
@@ -697,13 +715,14 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       targets.push(...(yield* purgeThreadDryRunTargets(global)));
       const days = global.storageCleanup.terminalThreadLogsAfterDays;
       if (days !== null) {
+        const includeArchived = global.storageCleanup.enabled;
         const logs = yield* storageMaintenance
-          .listTerminalThreadLogs({ modifiedBefore: daysAgoIso(days) })
+          .listTerminalThreadLogs({ modifiedBefore: daysAgoIso(days), includeArchived })
           .pipe(Effect.orElseSucceed(() => []));
         if (logs.length > 0) {
           targets.push({
             job: "provider-logs",
-            target: "deleted and archived thread logs",
+            target: terminalLogsLabel(includeArchived),
             projectId: null,
             threadId: null,
             action: "remove",
