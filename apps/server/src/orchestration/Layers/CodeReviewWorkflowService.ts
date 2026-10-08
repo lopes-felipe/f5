@@ -36,6 +36,7 @@ import {
   isLatestTurnFinishedAndConsumable,
   latestAssistantFeedback,
   nextWorkflowSlug,
+  reviewFeedbackForPinnedTurn,
   workflowArtifactFit,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
@@ -734,8 +735,17 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           // pinned assistant message stays within the read model's retention
           // window. latestAssistantFeedback also falls back to the latest
           // assistant message if the pinned id is ever outside the window.
+          // A reviewer that submitted its report as a plan (for example via
+          // ExitPlanMode) often ends with only a short summary message, so a
+          // longer plan captured for the pinned turn wins over that message.
           const text = thread
-            ? (latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)?.text ?? null)
+            ? ((
+                reviewFeedbackForPinnedTurn(
+                  thread,
+                  reviewer.pinnedTurnId,
+                  reviewer.pinnedAssistantMessageId,
+                ) ?? latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)
+              )?.text ?? null)
             : null;
           return {
             label: reviewer.label,

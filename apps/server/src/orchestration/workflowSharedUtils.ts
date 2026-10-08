@@ -327,6 +327,40 @@ export function latestAssistantFeedback(
   return null;
 }
 
+export function reviewFeedbackForPinnedTurn(
+  thread: Omit<Parameters<typeof latestAssistantFeedback>[0], "messages"> & {
+    readonly messages: ReadonlyArray<
+      Parameters<typeof latestAssistantFeedback>[0]["messages"][number] & {
+        readonly turnId?: string | null;
+      }
+    >;
+    readonly proposedPlans?: ReadonlyArray<{
+      readonly turnId: string | null;
+      readonly planMarkdown: string;
+    }>;
+  },
+  turnId: string | null,
+  messageId: string | null,
+) {
+  const pinnedMessageId =
+    messageId ??
+    (turnId
+      ? thread.messages.findLast(
+          (message) => message.turnId === turnId && message.role === "assistant",
+        )?.id
+      : null);
+  const feedback =
+    turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
+  const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
+  return plan && plan.planMarkdown.length > (feedback?.text.length ?? 0)
+    ? formatAssistantFeedback({
+        text: plan.planMarkdown,
+        reasoningText: thread.messages.find((message) => message.id === pinnedMessageId)
+          ?.reasoningText,
+      })
+    : feedback;
+}
+
 export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000): string {
   if (text.length <= maxChars) {
     return text;

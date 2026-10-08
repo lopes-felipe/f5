@@ -4,6 +4,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -2032,6 +2033,80 @@ describe("CodeReviewWorkflowService", () => {
       ),
     ).toHaveLength(1);
     expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.status).toBe("running");
+  });
+
+  it.each([
+    {
+      name: "the plan when it is longer than the final message",
+      message: "The client captured your proposed plan.",
+      plan: "# Review\n\nFull report submitted as a plan with every finding.",
+      expected: "Full report submitted as a plan",
+      unexpected: "The client captured your proposed plan.",
+    },
+    {
+      name: "the final message when it is longer than the plan",
+      message: "Full report written as the final message with every finding.",
+      plan: "Short plan",
+      expected: "Full report written as the final message",
+      unexpected: "Short plan",
+    },
+  ])("consolidates $name for a reviewer turn", async ({ message, plan, expected, unexpected }) => {
+    const reviewerAThread = {
+      ...makeCompletedThread({
+        threadId: ThreadId.makeUnsafe("reviewer-a"),
+        suffix: "review-a",
+        text: message,
+      }),
+      proposedPlans: [
+        {
+          id: OrchestrationProposedPlanId.makeUnsafe("plan-review-a"),
+          turnId: TurnId.makeUnsafe("turn-review-a"),
+          planMarkdown: plan,
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    };
+    const reviewerBThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-b"),
+      suffix: "review-b",
+    });
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: reviewerAThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerAThread.latestTurn!.assistantMessageId,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: reviewerBThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerBThread.latestTurn!.assistantMessageId,
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        status: "pending_start",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [reviewerAThread, reviewerBThread] }),
+    );
+
+    await harness.start();
+
+    const consolidationTurn = harness.dispatched.find(
+      (command) =>
+        command.type === "thread.turn.start" && command.message.text.includes("review-b findings"),
+    );
+    expect(
+      consolidationTurn?.type === "thread.turn.start" && consolidationTurn.message.text,
+    ).toEqual(expect.stringContaining(expected));
+    expect(
+      consolidationTurn?.type === "thread.turn.start" && consolidationTurn.message.text,
+    ).not.toContain(unexpected);
   });
 
   it("reuses a persisted consolidation thread when resuming pending start", async () => {
