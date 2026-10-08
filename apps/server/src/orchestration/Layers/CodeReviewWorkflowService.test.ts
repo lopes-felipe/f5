@@ -2044,23 +2044,44 @@ describe("CodeReviewWorkflowService", () => {
       unexpected: "The client captured your proposed plan.",
     },
     {
+      name: "the plan when only the summary's reasoning is longer than it",
+      message: "Summary of the submitted plan.",
+      reasoningText: "Long reasoning before the summary. ".repeat(10),
+      plan: "# Review\n\nFull report submitted as a plan with every finding.",
+      expected: "Full report submitted as a plan",
+      unexpected: "Summary of the submitted plan.",
+    },
+    {
       name: "the final message when it is longer than the plan",
       message: "Full report written as the final message with every finding.",
       plan: "Short plan",
       expected: "Full report written as the final message",
       unexpected: "Short plan",
     },
-  ])("consolidates $name for a reviewer turn", async ({ message, plan, expected, unexpected }) => {
+    {
+      name: "the final message when the longer plan belongs to another turn",
+      message: "Report from the retried reviewer turn.",
+      plan: "# Review\n\nStale report submitted as a plan by an earlier attempt.",
+      planTurnId: "turn-review-a-failed",
+      expected: "Report from the retried reviewer turn.",
+      unexpected: "Stale report",
+    },
+  ])("consolidates $name for a reviewer turn", async (row) => {
+    const { message, plan, expected, unexpected } = row;
+    const completed = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-a"),
+      suffix: "review-a",
+      text: message,
+    });
     const reviewerAThread = {
-      ...makeCompletedThread({
-        threadId: ThreadId.makeUnsafe("reviewer-a"),
-        suffix: "review-a",
-        text: message,
-      }),
+      ...completed,
+      messages: completed.messages.map((entry) =>
+        "reasoningText" in row ? { ...entry, reasoningText: row.reasoningText } : entry,
+      ),
       proposedPlans: [
         {
           id: OrchestrationProposedPlanId.makeUnsafe("plan-review-a"),
-          turnId: TurnId.makeUnsafe("turn-review-a"),
+          turnId: TurnId.makeUnsafe("planTurnId" in row ? row.planTurnId : "turn-review-a"),
           planMarkdown: plan,
           implementedAt: null,
           implementationThreadId: null,

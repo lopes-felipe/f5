@@ -352,11 +352,18 @@ export function reviewFeedbackForPinnedTurn(
   const feedback =
     turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
   const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
-  return plan && plan.planMarkdown.length > (feedback?.text.length ?? 0)
+  const pinnedMessage = thread.messages.find((message) => message.id === pinnedMessageId);
+  // Compare the plan with the reply alone. Reasoning is attached to whichever
+  // side wins, so counting it here would let a short summary with long
+  // reasoning displace a full report submitted as a plan.
+  const replyLength =
+    pinnedMessage?.role === "assistant"
+      ? pinnedMessage.text.trim().length
+      : (feedback?.text.length ?? 0);
+  return plan && plan.planMarkdown.length > replyLength
     ? formatAssistantFeedback({
         text: plan.planMarkdown,
-        reasoningText: thread.messages.find((message) => message.id === pinnedMessageId)
-          ?.reasoningText,
+        reasoningText: pinnedMessage?.reasoningText,
       })
     : feedback;
 }
