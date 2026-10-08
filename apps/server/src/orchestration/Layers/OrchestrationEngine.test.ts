@@ -41,6 +41,7 @@ import {
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { DiskSpaceMonitor } from "../../storage/DiskSpaceMonitor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
 
@@ -77,7 +78,21 @@ function histogramCount(
   return snapshot?.type === "Histogram" ? snapshot.state.count : 0;
 }
 
-async function createOrchestrationSystem(input?: { readonly tracePath?: string }) {
+/** A monitor whose turn-start hold the test controls. */
+function diskSpaceMonitorLayer(hold: { current: string | null }) {
+  return Layer.succeed(DiskSpaceMonitor, {
+    getStatus: () => Effect.die("unused"),
+    turnStartHold: Effect.sync(() => hold.current),
+    changes: Stream.empty,
+    noteStorageChanged: Effect.void,
+    start: () => Effect.void,
+  });
+}
+
+async function createOrchestrationSystem(input?: {
+  readonly tracePath?: string;
+  readonly diskSpaceHold?: { current: string | null };
+}) {
   if (input?.tracePath) {
     fs.mkdirSync(path.dirname(input.tracePath), { recursive: true });
   }
@@ -98,6 +113,7 @@ async function createOrchestrationSystem(input?: { readonly tracePath?: string }
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(SqlitePersistenceMemory),
+    Layer.provide(input?.diskSpaceHold ? diskSpaceMonitorLayer(input.diskSpaceHold) : Layer.empty),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(tracerLayer),
     Layer.provideMerge(NodeServices.layer),
@@ -214,6 +230,78 @@ describe("OrchestrationEngine", () => {
     const readModelB = await system.run(engine.getReadModel());
     expect(readModelB).toEqual(readModelA);
     await system.dispose();
+  });
+
+  it("holds turn starts while disk space is critical", async () => {
+    const createdAt = now();
+    const hold = { current: "Only 1 GB of disk space is free." as string | null };
+    const system = await createOrchestrationSystem({ diskSpaceHold: hold });
+    const { engine } = system;
+    try {
+      await system.run(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("cmd-disk-project"),
+          projectId: asProjectId("disk-project"),
+          title: "Disk project",
+          workspaceRoot: "/tmp/disk-project",
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        }),
+      );
+      // Other commands are not held.
+      await system.run(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("cmd-disk-thread"),
+          threadId: ThreadId.makeUnsafe("disk-thread"),
+          projectId: asProjectId("disk-project"),
+          title: "Thread",
+          model: "gpt-5-codex",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        }),
+      );
+      const turnStart = (commandId: string, dispatchSource?: "next-turn-queue") => ({
+        type: "thread.turn.start" as const,
+        commandId: CommandId.makeUnsafe(commandId),
+        threadId: ThreadId.makeUnsafe("disk-thread"),
+        message: {
+          messageId: asMessageId(`${commandId}-message`),
+          role: "user" as const,
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required" as const,
+        ...(dispatchSource ? { dispatchSource } : {}),
+        createdAt,
+      });
+
+      const direct = await system.run(Effect.flip(engine.dispatch(turnStart("cmd-disk-direct"))));
+      expect(direct._tag).toBe("OrchestrationCommandInvariantError");
+      expect(direct.message).toContain("Only 1 GB of disk space is free.");
+
+      // The queue retries a not-ready turn on its own, without spending an attempt.
+      const queued = await system.run(
+        Effect.flip(engine.dispatch(turnStart("cmd-disk-queued", "next-turn-queue"))),
+      );
+      expect(queued._tag).toBe("ThreadTurnNotReadyError");
+
+      // A held turn records nothing, so the same command goes through once space is free.
+      hold.current = null;
+      await system.run(engine.dispatch(turnStart("cmd-disk-queued", "next-turn-queue")));
+      const readModel = await system.run(engine.getReadModel());
+      const thread = readModel.threads.find((entry) => entry.id === "disk-thread");
+      expect(thread?.messages.map((message) => message.id)).toEqual([
+        asMessageId("cmd-disk-queued-message"),
+      ]);
+    } finally {
+      await system.dispose();
+    }
   });
 
   it("rejects cross-aggregate command reuse without replacing the original receipt", async () => {

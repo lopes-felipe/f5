@@ -182,9 +182,11 @@ import type {
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
   StorageCleanupResult,
+  StorageGetDiskSpaceRequest,
   StorageGetUsageRequest,
   StorageInvalidatedPayload,
   StorageUsageReport,
+  DiskSpaceStatus,
 } from "./storage";
 import type {
   NextTurnQueueCancelInput,
@@ -757,6 +759,9 @@ export interface NativeApi {
     automationAudit: (input?: StorageAutomationAuditInput) => Promise<StorageAutomationAuditResult>;
     onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
     onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
+    /** Free space on the volumes F5 and its providers write to. */
+    getDiskSpace: (input?: StorageGetDiskSpaceRequest) => Promise<DiskSpaceStatus>;
+    onDiskSpaceUpdated: (callback: (payload: DiskSpaceStatus) => void) => () => void;
   };
   nextTurnQueue: {
     list: (input: NextTurnQueueListInput) => Promise<NextTurnQueueSnapshot>;

@@ -1546,6 +1546,17 @@ it.layer(
         );
         assert.isAtLeast(category?.reclaimableBytes ?? 0, 4096);
 
+        // The low-disk banner's summary scans again without replacing the
+        // nonce of the scan the user is looking at; cleanup below uses it.
+        const summary = yield* storage.summarizeReclaimable;
+        const staging = summary.find((item) => item.categoryId === "codexMarketplaceStaging");
+        assert.equal(staging?.title, category?.title);
+        assert.equal(staging?.bytes, category?.reclaimableBytes);
+        assert.deepEqual(
+          summary.map((item) => item.bytes),
+          summary.map((item) => item.bytes).toSorted((left, right) => right - left),
+        );
+
         // A leftover that ages past the guard after the scan was not confirmed.
         yield* Effect.promise(() => makeDir(lateClone, 3 * 60 * 60 * 1_000));
         const result = yield* storage.cleanup({
