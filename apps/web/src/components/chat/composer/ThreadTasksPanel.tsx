@@ -50,7 +50,13 @@ export function ThreadTasksPanel(input: {
   return (
     <section
       data-composer-task-drawer={input.attached || undefined}
-      className="overflow-hidden rounded-2xl border border-border/70 bg-card/70 shadow-sm backdrop-blur-sm"
+      className={cn(
+        "overflow-hidden",
+        // A composer tray row: the tray supplies the frame and dividers.
+        input.attached
+          ? "w-full bg-card"
+          : "rounded-2xl border border-border/70 bg-card/70 shadow-sm backdrop-blur-sm",
+      )}
     >
       <button
         type="button"

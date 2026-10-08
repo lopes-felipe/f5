@@ -6934,23 +6934,6 @@ export default function ChatView({
                       {historyStatusContent}
                       <NewerMessageHistoryControl threadId={activeThread.id} />
                       <OlderActivityHistoryControl threadId={activeThread.id} />
-                      {
-                        // Tasks come only from the detail payload, so keep this
-                        // gated on `detailsLoaded` even though the timeline can
-                        // render from live events earlier.
-                        !composerRedesign && activeThread.detailsLoaded && showThreadTasksPanel ? (
-                          <div className="mx-auto mb-4 w-full max-w-(--chat-content-max-width)">
-                            <ThreadTasksPanel
-                              threadId={activeThread.id}
-                              tasks={effectiveThreadTasks}
-                              tracking={activeThread.tasksTracking}
-                              open={tasksPanelOpen}
-                              summary={taskPanelSummary}
-                              onToggle={onToggleTasksPanel}
-                            />
-                          </div>
-                        ) : null
-                      }
                     </>
                   }
                 />
@@ -6974,10 +6957,10 @@ export default function ChatView({
                   className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}
                 >
                   <ComposerTray redesign={composerRedesign}>
-                    {/* The redesign attaches the task list to the composer;
-                        otherwise it stays at the end of the timeline. Tasks
-                        come only from the detail payload. */}
-                    {composerRedesign && activeThread.detailsLoaded && showThreadTasksPanel ? (
+                    {/* The task list stays attached to the composer so it is
+                        visible in long threads. Tasks come only from the
+                        detail payload, so keep this gated on `detailsLoaded`. */}
+                    {activeThread.detailsLoaded && showThreadTasksPanel ? (
                       <ThreadTasksPanel
                         attached
                         threadId={activeThread.id}
