@@ -29,6 +29,7 @@ import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTur
 import { OrchestrationEngineLive } from "./orchestration/Layers/OrchestrationEngine";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor";
+import { NativeSessionCleanupReactorLive } from "./orchestration/Layers/NativeSessionCleanupReactor";
 import { CompactionServiceLive } from "./orchestration/Layers/CompactionService";
 import { ProjectSkillSyncServiceLive } from "./orchestration/Layers/ProjectSkillSyncService";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor";
@@ -226,6 +227,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       recordTerminalEvent: providerTerminalEventRepository.record,
     }).pipe(
       Layer.provide(adapterRegistryLayer),
+      Layer.provide(providerRegistryLayer),
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
@@ -452,6 +454,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(investigationWorkflowServiceLayer),
     Layer.provideMerge(nextTurnQueueDispatcherLayer),
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
+    Layer.provideMerge(
+      NativeSessionCleanupReactorLive.pipe(Layer.provideMerge(runtimeServicesLayer)),
+    ),
   );
   const providerSessionReaperLayer = ProviderSessionReaperLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),

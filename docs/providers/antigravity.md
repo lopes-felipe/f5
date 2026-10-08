@@ -42,7 +42,9 @@ subagent completed.
 Provider status checks only inspect local installation/account files. Each live process
 gets a scoped temporary directory, removed after shutdown. Only user skill directories
 are linked from `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills`; credentials,
-hooks and MCP configuration are not shared this way.
+hooks and MCP configuration are not shared this way. The same two directories in the
+instance's home form its private skill catalog. The CLI publishes no catalog of its own,
+so F5 scans them on each status check.
 
 The browser helper alone sets `ELECTRON_RUN_AS_NODE`. Agent tool commands retain Python
 and Google Cloud tool configuration; Antigravity-specific authentication overrides are

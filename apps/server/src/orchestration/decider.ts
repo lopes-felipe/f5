@@ -1458,6 +1458,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: steering ? "thread.turn-steer-requested" : "thread.turn-start-requested",
         payload: {
           ...(steering ? { expectedTurnId: command.expectedTurnId! } : {}),
+          ...(steering && command.expectedSessionGeneration !== undefined
+            ? { expectedSessionGeneration: command.expectedSessionGeneration }
+            : {}),
           ...(command.presentation ? { presentation: command.presentation } : {}),
           threadId: command.threadId,
           messageId: command.message.messageId,

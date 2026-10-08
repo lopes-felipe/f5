@@ -1,4 +1,8 @@
-import { RuntimeUsageLimit } from "@t3tools/contracts";
+import {
+  ProviderSessionAction,
+  ProviderSessionUnavailableReason,
+  RuntimeUsageLimit,
+} from "@t3tools/contracts";
 import { Schema } from "effect";
 
 import type { CheckpointServiceError } from "../checkpointing/Errors.ts";
@@ -209,7 +213,26 @@ export class ProviderDriverError extends Schema.TaggedErrorClass<ProviderDriverE
   }
 }
 
+/**
+ * ProviderSessionActionUnavailableError - A session action was refused after
+ * re-checking generation, executable support and policy. Carries the
+ * structured reason so stale browsers can explain it instead of retrying.
+ */
+export class ProviderSessionActionUnavailableError extends Schema.TaggedErrorClass<ProviderSessionActionUnavailableError>()(
+  "ProviderSessionActionUnavailableError",
+  {
+    threadId: Schema.String,
+    action: ProviderSessionAction,
+    reason: ProviderSessionUnavailableReason,
+  },
+) {
+  override get message(): string {
+    return this.reason.message;
+  }
+}
+
 export type ProviderServiceError =
+  | ProviderSessionActionUnavailableError
   | ProviderValidationError
   | ProviderValidationBusyError
   | ProviderUnsupportedError

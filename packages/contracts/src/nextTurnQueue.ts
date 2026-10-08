@@ -229,6 +229,8 @@ export type NextTurnQueueRetryInput = typeof NextTurnQueueRetryInput.Type;
 export const NextTurnQueueSteerInput = Schema.Struct({
   itemId: CommandId,
   expectedRevision: NonNegativeInt,
+  /** Session generation the browser saw; a restarted session refuses the steer. */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
 });
 export type NextTurnQueueSteerInput = typeof NextTurnQueueSteerInput.Type;
 

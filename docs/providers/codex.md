@@ -291,3 +291,64 @@ Older CLIs: the manager, adapter and rewind suites pass against fakes, and the
 credential-free startup smoke (`bun scripts/certify-codex-runtime.ts`) passed on 0.144.3
 and 0.160.1 on 2026-10-07. The authenticated rewind matrix from Release 0 above covers
 0.144.3, 0.147.0, 0.156.0 and 0.160.1. CLIs older than 0.144 are permitted but unverified.
+
+## Release 2: models, catalogs and inventory
+
+### Reported models
+
+Once per instance and CLI version, F5 opens a short-lived control client and pages
+`model/list`. The probe has an 8-second budget, and the process is closed in `finally`.
+Hidden models are dropped. Efforts come from `supportedReasoningEfforts` and
+`defaultReasoningEffort`, tiers from `serviceTiers` and `defaultServiceTier`, and
+`upgrade` becomes an advisory. `additionalSpeedTiers` is never read. Fast mode is offered
+only when a `fast` tier is reported. A model that reports no efforts gets no effort
+control. Reported capabilities override same-slug built-ins. If the probe fails, the last
+good result or the built-ins stay in use, and no slug a persisted thread uses is dropped.
+A failed probe is not retried for the same CLI version for 30 minutes. Concurrent
+callers share a single probe.
+
+Each session also reads its own `model/list`. `turn/start` resolves the requested effort
+against that list, walking down to the nearest offered level, so a CLI-only model
+receives the effort the composer showed. A `fast` service tier is sent only when the
+session's list offers it. The composer applies the same rule to effort and fast mode
+before it dispatches.
+
+### Catalogs
+
+The same probe reads `skills/list` for the instance. `repo` skills are excluded there,
+because the project scan owns repository files. The instance's `user`, `system` and
+`admin` skills form its private catalog, and switching instance in the composer drops
+it.
+
+### Inventory (read-only)
+
+Settings → Providers → an instance → **Hooks, plugins and connectors** opens a control
+client with the instance's own `CODEX_HOME` and reads:
+
+- `hooks/list`: program name only
+- `plugin/list`: installed plugins, local marketplaces only, no remote refetch
+- `app/list`
+- `config/read` with layers, for configured MCP servers
+
+F5 launches every app-server with `-c mcp_servers={}`, so `mcpServerStatus/list` would
+always be empty. MCP servers are read from each config layer's `mcp_servers` table
+instead, with the name and transport only, never commands, URLs or environment. The
+`sessionFlags` layer is skipped because it holds F5's own override. A server is shown as
+disabled when `enabled = false` or when its layer has a `disabledReason`.
+
+Sources come from the hook source or the MCP server's config layer:
+
+| Codex source                                    | Shown as |
+| ----------------------------------------------- | -------- |
+| user, sessionFlags                              | instance |
+| project                                         | project  |
+| system, mdm, enterpriseManaged, cloud*, legacy* | managed  |
+| plugin                                          | plugin   |
+
+If a method is unsupported, it becomes a warning instead of failing the view. F5 never
+installs, removes or edits these.
+
+`hooks/list`, `plugin/list` and `app/list` were added to `CODEX_CLIENT_REQUEST_METHODS`.
+Their decoded fields, plus the new `model/list` and `skills/list` fields, are certified
+against 0.160.1 (66 fields). The fixture was refreshed for the three new response
+schemas.

@@ -535,6 +535,11 @@ export function NextTurnQueuePanel({
                         await api.nextTurnQueue.steer({
                           itemId: candidate.itemId,
                           expectedRevision: snapshot.revision,
+                          ...(thread?.session?.capabilities
+                            ? {
+                                expectedSessionGeneration: thread.session.capabilities.generation,
+                              }
+                            : {}),
                         }),
                       );
                     })

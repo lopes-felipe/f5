@@ -78,6 +78,8 @@ function makeProviderServiceStub(input?: {
     respondToUserInput: (_input) => unused(),
     stopSession: (_input) => unused(),
     listSessions: () => Effect.succeed([] satisfies ReadonlyArray<ProviderSession>),
+    getSessionCapabilities: () => Effect.succeed(null),
+    assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: (_provider) => unused(),
     readThread: (_threadId) => unused(),
     rollbackConversation: (_input) => unused(),

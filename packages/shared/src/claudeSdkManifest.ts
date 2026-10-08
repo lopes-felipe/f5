@@ -15,7 +15,7 @@ export const CLAUDE_SDK_MESSAGE_DISPOSITIONS = {
   tool_use_summary: "canonical",
   "system/api_retry": "canonical",
   "system/background_tasks_changed": "canonical",
-  "system/commands_changed": "ignored", // Release 2: session command catalogs.
+  "system/commands_changed": "canonical",
   "system/compact_boundary": "canonical",
   "system/control_request_progress": "ignored",
   "system/elicitation_complete": "ignored", // Release 3: private elicitation transport.

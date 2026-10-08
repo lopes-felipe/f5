@@ -20,6 +20,7 @@ import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
+import { NativeSessionCleanupReactor } from "../Services/NativeSessionCleanupReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
@@ -76,6 +77,14 @@ describe("OrchestrationReactor", () => {
 
       runtime = ManagedRuntime.make(
         Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
+          Layer.provideMerge(
+            Layer.succeed(NativeSessionCleanupReactor, {
+              start: Effect.sync(() => {
+                started.push("native-session-cleanup-reactor");
+              }),
+              drain: Effect.void,
+            }),
+          ),
           Layer.provideMerge(
             Layer.succeed(OrchestrationEngineService, {
               getReadModel: () =>
@@ -257,6 +266,7 @@ describe("OrchestrationReactor", () => {
         "code-review-workflow-service",
         "investigation-workflow-service",
         "next-turn-queue-dispatcher",
+        "native-session-cleanup-reactor",
       ]);
 
       for (let index = 0; index < 20; index += 1) await runtime.runPromise(Effect.yieldNow);

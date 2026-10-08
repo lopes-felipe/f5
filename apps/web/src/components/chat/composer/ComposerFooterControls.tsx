@@ -140,7 +140,11 @@ export function ComposerFooterControls(props: {
           contextSummary={props.contextSummary}
           traitsMenuContent={
             model.selectedProvider === "codex" ? (
-              <CodexTraitsMenuContent threadId={threadId} model={model.selectedModel} />
+              <CodexTraitsMenuContent
+                threadId={threadId}
+                model={model.selectedModel}
+                models={model.selectedProviderModels}
+              />
             ) : model.showClaudeTraitsControls ? (
               <ClaudeTraitsMenuContent
                 threadId={threadId}
@@ -160,7 +164,11 @@ export function ComposerFooterControls(props: {
       ) : (
         <>
           {model.selectedProvider === "codex" ? (
-            <CodexTraitsPicker threadId={threadId} model={model.selectedModel} />
+            <CodexTraitsPicker
+              threadId={threadId}
+              model={model.selectedModel}
+              models={model.selectedProviderModels}
+            />
           ) : model.showClaudeTraitsControls ? (
             <ClaudeTraitsPicker
               threadId={threadId}

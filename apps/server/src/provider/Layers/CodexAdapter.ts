@@ -2582,6 +2582,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => manager.hasSession(threadId));
 
+    const getSessionDiscovery: NonNullable<CodexAdapterShape["getSessionDiscovery"]> = (threadId) =>
+      Effect.sync(() => manager.getSessionDiscovery?.(threadId));
+
     const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = (threadId) =>
       Effect.tryPromise({
         try: () => manager.reloadMcpConfig(threadId),
@@ -2688,6 +2691,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       stopSession,
       listSessions,
       hasSession,
+      getSessionDiscovery,
       reloadMcpConfig,
       stopAll,
       streamEvents: Stream.fromQueue(runtimeEventQueue),

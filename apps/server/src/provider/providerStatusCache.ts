@@ -12,13 +12,29 @@ const decodeProviderStatusCache = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ServerProviderSchema),
 );
 
+export const isReportedModel = (model: ServerProvider["models"][number] | undefined): boolean =>
+  model?.capabilities?.source === "reported";
+
+/**
+ * Built-in models stay the offline fallback, so no slug a persisted thread may
+ * use is ever dropped. Capabilities the executable reported for the same slug
+ * override the built-in metadata; executable-only models are appended.
+ */
 const mergeProviderModels = (
   fallbackModels: ReadonlyArray<ServerProvider["models"][number]>,
   cachedModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
   const fallbackSlugs = new Set(fallbackModels.map((model) => model.slug));
+  const reportedBySlug = new Map(
+    cachedModels
+      .filter((model) => !model.isCustom && isReportedModel(model))
+      .map((model) => [model.slug, model] as const),
+  );
   return [
-    ...fallbackModels,
+    ...fallbackModels.map((model) => {
+      const reported = model.isCustom ? undefined : reportedBySlug.get(model.slug);
+      return reported ? { ...model, capabilities: reported.capabilities } : model;
+    }),
     ...cachedModels.filter((model) => !model.isCustom && !fallbackSlugs.has(model.slug)),
   ];
 };

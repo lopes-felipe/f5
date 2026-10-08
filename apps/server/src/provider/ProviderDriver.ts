@@ -84,7 +84,29 @@ export interface ProviderInstance {
   >;
   readonly accountUsage?: AccountUsageCapability;
   readonly invalidateAccountStatus?: Effect.Effect<void>;
+  /**
+   * Read-only hooks/plugins/connectors/agents inventory for this instance.
+   * `projectRoot` is resolved by the server from a project id, never taken
+   * from the browser. Instance-private entries come from this instance's own
+   * home/config dir only.
+   */
+  readonly inventory?: (input: {
+    readonly projectRoot?: string | undefined;
+  }) => Effect.Effect<ProviderInstanceInventoryEntries, ProviderDriverError>;
+  /**
+   * Remove a native session's local transcript from this instance's own
+   * store (never the server-global home). Best-effort; callers log failures.
+   */
+  readonly deleteNativeSession?: (
+    sessionId: string,
+  ) => Effect.Effect<{ readonly removed: ReadonlyArray<string> }, ProviderDriverError>;
 }
+
+/** Inventory body; the registry stamps instance id, driver and timestamps. */
+export type ProviderInstanceInventoryEntries = Pick<
+  import("@t3tools/contracts").ProviderInstanceInventory,
+  "hooks" | "plugins" | "connectors" | "agents" | "warnings"
+>;
 
 export interface ProviderContinuationIdentity {
   readonly driverKind: ProviderDriverKind;

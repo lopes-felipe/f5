@@ -43,6 +43,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
+import { ProviderInventorySection } from "./ProviderInventorySection";
+import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   PROVIDER_STATUS_STYLES,
@@ -907,6 +909,9 @@ export function ProviderInstanceCard({
               driverKind === "claudeAgent" ||
               driverKind === "antigravity") && (
               <ProviderAccountPanel instanceId={instanceId} driver={instance.driver} />
+            )}
+            {providerRuntimeCapabilities(String(instance.driver)).instanceInventory && (
+              <ProviderInventorySection instanceId={instanceId} />
             )}
             {driverOption !== undefined ? (
               <ProviderModelsSection

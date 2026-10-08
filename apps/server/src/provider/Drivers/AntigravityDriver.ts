@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import { makeProviderLimits } from "../../usage/providerLimits.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { createModelCapabilities } from "@t3tools/shared/model";
@@ -9,7 +10,7 @@ import {
   ProviderInstanceId,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { ServerConfig } from "../../config.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
@@ -19,12 +20,14 @@ import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { scanInstanceHomeSkills } from "../../orchestration/projectSkills.ts";
 import { defaultProviderContinuationIdentity, type ProviderDriver } from "../ProviderDriver.ts";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 
 const driverKind = ProviderDriverKind.make("antigravity");
 export type AntigravityDriverEnv =
   | FileSystem.FileSystem
+  | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
   | ServerConfig
   | ProviderEventLoggers;
@@ -143,14 +146,25 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           },
         },
       );
+      const path = yield* Path.Path;
+      // The Antigravity CLI publishes no skill catalog, so user skills come
+      // from this instance's own home, never the server's.
+      const scanHomeSkills = scanInstanceHomeSkills({
+        homeDir: processEnv.HOME?.trim() || NodeOS.homedir(),
+        directories: [".gemini/config", ".gemini/antigravity-cli"],
+        nativeProvider: "antigravity",
+        allowFlatFiles: true,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
       const checkProvider = Effect.gen(function* () {
         if (enabled) yield* readModelChoices;
-        return yield* checkAntigravityProviderStatus(
-          effectiveConfig,
-          server.stateDir,
-          instanceId,
-          models,
-        );
+        const [snapshot, skills] = yield* Effect.all([
+          checkAntigravityProviderStatus(effectiveConfig, server.stateDir, instanceId, models),
+          scanHomeSkills,
+        ]);
+        return { ...snapshot, skills };
       }).pipe(
         Effect.map((snapshot) => ({
           ...snapshot,

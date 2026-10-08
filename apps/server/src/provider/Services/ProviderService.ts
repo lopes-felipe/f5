@@ -20,6 +20,8 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
+  ProviderSessionAction,
+  ProviderSessionCapabilities,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ThreadId,
@@ -98,6 +100,25 @@ export interface ProviderServiceShape {
   readonly getCapabilities: (
     provider: ProviderKind,
   ) => Effect.Effect<ProviderAdapterCapabilities, ProviderServiceError>;
+
+  /**
+   * Capabilities of the session generation a thread is bound to, routed
+   * through the persisted binding (never starts or recovers a session).
+   * `null` when the thread has no provider binding.
+   */
+  readonly getSessionCapabilities: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderSessionCapabilities | null, ProviderServiceError>;
+
+  /**
+   * Re-check generation, executable support and policy for one action.
+   * Fails with `ProviderSessionActionUnavailableError` when refused.
+   */
+  readonly assertSessionAction: (input: {
+    readonly threadId: ThreadId;
+    readonly action: ProviderSessionAction;
+    readonly expectedGeneration?: number;
+  }) => Effect.Effect<ProviderSessionCapabilities, ProviderServiceError>;
 
   /**
    * Read a provider thread snapshot.

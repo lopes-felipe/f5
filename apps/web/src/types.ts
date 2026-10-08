@@ -216,5 +216,7 @@ export interface ThreadSession {
   lastErrorOccurredAt?: string | null;
   usageLimit?: import("@t3tools/contracts").OrchestrationUsageLimit | null;
   tokenUsageSource?: "provider" | "estimated";
+  /** Capabilities of the bound session generation (Release 2). */
+  capabilities?: import("@t3tools/contracts").ProviderSessionCapabilities | null;
   orchestrationStatus: OrchestrationSessionStatus;
 }

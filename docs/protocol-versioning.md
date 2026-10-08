@@ -23,6 +23,10 @@ as well (or carry the same header and handle 426 in their XHR implementation).
 Upload callers acquire `beginProtocolUpload()` before sending and release its
 lease in `finally`, after consuming the response.
 
+Each harness release bumps the version once: Release 1 is 16, and Release 2 is 17
+(session capability snapshots, reported model capabilities, catalog sources and the
+provider inventory RPC).
+
 The authenticated `GET /api/bootstrap` response and WebSocket welcome advertise
 current capabilities, upload support, and global send limits. Today
 image attachments retain the existing eight-image, 10 MiB/image and 120,000-character

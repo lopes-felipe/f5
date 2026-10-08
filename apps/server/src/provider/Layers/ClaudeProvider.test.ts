@@ -19,6 +19,7 @@ import {
   normalizeClaudeCliEffort,
   resolveClaudeEffort,
   VERSION_GATED_CLAUDE_MODELS,
+  parseClaudeInitializationModels,
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
@@ -508,5 +509,26 @@ describe("Claude version gates", () => {
         ),
       ).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("parseClaudeInitializationModels", () => {
+  it("resolves aliases to canonical slugs, strips context suffixes and dedupes", () => {
+    const models = parseClaudeInitializationModels([
+      {
+        value: "default",
+        resolvedModel: "claude-cli-only-9[1m]",
+        displayName: "CLI Only",
+        description: "",
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "max"],
+      },
+      { value: "claude-cli-only-9", displayName: "Duplicate", description: "" },
+      { value: "team-alias", displayName: "Alias without resolution", description: "" },
+    ] as never);
+    expect(models.map((model) => [model.slug, model.name])).toEqual([
+      ["claude-cli-only-9", "CLI Only"],
+    ]);
+    expect(models[0]?.capabilities.source).toBe("reported");
   });
 });

@@ -222,6 +222,8 @@ const defaultProviderService: ProviderServiceShape = {
   respondToUserInput: () => unsupportedProviderCall(),
   stopSession: () => unsupportedProviderCall(),
   listSessions: () => Effect.succeed([]),
+  getSessionCapabilities: () => Effect.succeed(null),
+  assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
   getCapabilities: () => Effect.succeed({ sessionModelSwitch: "unsupported" }),
   readThread: () => unsupportedProviderCall(),
   rollbackConversation: () => unsupportedProviderCall(),
@@ -826,6 +828,8 @@ describe("WebSocket Server", () => {
             turnId: asTurnId(`provider-${input.threadId}`),
           };
         }),
+      getSessionCapabilities: () => Effect.succeed(null),
+      assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     };
   }
@@ -4208,6 +4212,8 @@ describe("WebSocket Server", () => {
       respondToUserInput: () => unsupported(),
       stopSession: () => unsupported(),
       listSessions: () => Effect.succeed([]),
+      getSessionCapabilities: () => Effect.succeed(null),
+      assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
       getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
       readThread: () => unsupported(),
       rollbackConversation: () => unsupported(),
