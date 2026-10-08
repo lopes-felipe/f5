@@ -9,7 +9,7 @@ import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
-import type { ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
@@ -336,7 +336,7 @@ import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
 import { useDiskSpaceStatus } from "../hooks/useDiskSpaceStatus";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
-import { UsageLimitResumeAction } from "./chat/UsageLimitResumeAction";
+import { UsageLimitNotice } from "./chat/UsageLimitNotice";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
@@ -6639,30 +6639,37 @@ export default function ChatView({
     if (diskSpaceStatus.level === "critical") threadNotices.push(notice);
     else lowDiskSpaceNotice = notice;
   }
+  const dismissActiveThreadError = () => {
+    dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
+    setThreadError(activeThread.id, null);
+  };
+  const activeUsageLimit =
+    activeThread.error && activeThread.session?.lastError === activeThread.error
+      ? (activeThread.session.usageLimit ?? null)
+      : null;
   if (activeThread.error) {
     threadNotices.push({
       id: "thread-error",
-      content: (
+      content: activeUsageLimit ? (
+        <UsageLimitNotice
+          threadId={activeThread.id}
+          limit={activeUsageLimit}
+          providerLabel={
+            activeThread.session
+              ? PROVIDER_DISPLAY_NAMES[activeThread.session.provider]
+              : "Provider"
+          }
+          onDismiss={dismissActiveThreadError}
+        />
+      ) : (
         <ThreadErrorBanner
           error={activeThread.error}
-          action={
-            activeThread.session?.usageLimit &&
-            activeThread.session.lastError === activeThread.error ? (
-              <UsageLimitResumeAction
-                threadId={activeThread.id}
-                limit={activeThread.session.usageLimit}
-              />
-            ) : undefined
-          }
           occurredAt={
             activeThread.session?.lastError === activeThread.error
               ? (activeThread.session.lastErrorOccurredAt ?? null)
               : null
           }
-          onDismiss={() => {
-            dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
-            setThreadError(activeThread.id, null);
-          }}
+          onDismiss={dismissActiveThreadError}
         />
       ),
     });
@@ -7077,6 +7084,7 @@ export default function ChatView({
                           activeProviderStatus?.runtimeCapabilities?.turnSteering === true,
                         )}
                         threadId={activeThread.id}
+                        foldUsageLimitResume={activeUsageLimit !== null}
                         provider={selectedProvider}
                         runtimeSlashCommands={composerNativeSlashCommands.commands}
                         projectSkills={activeProject?.skills}

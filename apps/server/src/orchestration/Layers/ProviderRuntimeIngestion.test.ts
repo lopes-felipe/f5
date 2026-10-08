@@ -4226,6 +4226,67 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("adds a display usage limit to usage-limit warning and error activities", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const resetsAt = "2026-10-08T18:10:00.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-limit-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-limit"),
+      payload: {},
+    });
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-limit-warning"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-limit"),
+      payload: {
+        message: `Claude 5-hour usage limit reached. Resets at ${resetsAt}.`,
+        detail: { rateLimitType: "five_hour", windowLabel: "5-hour", resetsAt },
+      },
+    });
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-limit-error"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-limit"),
+      payload: {
+        message: `Claude 5-hour usage limit reached. Resets at ${resetsAt}.`,
+        usageLimit: {
+          windows: [
+            { id: "seven_day", label: "7-day", resetsAt: "2026-10-07T18:10:00.000Z" },
+            { id: "five_hour", label: "5-hour", resetsAt },
+          ],
+          resetsAt,
+          resetSource: "provider",
+          evidence: "typed",
+        },
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-limit-error",
+      ),
+    );
+    const expected = { providerLabel: "Claude", windowLabel: "5-hour", resetsAt };
+    expect(
+      thread.activities.find((activity) => activity.id === "evt-limit-warning")?.payload,
+    ).toMatchObject({ usageLimit: expected });
+    expect(
+      thread.activities.find((activity) => activity.id === "evt-limit-error")?.payload,
+    ).toMatchObject({ usageLimit: expected });
+  });
+
   it("preserves MCP app identity and the advertised approval choices in the projection", async () => {
     const harness = await createHarness();
     harness.emit({

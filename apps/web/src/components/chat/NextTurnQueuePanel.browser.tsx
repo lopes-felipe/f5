@@ -73,6 +73,58 @@ describe("NextTurnQueuePanel", () => {
     await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
   });
 
+  it("folds the usage-limit auto-continue into the card and shows it again when unfolded", async () => {
+    const threadId = ThreadId.makeUnsafe("queue-thread-usage-limit");
+    useNextTurnQueueStore.getState().applySnapshot({
+      threadId,
+      revision: 1,
+      paused: false,
+      blockedKind: "waiting",
+      reasonCode: "usage_limit_reset",
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: [
+        {
+          itemId: CommandId.makeUnsafe("usage-resume"),
+          threadId,
+          submissionId: CommandId.makeUnsafe("usage-submission"),
+          position: 0,
+          status: "queued",
+          command: {
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe("usage-command"),
+            threadId,
+            message: {
+              messageId: MessageId.makeUnsafe("usage-message"),
+              role: "user",
+              text: "continue",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            presentation: "continuation",
+            createdAt: "2026-10-08T12:00:00.000Z",
+          },
+          attemptCount: 0,
+          notBefore: "2099-10-08T12:01:00.000Z",
+          scheduleReason: "usage_limit_reset",
+          dispatchStartedAt: null,
+          lastErrorCode: null,
+          lastErrorDetail: null,
+          createdAt: "2026-10-08T12:00:00.000Z",
+          updatedAt: "2026-10-08T12:00:00.000Z",
+        },
+      ],
+    });
+    active = await render(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume />);
+    await expect.element(page.getByLabelText("Queued turns")).not.toBeInTheDocument();
+
+    await active.rerender(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume={false} />);
+    await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+    await expect.element(page.getByText(/^Continues after usage limit resets/)).toBeInTheDocument();
+  });
+
   it("keeps the composer on screen with a full 20-item queue in the tray", async () => {
     const threadId = ThreadId.makeUnsafe("queue-thread-full");
     useNextTurnQueueStore.getState().applySnapshot({

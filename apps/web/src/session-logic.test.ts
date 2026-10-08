@@ -25,6 +25,7 @@ import {
   isLatestTurnSettled,
 } from "./session-logic";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
+import { formatUsageResumeTime } from "./lib/usageLimits";
 
 function makeActivity(overrides: {
   id?: string;
@@ -1043,6 +1044,88 @@ describe("deriveWorkLogEntries", () => {
       runtimeWarningVisibility: "hidden",
     });
     expect(entries).toEqual([]);
+  });
+
+  describe("usage limits", () => {
+    const resetsAt = "2026-10-08T18:10:00.000Z";
+    const usageLimit = { providerLabel: "Claude", windowLabel: "5-hour", resetsAt };
+    const message = `Claude 5-hour usage limit reached. Resets at ${resetsAt}.`;
+
+    it("merges the warning and the turn error into one neutral row in local time", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "limit-warning",
+            createdAt: "2026-10-08T16:28:19.000Z",
+            kind: "runtime.warning",
+            summary: "Runtime warning",
+            tone: "info",
+            turnId: "turn-limit",
+            payload: { message, detail: { rateLimitType: "five_hour" }, usageLimit },
+          }),
+          makeActivity({
+            id: "limit-error",
+            createdAt: "2026-10-08T16:28:20.000Z",
+            kind: "runtime.error",
+            summary: "Runtime error",
+            tone: "error",
+            turnId: "turn-limit",
+            payload: { message, usageLimit },
+          }),
+        ],
+        undefined,
+        { runtimeWarningVisibility: "hidden" },
+      );
+
+      expect(entries.map((entry) => entry.id)).toEqual(["limit-warning"]);
+      expect(entries[0]?.label).toBe(
+        `Claude 5-hour limit reached · resets ${formatUsageResumeTime(resetsAt)}`,
+      );
+      expect(entries[0]?.tone).toBe("info");
+      expect(entries[0]?.isIssue).toBe(true);
+    });
+
+    it("turns a usage-limit error without a warning into the neutral row", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "codex-limit-error",
+            kind: "runtime.error",
+            summary: "Runtime error",
+            tone: "error",
+            turnId: "turn-codex",
+            payload: {
+              message: "Codex usage limit reached.",
+              usageLimit: { providerLabel: "Codex", windowLabel: null, resetsAt: null },
+            },
+          }),
+        ],
+        undefined,
+      );
+
+      expect(entries.map((entry) => [entry.label, entry.tone])).toEqual([
+        ["Codex usage limit reached", "info"],
+      ]);
+    });
+
+    it("keeps the old label for a legacy warning without display fields", () => {
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "legacy-warning",
+            kind: "runtime.warning",
+            summary: "Runtime warning",
+            tone: "info",
+            turnId: "turn-legacy",
+            payload: { message, detail: { rateLimitType: "five_hour" } },
+          }),
+        ],
+        undefined,
+        { runtimeWarningVisibility: "full" },
+      );
+
+      expect(entries.map((entry) => entry.label)).toEqual([message]);
+    });
   });
 
   it("keeps runtime warnings summarized when visibility is summarized", () => {

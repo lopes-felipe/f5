@@ -35,6 +35,8 @@ import { toastManager } from "../ui/toast";
 import {
   deriveQueueAnnouncement,
   describeQueueBlockedState,
+  isFoldedUsageLimitItem,
+  mergeVisibleOrder,
   moveItemInOrder,
 } from "./NextTurnQueuePanel.logic";
 import { NextTurnQueueRow } from "./NextTurnQueueRow";
@@ -63,9 +65,12 @@ export function NextTurnQueuePanel({
   projectSkills,
   turnSteering = false,
   variant = "standalone",
+  foldUsageLimitResume = false,
 }: {
   readonly variant?: ComposerPanelVariant;
   readonly threadId: ThreadId;
+  /** True while the usage-limit card shows the pending auto-continue. */
+  readonly foldUsageLimitResume?: boolean;
   readonly turnSteering?: boolean | undefined;
   readonly provider?: ProviderKind | null;
   readonly runtimeSlashCommands?: CompactRuntimeConfiguredActivityPayload["slashCommands"] | null;
@@ -143,7 +148,17 @@ export function NextTurnQueuePanel({
     () => new Map(snapshot?.items.map((item) => [item.itemId, item] as const) ?? []),
     [snapshot?.items],
   );
-  const orderedItems = order.flatMap((itemId) => {
+  const hiddenIds = useMemo(
+    () =>
+      new Set(
+        snapshot?.items
+          .filter((item) => isFoldedUsageLimitItem(item, foldUsageLimitResume))
+          .map((item) => item.itemId) ?? [],
+      ),
+    [foldUsageLimitResume, snapshot?.items],
+  );
+  const visibleOrder = order.filter((itemId) => !hiddenIds.has(itemId));
+  const orderedItems = visibleOrder.flatMap((itemId) => {
     const item = itemsById.get(itemId);
     return item ? [item] : [];
   });
@@ -177,25 +192,25 @@ export function NextTurnQueuePanel({
 
   const move = useCallback(
     (itemId: CommandId, direction: -1 | 1) => {
-      const next = moveItemInOrder(order, itemId, direction);
-      if (next !== order) void reorder(next);
+      const next = moveItemInOrder(visibleOrder, itemId, direction);
+      if (next !== visibleOrder) void reorder(mergeVisibleOrder(order, hiddenIds, next));
     },
-    [order, reorder],
+    [hiddenIds, order, reorder, visibleOrder],
   );
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
       if (!event.over || event.active.id === event.over.id) return;
-      const from = order.indexOf(event.active.id as CommandId);
-      const to = order.indexOf(event.over.id as CommandId);
+      const from = visibleOrder.indexOf(event.active.id as CommandId);
+      const to = visibleOrder.indexOf(event.over.id as CommandId);
       if (from < 0 || to < 0) return;
-      const next = [...order];
+      const next = [...visibleOrder];
       const [moved] = next.splice(from, 1);
       if (!moved) return;
       next.splice(to, 0, moved);
-      void reorder(next);
+      void reorder(mergeVisibleOrder(order, hiddenIds, next));
     },
-    [order, reorder],
+    [hiddenIds, order, reorder, visibleOrder],
   );
 
   if (!snapshot && state.syncError) {
@@ -209,7 +224,7 @@ export function NextTurnQueuePanel({
     );
   }
   if (!snapshot) return null;
-  const itemCount = snapshot.items.length + state.optimistic.length;
+  const itemCount = snapshot.items.length - hiddenIds.size + state.optimistic.length;
   if (itemCount === 0 && !snapshot.paused && !state.syncError && snapshot.quarantinedCount === 0) {
     return null;
   }
@@ -301,7 +316,7 @@ export function NextTurnQueuePanel({
           >
             {snapshot.paused ? <PlayIcon /> : <PauseIcon />}
           </Button>
-          {snapshot.items.length > 0 ? (
+          {snapshot.items.length > hiddenIds.size ? (
             <Button
               type="button"
               variant="ghost"
@@ -416,7 +431,7 @@ export function NextTurnQueuePanel({
           modifiers={[restrictToVerticalAxis, restrictToFirstScrollableAncestor]}
           onDragEnd={onDragEnd}
         >
-          <SortableContext items={[...order]} strategy={verticalListSortingStrategy}>
+          <SortableContext items={visibleOrder} strategy={verticalListSortingStrategy}>
             <ol className="mt-1 max-h-[min(42vh,320px)] space-y-1 overflow-y-auto overscroll-contain">
               {state.optimistic.map((item) => (
                 <li
