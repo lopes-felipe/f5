@@ -1,6 +1,10 @@
 import { ServerSettingsService } from "../../serverSettings";
 import { UsageService, type UsageServiceShape } from "../../usage/Services/UsageService.ts";
-import { RuntimeRequestId, type ToolCompletionEnvelope } from "@t3tools/contracts";
+import {
+  RuntimeRequestId,
+  type ProviderSessionCapabilities,
+  type ToolCompletionEnvelope,
+} from "@t3tools/contracts";
 import { createHash } from "node:crypto";
 import { createAttachmentId } from "../../attachmentStore.ts";
 import { GitCommandError } from "../../git/Errors.ts";
@@ -119,6 +123,7 @@ function createProviderServiceHarness() {
   >();
 
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
+  let sessionCapabilities: ProviderSessionCapabilities | null = null;
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
@@ -127,7 +132,7 @@ function createProviderServiceHarness() {
     respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
-    getSessionCapabilities: () => Effect.succeed(null),
+    getSessionCapabilities: () => Effect.sync(() => sessionCapabilities),
     assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     readThread: (threadId) =>
@@ -171,6 +176,9 @@ function createProviderServiceHarness() {
   return {
     service,
     emit,
+    setSessionCapabilities: (next: ProviderSessionCapabilities | null) => {
+      sessionCapabilities = next;
+    },
     setSession,
     clearSessions,
     setThreadSnapshot,
@@ -391,6 +399,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       providerSessionDirectory,
       setProviderSession: provider.setSession,
+      setSessionCapabilities: provider.setSessionCapabilities,
       clearProviderSessions: provider.clearSessions,
       setThreadSnapshot: provider.setThreadSnapshot,
       interruptedTurns: provider.interruptedTurns,
@@ -4320,6 +4329,57 @@ describe("ProviderRuntimeIngestion", () => {
       instructionStrategy: "claude.append_system_prompt",
     });
     expect(activity?.payload).not.toHaveProperty("config");
+  });
+
+  it("refreshes session capabilities without clearing the projected usage limit", async () => {
+    const harness = await createHarness();
+    const at = "2026-10-01T00:00:00Z";
+    const instance = ProviderInstanceId.makeUnsafe("claude-test");
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("capabilities-limit-error"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("limited-turn"),
+      createdAt: at,
+      payload: {
+        message: "usage limit reached",
+        usageLimit: {
+          windows: [{ id: "five_hour", label: "5-hour", resetsAt: null }],
+          resetsAt: null,
+          resetSource: "provider",
+          evidence: "typed",
+        },
+      },
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.usageLimit?.turnId === "limited-turn",
+    );
+    harness.setSessionCapabilities({
+      generation: 2,
+      providerInstanceId: instance,
+      discovery: "discovered",
+      checkedAt: "2026-10-01T00:00:05.000Z",
+      actions: [{ action: "nativeCommands", supported: true }],
+    });
+    harness.emit({
+      type: "session.configured",
+      eventId: asEventId("capabilities-commands"),
+      provider: "claudeAgent",
+      providerInstanceId: instance,
+      createdAt: "2026-10-01T00:00:05.000Z",
+      threadId: asThreadId("thread-1"),
+      payload: { config: { slashCommands: [{ name: "review", description: "Review" }] } },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.capabilities?.discovery === "discovered",
+    );
+    expect(thread.session?.capabilities?.generation).toBe(2);
+    expect(thread.session?.usageLimit?.turnId).toBe("limited-turn");
   });
 
   it("preserves Codex slashCommands in runtime.configured activities", async () => {

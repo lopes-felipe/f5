@@ -41,6 +41,14 @@ describe("hookProgramName", () => {
     expect(hookProgramName('"C:\\tools\\lint.exe" --fix')).toBe("lint.exe");
     expect(hookProgramName("   ")).toBeUndefined();
   });
+
+  it("never surfaces part of a quoted assignment", () => {
+    expect(hookProgramName('HOOK_PASSWORD="first second" node hook.js')).toBe("node");
+    expect(hookProgramName("TOKEN='a b c' ./run.sh --flag")).toBe("run.sh");
+    expect(hookProgramName('A="x \\" y" B=1 /opt/bin/tool')).toBe("tool");
+    // Unterminated quotes yield nothing rather than a fragment.
+    expect(hookProgramName('SECRET="never closed node hook.js')).toBeUndefined();
+  });
 });
 
 describe("parseClaudeHooks", () => {

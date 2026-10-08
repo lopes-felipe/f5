@@ -72,6 +72,7 @@ import {
 } from "./readModelRetention.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "./turnStateTransitions.ts";
 import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
+import { mergeSessionCapabilities } from "../provider/sessionCapabilities.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -1226,9 +1227,13 @@ export function projectEvent(
           thread.session?.tokenUsageSource !== undefined
             ? { tokenUsageSource: thread.session.tokenUsageSource }
             : {}),
-          ...(session.capabilities === undefined && thread.session?.capabilities !== undefined
-            ? { capabilities: thread.session.capabilities }
-            : {}),
+          ...(() => {
+            const capabilities = mergeSessionCapabilities(
+              thread.session?.capabilities,
+              session.capabilities,
+            );
+            return capabilities !== undefined ? { capabilities } : {};
+          })(),
           ...(session.workflowExecutionProfile === undefined &&
           session.activeTurnId !== null &&
           thread.session?.activeTurnId === session.activeTurnId &&

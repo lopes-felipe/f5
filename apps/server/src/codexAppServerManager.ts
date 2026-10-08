@@ -755,15 +755,22 @@ export function buildCodexTurnStartParams(
   if (normalizedModel) {
     turnStartParams.model = normalizedModel;
   }
-  if (input.serviceTier !== undefined) {
-    turnStartParams.serviceTier = input.serviceTier;
-  }
   // Persisted state and non-web callers can supply stale or invalid values;
   // resolve them to a model-supported effort at the provider boundary. Efforts
   // the session's `model/list` reported win over F5's built-in table, so a
   // CLI-only model receives the effort the composer offered for it.
   const effortModel = normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
   const reportedCapabilities = state.reportedModelCapabilities?.get(effortModel);
+  if (input.serviceTier !== undefined) {
+    // A persisted fast-mode choice must not reach a model whose reported tiers
+    // lack it (the composer hides the toggle); null clears a thread-level tier.
+    turnStartParams.serviceTier =
+      input.serviceTier === "fast" &&
+      reportedCapabilities &&
+      !resolveModelCapabilities("codex", effortModel, reportedCapabilities).supportsFastMode
+        ? null
+        : input.serviceTier;
+  }
   const resolvedEffort =
     input.effort === undefined
       ? undefined

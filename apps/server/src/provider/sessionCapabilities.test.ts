@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildProviderSessionCapabilities,
   checkSessionAction,
+  mergeSessionCapabilities,
   readPersistedSessionGeneration,
   sessionActionSupport,
   sessionGenerationPayload,
@@ -85,5 +86,31 @@ describe("persisted session generation", () => {
     expect(readPersistedSessionGeneration({})).toBe(0);
     expect(readPersistedSessionGeneration({ sessionGeneration: -1 })).toBe(0);
     expect(readPersistedSessionGeneration(null)).toBe(0);
+  });
+});
+
+describe("mergeSessionCapabilities", () => {
+  const snapshot = (generation: number, checkedAt: string, discovery: "pending" | "discovered") =>
+    buildProviderSessionCapabilities({
+      ...base,
+      generation,
+      checkedAt,
+      discovery: { outcome: discovery },
+    });
+  const discovered = snapshot(3, "2026-10-08T00:00:02.000Z", "discovered");
+
+  it("keeps the current snapshot when the update omits it and clears on null", () => {
+    expect(mergeSessionCapabilities(discovered, undefined)).toBe(discovered);
+    expect(mergeSessionCapabilities(discovered, null)).toBeNull();
+  });
+
+  it("never lets an earlier snapshot of the same or an older generation win", () => {
+    const lateStart = snapshot(3, "2026-10-08T00:00:01.000Z", "pending");
+    expect(mergeSessionCapabilities(discovered, lateStart)).toBe(discovered);
+    expect(
+      mergeSessionCapabilities(discovered, snapshot(2, "2026-10-08T00:00:09.000Z", "pending")),
+    ).toBe(discovered);
+    const restarted = snapshot(4, "2026-10-08T00:00:00.000Z", "pending");
+    expect(mergeSessionCapabilities(discovered, restarted)).toBe(restarted);
   });
 });

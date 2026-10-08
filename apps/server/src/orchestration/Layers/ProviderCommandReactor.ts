@@ -54,6 +54,7 @@ import {
   ProviderSessionNotFoundError,
   ProviderTurnDeliveryError,
   ProviderUnsupportedError,
+  ProviderSessionActionUnavailableError,
   ProviderValidationError,
 } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -340,6 +341,7 @@ export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliver
     Schema.is(ProviderValidationError)(error) ||
     Schema.is(ProviderSessionNotFoundError)(error) ||
     Schema.is(ProviderUnsupportedError)(error) ||
+    Schema.is(ProviderSessionActionUnavailableError)(error) ||
     Schema.is(ProviderAdapterValidationError)(error);
   const detail =
     rejectedMessage ??
@@ -1465,6 +1467,9 @@ const make = Effect.gen(function* () {
         ...(event.commandId ? { deliveryId: event.commandId } : {}),
         ...(submissionSource ? { submissionSource } : {}),
         expectedTurnId: event.payload.expectedTurnId,
+        ...(event.payload.expectedSessionGeneration !== undefined
+          ? { expectedSessionGeneration: event.payload.expectedSessionGeneration }
+          : {}),
         input: message.text,
         attachments: message.attachments ?? [],
         interactionMode: event.payload.interactionMode,

@@ -86,11 +86,24 @@ export const makeNativeSessionCleanupReactor = Effect.gen(function* () {
       }
       const instance = yield* instances.getInstance(job.instanceId);
       if (!instance?.deleteNativeSession) {
-        yield* Effect.logInfo("native session cleanup skipped: instance unavailable", {
+        // Unavailable, or its transcripts live in a store shared with the user's CLI.
+        yield* Effect.logInfo("native session cleanup skipped: no isolated transcript store", {
           threadId: job.threadId,
           instanceId: job.instanceId,
         });
         return;
+      }
+      // The browser's stop request is asynchronous and may have failed; never
+      // unlink a transcript the CLI is still writing.
+      if (yield* instance.adapter.hasSession(job.threadId)) {
+        yield* instance.adapter.stopSession(job.threadId);
+        if (yield* instance.adapter.hasSession(job.threadId)) {
+          yield* Effect.logWarning("native session cleanup skipped: session still running", {
+            threadId: job.threadId,
+            instanceId: job.instanceId,
+          });
+          return;
+        }
       }
       const result = yield* instance.deleteNativeSession(job.sessionId);
       yield* Effect.logInfo("native session transcript deleted", {

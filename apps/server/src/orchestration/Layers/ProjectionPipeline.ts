@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
+import { mergeSessionCapabilities } from "../../provider/sessionCapabilities.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   estimateModelContextWindowTokens,
@@ -1700,13 +1701,12 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             tokenUsageSource:
               event.payload.session.tokenUsageSource ??
               (Option.isSome(existingRow) ? existingRow.value.tokenUsageSource : null),
-            // Omitted keeps the current generation's snapshot; null clears it.
+            // Omitted keeps the current snapshot, null clears it, older never wins.
             capabilities:
-              event.payload.session.capabilities !== undefined
-                ? event.payload.session.capabilities
-                : Option.isSome(existingRow)
-                  ? (existingRow.value.capabilities ?? null)
-                  : null,
+              mergeSessionCapabilities(
+                Option.isSome(existingRow) ? existingRow.value.capabilities : undefined,
+                event.payload.session.capabilities,
+              ) ?? null,
             updatedAt: event.payload.session.updatedAt,
           });
           return;

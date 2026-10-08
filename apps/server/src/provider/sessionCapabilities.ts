@@ -154,6 +154,25 @@ export function checkSessionAction(input: {
   return support.supported ? undefined : support.unavailableReason;
 }
 
+/**
+ * Projection merge for a `thread.session.set`. Omitted keeps the current
+ * snapshot and null clears it. Snapshots are dispatched from more than one
+ * place (session start, discovery refresh), so one taken earlier never
+ * replaces a newer one: an older generation, or the same generation checked
+ * earlier, keeps the current snapshot.
+ */
+export function mergeSessionCapabilities(
+  current: ProviderSessionCapabilities | null | undefined,
+  incoming: ProviderSessionCapabilities | null | undefined,
+): ProviderSessionCapabilities | null | undefined {
+  if (incoming === undefined) return current;
+  if (incoming === null || !current) return incoming;
+  if (incoming.generation < current.generation) return current;
+  if (incoming.generation === current.generation && incoming.checkedAt < current.checkedAt)
+    return current;
+  return incoming;
+}
+
 const SESSION_GENERATION_KEY = "sessionGeneration";
 
 /** Generation persisted in the binding's runtime payload; 0 before Release 2. */

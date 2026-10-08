@@ -65,6 +65,43 @@ describe("CLI-only model execution", () => {
   });
 });
 
+describe("reported service tiers at turn/start", () => {
+  const noFastTier = {
+    data: [
+      {
+        id: "gpt-no-fast",
+        model: "gpt-no-fast",
+        supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+        serviceTiers: [{ id: "flex", name: "Flex" }],
+      },
+    ],
+  };
+
+  it("clears a persisted fast tier the model does not offer", () => {
+    const params = buildCodexTurnStartParams(
+      { threadId: "thread-1", input: "hello", model: "gpt-no-fast", serviceTier: "fast" } as never,
+      {
+        providerThreadId: "provider-thread-1",
+        account: readCodexAccountSnapshot({ type: "chatgpt", planType: "pro" }),
+        reportedModelCapabilities: readCodexReportedModelCapabilities(noFastTier),
+      },
+    );
+    expect(params.serviceTier).toBeNull();
+  });
+
+  it("keeps the fast tier when the model reports it", () => {
+    const params = buildCodexTurnStartParams(
+      { threadId: "thread-1", input: "hello", model: "gpt-cli-only", serviceTier: "fast" } as never,
+      {
+        providerThreadId: "provider-thread-1",
+        account: readCodexAccountSnapshot({ type: "chatgpt", planType: "pro" }),
+        reportedModelCapabilities: readCodexReportedModelCapabilities(MODEL_LIST),
+      },
+    );
+    expect(params.serviceTier).toBe("fast");
+  });
+});
+
 describe("parseCodexInstanceSkills", () => {
   it("keeps instance skills and leaves repo skills to the project scan", () => {
     expect(

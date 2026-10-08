@@ -95,6 +95,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   deliveryId: Schema.optional(CommandId),
   expectedTurnId: Schema.optional(TurnId),
+  /** Steering only: the session generation the browser saw. */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
   input: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),

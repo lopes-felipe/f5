@@ -4981,6 +4981,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             message:
               "Steering requires an active turn with the same Build/Plan and permission modes.",
           });
+        // Re-check the routed session generation and executable support; a
+        // restart later changes the active turn id, which dispatch rejects.
+        yield* providerService
+          .assertSessionAction({
+            threadId: item.threadId,
+            action: "steer",
+            ...(body.expectedSessionGeneration !== undefined
+              ? { expectedGeneration: body.expectedSessionGeneration }
+              : {}),
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new RouteRequestError({
+                  message:
+                    error._tag === "ProviderSessionActionUnavailableError"
+                      ? error.reason.message
+                      : error.message,
+                }),
+            ),
+          );
         yield* nextTurnQueueStore
           .setSteer(item.itemId, body.expectedRevision, thread.session.activeTurnId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));

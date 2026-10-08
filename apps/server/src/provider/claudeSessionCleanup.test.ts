@@ -4,7 +4,10 @@ import * as NodePath from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { deleteClaudeSessionTranscript } from "./claudeSessionCleanup.ts";
+import {
+  deleteClaudeSessionTranscript,
+  resolveClaudeTranscriptCleanupDir,
+} from "./claudeSessionCleanup.ts";
 
 const SESSION = "0f8f2a52-5b0f-4c7e-9d7a-1a2b3c4d5e6f";
 let root: string;
@@ -79,5 +82,59 @@ describe("deleteClaudeSessionTranscript", () => {
     await expect(
       deleteClaudeSessionTranscript({ claudeConfigDir: root, sessionId: "../projects" }),
     ).rejects.toThrow("non-UUID");
+  });
+});
+
+describe("resolveClaudeTranscriptCleanupDir", () => {
+  const base = {
+    userHomeDir: "/Users/me",
+    serverConfigDir: "/Users/me/.claude",
+    isolatedProfile: false,
+    homePath: "",
+  };
+
+  it("refuses the default instance, which shares ~/.claude with the CLI", () => {
+    expect(resolveClaudeTranscriptCleanupDir({ ...base, configDir: "/Users/me/.claude" })).toBe(
+      undefined,
+    );
+    // Even a non-default config dir is not F5's unless F5 isolated it.
+    expect(
+      resolveClaudeTranscriptCleanupDir({ ...base, configDir: "/opt/claude-shared" }),
+    ).toBeUndefined();
+  });
+
+  it("refuses an isolated instance that still points at a user store", () => {
+    expect(
+      resolveClaudeTranscriptCleanupDir({
+        ...base,
+        homePath: "/Users/me",
+        configDir: "/Users/me/.claude",
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveClaudeTranscriptCleanupDir({
+        ...base,
+        isolatedProfile: true,
+        serverConfigDir: "/custom/claude",
+        configDir: "/custom/claude",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("allows a profile or homePath store F5 owns", () => {
+    expect(
+      resolveClaudeTranscriptCleanupDir({
+        ...base,
+        isolatedProfile: true,
+        configDir: "/state/provider-homes/claude/.claude",
+      }),
+    ).toBe("/state/provider-homes/claude/.claude");
+    expect(
+      resolveClaudeTranscriptCleanupDir({
+        ...base,
+        homePath: "/work-home",
+        configDir: "/work-home/.claude",
+      }),
+    ).toBe("/work-home/.claude");
   });
 });

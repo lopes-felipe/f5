@@ -11,10 +11,45 @@
  *
  * @module provider/claudeSessionCleanup
  */
+import { realpathSync } from "node:fs";
 import * as NodeFs from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import { isUuid } from "./claudeResumeState.ts";
+
+function canonicalDir(path: string): string {
+  const resolved = NodePath.resolve(path);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * The config dir F5 may delete transcripts from, or `undefined` when the
+ * instance shares its store with the user's own Claude CLI.
+ *
+ * Only an explicitly isolated instance qualifies: a non-default F5 profile
+ * (managed provider home) or a configured `homePath`. Even then the dir must
+ * differ from the user's default `~/.claude` and from the store the F5
+ * server's own environment points at, because sessions there are visible to
+ * (and may have been continued with) `claude --resume`.
+ */
+export function resolveClaudeTranscriptCleanupDir(input: {
+  readonly configDir: string;
+  readonly isolatedProfile: boolean;
+  readonly homePath: string;
+  readonly userHomeDir: string;
+  readonly serverConfigDir: string;
+}): string | undefined {
+  if (!input.isolatedProfile && input.homePath.trim().length === 0) return undefined;
+  const configDir = canonicalDir(input.configDir);
+  const shared = [NodePath.join(input.userHomeDir, ".claude"), input.serverConfigDir].map(
+    canonicalDir,
+  );
+  return shared.includes(configDir) ? undefined : configDir;
+}
 
 export interface ClaudeSessionCleanupResult {
   /** Absolute paths removed; empty when the session had no local transcript. */

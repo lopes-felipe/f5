@@ -106,8 +106,13 @@ export const makeConversationRewind = Effect.gen(function* () {
       const sessionCapabilities = yield* provider
         .getSessionCapabilities(thread.id)
         .pipe(Effect.orElseSucceed(() => null));
+      // A browser that saw an older generation is refused before anything changes.
       const rollbackRefusal = sessionCapabilities
-        ? checkSessionAction({ capabilities: sessionCapabilities, action: "rollback" })
+        ? checkSessionAction({
+            capabilities: sessionCapabilities,
+            action: "rollback",
+            expectedGeneration: request.expectedSessionGeneration,
+          })
         : undefined;
       if (rollbackRefusal) return yield* fail(rollbackRefusal.message);
       const caps = thread.session?.providerName

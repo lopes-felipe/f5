@@ -45,14 +45,23 @@ function deletedEvent(threadId: string): OrchestrationEvent {
   } as unknown as OrchestrationEvent;
 }
 
+/** Adapter stop and delete calls, in order, from the latest runCleanup. */
+let lastEvents: string[] = [];
+
 async function runCleanup(input: {
   readonly bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>;
   readonly deletedThreadIds: ReadonlyArray<string>;
   readonly liveThreadIds: ReadonlyArray<string>;
   readonly events: ReadonlyArray<OrchestrationEvent>;
   readonly failDelete?: boolean;
+  /** Live adapter session: "stops" ends on stopSession, "stuck" survives it. */
+  readonly liveSession?: "stops" | "stuck";
+  /** The instance shares its store with the user's CLI (no deleteNativeSession). */
+  readonly sharedStore?: boolean;
 }) {
   const deletions: Array<{ instanceId: string; sessionId: string }> = [];
+  const events: string[] = [];
+  let live = input.liveSession !== undefined;
   const readModel = {
     threads: [
       ...input.deletedThreadIds.map((id) => ({ id, deletedAt: "2026-10-08T00:00:00.000Z" })),
@@ -61,13 +70,26 @@ async function runCleanup(input: {
   } as unknown as OrchestrationReadModel;
   const instance = {
     instanceId: INSTANCE,
-    deleteNativeSession: (sessionId: string) =>
-      input.failDelete
-        ? Effect.die(new Error("disk on fire"))
-        : Effect.sync(() => {
-            deletions.push({ instanceId: INSTANCE, sessionId });
-            return { removed: [`/profiles/work/.claude/projects/-repo/${sessionId}.jsonl`] };
-          }),
+    adapter: {
+      hasSession: () => Effect.sync(() => live),
+      stopSession: () =>
+        Effect.sync(() => {
+          events.push("stop");
+          if (input.liveSession === "stops") live = false;
+        }),
+    },
+    ...(input.sharedStore
+      ? {}
+      : {
+          deleteNativeSession: (sessionId: string) =>
+            input.failDelete
+              ? Effect.die(new Error("disk on fire"))
+              : Effect.sync(() => {
+                  events.push("delete");
+                  deletions.push({ instanceId: INSTANCE, sessionId });
+                  return { removed: [`/profiles/work/.claude/projects/-repo/${sessionId}.jsonl`] };
+                }),
+        }),
   } as unknown as ProviderInstance;
 
   const runtime = ManagedRuntime.make(
@@ -105,6 +127,7 @@ async function runCleanup(input: {
   } finally {
     await runtime.dispose();
   }
+  lastEvents = events;
   return deletions;
 }
 
@@ -165,5 +188,40 @@ describe("NativeSessionCleanupReactor", () => {
         failDelete: true,
       }),
     ).resolves.toEqual([]);
+  });
+
+  it("stops a still-running session before deleting its transcript", async () => {
+    await runCleanup({
+      bindings: [binding("deleted", SESSION)],
+      deletedThreadIds: ["deleted"],
+      liveThreadIds: [],
+      events: [deletedEvent("deleted")],
+      liveSession: "stops",
+    });
+    expect(lastEvents).toEqual(["stop", "delete"]);
+  });
+
+  it("keeps the transcript when the session cannot be stopped", async () => {
+    const result = await runCleanup({
+      bindings: [binding("deleted", SESSION)],
+      deletedThreadIds: ["deleted"],
+      liveThreadIds: [],
+      events: [deletedEvent("deleted")],
+      liveSession: "stuck",
+    });
+    expect(lastEvents).toEqual(["stop"]);
+    expect(result).toEqual([]);
+  });
+
+  it("never deletes from an instance whose store is shared with the user's CLI", async () => {
+    expect(
+      await runCleanup({
+        bindings: [binding("deleted", SESSION)],
+        deletedThreadIds: ["deleted"],
+        liveThreadIds: [],
+        events: [deletedEvent("deleted")],
+        sharedStore: true,
+      }),
+    ).toEqual([]);
   });
 });

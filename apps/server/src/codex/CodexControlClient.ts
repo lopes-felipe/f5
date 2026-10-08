@@ -593,6 +593,7 @@ export class CodexControlClient extends EventEmitter<{
     maxPages: number,
   ): Promise<ReadonlyArray<Record<string, unknown>>> {
     const entries: Record<string, unknown>[] = [];
+    const seenCursors = new Set<string>();
     let cursor: string | undefined;
     for (let page = 0; page < maxPages; page += 1) {
       const result = await this.sendRequest<Record<string, unknown>>(method, {
@@ -601,7 +602,9 @@ export class CodexControlClient extends EventEmitter<{
       });
       if (Array.isArray(result.data)) entries.push(...result.data.filter(isObject));
       cursor = asTrimmedString(result.nextCursor);
-      if (!cursor) break;
+      // A repeated cursor would re-read (and duplicate) the same page.
+      if (!cursor || seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
     }
     return entries;
   }

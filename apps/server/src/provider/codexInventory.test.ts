@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   codexInventorySource,
-  codexMcpServerOrigins,
   parseCodexApps,
   parseCodexHooks,
-  parseCodexMcpServers,
+  parseCodexMcpServersFromLayers,
   parseCodexPlugins,
 } from "./codexInventory.ts";
 
@@ -89,26 +88,44 @@ describe("parseCodexPlugins", () => {
   });
 });
 
-describe("parseCodexMcpServers", () => {
-  it("annotates sources from config origins and includes configured-but-unstarted servers", () => {
-    const origins = codexMcpServerOrigins({
-      "mcp_servers.docs.command": { name: { type: "project", dotCodexFolder: "/repo/.codex" } },
-      "mcp_servers.corp.url": { name: { type: "mdm", domain: "x", key: "y" } },
-    });
+describe("parseCodexMcpServersFromLayers", () => {
+  it("lists configured servers per layer and skips F5's own session override", () => {
     expect(
-      parseCodexMcpServers(
-        [{ name: "docs", startupStatus: "ready" }],
+      parseCodexMcpServersFromLayers([
+        { name: { type: "sessionFlags" }, version: "1", config: { mcp_servers: {} } },
         {
-          mcp_servers: {
-            docs: { command: "docs" },
-            corp: { url: "https://corp", enabled: false },
-          },
+          name: { type: "project", dotCodexFolder: "/repo/.codex" },
+          version: "1",
+          config: { mcp_servers: { docs: { command: "docs", env: { TOKEN: "secret" } } } },
         },
-        origins,
-      ),
+        {
+          name: { type: "user", file: "/home/.codex/config.toml" },
+          version: "1",
+          config: { mcp_servers: { mine: { url: "https://mcp.example", enabled: false } } },
+        },
+        {
+          name: { type: "mdm", domain: "com.openai.codex", key: "config" },
+          version: "1",
+          config: { mcp_servers: { corp: { command: "corp" } } },
+          disabledReason: "untrusted",
+        },
+      ]),
     ).toEqual([
-      { name: "docs", kind: "stdio", status: "ready", source: "project" },
-      { name: "corp", kind: "http", enabled: false, source: "managed" },
+      { name: "docs", kind: "stdio", source: "project", sourcePath: "/repo/.codex" },
+      {
+        name: "mine",
+        kind: "http",
+        enabled: false,
+        source: "instance",
+        sourcePath: "/home/.codex/config.toml",
+      },
+      {
+        name: "corp",
+        kind: "stdio",
+        enabled: false,
+        source: "managed",
+        sourcePath: "com.openai.codex/config",
+      },
     ]);
   });
 });

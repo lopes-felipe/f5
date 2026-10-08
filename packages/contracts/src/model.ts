@@ -176,6 +176,13 @@ export const ModelCapabilities = Schema.Struct({
    * built-in metadata for the same slug; absent means built-in.
    */
   source: Schema.optional(ModelCapabilitiesSource),
+  /**
+   * Explicit executable reports. Each is tri-state: `true`/`false` when the
+   * executable said so, absent when it did not report the fact (F5 metadata
+   * then decides).
+   */
+  supportsEffort: Schema.optional(Schema.Boolean),
+  supportsFastMode: Schema.optional(Schema.Boolean),
   supportsAdaptiveThinking: Schema.optional(Schema.Boolean),
   supportsAutoMode: Schema.optional(Schema.Boolean),
   serviceTiers: Schema.optional(Schema.Array(ModelServiceTier)),

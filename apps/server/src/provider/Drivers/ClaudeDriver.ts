@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import {
   validateManagedHome,
   validateProviderCompatibility,
@@ -37,7 +38,10 @@ import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter, resolveClaudeConfigDir } from "../Layers/ClaudeAdapter.ts";
 import { readClaudeInventory, resolveClaudeUserStatePath } from "../claudeInventory.ts";
-import { deleteClaudeSessionTranscript } from "../claudeSessionCleanup.ts";
+import {
+  deleteClaudeSessionTranscript,
+  resolveClaudeTranscriptCleanupDir,
+} from "../claudeSessionCleanup.ts";
 import { checkClaudeProviderStatus, makePendingClaudeProvider } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -237,6 +241,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         ),
       );
 
+      // Transcripts are only deleted from a store F5 owns; the default
+      // instance shares `~/.claude` with the user's own CLI.
+      const transcriptCleanupDir = resolveClaudeTranscriptCleanupDir({
+        configDir: resolveClaudeConfigDir(claudeProcessEnvironment, serverCwd),
+        isolatedProfile: serverConfig.profile !== undefined && !serverConfig.profile.isDefault,
+        homePath: effectiveConfig.homePath,
+        userHomeDir: NodeOS.homedir(),
+        serverConfigDir: resolveClaudeConfigDir(process.env, serverCwd),
+      });
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -271,21 +285,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
               }),
           });
         },
-        deleteNativeSession: (sessionId) =>
-          Effect.tryPromise({
-            try: () =>
-              deleteClaudeSessionTranscript({
-                claudeConfigDir: resolveClaudeConfigDir(claudeProcessEnvironment, serverCwd),
-                sessionId,
-              }),
-            catch: (cause) =>
-              new ProviderDriverError({
-                driver: DRIVER_KIND,
-                instanceId,
-                detail: "Could not delete the Claude session transcript.",
-                cause,
-              }),
-          }),
+        ...(transcriptCleanupDir
+          ? {
+              deleteNativeSession: (sessionId: string) =>
+                Effect.tryPromise({
+                  try: () =>
+                    deleteClaudeSessionTranscript({
+                      claudeConfigDir: transcriptCleanupDir,
+                      sessionId,
+                    }),
+                  catch: (cause) =>
+                    new ProviderDriverError({
+                      driver: DRIVER_KIND,
+                      instanceId,
+                      detail: "Could not delete the Claude session transcript.",
+                      cause,
+                    }),
+                }),
+            }
+          : {}),
       } satisfies ProviderInstance;
     }),
 };

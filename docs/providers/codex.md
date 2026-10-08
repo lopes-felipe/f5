@@ -301,13 +301,17 @@ Once per instance and CLI version, F5 opens a short-lived control client and pag
 Hidden models are dropped. Efforts come from `supportedReasoningEfforts` and
 `defaultReasoningEffort`, tiers from `serviceTiers` and `defaultServiceTier`, and
 `upgrade` becomes an advisory. `additionalSpeedTiers` is never read. Fast mode is offered
-only when a `fast` tier is reported. Reported capabilities override same-slug built-ins.
-If the probe fails, the last good result or the built-ins stay in use, and no slug a
-persisted thread uses is dropped.
+only when a `fast` tier is reported. A model that reports no efforts gets no effort
+control. Reported capabilities override same-slug built-ins. If the probe fails, the last
+good result or the built-ins stay in use, and no slug a persisted thread uses is dropped.
+A failed probe is not retried for the same CLI version for 30 minutes. Concurrent
+callers share a single probe.
 
 Each session also reads its own `model/list`. `turn/start` resolves the requested effort
 against that list, walking down to the nearest offered level, so a CLI-only model
-receives the effort the composer showed.
+receives the effort the composer showed. A `fast` service tier is sent only when the
+session's list offers it. The composer applies the same rule to effort and fast mode
+before it dispatches.
 
 ### Catalogs
 
@@ -324,9 +328,15 @@ client with the instance's own `CODEX_HOME` and reads:
 - `hooks/list`: program name only
 - `plugin/list`: installed plugins, local marketplaces only, no remote refetch
 - `app/list`
-- `mcpServerStatus/list`
+- `config/read` with layers, for configured MCP servers
 
-Sources come from the hook source or the `config/read` origin of `mcp_servers.<name>`:
+F5 launches every app-server with `-c mcp_servers={}`, so `mcpServerStatus/list` would
+always be empty. MCP servers are read from each config layer's `mcp_servers` table
+instead, with the name and transport only, never commands, URLs or environment. The
+`sessionFlags` layer is skipped because it holds F5's own override. A server is shown as
+disabled when `enabled = false` or when its layer has a `disabledReason`.
+
+Sources come from the hook source or the MCP server's config layer:
 
 | Codex source                                    | Shown as |
 | ----------------------------------------------- | -------- |

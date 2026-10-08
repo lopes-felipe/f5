@@ -19,7 +19,7 @@ import {
   type ProviderStartOptions,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Path, Ref, Schema, Semaphore, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
@@ -49,6 +49,7 @@ import { readCodexInventory } from "../codexInventory.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+const CODEX_CATALOG_FAILURE_BACKOFF_MS = 30 * 60 * 1000;
 
 export type CodexDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -338,11 +339,25 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         readonly version: string;
         readonly catalog: CodexInstanceCatalog;
       } | null>(null);
+      // A failed probe is not retried for the same CLI version until the
+      // backoff elapses, so refreshes do not respawn the app-server each time.
+      const catalogFailure = yield* Ref.make<{
+        readonly version: string;
+        readonly failedAt: number;
+      } | null>(null);
+      // Concurrent refreshes share one probe instead of spawning several.
+      const catalogProbeLock = yield* Semaphore.make(1);
       const catalogFor = (status: ProviderPreflightStatus) =>
         Effect.gen(function* () {
           if (!enabled || !status.available || !status.version) return undefined;
           const cached = yield* Ref.get(instanceCatalog);
           if (cached?.version === status.version) return cached.catalog;
+          const failure = yield* Ref.get(catalogFailure);
+          if (
+            failure?.version === status.version &&
+            Date.now() - failure.failedAt < CODEX_CATALOG_FAILURE_BACKOFF_MS
+          )
+            return cached?.catalog;
           const probed = yield* Effect.tryPromise({
             try: () =>
               probeCodexInstanceCatalog({
@@ -370,10 +385,14 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             ),
             Effect.option,
           );
-          if (probed._tag === "None") return cached?.catalog;
+          if (probed._tag === "None") {
+            yield* Ref.set(catalogFailure, { version: status.version, failedAt: Date.now() });
+            return cached?.catalog;
+          }
+          yield* Ref.set(catalogFailure, null);
           yield* Ref.set(instanceCatalog, { version: status.version, catalog: probed.value });
           return probed.value;
-        });
+        }).pipe(catalogProbeLock.withPermits(1));
       const checkProvider = checkCodexProviderPreflight({
         providerOptions: defaultProviderOptions,
         processEnvironment,

@@ -84,6 +84,9 @@ function CodexTraitsMenuContentImpl(props: {
   const draft = useComposerThreadDraft(props.threadId);
   const modelOptions = draft.modelOptions?.codex;
   const setModelOptions = useComposerDraftStore((store) => store.setModelOptions);
+  const reported = props.models
+    ? getProviderModelCapabilities(props.models, props.model, CODEX_PROVIDER)
+    : undefined;
   const capabilities = resolveCodexTraitCapabilities(props.model, props.models);
   const options = capabilities.effortOptions as ReadonlyArray<CodexReasoningEffort>;
   const defaultReasoningEffort = capabilities.defaultEffort;
@@ -118,10 +121,11 @@ function CodexTraitsMenuContentImpl(props: {
             const nextEffort = options.find((option) => option === value);
             if (!nextEffort) return;
             setCodexModelOptions(
-              normalizeCodexModelOptions(props.model, {
-                ...modelOptions,
-                reasoningEffort: nextEffort,
-              }),
+              normalizeCodexModelOptions(
+                props.model,
+                { ...modelOptions, reasoningEffort: nextEffort },
+                reported,
+              ),
             );
             props.onSelectionComplete?.();
           }}
@@ -142,10 +146,11 @@ function CodexTraitsMenuContentImpl(props: {
             value={fastModeEnabled ? "on" : "off"}
             onValueChange={(value) => {
               setCodexModelOptions(
-                normalizeCodexModelOptions(props.model, {
-                  ...modelOptions,
-                  fastMode: value === "on",
-                }),
+                normalizeCodexModelOptions(
+                  props.model,
+                  { ...modelOptions, fastMode: value === "on" },
+                  reported,
+                ),
               );
               props.onSelectionComplete?.();
             }}

@@ -20,10 +20,6 @@ export type ProviderSessionAction = typeof ProviderSessionAction.Type;
 export const ProviderSessionUnavailableCode = Schema.Literals([
   /** The adapter or executable never supports this action. */
   "unsupported",
-  /** The installed executable is too old, or its version is unknown. */
-  "executable-version",
-  /** F5 policy (runtime mode, workflow stage, profile isolation) forbids it. */
-  "policy",
   /** The session has not finished native discovery yet. */
   "discovery-pending",
   /** There is no live provider session for this thread. */

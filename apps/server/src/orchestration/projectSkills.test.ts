@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   isSafeProjectSkillDirectoryName,
   parseClaudeSkillDocument,
+  scanInstanceHomeSkills,
   scanProjectSkills,
 } from "./projectSkills.ts";
 
@@ -224,5 +225,38 @@ description: Implement the approved plan.
     expect(result.skills.map((skill) => skill.commandName)).toEqual(["review"]);
     expect(result.skills[0]?.sourcePath).toBe(".gemini/skills/review.md");
     expect(result.warnings.some((warning) => warning.reason.includes("1 MiB"))).toBe(true);
+  });
+
+  it("lists an instance home's user skills with absolute paths", async () => {
+    const homeDir = createTempRoot();
+    tempRoots.push(homeDir);
+    const skills = path.join(homeDir, ".gemini", "config", "skills");
+    mkdirSync(skills, { recursive: true });
+    writeFileSync(path.join(skills, "review.md"), "---\ndescription: Review changes\n---\n");
+    writeSkill(
+      homeDir,
+      [".gemini", "antigravity-cli", "skills", "deploy"],
+      "---\ndescription: Deploy\n---\n",
+    );
+    // Another provider's directory in the same home is not this instance's.
+    writeSkill(homeDir, [".claude", "skills", "other"], "---\ndescription: Other\n---\n");
+
+    const result = await Effect.runPromise(
+      scanInstanceHomeSkills({
+        homeDir,
+        directories: [".gemini/config", ".gemini/antigravity-cli"],
+        nativeProvider: "antigravity",
+        allowFlatFiles: true,
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    expect(result.map((skill) => [skill.name, skill.scope, skill.path]).toSorted()).toEqual([
+      [
+        "deploy",
+        "user",
+        path.join(homeDir, ".gemini", "antigravity-cli", "skills", "deploy", "SKILL.md"),
+      ],
+      ["review", "user", path.join(skills, "review.md")],
+    ]);
   });
 });

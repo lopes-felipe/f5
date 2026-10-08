@@ -1348,6 +1348,11 @@ export const ThreadTurnSteerCommand = Schema.Struct({
   ...ThreadTurnStartCommand.fields,
   type: Schema.Literal("thread.turn.steer"),
   expectedTurnId: TurnId,
+  /**
+   * Session generation the browser saw. The server refuses the action with
+   * `stale-generation` when the provider session restarted since then.
+   */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
 });
 export type ThreadTurnSteerCommand = typeof ThreadTurnSteerCommand.Type;
 
@@ -1431,6 +1436,11 @@ export const ThreadConversationRevertCommand = Schema.Struct({
    * this thread has moved on since, without being affected by other threads.
    */
   expectedLatestMessageId: Schema.optional(MessageId),
+  /**
+   * Session generation the browser saw. The server refuses the action with
+   * `stale-generation` when the provider session restarted since then.
+   */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 /**
@@ -1535,6 +1545,7 @@ export const ClientOrchestrationCommand = Schema.Union([
     ...ClientThreadTurnStartCommand.fields,
     type: Schema.Literal("thread.turn.steer"),
     expectedTurnId: TurnId,
+    expectedSessionGeneration: Schema.optional(NonNegativeInt),
   }),
   ThreadTurnInterruptCommand,
   ThreadApprovalRespondCommand,
@@ -2465,7 +2476,11 @@ export const OrchestrationEvent = Schema.Union([
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-steer-requested"),
-    payload: Schema.Struct({ ...ThreadTurnStartRequestedPayload.fields, expectedTurnId: TurnId }),
+    payload: Schema.Struct({
+      ...ThreadTurnStartRequestedPayload.fields,
+      expectedTurnId: TurnId,
+      expectedSessionGeneration: Schema.optional(NonNegativeInt),
+    }),
   }),
   Schema.Struct({
     ...EventBaseFields,

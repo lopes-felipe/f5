@@ -785,7 +785,22 @@ export function resolveCodexReasoningEffortForModel(
 export function normalizeCodexModelOptions(
   model: string | null | undefined,
   modelOptions: CodexModelOptions | null | undefined,
+  /** The model's reported capabilities; when present they decide, as at `turn/start`. */
+  reported?: ModelCapabilities | null,
 ): CodexModelOptions | undefined {
+  if (reported?.source === "reported") {
+    const capabilities = resolveModelCapabilities("codex", model, reported);
+    const requested = modelOptions?.reasoningEffort;
+    const effort =
+      requested && capabilities.effortOptions.includes(requested) ? requested : undefined;
+    const reportedOptions: CodexModelOptions = {
+      ...(effort && effort !== capabilities.defaultEffort ? { reasoningEffort: effort } : {}),
+      ...(modelOptions?.fastMode === true && capabilities.supportsFastMode
+        ? { fastMode: true }
+        : {}),
+    };
+    return Object.keys(reportedOptions).length > 0 ? reportedOptions : undefined;
+  }
   const defaultReasoningEffort = getDefaultReasoningEffort("codex", model);
   const reasoningEffort = resolveCodexReasoningEffortForModel(model, modelOptions?.reasoningEffort);
   const fastModeEnabled = modelOptions?.fastMode === true;
@@ -914,16 +929,20 @@ export function resolveModelCapabilities(
     const metadata = getClaudeModelMetadata(slug);
     const effortDescriptor = selectDescriptor(reportedCaps, "effort");
     const builtInEfforts = metadata?.effortOptions ?? [];
-    const effortOptions = effortDescriptor
-      ? knownEfforts(
-          [
-            ...effortDescriptor.options.map((option) => option.id),
-            // The prompt keyword is F5 metadata; executables never report it.
-            ...(builtInEfforts.includes("ultrathink") ? ["ultrathink"] : []),
-          ],
-          CLAUDE_CODE_EFFORT_OPTIONS,
-        )
-      : builtInEfforts;
+    // An explicit "no effort" report wins; an unreported list keeps F5's.
+    const effortOptions: ReadonlyArray<ClaudeCodeEffort> =
+      reportedCaps?.supportsEffort === false
+        ? []
+        : effortDescriptor
+          ? knownEfforts(
+              [
+                ...effortDescriptor.options.map((option) => option.id),
+                // The prompt keyword is F5 metadata; executables never report it.
+                ...(builtInEfforts.includes("ultrathink") ? ["ultrathink"] : []),
+              ],
+              CLAUDE_CODE_EFFORT_OPTIONS,
+            )
+          : builtInEfforts;
     const reportedDefault = effortDescriptor ? descriptorDefault(effortDescriptor) : undefined;
     const defaultEffort =
       reportedDefault && effortOptions.includes(reportedDefault as ClaudeCodeEffort)
@@ -940,7 +959,8 @@ export function resolveModelCapabilities(
       defaultEffort,
       promptInjectedEfforts: effortOptions.includes("ultrathink") ? ["ultrathink"] : [],
       supportsFastMode: reportedCaps
-        ? hasDescriptor(reportedCaps, "fastMode")
+        ? (reportedCaps.supportsFastMode ??
+          (hasDescriptor(reportedCaps, "fastMode") || metadata?.supportsFastMode === true))
         : metadata?.supportsFastMode === true,
       supportsThinkingToggle: reportedCaps
         ? hasDescriptor(reportedCaps, "thinking")
@@ -956,12 +976,15 @@ export function resolveModelCapabilities(
   if (provider === "codex") {
     const metadata = getCodexModelMetadata(slug);
     const effortDescriptor = selectDescriptor(reportedCaps, "reasoningEffort");
-    const effortOptions: ReadonlyArray<CodexReasoningEffort> = effortDescriptor
-      ? knownEfforts(
-          effortDescriptor.options.map((option) => option.id),
-          CODEX_REASONING_EFFORT_OPTIONS,
-        )
-      : (metadata?.effortOptions ?? REASONING_EFFORT_OPTIONS_BY_PROVIDER.codex);
+    const effortOptions: ReadonlyArray<CodexReasoningEffort> =
+      reportedCaps?.supportsEffort === false
+        ? []
+        : effortDescriptor
+          ? knownEfforts(
+              effortDescriptor.options.map((option) => option.id),
+              CODEX_REASONING_EFFORT_OPTIONS,
+            )
+          : (metadata?.effortOptions ?? REASONING_EFFORT_OPTIONS_BY_PROVIDER.codex);
     const reportedDefault = effortDescriptor ? descriptorDefault(effortDescriptor) : undefined;
     const builtInDefault = getDefaultReasoningEffort("codex", slug);
     const defaultEffort =
@@ -970,17 +993,16 @@ export function resolveModelCapabilities(
         : effortOptions.includes(builtInDefault)
           ? builtInDefault
           : effortOptions[0];
+    // `undefined` when the model has no effort at all.
     return {
       ...base,
       source: reportedCaps ? "reported" : metadata ? "built-in" : "unknown",
       effortOptions,
       defaultEffort,
       promptInjectedEfforts: [],
-      // Reported models advertise fast mode as a service tier; built-ins keep
-      // the historical always-available toggle.
-      supportsFastMode: reportedCaps
-        ? (reportedCaps.serviceTiers ?? []).some((tier) => tier.id === CODEX_FAST_SERVICE_TIER)
-        : true,
+      // Reported models advertise fast mode as a service tier; when tiers were
+      // not reported, built-ins keep the historical always-available toggle.
+      supportsFastMode: reportedCaps?.supportsFastMode ?? true,
       supportsThinkingToggle: false,
       supportsContextWindow: false,
       supportsAdaptiveThinking: undefined,
@@ -1047,7 +1069,12 @@ export function createReportedClaudeModelCapabilities(
         ? "high"
         : efforts[0];
   const optionDescriptors: ProviderOptionDescriptor[] = [];
-  if (info.supportsEffort !== false && efforts.length > 0) {
+  if (info.supportsEffort === false) {
+    // Explicitly no effort: no descriptor, and the resolver sends none.
+  } else if (efforts.length === 0) {
+    // Levels not reported: keep F5's own effort choices for this model.
+    if (builtInEffort) optionDescriptors.push(builtInEffort);
+  } else {
     const withKeyword = builtInEffort?.promptInjectedValues?.includes("ultrathink")
       ? [...efforts, "ultrathink" as const]
       : efforts;
@@ -1066,6 +1093,10 @@ export function createReportedClaudeModelCapabilities(
   }
   if (info.supportsFastMode === true) {
     optionDescriptors.push({ id: "fastMode", label: "Fast Mode", type: "boolean" });
+  } else if (info.supportsFastMode === undefined) {
+    // Unreported: F5 metadata decides (the SDK field is optional).
+    const builtInFast = builtIn.optionDescriptors?.find((entry) => entry.id === "fastMode");
+    if (builtInFast) optionDescriptors.push(builtInFast);
   }
   // Context-window choices are F5 metadata the SDK does not report.
   const contextWindow = builtIn.optionDescriptors?.find((entry) => entry.id === "contextWindow");
@@ -1084,6 +1115,8 @@ export function createReportedClaudeModelCapabilities(
   return {
     optionDescriptors,
     source: "reported",
+    ...(info.supportsEffort !== undefined ? { supportsEffort: info.supportsEffort } : {}),
+    ...(info.supportsFastMode !== undefined ? { supportsFastMode: info.supportsFastMode } : {}),
     ...(info.supportsAdaptiveThinking !== undefined
       ? { supportsAdaptiveThinking: info.supportsAdaptiveThinking }
       : {}),
@@ -1125,6 +1158,8 @@ function nonEmptyString(value: unknown): string | undefined {
 export function createReportedCodexModelCapabilities(
   info: ReportedCodexModelInfo,
 ): ModelCapabilities {
+  const effortsReported = Array.isArray(info.supportedReasoningEfforts);
+  const tiersReported = Array.isArray(info.serviceTiers);
   const efforts = knownEfforts(
     (info.supportedReasoningEfforts ?? []).flatMap((entry) => {
       const effort = nonEmptyString(entry?.reasoningEffort);
@@ -1165,6 +1200,11 @@ export function createReportedCodexModelCapabilities(
           ]
         : [],
     source: "reported",
+    // A reported empty list means "none"; an absent field leaves F5's defaults.
+    ...(effortsReported ? { supportsEffort: efforts.length > 0 } : {}),
+    ...(tiersReported
+      ? { supportsFastMode: serviceTiers.some((tier) => tier.id === CODEX_FAST_SERVICE_TIER) }
+      : {}),
     ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
     ...(defaultServiceTier ? { defaultServiceTier } : {}),
     ...(upgradeTo && upgradeTo !== info.model ? { upgradeTo } : {}),

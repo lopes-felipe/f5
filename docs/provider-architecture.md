@@ -55,7 +55,9 @@ There are three layers, each with its own owner:
   catalog arrives. The generation is persisted in the binding's runtime payload: it is
   incremented on start and resume, and kept when an existing session is adopted.
   `assertSessionAction` re-checks the generation, executable support and policy before an
-  action is routed, and refuses a stale browser with `stale-generation`.
+  action is routed, and refuses a stale browser with `stale-generation`. The browser
+  sends `expectedSessionGeneration` with steer (direct and queued) and with conversation
+  rewind. An older or out-of-order snapshot never replaces a newer projected one.
   `getCapabilities(provider)` remains for adapter-wide facts.
 - **Model**: `resolveModelCapabilities(provider, slug, reported?)` in
   `@t3tools/shared/model` merges executable-reported capabilities over F5's built-ins.

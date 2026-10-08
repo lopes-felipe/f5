@@ -161,8 +161,8 @@ function InventoryBody({ inventory }: { readonly inventory: ProviderInstanceInve
       ) : null}
       {inventory.warnings.length > 0 ? (
         <ul className="space-y-0.5 text-xs text-warning-foreground">
-          {inventory.warnings.map((warning) => (
-            <li key={warning}>{warning}</li>
+          {inventory.warnings.map((warning, index) => (
+            <li key={`${index}:${warning}`}>{warning}</li>
           ))}
         </ul>
       ) : null}

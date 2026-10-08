@@ -1,5 +1,6 @@
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
+import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
@@ -1399,11 +1400,26 @@ export default function ChatView({
   );
   const selectedModelOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
-      const codexOptions = normalizeCodexModelOptions(selectedModel, draftModelOptions?.codex);
+      // Same reported capabilities the picker offered, so the sent effort matches.
+      const codexOptions = normalizeCodexModelOptions(
+        selectedModel,
+        draftModelOptions?.codex,
+        getProviderModelCapabilities(
+          selectedProviderModels,
+          selectedModel,
+          ProviderDriverKind.make("codex"),
+        ),
+      );
       return codexOptions ? { codex: codexOptions } : undefined;
     }
     return genericModelOptionsForDispatch;
-  }, [draftModelOptions?.codex, genericModelOptionsForDispatch, selectedModel, selectedProvider]);
+  }, [
+    draftModelOptions?.codex,
+    genericModelOptionsForDispatch,
+    selectedModel,
+    selectedProvider,
+    selectedProviderModels,
+  ]);
   const selectedModelSelectionOptionsForDispatch = useMemo(
     () =>
       selectedProvider === "codex"
@@ -4436,6 +4452,9 @@ export default function ChatView({
           targetMessageId: messageId,
           restoreFiles,
           ...(latestMessageId ? { expectedLatestMessageId: latestMessageId } : {}),
+          ...(activeThread.session?.capabilities
+            ? { expectedSessionGeneration: activeThread.session.capabilities.generation }
+            : {}),
           createdAt: new Date().toISOString(),
         });
       } catch (err) {

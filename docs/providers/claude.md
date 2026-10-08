@@ -548,10 +548,14 @@ When a thread is deleted, F5 removes `<config dir>/projects/*/<session>.jsonl` a
 `<session>/` sidecar directory. The config dir is the bound instance's isolated one,
 never the server-global home. It does not call the SDK's `deleteSession`, because that
 resolves the store from the server's own environment and cannot target an isolated
-profile. If any other live thread binds the same Claude session id (a fork or import),
-the cleanup is skipped. Cleanup is best-effort: failures are logged and never block the
-deletion. Snoozed and archived threads keep their transcripts. Symlinks are unlinked,
-never followed.
+profile. Cleanup applies only when F5 owns the store: either a non-default profile or a
+configured `homePath`. A store that resolves to `~/.claude` or to the server's own config
+dir is shared with the user's CLI, so it is never touched. If the bound session is still
+live, it is stopped first. If it is still running after that, the transcript is kept. If
+any other live thread binds the same Claude session id (a fork or import), the cleanup is
+skipped. Cleanup is best-effort: failures are logged and never block the deletion.
+Snoozed and archived threads keep their transcripts. Symlinks are unlinked, never
+followed.
 
 Wire protocol 17 adds session capability snapshots, reported model capabilities,
 catalog sources and the inventory RPC. Clients and servers must both run Release 2.

@@ -4708,26 +4708,16 @@ const make = Effect.gen(function* () {
             .pipe(Effect.orElseSucceed(() => null));
           if (
             capabilities &&
-            !sameSessionCapabilities(thread.session?.capabilities ?? null, capabilities)
+            thread.session &&
+            !sameSessionCapabilities(thread.session.capabilities ?? null, capabilities)
           ) {
+            // Only the snapshot changes; every other session field (usage
+            // limit, retryability, token usage) stays as projected.
             yield* orchestrationEngine.dispatch({
               type: "thread.session.set",
               commandId: providerCommandId(event, "thread-session-capabilities-set"),
               threadId: thread.id,
-              session: {
-                threadId: thread.id,
-                status: thread.session?.status ?? "ready",
-                providerName: event.provider,
-                providerInstanceId:
-                  event.providerInstanceId ?? thread.session?.providerInstanceId ?? null,
-                runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
-                activeTurnId: thread.session?.activeTurnId ?? null,
-                lastError: thread.session?.lastError ?? null,
-                lastErrorId: thread.session?.lastErrorId ?? null,
-                lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
-                capabilities,
-                updatedAt: now,
-              },
+              session: { ...thread.session, capabilities, updatedAt: now },
               createdAt: now,
             });
           }

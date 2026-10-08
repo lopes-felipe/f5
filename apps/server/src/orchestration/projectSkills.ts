@@ -1,8 +1,9 @@
 import {
-  type ProjectId,
+  ProjectId,
   type ProjectSkill,
   type ProjectSkillScope,
   type ProviderKind,
+  type ServerProviderSkill,
 } from "@t3tools/contracts";
 import { Data, Effect, FileSystem, Path } from "effect";
 import { parseDocument } from "yaml";
@@ -539,4 +540,49 @@ export const scanProjectSkills = Effect.fn(function* (input: {
     watchPaths: uniqueSortedPaths(scopes.flatMap((scope) => scope.watchPaths)),
     warnings: scopes.flatMap((scope) => scope.warnings),
   };
+});
+
+/**
+ * Instance-private skills from a provider home, for drivers whose CLI
+ * publishes no skill catalog of its own (Antigravity). `homeDir` must be the
+ * instance's own home (its child environment), never the server's, so one
+ * profile's user skills never reach another profile.
+ */
+export const scanInstanceHomeSkills = Effect.fn(function* (input: {
+  readonly homeDir: string;
+  /** Directories under `homeDir` holding a `skills/` folder. */
+  readonly directories: ReadonlyArray<string>;
+  readonly nativeProvider: ProviderKind;
+  readonly allowFlatFiles?: boolean;
+}): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
+  const scopes = yield* Effect.all(
+    input.directories.map((directory) =>
+      scanSkillScope({
+        projectId: ProjectId.makeUnsafe("instance-home"),
+        scope: "user",
+        workspaceParentPath: input.homeDir,
+        claudeDirPath: path.join(input.homeDir, directory),
+        skillsDirPath: path.join(input.homeDir, directory, "skills"),
+        nativeProviders: [input.nativeProvider],
+        ...(input.allowFlatFiles ? { allowFlatFiles: true } : {}),
+      }),
+    ),
+    { concurrency: 4 },
+  );
+  return resolveProjectSkillCollisions(scopes.flatMap((scope) => scope.candidates)).flatMap(
+    (skill): ServerProviderSkill[] =>
+      skill.sourcePath
+        ? [
+            {
+              name: skill.commandName,
+              path: path.join(input.homeDir, skill.sourcePath.replace(/^~\//, "")),
+              enabled: true,
+              scope: "user",
+              description: skill.description,
+              ...(skill.displayName ? { displayName: skill.displayName } : {}),
+            },
+          ]
+        : [],
+  );
 });

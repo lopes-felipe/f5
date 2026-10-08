@@ -1,8 +1,7 @@
 /**
  * Read-only inventory of one Codex instance through a short-lived app-server
  * control client: `hooks/list`, `plugin/list` (installed, local marketplaces
- * only), `app/list` and `mcpServerStatus/list`, with MCP sources taken from
- * `config/read` origins. The client runs with the instance's own CODEX_HOME,
+ * only), `app/list`, and MCP servers from the `config/read` layers. The client runs with the instance's own CODEX_HOME,
  * so entries never come from another profile. F5 never edits them.
  *
  * @module provider/codexInventory
@@ -149,53 +148,50 @@ export function parseCodexApps(
   return result;
 }
 
-/** Owner of each `mcp_servers.<name>` table from `config/read` origins. */
-export function codexMcpServerOrigins(
-  origins: Record<string, unknown> | undefined,
-): ReadonlyMap<string, ProviderInventorySource> {
-  const result = new Map<string, ProviderInventorySource>();
-  for (const [keyPath, origin] of Object.entries(origins ?? {})) {
-    const match = /^mcp_servers\.([^.]+)/.exec(keyPath);
-    if (!match?.[1] || result.has(match[1])) continue;
-    const layer = isRecord(origin) && isRecord(origin.name) ? origin.name.type : undefined;
-    result.set(match[1], codexInventorySource(layer));
-  }
-  return result;
+/** Path or identity of a config layer (`ConfigLayerSource`), for display. */
+function layerSourcePath(name: Record<string, unknown>): string | undefined {
+  return (
+    bounded(name.file) ??
+    bounded(name.dotCodexFolder) ??
+    (typeof name.domain === "string" && typeof name.key === "string"
+      ? bounded(`${name.domain}/${name.key}`)
+      : undefined)
+  );
 }
 
-export function parseCodexMcpServers(
-  statuses: ReadonlyArray<unknown>,
-  config: Record<string, unknown> | undefined,
-  origins: ReadonlyMap<string, ProviderInventorySource>,
+/**
+ * MCP servers as configured in each `config/read` layer. F5 launches every
+ * control app-server with `-c mcp_servers={}` so listing never starts a
+ * user's MCP server; that override is the `sessionFlags` layer and is skipped,
+ * which leaves the servers the user actually configured, each with its owner.
+ * Only names and transport are read; commands, args, env and headers are not.
+ */
+export function parseCodexMcpServersFromLayers(
+  layers: ReadonlyArray<unknown> | null | undefined,
 ): ReadonlyArray<ProviderInventoryConnector> {
-  const configured = config && isRecord(config.mcp_servers) ? config.mcp_servers : {};
-  const byName = new Map<string, ProviderInventoryConnector>();
-  for (const status of statuses) {
-    if (!isRecord(status)) continue;
-    const name = bounded(status.name);
-    if (!name || byName.has(name)) continue;
-    const entry = configured[name];
-    const startup = bounded(status.startupStatus) ?? bounded(status.authStatus);
-    byName.set(name, {
-      name,
-      kind: isRecord(entry) && typeof entry.url === "string" ? "http" : "stdio",
-      ...(isRecord(entry) && entry.enabled === false ? { enabled: false } : {}),
-      ...(startup ? { status: startup } : {}),
-      source: origins.get(name) ?? "unknown",
-    });
+  const result: ProviderInventoryConnector[] = [];
+  const seen = new Set<string>();
+  for (const layer of layers ?? []) {
+    if (!isRecord(layer) || !isRecord(layer.name) || !isRecord(layer.config)) continue;
+    if (layer.name.type === "sessionFlags") continue;
+    const servers = isRecord(layer.config.mcp_servers) ? layer.config.mcp_servers : {};
+    const source = codexInventorySource(layer.name.type);
+    const sourcePath = layerSourcePath(layer.name);
+    const disabledLayer = typeof layer.disabledReason === "string";
+    for (const [serverName, entry] of Object.entries(servers)) {
+      const name = bounded(serverName);
+      if (!name || !isRecord(entry) || seen.has(`${source}:${name}`)) continue;
+      seen.add(`${source}:${name}`);
+      result.push({
+        name,
+        kind: typeof entry.url === "string" ? "http" : "stdio",
+        ...(entry.enabled === false || disabledLayer ? { enabled: false } : {}),
+        source,
+        ...(sourcePath ? { sourcePath } : {}),
+      });
+    }
   }
-  // Configured but not reported (disabled servers are not started).
-  for (const [serverName, entry] of Object.entries(configured)) {
-    const name = bounded(serverName);
-    if (!name || byName.has(name) || !isRecord(entry)) continue;
-    byName.set(name, {
-      name,
-      kind: typeof entry.url === "string" ? "http" : "stdio",
-      ...(entry.enabled === false ? { enabled: false } : {}),
-      source: origins.get(name) ?? "unknown",
-    });
-  }
-  return [...byName.values()];
+  return result;
 }
 
 async function attempt<T>(
@@ -236,18 +232,11 @@ export async function readCodexInventory(
       const plugins = await attempt(warnings, "plugin/list", () => opened.listPlugins(cwds));
       const apps = await attempt(warnings, "app/list", () => opened.listApps());
       const config = await attempt(warnings, "config/read", () => opened.readConfig());
-      const mcp = await attempt(warnings, "mcpServerStatus/list", () =>
-        opened.listMcpServerStatus(),
-      );
       return {
         hooks: parseCodexHooks(hooks ?? []),
         plugins: parseCodexPlugins(plugins),
         connectors: [
-          ...parseCodexMcpServers(
-            mcp?.data ?? [],
-            config?.config,
-            codexMcpServerOrigins(config?.origins),
-          ),
+          ...parseCodexMcpServersFromLayers(config?.layers),
           ...parseCodexApps(apps ?? []),
         ],
         warnings,

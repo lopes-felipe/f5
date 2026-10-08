@@ -1307,6 +1307,17 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               detail: "This provider does not support steering.",
             });
           }
+          // Steering re-checks the routed generation and executable support, so
+          // a stale browser cannot steer a session restarted since it looked.
+          if (input.expectedTurnId !== undefined) {
+            yield* assertSessionAction({
+              threadId: input.threadId,
+              action: "steer",
+              ...(input.expectedSessionGeneration !== undefined
+                ? { expectedGeneration: input.expectedSessionGeneration }
+                : {}),
+            });
+          }
           const turn = yield* input.expectedTurnId !== undefined
             ? routed.adapter.steerTurn!({
                 ...input,

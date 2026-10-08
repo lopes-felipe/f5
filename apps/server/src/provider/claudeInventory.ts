@@ -85,16 +85,53 @@ function bounded(value: unknown): string | undefined {
 }
 
 /**
+ * Split a command line into shell words without executing anything: single
+ * quotes are literal, double quotes honor `\` before `$`, `` ` ``, `"`, `\`,
+ * and a bare `\` escapes the next character. Returns `undefined` for an
+ * unterminated quote, so a malformed line never yields a partial word.
+ */
+function splitShellWords(command: string): ReadonlyArray<string> | undefined {
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      else word += char;
+    } else if (quote === '"') {
+      if (char === '"') quote = undefined;
+      else if (char === "\\" && /[$`"\\]/.test(command[index + 1] ?? "")) word += command[++index];
+      else word += char;
+    } else if (/\s/.test(char)) {
+      if (inWord) words.push(word);
+      word = "";
+      inWord = false;
+    } else {
+      inWord = true;
+      if (char === "'" || char === '"') quote = char;
+      else if (char === "\\" && index + 1 < command.length) word += command[++index];
+      else word += char;
+    }
+  }
+  if (quote) return undefined;
+  if (inWord) words.push(word);
+  return words;
+}
+
+/**
  * The program a hook command runs, without arguments (they may carry tokens).
- * Leading `VAR=value` assignments are skipped.
+ * Leading `VAR=value` assignments are skipped as whole shell words, so a
+ * quoted value with spaces never surfaces a fragment of itself.
  */
 export function hookProgramName(command: unknown): string | undefined {
   if (typeof command !== "string") return undefined;
-  const tokens = command.trim().split(/\s+/);
-  const program = tokens.find((token) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(token));
+  const words = splitShellWords(command.trim());
+  if (!words) return undefined;
+  const program = words.find((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
   if (!program) return undefined;
-  const unquoted = program.replace(/^["']|["']$/g, "");
-  return bounded(unquoted.split(/[\\/]/).pop());
+  return bounded(program.split(/[\\/]/).pop());
 }
 
 function hostOf(url: unknown): string | undefined {

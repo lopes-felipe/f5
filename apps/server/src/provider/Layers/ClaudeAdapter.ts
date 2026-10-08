@@ -1505,13 +1505,15 @@ function buildPromptText(
   input: ProviderAdapterSendTurnInput,
   options: {
     readonly activeModel?: string;
+    /** Session model the effort resolves against when the turn names none. */
+    readonly sessionModel?: string;
     readonly allowsWorkspaceEdits: boolean;
     readonly reportedCapabilities?: ModelCapabilities;
   },
 ): string {
   const userPrompt = applyClaudeModelPromptEffort(
     input.input?.trim() ?? "",
-    input.model,
+    input.model ?? options.sessionModel,
     input.modelOptions?.claudeAgent?.effort,
     options.reportedCapabilities,
   );
@@ -1567,6 +1569,7 @@ function buildUserMessageEffect(
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly activeModel?: string;
+    readonly sessionModel?: string | undefined;
     readonly allowsWorkspaceEdits: boolean;
     readonly hostContractUpdate?: string | undefined;
     readonly reportedCapabilities?: ModelCapabilities | undefined;
@@ -1575,6 +1578,7 @@ function buildUserMessageEffect(
   return Effect.gen(function* () {
     const promptText = buildPromptText(input, {
       ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
+      ...(dependencies.sessionModel ? { sessionModel: dependencies.sessionModel } : {}),
       allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
       ...(dependencies.reportedCapabilities
         ? { reportedCapabilities: dependencies.reportedCapabilities }
@@ -6539,9 +6543,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
-          ...(activeModel ? { activeModel } : {}),
+          ...(activeModel ? { activeModel, sessionModel: activeModel } : {}),
           allowsWorkspaceEdits,
-          reportedCapabilities: yield* reportedCapabilitiesFor(input.model),
+          // A turn that names no model runs on the session model.
+          reportedCapabilities: yield* reportedCapabilitiesFor(input.model ?? activeModel),
           hostContractUpdate:
             context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
             !context.hostContractVersion &&
@@ -6651,7 +6656,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             fileSystem,
             attachmentsDir: serverConfig.attachmentsDir,
             allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
-            reportedCapabilities: yield* reportedCapabilitiesFor(input.model),
+            sessionModel: getClaudeSessionModel(context),
+            reportedCapabilities: yield* reportedCapabilitiesFor(
+              input.model ?? getClaudeSessionModel(context),
+            ),
           });
           if (context.stopped || context.turnState?.turnId !== input.expectedTurnId) {
             return yield* new ProviderAdapterRequestError({
