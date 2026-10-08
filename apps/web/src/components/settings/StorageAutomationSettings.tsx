@@ -21,6 +21,9 @@ const JOB_LABELS = {
   "provider-logs": "Provider logs",
   "auto-pull": "Auto-pull",
   "codex-marketplace-staging": "Codex marketplace staging",
+  "event-compaction": "Event compaction",
+  "thread-purge": "Thread purge",
+  "database-vacuum": "Database space",
 } as const satisfies Record<StorageAutomationTarget["job"], string>;
 
 const ACTION_LABELS = {
@@ -139,7 +142,59 @@ export function StorageAutomationSettings() {
             onCommit={(providerLogsAfterDays) => saveCleanup({ providerLogsAfterDays })}
           />
         </label>
+        <label className="flex items-center justify-between gap-4 py-2 text-sm">
+          <span>
+            Permanently delete archived threads after
+            <span className="block text-xs text-muted-foreground">
+              Days since archiving. Empty keeps archived threads.
+            </span>
+          </span>
+          <RetentionDaysInput
+            label="Permanently delete archived threads after"
+            value={storageCleanup.archivedThreadsPurgeAfterDays}
+            disabled={rulesDisabled}
+            onCommit={(archivedThreadsPurgeAfterDays) =>
+              saveCleanup({ archivedThreadsPurgeAfterDays })
+            }
+          />
+        </label>
       </fieldset>
+
+      <div className="space-y-1 border-t border-border pt-4">
+        <p className="text-xs text-muted-foreground">
+          These run hourly even when automatic cleanup is off: they remove only what no thread can
+          open again. F5 also compacts finished threads' event history and returns free database
+          space to the disk.
+        </p>
+        <label className="flex items-center justify-between gap-4 py-2 text-sm">
+          <span>
+            Purge deleted threads after
+            <span className="block text-xs text-muted-foreground">
+              Days since deletion. Empty never purges.
+            </span>
+          </span>
+          <RetentionDaysInput
+            label="Purge deleted threads after"
+            value={storageCleanup.deletedThreadsPurgeAfterDays}
+            onCommit={(deletedThreadsPurgeAfterDays) =>
+              saveCleanup({ deletedThreadsPurgeAfterDays })
+            }
+          />
+        </label>
+        <label className="flex items-center justify-between gap-4 py-2 text-sm">
+          <span>
+            Delete logs of deleted and archived threads after
+            <span className="block text-xs text-muted-foreground">
+              Days since the log was last written. Empty keeps them.
+            </span>
+          </span>
+          <RetentionDaysInput
+            label="Delete logs of deleted and archived threads after"
+            value={storageCleanup.terminalThreadLogsAfterDays}
+            onCommit={(terminalThreadLogsAfterDays) => saveCleanup({ terminalThreadLogsAfterDays })}
+          />
+        </label>
+      </div>
 
       <label className="flex items-center justify-between gap-4 py-2 text-sm">
         <span>

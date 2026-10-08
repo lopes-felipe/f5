@@ -1566,7 +1566,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadCommandExecutionRepository.upsert({
             ...existingRow,
             output: nextOutput.output,
-            outputTruncated: existingRow.outputTruncated || nextOutput.outputTruncated,
+            outputTruncated:
+              existingRow.outputTruncated ||
+              nextOutput.outputTruncated ||
+              event.payload.outputTruncated === true,
             updatedAt: event.payload.updatedAt,
             lastUpdatedSequence: event.sequence,
           });
