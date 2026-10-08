@@ -39,13 +39,32 @@ interface AuditRow {
   readonly createdAt: string;
 }
 
-/** Best effort: an audit write never fails the cleanup or pull it describes. */
-export const recordStorageAutomationAudit = (record: StorageAutomationAuditRecord) =>
+/**
+ * Best effort: an audit write never fails the cleanup or pull it describes.
+ * With `skipIfRepeated`, nothing is written when the newest row for the same
+ * job and target already has the same result and reason, so a target that
+ * fails on every pass cannot push real history out of the capped table.
+ */
+export const recordStorageAutomationAudit = (
+  record: StorageAutomationAuditRecord,
+  options?: { readonly skipIfRepeated?: boolean },
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    if (options?.skipIfRepeated) {
+      const latest = yield* sql<{ readonly result: string; readonly reason: string | null }>`
+        SELECT result, reason FROM storage_automation_audit
+        WHERE job = ${record.job} AND target = ${record.target}
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+      `;
+      if (latest[0]?.result === record.result && latest[0]?.reason === (record.reason ?? null)) {
+        return;
+      }
+    }
     const createdAt = new Date().toISOString();
     yield* sql`
-      INSERT INTO storage_automation_audit_v2 (
+      INSERT INTO storage_automation_audit (
         audit_id, operation_id, job, policy_version, target, project_id, thread_id,
         before_ref, after_ref, result, reason, created_at
       ) VALUES (
@@ -78,7 +97,7 @@ export const listStorageAutomationAudit = (limit: number) =>
         result,
         reason,
         created_at AS "createdAt"
-      FROM storage_automation_audit_v2
+      FROM storage_automation_audit
       ORDER BY created_at DESC
       LIMIT ${limit}
     `;
@@ -88,11 +107,11 @@ export const listStorageAutomationAudit = (limit: number) =>
 export const pruneStorageAutomationAudit = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cutoff = new Date(Date.now() - AUDIT_RETENTION_MS).toISOString();
-  yield* sql`DELETE FROM storage_automation_audit_v2 WHERE created_at < ${cutoff}`;
+  yield* sql`DELETE FROM storage_automation_audit WHERE created_at < ${cutoff}`;
   yield* sql`
-    DELETE FROM storage_automation_audit_v2
+    DELETE FROM storage_automation_audit
     WHERE audit_id NOT IN (
-      SELECT audit_id FROM storage_automation_audit_v2
+      SELECT audit_id FROM storage_automation_audit
       ORDER BY created_at DESC
       LIMIT ${AUDIT_MAX_ROWS}
     )

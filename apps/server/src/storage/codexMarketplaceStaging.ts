@@ -22,8 +22,9 @@ import { removeTreeIfSafe, type StoragePathWarningInput } from "./storagePathSaf
  * Both are temp dirs that Codex removes only when the upgrade runs to the end
  * in a live process. When F5 stops an app-server mid-upgrade (or Git outlives
  * it and finishes the clone), the full clone stays behind; at a few hundred
- * MB each they filled the disk. Nothing reads them afterwards, so anything
- * past the age guard is garbage.
+ * MB each they filled the disk. Nothing reads a staging clone afterwards, so
+ * one past the age guard is garbage; backups are checked first (see
+ * `isRedundantBackup`).
  */
 export const CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS = 2 * 60 * 60 * 1_000;
 
@@ -95,14 +96,77 @@ async function listPrefixedDirectories(
     if (!entry.name.startsWith(prefix) || !entry.isDirectory()) continue;
     const target = Path.join(directory, entry.name);
     const stat = await FS.lstat(target).catch(() => null);
+    // Codex creates these dirs fresh with `tempfile` and never renames one
+    // into place; moving the old root into a backup dir updates that dir's
+    // mtime. So mtime is when the upgrade last touched it.
     if (stat?.isDirectory()) result.push({ path: target, mtimeMs: stat.mtimeMs });
   }
   return result;
 }
 
+const INSTALL_METADATA_FILE = ".codex-marketplace-install.json";
+const MANIFEST_PATHS = [
+  Path.join(".agents", "plugins", "marketplace.json"),
+  Path.join(".claude-plugin", "marketplace.json"),
+];
+
+/** Source identity of an installed marketplace root, or null when it has none. */
+async function readInstallIdentity(root: string): Promise<string | null> {
+  try {
+    const metadata = JSON.parse(
+      await FS.readFile(Path.join(root, INSTALL_METADATA_FILE), "utf8"),
+    ) as Record<string, unknown>;
+    if (typeof metadata.source !== "string") return null;
+    return JSON.stringify([
+      metadata.source_type ?? null,
+      metadata.source,
+      metadata.ref_name ?? null,
+      metadata.sparse_paths ?? [],
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+async function hasMarketplaceManifest(root: string): Promise<boolean> {
+  for (const manifest of MANIFEST_PATHS) {
+    const stat = await FS.stat(Path.join(root, manifest)).catch(() => null);
+    if (stat?.isFile()) return true;
+  }
+  return false;
+}
+
+/**
+ * Codex parks the previous marketplace root in `marketplace-backup-*\/root`
+ * while it swaps in an upgrade. When both the swap and the rollback fail it
+ * keeps that dir on purpose, and it may be the only copy left. A backup is
+ * only garbage when it holds no root, or when a complete installed
+ * marketplace from the same source sits next to it.
+ */
+async function isRedundantBackup(marketplacesRoot: string, backup: string): Promise<boolean> {
+  const backupRoot = Path.join(backup, "root");
+  if ((await FS.lstat(backupRoot).catch(() => null)) === null) return true;
+  const identity = await readInstallIdentity(backupRoot);
+  if (identity === null) return false;
+  const entries = await FS.readdir(marketplacesRoot, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    if (entry.name.startsWith(BACKUP_PREFIX)) continue;
+    const installed = Path.join(marketplacesRoot, entry.name);
+    if (
+      (await readInstallIdentity(installed)) === identity &&
+      (await hasMarketplaceManifest(installed))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Leftover marketplace upgrade clones and backups older than the age guard,
- * which keeps an upgrade that is still running out of reach. Homes that
+ * which keeps an upgrade that is still running out of reach. Backups that may
+ * be the only copy of an installed marketplace are never listed. Homes that
  * resolve to the same directory (a shadow home links `.tmp` to its shared
  * home) are scanned once.
  */
@@ -129,7 +193,11 @@ export async function listCodexMarketplaceLeftovers(input: {
       })),
     ];
     for (const candidate of candidates) {
-      if (candidate.mtimeMs < cutoff) leftovers.push({ ...candidate, home, root });
+      if (candidate.mtimeMs >= cutoff) continue;
+      if (candidate.kind === "backup" && !(await isRedundantBackup(root, candidate.path))) {
+        continue;
+      }
+      leftovers.push({ ...candidate, home, root });
     }
   }
   return leftovers;
@@ -150,7 +218,9 @@ export async function removeCodexMarketplaceLeftover(
 ): Promise<{ readonly reclaimedBytes: number; readonly warning?: StoragePathWarningInput }> {
   const bytes = await codexMarketplaceLeftoverBytes(leftover);
   const result = await removeTreeIfSafe({ path: leftover.path, allowedRoot: leftover.root });
+  // `removeTreeIfSafe` reports the size of the directory entry itself, which
+  // is 0 on Windows; no warning means the tree is gone.
   return result.warning
     ? { reclaimedBytes: 0, warning: result.warning }
-    : { reclaimedBytes: result.reclaimedBytes > 0 ? bytes : 0 };
+    : { reclaimedBytes: bytes };
 }

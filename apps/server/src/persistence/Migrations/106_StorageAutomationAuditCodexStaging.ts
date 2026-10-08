@@ -4,17 +4,21 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 /**
  * Allow the `codex-marketplace-staging` job in the storage automation audit:
  * the sweep that removes leaked Codex marketplace upgrade clones. SQLite
- * cannot alter a CHECK constraint, so the rows move to a new table. It gets a
- * new name instead of `ALTER TABLE ... RENAME`, because a rename re-validates
- * every trigger in the schema and fails on databases whose search triggers
- * point at tables an earlier repair migration has not created yet.
+ * cannot alter a CHECK constraint, so the table is rebuilt under its own name,
+ * which keeps older builds reading the same table after a downgrade.
+ *
+ * The rename runs with `legacy_alter_table` on. Otherwise SQLite re-parses
+ * every trigger in the schema during the rename, and that fails on databases
+ * whose search triggers point at tables an earlier repair migration has not
+ * created yet. Nothing references the audit table, so there is nothing for the
+ * modern rename to rewrite.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* sql`
-        CREATE TABLE IF NOT EXISTS storage_automation_audit_v2 (
+        CREATE TABLE storage_automation_audit_next (
           audit_id TEXT PRIMARY KEY,
           operation_id TEXT NOT NULL,
           job TEXT NOT NULL CHECK (
@@ -33,7 +37,7 @@ export default Effect.gen(function* () {
       `;
       // Named columns: the source layout lives in migration 098.
       yield* sql`
-        INSERT OR IGNORE INTO storage_automation_audit_v2 (
+        INSERT INTO storage_automation_audit_next (
           audit_id, operation_id, job, policy_version, target, project_id, thread_id,
           before_ref, after_ref, result, reason, created_at
         ) SELECT
@@ -42,9 +46,13 @@ export default Effect.gen(function* () {
         FROM storage_automation_audit
       `;
       yield* sql`DROP TABLE storage_automation_audit`;
+      yield* sql`PRAGMA legacy_alter_table = ON`;
+      yield* sql`ALTER TABLE storage_automation_audit_next RENAME TO storage_automation_audit`.pipe(
+        Effect.ensuring(sql`PRAGMA legacy_alter_table = OFF`.pipe(Effect.ignore)),
+      );
       yield* sql`
-        CREATE INDEX IF NOT EXISTS idx_storage_automation_audit_v2_created_at
-        ON storage_automation_audit_v2 (created_at)
+        CREATE INDEX IF NOT EXISTS idx_storage_automation_audit_created_at
+        ON storage_automation_audit (created_at)
       `;
     }),
   );

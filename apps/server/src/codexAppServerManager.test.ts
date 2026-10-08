@@ -2102,6 +2102,11 @@ describe("runOneOffPrompt", () => {
 describe("runOneOffPrompt warm app-server reuse", () => {
   function createOneOffPoolHarness(options?: {
     readonly failPrompt?: (prompt: string) => boolean;
+    readonly beforeAnswer?: (prompt: string) => ReadonlyArray<Notification>;
+    readonly afterCompleted?: (
+      prompt: string,
+      providerThreadId: string,
+    ) => ReadonlyArray<Notification>;
   }) {
     const manager = new CodexAppServerManager();
     const sessions = (manager as unknown as { sessions: Map<string, Record<string, unknown>> })
@@ -2131,40 +2136,55 @@ describe("runOneOffPrompt warm app-server reuse", () => {
       });
       return session;
     });
+    // Only the JSON-RPC transport is stubbed: `sendTurn`, notification routing
+    // (including the auxiliary-thread filter) and turn lifecycle state are real.
+    const notify = (context: unknown, method: string, params: Record<string, unknown>) =>
+      (
+        manager as unknown as {
+          handleServerNotification: (context: unknown, notification: unknown) => void;
+        }
+      ).handleServerNotification(context, { method, params });
+    let turnCounter = 0;
     const sendRequest = vi
       .spyOn(
         manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
         "sendRequest",
       )
-      .mockImplementation(async () => ({ thread: { id: `provider-${++providerThreadCounter}` } }));
-    const stopSession = vi.spyOn(manager, "stopSession");
-    vi.spyOn(manager, "sendTurn").mockImplementation(async (input) => {
-      const failed = options?.failPrompt?.(input.input ?? "") ?? false;
-      queueMicrotask(() => {
-        manager.emit("event", {
-          id: asEventId(`evt-${randomUUID()}`),
-          kind: "notification",
-          provider: "codex",
-          threadId: input.threadId,
-          createdAt: "2026-10-07T10:00:01.000Z",
-          method: "item/agentMessage/delta",
-          textDelta: `answer to ${input.input}`,
-          payload: {},
+      .mockImplementation(async (...args: unknown[]) => {
+        const [context, method, params] = args as [unknown, string, Record<string, unknown>];
+        if (method !== "turn/start")
+          return { thread: { id: `provider-${++providerThreadCounter}` } };
+        const providerThreadId = params.threadId as string;
+        const prompt = (params.input as Array<{ text?: string }>)[0]?.text ?? "";
+        const turnId = `turn-${++turnCounter}`;
+        const failed = options?.failPrompt?.(prompt) ?? false;
+        // Codex answers turn/start before it streams the turn's notifications.
+        setImmediate(() => {
+          notify(context, "turn/started", { threadId: providerThreadId, turn: { id: turnId } });
+          for (const extra of options?.beforeAnswer?.(prompt) ?? []) {
+            notify(context, extra.method, extra.params);
+          }
+          notify(context, "item/agentMessage/delta", {
+            threadId: providerThreadId,
+            turnId,
+            itemId: `item-${turnId}`,
+            delta: `answer to ${prompt}`,
+          });
+          notify(context, "turn/completed", {
+            threadId: providerThreadId,
+            turn: { id: turnId, status: failed ? "failed" : "completed" },
+          });
+          for (const extra of options?.afterCompleted?.(prompt, providerThreadId) ?? []) {
+            notify(context, extra.method, extra.params);
+          }
         });
-        manager.emit("event", {
-          id: asEventId(`evt-${randomUUID()}`),
-          kind: "notification",
-          provider: "codex",
-          threadId: input.threadId,
-          createdAt: "2026-10-07T10:00:02.000Z",
-          method: "turn/completed",
-          payload: { turn: { status: failed ? "failed" : "completed" } },
-        });
+        return { turn: { id: turnId } };
       });
-      return { threadId: input.threadId, turnId: "turn-one-off" as never };
-    });
+    const stopSession = vi.spyOn(manager, "stopSession");
     return { manager, sessions, startSession, sendRequest, stopSession };
   }
+
+  type Notification = { readonly method: string; readonly params: Record<string, unknown> };
 
   it("spawns one plugin-free app-server and opens a fresh thread for each later prompt", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -2184,7 +2204,7 @@ describe("runOneOffPrompt warm app-server reuse", () => {
 
       expect(startSession).toHaveBeenCalledTimes(1);
       expect(startSession).toHaveBeenCalledWith(
-        expect.objectContaining({ disablePlugins: true, processCwd: os.homedir(), cwd: "/tmp/a" }),
+        expect.objectContaining({ disablePlugins: true, processCwd: os.tmpdir(), cwd: "/tmp/a" }),
       );
       const threadStarts = sendRequest.mock.calls.filter((call) => call[1] === "thread/start");
       expect(threadStarts).toHaveLength(2);
@@ -2255,24 +2275,80 @@ describe("runOneOffPrompt warm app-server reuse", () => {
   it("ignores stragglers from the previous prompt while the next thread opens", async () => {
     const { manager, sendRequest } = createOneOffPoolHarness();
     await manager.runOneOffPrompt({ prompt: "first", timeoutMs: 1_000 });
+    const transport = sendRequest.getMockImplementation()!;
     sendRequest.mockImplementation(async (...args: unknown[]) => {
-      const context = args[0] as { session: { threadId: ThreadId } };
-      manager.emit("event", {
-        id: asEventId(`evt-${randomUUID()}`),
-        kind: "notification",
-        provider: "codex",
-        threadId: context.session.threadId,
-        createdAt: "2026-10-07T10:00:00.500Z",
-        method: "item/agentMessage/delta",
-        textDelta: "stale ",
-        payload: {},
-      });
-      return { thread: { id: "provider-next" } };
+      if (args[1] === "thread/start") {
+        const context = args[0] as { session: { threadId: ThreadId } };
+        manager.emit("event", {
+          id: asEventId(`evt-${randomUUID()}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: context.session.threadId,
+          createdAt: "2026-10-07T10:00:00.500Z",
+          method: "item/agentMessage/delta",
+          textDelta: "stale ",
+          payload: {},
+        });
+      }
+      return transport(...args);
     });
 
     await expect(manager.runOneOffPrompt({ prompt: "second", timeoutMs: 1_000 })).resolves.toBe(
       "answer to second",
     );
+    manager.stopAll();
+  });
+
+  it("drops notifications that still arrive for the previous prompt's provider thread", async () => {
+    const { manager, startSession } = createOneOffPoolHarness({
+      // provider-1 is the first prompt's thread; the second prompt runs on a new one.
+      beforeAnswer: (prompt) =>
+        prompt === "second"
+          ? [
+              {
+                method: "item/agentMessage/delta",
+                params: { threadId: "provider-1", turnId: "turn-1", delta: "stale " },
+              },
+            ]
+          : [],
+    });
+
+    await manager.runOneOffPrompt({ prompt: "first", timeoutMs: 1_000 });
+    await expect(manager.runOneOffPrompt({ prompt: "second", timeoutMs: 1_000 })).resolves.toBe(
+      "answer to second",
+    );
+    expect(startSession).toHaveBeenCalledTimes(1);
+    manager.stopAll();
+  });
+
+  it("retires an app-server that started another turn before it was released", async () => {
+    const { manager, sessions, startSession, stopSession } = createOneOffPoolHarness({
+      afterCompleted: (prompt, providerThreadId) =>
+        prompt === "first"
+          ? [{ method: "turn/started", params: { threadId: providerThreadId, turn: { id: "x" } } }]
+          : [],
+    });
+
+    await manager.runOneOffPrompt({ prompt: "first", timeoutMs: 1_000 });
+    expect(stopSession).toHaveBeenCalledTimes(1);
+    expect(sessions.size).toBe(0);
+    await manager.runOneOffPrompt({ prompt: "second", timeoutMs: 1_000 });
+    expect(startSession).toHaveBeenCalledTimes(2);
+    manager.stopAll();
+  });
+
+  it("runs a prompt without a cwd in the server cwd on both cold and warm workers", async () => {
+    const { manager, startSession, sendRequest } = createOneOffPoolHarness();
+
+    await manager.runOneOffPrompt({ prompt: "cold", timeoutMs: 1_000 });
+    await manager.runOneOffPrompt({ prompt: "warm", timeoutMs: 1_000 });
+
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: process.cwd(), processCwd: os.tmpdir() }),
+    );
+    const threadStarts = sendRequest.mock.calls.filter((call) => call[1] === "thread/start");
+    expect(threadStarts).toHaveLength(1);
+    expect(threadStarts[0]?.[2]).toEqual(expect.objectContaining({ cwd: process.cwd() }));
     manager.stopAll();
   });
 

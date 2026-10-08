@@ -887,6 +887,12 @@ interface CodexOneOffWorker {
 /**
  * Everything that changes the app-server process itself. Per-prompt values
  * (cwd, model, runtime mode) go on the provider thread instead.
+ *
+ * The signed-in account is not part of the key: after `codex login` switches
+ * accounts in the same home, an idle warm worker can serve background prompts
+ * with the previous login until it retires (at most `CODEX_ONE_OFF_WORKER_IDLE_MS`
+ * after its last prompt). Changing the instance's settings rebuilds the
+ * adapter, which stops every worker.
  */
 export function codexOneOffPoolKey(
   providerOptions: ProviderSessionStartInput["providerOptions"],
@@ -1372,6 +1378,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     // provider thread. Acquiring is synchronous, so two prompts can never
     // claim the same worker.
     const poolKey = codexOneOffPoolKey(input.providerOptions);
+    // Resolved once and sent explicitly on both paths, so a prompt runs in the
+    // same directory whether or not a warm worker exists.
+    const cwd = input.cwd ?? process.cwd();
     let worker = this.acquireOneOffWorker(poolKey);
     const threadId =
       worker?.threadId ?? ThreadId.makeUnsafe(`${CODEX_ONE_OFF_THREAD_PREFIX}${randomUUID()}`);
@@ -1461,7 +1470,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       if (worker) {
         await this.openOneOffThread(threadId, {
-          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          cwd,
           ...(input.model !== undefined ? { model: input.model } : {}),
           runtimeMode: input.runtimeMode ?? "approval-required",
         });
@@ -1471,14 +1480,16 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         await this.startSession({
           threadId,
           provider: "codex",
-          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          cwd,
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...(input.providerOptions !== undefined
             ? { providerOptions: input.providerOptions }
             : {}),
           runtimeMode: input.runtimeMode ?? "approval-required",
-          // The process outlives this prompt's cwd (which may be a temp dir).
-          processCwd: OS.homedir(),
+          // The process outlives this prompt's cwd (which may be a temp dir)
+          // and serves later prompts in other dirs, so it runs somewhere
+          // neutral that carries no project or home-directory instructions.
+          processCwd: OS.tmpdir(),
           // One-offs never use plugins; keep Codex from starting a marketplace
           // upgrade that a stopped app-server would leave behind on disk.
           disablePlugins: true,
@@ -1563,10 +1574,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   /** Start a fresh provider thread on a warm one-off app-server. */
   private async openOneOffThread(
     threadId: ThreadId,
-    input: { readonly cwd?: string; readonly model?: string; readonly runtimeMode: RuntimeMode },
+    input: { readonly cwd: string; readonly model?: string; readonly runtimeMode: RuntimeMode },
   ): Promise<void> {
     const context = this.requireSession(threadId);
-    const resolvedCwd = input.cwd ?? process.cwd();
+    const resolvedCwd = input.cwd;
     const model = resolveCodexModelForAccount(
       normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL_BY_PROVIDER.codex,
       context.account,

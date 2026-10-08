@@ -393,7 +393,7 @@ describe("StorageCleanupWorker Codex marketplace staging", () => {
     const oldClone = path.join(workMarketplaces, ".staging", "marketplace-upgrade-old");
     const freshClone = path.join(workMarketplaces, ".staging", "marketplace-upgrade-fresh");
     const oldBackup = path.join(personalMarketplaces, "marketplace-backup-old");
-    const installed = path.join(personalMarketplaces, "doordash-agentskills");
+    const installed = path.join(personalMarketplaces, "example-marketplace");
     await makeDir(oldClone, 3 * HOUR_MS);
     await makeDir(freshClone, 30 * 60 * 1_000);
     await makeDir(oldBackup, 5 * HOUR_MS);

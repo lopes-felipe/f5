@@ -459,15 +459,19 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       const leftovers = yield* codexMarketplaceLeftovers;
       for (const leftover of leftovers) {
         const outcome = yield* Effect.promise(() => removeCodexMarketplaceLeftover(leftover));
-        yield* recordStorageAutomationAudit({
-          operationId,
-          job: "codex-marketplace-staging",
-          target: redactHomePath(leftover.path),
-          result: outcome.warning ? "failed" : "removed",
-          reason: outcome.warning
-            ? outcome.warning.reason
-            : `${leftover.kind === "staging" ? "upgrade clone" : "upgrade backup"} older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours; ${outcome.reclaimedBytes} bytes`,
-        }).pipe(Effect.provideServices(services));
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "codex-marketplace-staging",
+            target: redactHomePath(leftover.path),
+            result: outcome.warning ? "failed" : "removed",
+            reason: outcome.warning
+              ? outcome.warning.reason
+              : `${leftover.kind === "staging" ? "upgrade clone" : "upgrade backup"} older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours; ${outcome.reclaimedBytes} bytes`,
+            // A dir that cannot be deleted fails again on every pass.
+          },
+          { skipIfRepeated: outcome.warning !== undefined },
+        ).pipe(Effect.provideServices(services));
       }
     }).pipe(
       Effect.catchCause((cause) =>

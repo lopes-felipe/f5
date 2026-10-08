@@ -74,6 +74,9 @@ function resolveHomePath(path: Path.Path, value: string | undefined): string {
  * (`homePath`, or the inherited `CODEX_HOME`, or `~/.codex`) and, for an auth
  * overlay, the shadow home. Mirrors `resolveCodexHomeLayout` plus the
  * `CODEX_HOME` fallback the process environment applies when `homePath` is empty.
+ * A managed (isolated profile) instance without a `homePath` resolves to no
+ * home: `validateManagedHome` refuses to launch it, and falling back to
+ * `~/.codex` would reach outside the profile.
  */
 export function resolveCodexInstanceHomePaths(input: {
   readonly config: Pick<CodexSettings, "homePath" | "shadowHomePath">;
@@ -81,11 +84,12 @@ export function resolveCodexInstanceHomePaths(input: {
   readonly inheritedCodexHome: string | undefined;
 }): ReadonlyArray<string> {
   const homePath = input.config.homePath.trim();
+  if (input.managed && homePath.length === 0) return [];
   const inherited = input.inheritedCodexHome?.trim();
   const shared = NodePath.resolve(
     homePath.length > 0
       ? expandHomePath(homePath)
-      : !input.managed && inherited
+      : inherited
         ? expandHomePath(inherited)
         : NodePath.join(NodeOS.homedir(), ".codex"),
   );

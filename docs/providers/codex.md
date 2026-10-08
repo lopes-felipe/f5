@@ -158,15 +158,20 @@ These clones can be hundreds of MB each.
 
 F5 limits this in three ways:
 
-- Title, session-note, compaction and harness-validation prompts share one warm app-server
-  per Codex launch config instead of starting one per prompt. The warm process stops after
-  5 minutes idle, after 50 prompts, or after any failed prompt.
-- These one-off app-servers start with `-c features.plugins=false`, so they never begin a
+- Session-note, compaction and harness-validation prompts share one warm app-server per
+  Codex launch config instead of starting one per prompt. The warm process stops after
+  5 minutes idle, after 50 prompts, or after any failed prompt. It is not tied to the
+  signed-in account: after `codex login` switches accounts in the same home, background
+  prompts can use the previous login until the warm process stops.
+- These one-off app-servers, and the `codex exec` runs that generate titles, commit messages,
+  PR text and branch names, start with `-c features.plugins=false`, so they never begin a
   marketplace upgrade. Thread sessions keep plugins on.
-- Every hour, F5 deletes `marketplace-upgrade-*` and `marketplace-backup-*` dirs older than
-  2 hours in every Codex home it launches, even when automatic storage cleanup is off. Each
-  deletion is recorded in the automatic cleanup history. **Settings → Storage → Provider
-  homes** offers the same cleanup on demand.
+- Every hour, F5 deletes `marketplace-upgrade-*` dirs older than 2 hours in every Codex home
+  it launches, even when automatic storage cleanup is off. It deletes a
+  `marketplace-backup-*` dir only when an installed marketplace from the same source sits
+  next to it; a backup Codex kept after a failed rollback may be the only copy and is left
+  alone. Each deletion is recorded in the automatic cleanup history. **Settings → Storage →
+  Provider homes** offers the same cleanup on demand.
 
 ## Release 0 rewind compatibility
 

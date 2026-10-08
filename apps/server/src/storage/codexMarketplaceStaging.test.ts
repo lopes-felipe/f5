@@ -45,7 +45,7 @@ async function makeCodexHome(home: string) {
   await makeDir(path.join(marketplaces, "marketplace-backup-old"), old);
   await makeDir(path.join(marketplaces, "marketplace-backup-fresh"), 0);
   // The installed marketplace and unrelated entries are never touched.
-  await makeDir(path.join(marketplaces, "doordash-agentskills"), old);
+  await makeDir(path.join(marketplaces, "example-marketplace"), old);
   await makeDir(path.join(staging, "other-old"), old);
   await fs.writeFile(path.join(staging, "marketplace-upgrade-file"), "not a dir");
   const outside = path.join(path.dirname(home), `${path.basename(home)}-outside`);
@@ -86,6 +86,53 @@ describe("listCodexMarketplaceLeftovers", () => {
 
     expect(leftovers).toHaveLength(2);
     expect(new Set(leftovers.map((entry) => entry.home))).toEqual(new Set([shared]));
+  });
+
+  it("keeps a backup that may be the only copy of an installed marketplace", async () => {
+    const home = path.join(await tempDir(), "codex");
+    const marketplaces = path.join(home, ".tmp", "marketplaces");
+    const old = 3 * HOUR_MS;
+    const metadata = (revision: string) =>
+      JSON.stringify({
+        source_type: "git",
+        source: "https://example.com/marketplace.git",
+        ref_name: null,
+        sparse_paths: [],
+        revision,
+      });
+    const writeRoot = async (root: string, revision: string, manifest: boolean) => {
+      await fs.mkdir(root, { recursive: true });
+      await fs.writeFile(path.join(root, ".codex-marketplace-install.json"), metadata(revision));
+      if (manifest) {
+        await fs.mkdir(path.join(root, ".agents", "plugins"), { recursive: true });
+        await fs.writeFile(path.join(root, ".agents", "plugins", "marketplace.json"), "{}");
+      }
+    };
+    const backdate = async (target: string) => {
+      const when = new Date(Date.now() - old);
+      await fs.utimes(target, when, when);
+    };
+    // Rollback failed: the backup holds the previous root and nothing replaced it.
+    const retained = path.join(marketplaces, "marketplace-backup-retained");
+    await writeRoot(path.join(retained, "root"), "old", true);
+    await backdate(retained);
+
+    const listed = async () =>
+      (await listCodexMarketplaceLeftovers({ homes: [home], nowMs: Date.now() })).map(
+        (entry) => entry.path,
+      );
+    expect(await listed()).toEqual([]);
+
+    // An installed root from the same source without a manifest is incomplete
+    // (a half-deleted destination), so the backup is still the safe copy.
+    const installed = path.join(marketplaces, "example-marketplace");
+    await writeRoot(installed, "new", false);
+    expect(await listed()).toEqual([]);
+
+    // Once a complete install from the same source exists, the backup is garbage.
+    await fs.mkdir(path.join(installed, ".agents", "plugins"), { recursive: true });
+    await fs.writeFile(path.join(installed, ".agents", "plugins", "marketplace.json"), "{}");
+    expect(await listed()).toEqual([retained]);
   });
 
   it("uses a 2-hour age guard by default", () => {
@@ -159,6 +206,30 @@ describe("resolveCodexLaunchHomes", () => {
     expect(
       resolveCodexLaunchHomes({ settings, profile: undefined, stateDir, baseEnv: {} }).toSorted(),
     ).toEqual([path.join(homedir, "work-codex"), "/shadow/codex", "/personal/codex"].toSorted());
+  });
+
+  it("never reaches outside an isolated profile for an instance without a home", () => {
+    const profile = { isDefault: false } as Parameters<
+      typeof resolveCodexLaunchHomes
+    >[0]["profile"];
+    expect(
+      resolveCodexLaunchHomes({
+        settings: decodeSettings({}),
+        profile,
+        stateDir,
+        baseEnv: { CODEX_HOME: "/env/codex" },
+      }),
+    ).toEqual([]);
+    expect(
+      resolveCodexLaunchHomes({
+        settings: decodeSettings({
+          providers: { codex: { homePath: "/state/profile/provider-homes/codex" } },
+        }),
+        profile,
+        stateDir,
+        baseEnv: {},
+      }),
+    ).toEqual(["/state/profile/provider-homes/codex"]);
   });
 
   it("honors a CODEX_HOME set in the instance environment", () => {
