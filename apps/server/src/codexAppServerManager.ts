@@ -1012,6 +1012,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         mcpServers: input.mcpServers ?? {},
         ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
         ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
+        ...(input.workflowExecutionProfile ? { readOnlyWorkflow: true } : {}),
       });
       if (appServerCommand.dropped.length > 0) {
         await this.runPromise(

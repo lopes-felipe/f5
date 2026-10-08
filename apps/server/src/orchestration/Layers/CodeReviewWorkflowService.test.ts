@@ -13,7 +13,7 @@ import {
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Effect, Exit, Layer, ManagedRuntime, Queue, Scope, Stream } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime, Option, Queue, Scope, Stream } from "effect";
 
 import { TextGenerationError } from "../../git/Errors.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
@@ -29,6 +29,17 @@ import {
   type ProviderTurnDeliveryWorkerShape,
 } from "../Services/ProviderTurnDeliveryWorker.ts";
 import { CodeReviewWorkflowServiceLive } from "./CodeReviewWorkflowService.ts";
+import type { CodeReviewTargetSnapshot } from "../../persistence/Services/CodeReviewTargetSnapshots.ts";
+import {
+  makeWorkflowEvidenceLedger,
+  WorkflowEvidenceLedger,
+  type WorkflowEvidenceLedgerShape,
+} from "../../workflowInspection/evidenceLedger.ts";
+import {
+  ReviewTargetError,
+  ReviewTargetService,
+  type ReviewTargetServiceShape,
+} from "../../workflowInspection/reviewTarget.ts";
 
 const NOW = "2026-04-02T12:00:00.000Z";
 const ERROR_AT = "2026-04-02T12:01:00.000Z";
@@ -354,11 +365,68 @@ function applyCodeReviewWorkflowCommandToSnapshot(
   }
 }
 
+function fakeReviewTargets(options?: { readonly fail?: string }) {
+  const captures: string[] = [];
+  const stored = new Map<string, CodeReviewTargetSnapshot>();
+  const shape: ReviewTargetServiceShape = {
+    capture: (input) =>
+      options?.fail
+        ? Effect.fail(new ReviewTargetError({ message: options.fail }))
+        : Effect.sync(() => {
+            captures.push(input.workflowId);
+            const snapshot: CodeReviewTargetSnapshot = {
+              id: "snapshot-1",
+              workflowId: input.workflowId,
+              projectId: input.projectId,
+              kind: "pull-request",
+              capturedAt: "2026-10-01T00:00:00.000Z",
+              pullRequest: {
+                host: "github.com",
+                repository: "acme/app",
+                number: 42,
+                url: "https://github.com/acme/app/pull/42",
+                title: "Change",
+                state: "open",
+                author: "contributor",
+                baseRef: "main",
+                headRef: "feature",
+                headRepository: "contributor/app",
+              },
+              workspaceRoot: null,
+              comparisonRef: null,
+              baseSha: "b".repeat(40),
+              headSha: "a".repeat(40),
+              mergeBaseSha: "c".repeat(40),
+              files: [
+                {
+                  path: "src/a.ts",
+                  previousPath: null,
+                  status: "modified",
+                  additions: 1,
+                  deletions: 0,
+                  headBlobSha: "d".repeat(40),
+                  patchAvailable: true,
+                },
+              ],
+              patch: "diff --git a/src/a.ts b/src/a.ts\n+two\n",
+              provenance: "test",
+            };
+            stored.set(input.workflowId, snapshot);
+            return snapshot;
+          }),
+    getByWorkflowId: (workflowId) => Effect.succeed(Option.fromNullishOr(stored.get(workflowId))),
+    getForProject: () => Effect.fail(new ReviewTargetError({ message: "not used" })),
+  };
+  return { shape, captures };
+}
+
 async function createHarness(
   initialSnapshot: OrchestrationReadModel,
   options?: {
     failDispatch?: (command: OrchestrationCommand, count: number) => unknown | undefined;
     providerTurnDeliveryWorker?: ProviderTurnDeliveryWorkerShape;
+    reviewTargets?: ReviewTargetServiceShape;
+    evidenceLedger?: WorkflowEvidenceLedgerShape;
   },
 ) {
   let snapshot = initialSnapshot;
@@ -474,15 +542,18 @@ async function createHarness(
       } as unknown as TextGenerationShape),
     ),
   );
-  const runtime = ManagedRuntime.make(
+  const optionalServicesLayer = Layer.mergeAll(
     options?.providerTurnDeliveryWorker
-      ? serviceLayer.pipe(
-          Layer.provideMerge(
-            Layer.succeed(ProviderTurnDeliveryWorker, options.providerTurnDeliveryWorker),
-          ),
-        )
-      : serviceLayer,
+      ? Layer.succeed(ProviderTurnDeliveryWorker, options.providerTurnDeliveryWorker)
+      : Layer.empty,
+    options?.reviewTargets
+      ? Layer.succeed(ReviewTargetService, options.reviewTargets)
+      : Layer.empty,
+    options?.evidenceLedger
+      ? Layer.succeed(WorkflowEvidenceLedger, options.evidenceLedger)
+      : Layer.empty,
   );
+  const runtime = ManagedRuntime.make(serviceLayer.pipe(Layer.provideMerge(optionalServicesLayer)));
 
   const service = await runtime.runPromise(Effect.service(CodeReviewWorkflowService));
   let closeStartScope: (() => Promise<void>) | null = null;
@@ -577,6 +648,58 @@ describe("CodeReviewWorkflowService", () => {
       "prefer `rg` and `rg --files`",
     );
     expect(reviewerTurns[0]?.message.text).toContain("file_path:line_number");
+  });
+
+  it("pins one review target snapshot and gives it to both reviewers", async () => {
+    const reviewTargets = fakeReviewTargets();
+    harness = await createHarness(makeReadModel({}), { reviewTargets: reviewTargets.shape });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review https://github.com/acme/app/pull/42",
+        reviewerA: { provider: "codex", model: "gpt-5-codex" },
+        reviewerB: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+        consolidation: { provider: "codex", model: "gpt-5-codex" },
+      }),
+    );
+
+    expect(reviewTargets.captures).toHaveLength(1);
+    const reviewerTurns = harness.dispatched.filter(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    expect(reviewerTurns).toHaveLength(2);
+    for (const turn of reviewerTurns) {
+      expect(turn.message.text).toContain("## Pinned Review Target");
+      expect(turn.message.text).toContain("snapshot-1");
+      expect(turn.message.text).toContain("a".repeat(40));
+    }
+  });
+
+  it("does not create a review when its target cannot be resolved", async () => {
+    const reviewTargets = fakeReviewTargets({
+      fail: "The review instructions name several pull requests.",
+    });
+    harness = await createHarness(makeReadModel({}), { reviewTargets: reviewTargets.shape });
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        harness.service.createWorkflow({
+          projectId: ProjectId.makeUnsafe("project-1"),
+          title: "Code Review",
+          reviewPrompt: "Review acme/app#1 and acme/app#2",
+          reviewerA: { provider: "codex", model: "gpt-5-codex" },
+          reviewerB: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+          consolidation: { provider: "codex", model: "gpt-5-codex" },
+        }),
+      ),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(String(Exit.isFailure(exit) ? exit.cause : "")).toContain("several pull requests");
+    expect(harness.dispatched.some((command) => command.type === "thread.create")).toBe(false);
   });
 
   it("deletes the persisted workflow if reviewer thread creation fails", async () => {
@@ -1104,6 +1227,90 @@ describe("CodeReviewWorkflowService", () => {
 
     expect(consolidationCreates).toHaveLength(1);
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.consolidation.status).toBe("running");
+  });
+
+  it("fails a reviewer that could not read the pinned evidence instead of consolidating", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: { ...makeWorkflow().reviewerA, status: "running" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const reviewerThread = (id: typeof workflow.reviewerA.threadId, label: string) =>
+      makeThread({
+        id,
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`turn-${label}`),
+          state: "completed",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: MessageId.makeUnsafe(`assistant-${label}`),
+        },
+        session: {
+          threadId: id,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+        messages: [
+          {
+            id: MessageId.makeUnsafe(`assistant-${label}`),
+            role: "assistant",
+            text: `${label} looks fine`,
+            turnId: null,
+            streaming: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      });
+    const evidenceLedger = makeWorkflowEvidenceLedger();
+    await Effect.runPromise(
+      evidenceLedger.recordFailure({
+        threadId: workflow.reviewerA.threadId,
+        key: "review_target_diff",
+        message: "GitHub rate limit reached",
+      }),
+    );
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          reviewerThread(workflow.reviewerA.threadId, "review-a"),
+          reviewerThread(workflow.reviewerB.threadId, "review-b"),
+        ],
+      }),
+      { evidenceLedger },
+    );
+    await harness.start();
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: workflow.reviewerA.threadId,
+        session: {
+          threadId: workflow.reviewerA.threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    );
+
+    await waitFor(
+      () => lastWorkflowUpsert(harness!.dispatched)?.workflow.reviewerA.status === "error",
+    );
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.reviewerA.error).toContain(
+      "GitHub rate limit reached",
+    );
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
   });
 
   it("starts consolidation when the final reviewer output is reasoning-only", async () => {

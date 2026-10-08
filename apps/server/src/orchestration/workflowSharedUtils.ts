@@ -50,7 +50,7 @@ export function workflowPromptToolingGuidance(provider?: ProviderKind): string |
       ].join("\n");
     case "codex":
       return [
-        "- Use direct repository inspection to ground your decisions; prefer `rg` and `rg --files` for fast search.",
+        "- Use direct repository inspection to ground your decisions. When the F5 inspection tools are attached (read-only stages), search and read with them (`search_text`, `find_files`, `read_file`, `git_diff`); otherwise prefer `rg` and `rg --files` for fast search.",
         "- Parallelize independent read-only inspections when it improves coverage, but keep dependent edits and conclusions sequential.",
       ].join("\n");
     default:

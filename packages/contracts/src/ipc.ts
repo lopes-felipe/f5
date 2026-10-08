@@ -128,9 +128,12 @@ import type {
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
   McpServerStatusesResult,
+  McpSetWorkflowConnectorTrustRequest,
   McpStartLoginRequest,
   McpStartOauthLoginRequest,
   McpStatusUpdatedPayload,
+  McpGetWorkflowConnectorAccessRequest,
+  McpWorkflowConnectorAccessResult,
 } from "./mcp";
 import type {
   TerminalClearInput,
@@ -746,6 +749,12 @@ export interface NativeApi {
     ) => Promise<McpApplyToLiveSessionsResult>;
     startOAuthLogin: (input: McpStartOauthLoginRequest) => Promise<McpOauthLoginStatusResult>;
     getOAuthStatus: (input: McpOauthLoginStatusRequest) => Promise<McpOauthLoginStatusResult>;
+    getWorkflowConnectorAccess: (
+      input: McpGetWorkflowConnectorAccessRequest,
+    ) => Promise<McpWorkflowConnectorAccessResult>;
+    setWorkflowConnectorTrust: (
+      input: McpSetWorkflowConnectorTrustRequest,
+    ) => Promise<McpWorkflowConnectorAccessResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

@@ -18,9 +18,12 @@ export function computeProviderLaunchFingerprint(input: {
   readonly instanceLaunchIdentity?: string;
   readonly mcpEffectiveConfigVersion?: string | null;
   readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
+  /** Read-only stage capabilities; changes recreate the session so stale tools cannot survive. */
+  readonly workflowCapabilityDigest?: string;
 }): string {
   const identity = JSON.stringify({
-    version: 2,
+    // v3: read-only stages carry host-computed capabilities.
+    version: 3,
     provider: input.provider,
     providerInstanceId: input.providerInstanceId,
     runtimeMode: input.runtimeMode,
@@ -29,6 +32,7 @@ export function computeProviderLaunchFingerprint(input: {
     instanceLaunchIdentity: input.instanceLaunchIdentity ?? "",
     mcpEffectiveConfigVersion: input.mcpEffectiveConfigVersion ?? "",
     workflowExecutionProfile: input.workflowExecutionProfile ?? "",
+    workflowCapabilityDigest: input.workflowCapabilityDigest ?? "",
   });
   return createHash("sha256").update(identity).digest("hex");
 }

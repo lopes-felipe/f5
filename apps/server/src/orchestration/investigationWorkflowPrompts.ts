@@ -48,8 +48,8 @@ ${input.problemPrompt}`,
 - Establish a timeline: when it started, what changed, and whether deploys, config, data, dependencies, or traffic correlate with the symptom.
 - Trace the actual code path and data flow from trigger to symptom. Read source and cite \`file_path:line_number\`.
 - Separate proximate trigger from underlying root cause.
-- Reproduce or simulate with read-only diagnostic commands.
-- Use every relevant connected tool available to you: logs, metrics, traces, error trackers, dashboards, VCS history, and repository inspection.`,
+- Reproduce or simulate with read-only inspection only: file contents, Git history, diffs, and revisions, and read-only connector queries.
+- Use every relevant read-only tool available to you: connected logs, metrics, traces, error trackers, and dashboards, plus VCS history and repository inspection. Connector write operations, shell commands, and web access are not available.`,
     `## Evidence Rules
 - Every claim, ruled-out branch, and conclusion must cite concrete material evidence: \`file_path:line_number\`, commit SHA, log line, metric or trace, stack trace, or exact command output.
 - Include a full human-clickable URL whenever a tool can produce a durable one, such as Datadog, Sentry, GitHub permalink, or trace URL.

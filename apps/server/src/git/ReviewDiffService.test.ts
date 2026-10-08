@@ -123,7 +123,7 @@ function terminalDiffRunner(
   terminalResult: Pick<ProcessRunResult, "aborted" | "timedOut">,
 ): NonNullable<ReviewDiffExecutionOptions["processRunner"]> {
   return async (command, args, options) => {
-    if (args[0] === "diff" && args.includes("--binary")) {
+    if (args.includes("diff") && args.includes("--binary")) {
       return {
         stdout: "",
         stderr: "",

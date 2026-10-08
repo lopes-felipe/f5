@@ -374,6 +374,8 @@ function makeProviderRuntimeTestLayer(providerLayer: Layer.Layer<ProviderService
           ...(serverName ? { serverName } : {}),
           status: "idle" as const,
         }),
+      getWorkflowConnectorAccess: ({ projectId }) => Effect.succeed({ projectId, connectors: [] }),
+      setWorkflowConnectorTrust: ({ projectId }) => Effect.succeed({ projectId, connectors: [] }),
     }),
   );
 }

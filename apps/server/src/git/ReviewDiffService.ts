@@ -13,8 +13,9 @@ import type {
 } from "@t3tools/contracts";
 import { Data, Effect } from "effect";
 
-import { runProcess, type ProcessRunResult } from "../processRunner.ts";
+import type { runProcess, ProcessRunResult } from "../processRunner.ts";
 import { REVIEW_PATCH_LIMIT_BYTES, truncatePatchAtFileBoundary } from "./patchTruncation.ts";
+import { READ_ONLY_GIT_DIFF_ARGS, runReadOnlyGit } from "./readOnlyGit.ts";
 
 const STDERR_LIMIT_BYTES = 32 * 1024;
 const UNTRACKED_LIMIT_PATHS = 512;
@@ -50,20 +51,14 @@ function runGit(
   execution: ReviewDiffExecutionOptions = {},
 ): Effect.Effect<ProcessRunResult, Error> {
   return Effect.callback<ProcessRunResult, Error>((resume, signal) => {
-    void (execution.processRunner ?? runProcess)("git", args, {
+    void runReadOnlyGit(args, {
       cwd,
       timeoutMs: execution.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
-      allowNonZeroExit: true,
-      outputMode: "truncate",
       maxStdoutBytes: options?.stdoutLimit ?? REVIEW_PATCH_LIMIT_BYTES * 2,
       maxStderrBytes: STDERR_LIMIT_BYTES,
       signal,
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_CONFIG_NOSYSTEM: "1",
-        ...options?.env,
-      },
+      ...(options?.env ? { env: options.env } : {}),
+      ...(execution.processRunner ? { processRunner: execution.processRunner } : {}),
     }).then(
       (result) => resume(Effect.succeed(result)),
       (error: unknown) =>
@@ -159,7 +154,9 @@ function makeWorkingTreePatch(
   cwd: string,
   ignoreWhitespace: boolean,
   execution: ReviewDiffExecutionOptions,
+  options: { readonly against?: string; readonly patchLimitBytes?: number } = {},
 ): Effect.Effect<WorkingTreePatch | ReviewPreviewDiffFailure, Error> {
+  const patchLimitBytes = options.patchLimitBytes ?? REVIEW_PATCH_LIMIT_BYTES;
   return Effect.acquireUseRelease(
     Effect.tryPromise({
       try: async () => {
@@ -190,6 +187,7 @@ function makeWorkingTreePatch(
           cwd,
           [
             "diff",
+            ...READ_ONLY_GIT_DIFF_ARGS,
             "--cached",
             "--no-renames",
             "--name-only",
@@ -245,6 +243,7 @@ function makeWorkingTreePatch(
           cwd,
           [
             "diff",
+            ...READ_ONLY_GIT_DIFF_ARGS,
             "--binary",
             "--src-prefix=a/",
             "--dst-prefix=b/",
@@ -252,15 +251,19 @@ function makeWorkingTreePatch(
             "--minimal",
             "--find-renames",
             ...(ignoreWhitespace ? ["--ignore-all-space"] : []),
-            "HEAD",
+            options.against ?? "HEAD",
             "--",
           ],
-          { env },
+          { env, stdoutLimit: patchLimitBytes * 2 },
           execution,
         );
         const diffFailure = commandFailure(diff);
         if (diffFailure) return diffFailure;
-        const bounded = truncatePatchAtFileBoundary(diff.stdout, diff.stdoutTruncated === true);
+        const bounded = truncatePatchAtFileBoundary(
+          diff.stdout,
+          diff.stdoutTruncated === true,
+          patchLimitBytes,
+        );
         return {
           kind: "patch" as const,
           patch: bounded.patch,
@@ -275,6 +278,83 @@ function makeWorkingTreePatch(
       }),
     (directory) =>
       Effect.promise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore),
+  );
+}
+
+export interface WorkspaceReviewDiff {
+  /** HEAD at capture time. */
+  readonly headCommit: string;
+  /** The commit the patch is relative to: HEAD, or the merge base with the comparison ref. */
+  readonly baseCommit: string;
+  readonly comparisonRef: string | null;
+  readonly patch: string;
+  readonly truncated: boolean;
+  readonly truncationReason: string | null;
+}
+
+/**
+ * Pin a workspace review diff: everything the user would see in the working
+ * tree (staged, unstaged, and untracked) relative to HEAD, or relative to the
+ * merge base with `comparisonRef` when one is configured.
+ */
+export function captureWorkspaceReviewDiff(
+  input: {
+    readonly cwd: string;
+    readonly comparisonRef: string | null;
+    readonly patchLimitBytes: number;
+  },
+  execution: ReviewDiffExecutionOptions = {},
+): Effect.Effect<WorkspaceReviewDiff | ReviewPreviewDiffFailure> {
+  return Effect.gen(function* () {
+    const repositoryProbe = yield* runGit(
+      input.cwd,
+      ["rev-parse", "--is-inside-work-tree"],
+      undefined,
+      execution,
+    );
+    if (repositoryProbe.code !== 0 || repositoryProbe.stdout.trim() !== "true") {
+      return failure("not_a_repository", "The project workspace is not a Git repository.");
+    }
+    const headCommit = yield* resolveCommit(input.cwd, "HEAD", execution);
+    if (!headCommit) return failure("unborn_head", "The repository has no HEAD commit.");
+    let baseCommit = headCommit;
+    if (input.comparisonRef !== null) {
+      const refCommit = yield* resolveCommit(input.cwd, input.comparisonRef, execution);
+      if (!refCommit) {
+        return failure(
+          "invalid_ref",
+          `Comparison ref does not resolve to a commit: ${input.comparisonRef}`,
+        );
+      }
+      const mergeBase = yield* runGit(
+        input.cwd,
+        ["merge-base", refCommit, headCommit],
+        undefined,
+        execution,
+      );
+      const mergeBaseFailure = commandFailure(mergeBase);
+      if (mergeBaseFailure) return mergeBaseFailure;
+      baseCommit = mergeBase.stdout.trim();
+    }
+    const working = yield* makeWorkingTreePatch(input.cwd, false, execution, {
+      against: baseCommit,
+      patchLimitBytes: input.patchLimitBytes,
+    });
+    if (working.kind === "error") return working;
+    return {
+      headCommit,
+      baseCommit,
+      comparisonRef: input.comparisonRef,
+      patch: working.patch,
+      truncated: working.truncated,
+      truncationReason: working.reason,
+    } satisfies WorkspaceReviewDiff;
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.succeed(
+        failure("git_failed", error instanceof Error ? error.message : String(error), true),
+      ),
+    ),
   );
 }
 
@@ -342,6 +422,7 @@ export function getReviewPreviewDiff(
       cwd,
       [
         "diff",
+        ...READ_ONLY_GIT_DIFF_ARGS,
         "--binary",
         "--src-prefix=a/",
         "--dst-prefix=b/",

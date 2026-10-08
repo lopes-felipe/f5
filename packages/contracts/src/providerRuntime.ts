@@ -426,6 +426,16 @@ const RequestOpenedPayload = Schema.Struct({
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
   requestedPermissions: Schema.optional(UnknownRecordSchema),
+  /**
+   * Present when this is a receipt for a call the host already denied under a
+   * mandatory policy. The request is settled before it is published, so
+   * consumers must not treat it as awaiting a decision.
+   */
+  hostEnforcedDenial: Schema.optional(
+    Schema.Struct({
+      reason: TrimmedNonEmptyStringSchema,
+    }),
+  ),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 

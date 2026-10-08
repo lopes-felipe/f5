@@ -26,6 +26,17 @@ import type {
 import type { Effect } from "effect";
 import type { Stream } from "effect";
 
+import type { WorkflowCapabilityGrant } from "../../workflowInspection/capabilityPolicy.ts";
+
+/**
+ * Session start input as adapters receive it. `workflowCapabilities` is
+ * computed by ProviderService for read-only workflow stages; callers cannot
+ * supply it.
+ */
+export type ProviderAdapterStartSessionInput = ProviderSessionStartInput & {
+  readonly workflowCapabilities?: WorkflowCapabilityGrant | undefined;
+};
+
 export type ProviderSessionModelSwitchMode = "in-session" | "restart-session" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
@@ -103,7 +114,7 @@ export interface ProviderAdapterShape<TError> {
    * Start a provider-backed session.
    */
   readonly startSession: (
-    input: ProviderSessionStartInput,
+    input: ProviderAdapterStartSessionInput,
   ) => Effect.Effect<ProviderSession, TError>;
 
   /**

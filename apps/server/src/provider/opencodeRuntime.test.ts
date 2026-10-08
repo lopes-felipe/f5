@@ -15,6 +15,7 @@ import {
   OpenCodeRuntimeLive,
   resolveOpenCodeInvocation,
   loadOpenCodeSkills,
+  withOpenCodeInspectionServer,
 } from "./opencodeRuntime.ts";
 
 it("bounds a stuck CLI probe and closes its process scope", async () => {
@@ -112,6 +113,32 @@ describe("buildOpenCodePermissionRules", () => {
       permission: "question",
       pattern: "*",
       action: "deny",
+    });
+  });
+
+  it("allows the host inspection server's tools and keeps shell denied", () => {
+    const rules = buildOpenCodeWorkflowPermissionRules("unattended-readonly", {
+      inspectionServerName: "f5_inspect",
+    });
+    expect(rules).toContainEqual({ permission: "f5_inspect_*", pattern: "*", action: "allow" });
+    expect(rules).toContainEqual({ permission: "grep", pattern: "*", action: "allow" });
+    // Later rules win, so the trailing shell and edit denials still hold.
+    expect(rules.at(-2)).toEqual({ permission: "bash", pattern: "*", action: "deny" });
+    expect(rules.at(-1)).toEqual({ permission: "edit", pattern: "*", action: "deny" });
+  });
+
+  it("injects the inspection server into OpenCode's inline config", () => {
+    const env = withOpenCodeInspectionServer(
+      { OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { existing: { type: "local" } } }) },
+      { serverName: "f5_inspect", url: "http://127.0.0.1:9/mcp/inspect", token: "secret" },
+    );
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? "{}");
+    expect(config.mcp.existing).toEqual({ type: "local" });
+    expect(config.mcp.f5_inspect).toEqual({
+      type: "remote",
+      url: "http://127.0.0.1:9/mcp/inspect",
+      enabled: true,
+      headers: { Authorization: "Bearer secret" },
     });
   });
 });

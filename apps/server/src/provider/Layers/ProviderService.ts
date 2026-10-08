@@ -47,8 +47,15 @@ import {
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type ServerSettings,
   TrimmedNonEmptyString,
+  type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
+import { InspectionMcpHttpServer } from "../../workflowInspection/InspectionMcpHttpServer.ts";
+import {
+  grantWorkflowCapabilities,
+  planWorkflowCapabilities,
+} from "../../workflowInspection/workflowCapabilities.ts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
@@ -309,6 +316,33 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const directory = yield* ProviderSessionDirectory;
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
+    const inspectionServer = Option.getOrNull(yield* Effect.serviceOption(InspectionMcpHttpServer));
+    const capabilitySettings = yield* Effect.serviceOption(ServerSettingsService);
+    const readCapabilitySettings = Option.isSome(capabilitySettings)
+      ? capabilitySettings.value.getSettings.pipe(
+          Effect.map((settings): ServerSettings | null => settings),
+          Effect.orElseSucceed(() => null),
+        )
+      : Effect.succeed(null);
+    /** Plan a read-only stage's capabilities; undefined outside read-only stages. */
+    const planCapabilities = (input: {
+      readonly projectId?: ProjectId | undefined;
+      readonly provider: ProviderKind;
+      readonly cwd?: string | undefined;
+      readonly profile?: WorkflowTurnExecutionProfile | undefined;
+      readonly providerOptions: ProviderStartOptions | undefined;
+    }) =>
+      input.profile === undefined
+        ? Effect.succeed(undefined)
+        : readCapabilitySettings.pipe(
+            Effect.map((settings) =>
+              planWorkflowCapabilities({
+                settings,
+                inspectionAvailable: inspectionServer !== null,
+                ...input,
+              }),
+            ),
+          );
     // Terminal receipts are persisted in order within each thread. Bound the
     // queue so a prolonged SQLite outage applies backpressure to provider
     // streams instead of allowing process memory to grow without limit.
@@ -639,12 +673,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         if (unsupportedRuntimeMode) {
           return yield* toValidationError(input.operation, unsupportedRuntimeMode);
         }
+        const capabilityPlan = yield* planCapabilities({
+          ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
+          provider: input.binding.provider,
+          ...(persistedCwd ? { cwd: persistedCwd } : {}),
+          profile: recoveredInstructionContext?.workflowExecutionProfile,
+          providerOptions: resumedProviderOptions,
+        });
+        const launchProviderOptions = capabilityPlan?.providerOptions ?? resumedProviderOptions;
         const launchFingerprint = computeProviderLaunchFingerprint({
           provider: input.binding.provider,
           providerInstanceId: bindingInstanceId,
           runtimeMode: recoveredRuntimeMode,
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
+          ...(launchProviderOptions ? { providerOptions: launchProviderOptions } : {}),
           ...(instanceInfo.launchIdentity
             ? { instanceLaunchIdentity: instanceInfo.launchIdentity }
             : {}),
@@ -654,6 +696,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 workflowExecutionProfile: recoveredInstructionContext.workflowExecutionProfile,
               }
             : {}),
+          ...(capabilityPlan ? { workflowCapabilityDigest: capabilityPlan.digest } : {}),
         });
         const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
         if (hasActiveSession && input.binding.launchFingerprint === launchFingerprint) {
@@ -724,6 +767,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
         if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
+        const workflowCapabilities = capabilityPlan
+          ? yield* grantWorkflowCapabilities(inspectionServer, capabilityPlan, {
+              threadId: input.binding.threadId,
+              ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
+              ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            })
+          : undefined;
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
@@ -733,9 +783,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ...recoveredInstructionContext,
           ...(persistedModel ? { model: persistedModel } : {}),
           ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
-          ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
+          ...(launchProviderOptions ? { providerOptions: launchProviderOptions } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: recoveredRuntimeMode,
+          ...(workflowCapabilities ? { workflowCapabilities } : {}),
         });
         if (resumed.provider !== adapter.provider) {
           return yield* toValidationError(
@@ -1018,12 +1069,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                     ),
                   )
               : undefined;
+          const mergedProviderOptions = mergeResolvedMcpProviderOptions({
+            providerOptions: input.providerOptions,
+            projectMcpServers: resolvedProjectMcp?.servers,
+          });
+          const capabilityPlan = yield* planCapabilities({
+            ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+            provider: resolvedProvider,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
+            profile: input.workflowExecutionProfile,
+            providerOptions: mergedProviderOptions,
+          });
           const adapterInput = {
             ...input,
-            providerOptions: mergeResolvedMcpProviderOptions({
-              providerOptions: input.providerOptions,
-              projectMcpServers: resolvedProjectMcp?.servers,
-            }),
+            providerOptions: capabilityPlan?.providerOptions ?? mergedProviderOptions,
           };
           const launchFingerprint = computeProviderLaunchFingerprint({
             provider: resolvedProvider,
@@ -1040,13 +1099,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ...(input.workflowExecutionProfile
               ? { workflowExecutionProfile: input.workflowExecutionProfile }
               : {}),
+            ...(capabilityPlan ? { workflowCapabilityDigest: capabilityPlan.digest } : {}),
           });
           yield* stopStaleSessionsForThread({
             threadId,
             currentInstanceId: requestedInstanceId,
           });
           if (adapterInput.cwd) yield* ensureWorkspaceDirectory(adapterInput.cwd);
-          const session = yield* adapter.startSession(adapterInput);
+          const workflowCapabilities = capabilityPlan
+            ? yield* grantWorkflowCapabilities(inspectionServer, capabilityPlan, {
+                threadId,
+                ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+              })
+            : undefined;
+          if (!workflowCapabilities && inspectionServer) {
+            yield* inspectionServer.revokeThread(threadId);
+          }
+          const session = yield* adapter.startSession({
+            ...adapterInput,
+            ...(workflowCapabilities ? { workflowCapabilities } : {}),
+          });
 
           if (session.provider !== adapter.provider) {
             return yield* toValidationError(
@@ -1482,6 +1555,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           if (routed.isActive) {
             yield* routed.adapter.stopSession(routed.threadId);
           }
+          if (inspectionServer) yield* inspectionServer.revokeThread(input.threadId);
           yield* directory.upsert({
             threadId: input.threadId,
             provider: routed.adapter.provider,

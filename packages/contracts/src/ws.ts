@@ -90,10 +90,12 @@ import {
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
   McpGetServerStatusesRequest,
+  McpGetWorkflowConnectorAccessRequest,
   McpOauthLoginStatusRequest,
   McpReloadProjectRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
+  McpSetWorkflowConnectorTrustRequest,
   McpStartLoginRequest,
   McpStartOauthLoginRequest,
   McpStatusUpdatedPayload,
@@ -415,6 +417,8 @@ export const WS_METHODS = {
   mcpApplyToLiveSessions: "mcp.applyToLiveSessions",
   mcpStartOAuthLogin: "mcp.startOAuthLogin",
   mcpGetOAuthStatus: "mcp.getOAuthStatus",
+  mcpGetWorkflowConnectorAccess: "mcp.getWorkflowConnectorAccess",
+  mcpSetWorkflowConnectorTrust: "mcp.setWorkflowConnectorTrust",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -727,6 +731,11 @@ const WebSocketRequestBody = Schema.Union([
   tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
+  tagRequestBody(WS_METHODS.mcpGetWorkflowConnectorAccess, McpGetWorkflowConnectorAccessRequest),
+  tagMcpAccountRequestBody(
+    WS_METHODS.mcpSetWorkflowConnectorTrust,
+    McpSetWorkflowConnectorTrustRequest,
+  ),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),

@@ -271,6 +271,37 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   previewArtifactRetentionDays: Schema.optionalKey(StorageRetentionDays),
 });
 
+/**
+ * A connector tool as observed when the user trusted the connector for
+ * read-only workflows. Fingerprints let the host detect later schema changes.
+ */
+export const WorkflowConnectorTrustedTool = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  descriptorFingerprint: TrimmedNonEmptyString,
+  schemaFingerprint: Schema.NullOr(TrimmedNonEmptyString),
+  readOnlyHint: Schema.Boolean,
+  destructiveHint: Schema.Boolean,
+});
+export type WorkflowConnectorTrustedTool = typeof WorkflowConnectorTrustedTool.Type;
+
+/**
+ * The user's decision to trust a connector's own read-only declarations in
+ * read-only workflow stages. This trusts a declaration; it is not a verified
+ * guarantee. Trust is void once the connector configuration or tools change.
+ */
+export const WorkflowConnectorTrust = Schema.Struct({
+  configFingerprint: TrimmedNonEmptyString,
+  trustedAt: IsoDateTime,
+  tools: Schema.Array(WorkflowConnectorTrustedTool),
+});
+export type WorkflowConnectorTrust = typeof WorkflowConnectorTrust.Type;
+
+export const WorkflowTrustedConnectors = Schema.Record(
+  TrimmedNonEmptyString,
+  WorkflowConnectorTrust,
+);
+export type WorkflowTrustedConnectors = typeof WorkflowTrustedConnectors.Type;
+
 export const ProjectSettingsOverrides = Schema.Struct({
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
@@ -286,6 +317,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
+  /** User-only; written by the connector-trust API, never by checked-in files. */
+  workflowTrustedConnectors: Schema.optionalKey(WorkflowTrustedConnectors),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 

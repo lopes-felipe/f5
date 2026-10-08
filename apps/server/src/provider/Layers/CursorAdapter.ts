@@ -773,6 +773,10 @@ export function makeCursorAdapter(
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
                       rawPayload: params,
+                      hostEnforcedDenial: {
+                        reason:
+                          "Cursor permission requests are not available in read-only workflow stages.",
+                      },
                     }),
                   );
                   return { outcome: { outcome: "cancelled" as const } };

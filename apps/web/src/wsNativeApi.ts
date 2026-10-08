@@ -616,6 +616,10 @@ export function createWsNativeApi(): NativeApi {
           timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
         }),
       getOAuthStatus: (input) => transport.request(WS_METHODS.mcpGetOAuthStatus, input),
+      getWorkflowConnectorAccess: (input) =>
+        transport.request(WS_METHODS.mcpGetWorkflowConnectorAccess, input),
+      setWorkflowConnectorTrust: (input) =>
+        transport.request(WS_METHODS.mcpSetWorkflowConnectorTrust, input),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

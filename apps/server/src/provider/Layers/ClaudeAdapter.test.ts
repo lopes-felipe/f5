@@ -1342,12 +1342,18 @@ describe("ClaudeAdapterLive", () => {
         vi.waitFor(() =>
           assert.ok(
             events.some(
-              (event) => event.type === "request.resolved" && event.payload.decision === "decline",
+              (event) =>
+                event.type === "item.completed" &&
+                event.itemId === "workflow-write-hook" &&
+                event.payload.status === "failed",
             ),
           ),
         ),
       );
-      assert.ok(events.some((event) => event.type === "request.opened"));
+      const receipt = events.find((event) => event.type === "request.opened");
+      assert.ok(receipt?.type === "request.opened" && receipt.payload.hostEnforcedDenial);
+      // A host denial is a receipt, not a pending approval.
+      assert.isFalse(events.some((event) => event.type === "request.resolved"));
       yield* Fiber.interrupt(listener);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -9607,6 +9613,123 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(emitted[1]?.type, "user-input.resolved");
       assert.equal(emitted[0]?.requestId, emitted[1]?.requestId);
       assert.deepEqual((emitted[1] as { payload: { answers: unknown } }).payload.answers, {});
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("offers read-only inspection and records each host denial once", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        workflowCapabilities: {
+          profile: "unattended-readonly",
+          inspectionServerName: "f5_inspect",
+          inspection: {
+            serverName: "f5_inspect",
+            url: "http://127.0.0.1:9/mcp/inspect",
+            token: "inspection-token",
+            envVarName: "F5_INSPECT_TOKEN_TEST",
+          },
+          connectors: {},
+        },
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.include(options.tools as ReadonlyArray<string>, "Read");
+      assert.notInclude(options.tools as ReadonlyArray<string>, "Bash");
+      assert.isTrue(options.strictMcpConfig);
+      assert.deepEqual(options.mcpServers?.f5_inspect, {
+        type: "http",
+        url: "http://127.0.0.1:9/mcp/inspect",
+        headers: { Authorization: "Bearer inspection-token" },
+      });
+
+      const canUseTool = options.canUseTool!;
+      const signal = new AbortController().signal;
+      const facade = yield* Effect.promise(() =>
+        canUseTool(
+          "mcp__f5_inspect__read_file",
+          { path: "README.md" },
+          {
+            signal,
+            toolUseID: "facade-read",
+            requestId: "facade-read",
+            mcpServer: { name: "f5_inspect", source: "dynamic" },
+          },
+        ),
+      );
+      assert.equal(facade?.behavior, "allow");
+      // Same name, but served from user configuration rather than the host.
+      const spoofed = yield* Effect.promise(() =>
+        canUseTool(
+          "mcp__f5_inspect__read_file",
+          { path: "README.md" },
+          {
+            signal,
+            toolUseID: "spoofed-read",
+            requestId: "spoofed-read",
+            mcpServer: { name: "f5_inspect", source: "user" },
+          },
+        ),
+      );
+      assert.equal(spoofed?.behavior, "deny");
+
+      const bashOptions = { signal, toolUseID: "bash-denied", requestId: "bash-denied" };
+      const bash = yield* Effect.promise(() => canUseTool("Bash", { command: "ls" }, bashOptions));
+      assert.equal(bash?.behavior, "deny");
+      yield* Effect.promise(() => canUseTool("Bash", { command: "ls" }, bashOptions));
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) => event.type === "item.completed" && event.itemId === "bash-denied",
+            ),
+          ),
+        ),
+      );
+      const bashItems = events.filter(
+        (event) => event.type === "item.completed" && event.itemId === "bash-denied",
+      );
+      assert.equal(bashItems.length, 1);
+      assert.equal(
+        bashItems[0]?.type === "item.completed" && bashItems[0].payload.status,
+        "failed",
+      );
+      const receipts = events.filter(
+        (event) =>
+          event.type === "request.opened" &&
+          event.payload.hostEnforcedDenial !== undefined &&
+          (event.payload.args as { toolUseId?: string } | undefined)?.toolUseId === "bash-denied",
+      );
+      assert.equal(receipts.length, 1);
+
+      // The denial arrived before the stream reported the tool; the late
+      // tool-start must not reopen it.
+      emitBashToolStart(harness.query, { toolUseId: "bash-denied", index: 0 });
+      emitBashToolStart(harness.query, { toolUseId: "bash-probe", index: 1 });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some((event) => event.type === "item.started" && event.itemId === "bash-probe"),
+          ),
+        ),
+      );
+      assert.isFalse(
+        events.some((event) => event.type === "item.started" && event.itemId === "bash-denied"),
+      );
+      yield* Fiber.interrupt(listener);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

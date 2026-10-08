@@ -164,6 +164,8 @@ export interface BuildCodexAppServerCommandInput {
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
   readonly mcpOAuthCallbackPort?: number | null;
   readonly mcpOAuthCallbackUrl?: string | null;
+  /** Read-only workflow stage: disable native shell, patch, web, and app tools. */
+  readonly readOnlyWorkflow?: boolean;
 }
 
 /** Build the one canonical argv used by every Codex app-server process. */
@@ -176,6 +178,7 @@ export function buildCodexAppServerCommand(
     mcpServers: input.mcpServers ?? null,
     mcpOAuthCallbackPort: input.mcpOAuthCallbackPort ?? null,
     mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl ?? null,
+    ...(input.readOnlyWorkflow ? { readOnlyWorkflow: true } : {}),
   });
   return {
     argv: ["app-server", ...resolved.argv, ...managedArgs],

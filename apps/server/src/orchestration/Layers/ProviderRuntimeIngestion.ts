@@ -1271,6 +1271,26 @@ function runtimeEventToActivities(
       if (event.payload.requestType === "tool_user_input") {
         return [];
       }
+      if (event.payload.hostEnforcedDenial) {
+        // A receipt for a tool the host denied; nothing awaits a decision.
+        return [
+          {
+            id: event.eventId,
+            createdAt: event.createdAt,
+            tone: "info",
+            kind: "runtime.warning",
+            summary: "Tool denied by read-only workflow policy",
+            payload: {
+              message: event.payload.hostEnforcedDenial.reason,
+              ...(event.payload.detail
+                ? { detail: truncateApprovalDetail(event.payload.detail) }
+                : {}),
+            },
+            turnId: toTurnId(event.turnId) ?? null,
+            ...maybeSequence,
+          },
+        ];
+      }
       const requestKind = requestKindFromCanonicalRequestType(event.payload.requestType);
       return [
         {
@@ -2084,8 +2104,25 @@ const make = Effect.gen(function* () {
   const clearUnattendedDeclines = (threadId: ThreadId, turnId?: TurnId) =>
     Effect.sync(() => {
       const existing = unattendedDeclineCounts.get(threadId);
-      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
-      unattendedDeclineCounts.delete(threadId);
+      if (existing && (turnId === undefined || existing.turnId === turnId)) {
+        unattendedDeclineCounts.delete(threadId);
+      }
+      const denials = hostDenialCounts.get(threadId);
+      if (denials && (turnId === undefined || denials.turnId === turnId)) {
+        hostDenialCounts.delete(threadId);
+      }
+    });
+
+  // A denied tool is recoverable: the provider gets the reason and continues.
+  // Only a turn that keeps retrying denied tools is stopped.
+  const hostDenialCounts = new Map<ThreadId, { readonly turnId: TurnId; count: number }>();
+  const MAX_HOST_DENIALS_PER_TURN = 12;
+  const countHostDenial = (threadId: ThreadId, turnId: TurnId) =>
+    Effect.sync(() => {
+      const existing = hostDenialCounts.get(threadId);
+      const next = existing && existing.turnId === turnId ? existing.count + 1 : 1;
+      hostDenialCounts.set(threadId, { turnId, count: next });
+      return next;
     });
 
   const readWorkflowExecutionProfileForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -3309,7 +3346,45 @@ const make = Effect.gen(function* () {
         workflowExecutionProfile = yield* readWorkflowExecutionProfileForThread(thread.id);
       }
 
-      if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
+      if (
+        workflowExecutionProfile &&
+        event.type === "request.opened" &&
+        event.payload.hostEnforcedDenial &&
+        profiledTurnId
+      ) {
+        // The adapter already denied the tool and told the provider why; this is
+        // a receipt, not a pending approval.
+        const denialCount = yield* countHostDenial(thread.id, profiledTurnId);
+        yield* Effect.logInfo("read-only workflow stage tool denied by host policy", {
+          threadId: thread.id,
+          turnId: profiledTurnId,
+          requestType: event.payload.requestType,
+          reason: event.payload.hostEnforcedDenial.reason,
+          denialCount,
+        });
+        if (denialCount > MAX_HOST_DENIALS_PER_TURN) {
+          yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+          yield* clearUnattendedDeclines(thread.id, profiledTurnId);
+          yield* recordProfiledTurnFailure({
+            threadId: thread.id,
+            turnId: profiledTurnId,
+            error: `Workflow read-only stage kept requesting tools that are not permitted (${denialCount} denials, last: ${event.payload.hostEnforcedDenial.reason}). The turn was interrupted.`,
+            retryable: false,
+            createdAt: now,
+          });
+          return;
+        }
+      } else if (
+        workflowExecutionProfile === "attended-readonly" &&
+        event.type === "request.opened" &&
+        event.payload.requestType === "mcp_elicitation_approval" &&
+        profiledTurnId
+      ) {
+        // Attended stages answer connector sign-in and elicitation prompts
+        // through the normal approval transport; the user is present, so the
+        // unattended watchdog no longer applies.
+        yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+      } else if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
         if (event.requestId !== undefined) {
           yield* providerService
             .respondToRequest({

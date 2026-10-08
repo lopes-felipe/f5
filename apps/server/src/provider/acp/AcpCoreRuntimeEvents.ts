@@ -90,6 +90,8 @@ export function makeAcpRequestOpenedEvent(input: {
   readonly source: AcpAdapterRawSource;
   readonly method: string;
   readonly rawPayload: unknown;
+  /** Set when the host denied the request itself; no approval is pending. */
+  readonly hostEnforcedDenial?: { readonly reason: string };
 }): ProviderRuntimeEvent {
   return {
     type: "request.opened",
@@ -103,6 +105,7 @@ export function makeAcpRequestOpenedEvent(input: {
       detail: input.detail,
       ...(input.approvalOptions ? { approvalOptions: input.approvalOptions } : {}),
       args: input.args,
+      ...(input.hostEnforcedDenial ? { hostEnforcedDenial: input.hostEnforcedDenial } : {}),
     },
     raw: {
       source: input.source,

@@ -7,6 +7,7 @@ import type {
   McpOauthLoginStatusResult,
   McpProjectConfigResult,
   McpServerStatusesResult,
+  McpWorkflowConnectorAccessResult,
   ProjectId,
   ProviderKind,
   ProviderInstanceId,
@@ -51,7 +52,25 @@ export const mcpQueryKeys = {
     binaryPath: CodexEnvironmentKeyPart,
     homePath: CodexEnvironmentKeyPart,
   ) => ["mcp", "oauthStatus", projectId, serverName, binaryPath, homePath] as const,
+  workflowConnectorAccess: (projectId: ProjectId | null) =>
+    ["mcp", "workflowConnectorAccess", projectId] as const,
 };
+
+export function mcpWorkflowConnectorAccessQueryOptions(input: {
+  readonly projectId: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpWorkflowConnectorAccessResult>({
+    queryKey: mcpQueryKeys.workflowConnectorAccess(input.projectId),
+    enabled: (input.enabled ?? true) && Boolean(input.projectId),
+    queryFn: async () => {
+      if (!input.projectId) {
+        throw new Error("Workflow connector access is unavailable.");
+      }
+      return ensureNativeApi().mcp.getWorkflowConnectorAccess({ projectId: input.projectId });
+    },
+  });
+}
 
 export function mcpCommonConfigQueryOptions(input?: { readonly enabled?: boolean }) {
   return queryOptions<McpCommonConfigResult>({

@@ -281,12 +281,32 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
   }
 }
 
+/** OpenCode names MCP tools `<server>_<tool>` with non-word characters replaced. */
+export function openCodeMcpToolPermission(serverName: string): string {
+  return `${serverName.replace(/[^a-zA-Z0-9_-]/g, "_")}_*`;
+}
+
 export function buildOpenCodeWorkflowPermissionRules(
   profile: WorkflowTurnExecutionProfile,
+  options?: { readonly inspectionServerName?: string | null | undefined },
 ): PermissionRuleset {
   return [
     { permission: "*", pattern: "*", action: "deny" },
     { permission: "read", pattern: "*", action: "allow" },
+    { permission: "glob", pattern: "*", action: "allow" },
+    { permission: "grep", pattern: "*", action: "allow" },
+    { permission: "list", pattern: "*", action: "allow" },
+    { permission: "todoread", pattern: "*", action: "allow" },
+    { permission: "todowrite", pattern: "*", action: "allow" },
+    ...(options?.inspectionServerName
+      ? [
+          {
+            permission: openCodeMcpToolPermission(options.inspectionServerName),
+            pattern: "*",
+            action: "allow" as const,
+          },
+        ]
+      : []),
     {
       permission: "question",
       pattern: "*",
@@ -295,6 +315,44 @@ export function buildOpenCodeWorkflowPermissionRules(
     { permission: "bash", pattern: "*", action: "deny" },
     { permission: "edit", pattern: "*", action: "deny" },
   ];
+}
+
+/**
+ * Add the host inspection server to OpenCode's inline config. Only valid for
+ * servers F5 spawns; an external server keeps its own configuration.
+ */
+export function withOpenCodeInspectionServer(
+  environment: NodeJS.ProcessEnv,
+  inspection: { readonly serverName: string; readonly url: string; readonly token: string },
+): NodeJS.ProcessEnv {
+  let base: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(environment.OPENCODE_CONFIG_CONTENT ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      base = parsed as Record<string, unknown>;
+    }
+  } catch {
+    base = {};
+  }
+  const mcp =
+    base.mcp && typeof base.mcp === "object" && !Array.isArray(base.mcp)
+      ? (base.mcp as Record<string, unknown>)
+      : {};
+  return {
+    ...environment,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({
+      ...base,
+      mcp: {
+        ...mcp,
+        [inspection.serverName]: {
+          type: "remote",
+          url: inspection.url,
+          enabled: true,
+          headers: { Authorization: `Bearer ${inspection.token}` },
+        },
+      },
+    }),
+  };
 }
 
 export function toOpenCodePermissionReply(

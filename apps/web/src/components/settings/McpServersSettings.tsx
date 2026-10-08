@@ -11,6 +11,7 @@ import {
   type ProviderKind,
   ProviderInstanceId,
   type McpServerStatusEntry,
+  type WorkflowConnectorAccessEntry,
 } from "@t3tools/contracts";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,6 +27,7 @@ import {
   mcpProjectConfigQueryOptions,
   mcpQueryKeys,
   mcpServerStatusesQueryOptions,
+  mcpWorkflowConnectorAccessQueryOptions,
 } from "../../lib/mcpReactQuery";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { Badge } from "../ui/badge";
@@ -917,6 +919,79 @@ function serverStatusBadge(
   }
 }
 
+const WORKFLOW_TRUST_EXPLANATION =
+  "Read-only workflow stages can use this connector's operations that declare themselves read-only and not destructive. F5 relies on the connector's own declarations and does not verify them. Changing the connector or its tools turns trust off until you trust it again.";
+
+function workflowAccessBadge(entry: WorkflowConnectorAccessEntry | undefined) {
+  switch (entry?.state) {
+    case "verified":
+      return <Badge variant="outline">Verified read-only: {entry.verifiedConnector}</Badge>;
+    case "trusted":
+      return <Badge variant="outline">Trusted for read-only workflows</Badge>;
+    case "trust-stale":
+      return <Badge variant="outline">Trust needs renewal</Badge>;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Trust a connector's read-only declarations for workflow stages. Listing the
+ * connector's tools goes through Codex, so trust is managed from the Codex view.
+ */
+function WorkflowConnectorTrustControl(props: {
+  readonly projectId: ProjectId;
+  readonly instanceId: ProviderInstanceId;
+  readonly name: string;
+  readonly entry: WorkflowConnectorAccessEntry | undefined;
+}) {
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (props.entry?.state === "verified") return null;
+  const trusted = props.entry?.state === "trusted";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
+        <Tooltip>
+          <TooltipTrigger
+            render={<span className="text-2xs text-muted-foreground">Read-only workflows</span>}
+          />
+          <TooltipPopup side="top" className="max-w-xs">
+            {WORKFLOW_TRUST_EXPLANATION}
+          </TooltipPopup>
+        </Tooltip>
+        <Switch
+          checked={trusted}
+          disabled={pending}
+          onCheckedChange={(checked) => {
+            setPending(true);
+            setError(null);
+            void ensureNativeApi()
+              .mcp.setWorkflowConnectorTrust({
+                projectId: props.projectId,
+                serverName: props.name,
+                trusted: Boolean(checked),
+                instanceId: props.instanceId,
+              })
+              .catch((cause) => {
+                setError(readErrorMessage(cause, "Failed to update connector trust."));
+              })
+              .finally(() => {
+                setPending(false);
+                void queryClient.invalidateQueries({
+                  queryKey: mcpQueryKeys.workflowConnectorAccess(props.projectId),
+                });
+              });
+          }}
+          aria-label={`Trust MCP server ${props.name} for read-only workflows`}
+        />
+      </div>
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 function McpServerRow(props: {
   readonly selectedProvider: ProviderKind;
   readonly instanceId: ProviderInstanceId;
@@ -930,6 +1005,7 @@ function McpServerRow(props: {
   readonly codexCallbackSummary: string | null;
   readonly isOverridden: boolean;
   readonly overrideTargetEnabled: boolean | undefined;
+  readonly workflowAccess: WorkflowConnectorAccessEntry | undefined;
   readonly onToggleEnabled: (checked: boolean) => void;
   readonly onEdit: () => void;
   readonly onRemove: () => void;
@@ -1031,6 +1107,7 @@ function McpServerRow(props: {
             {serverStatusBadge(props.selectedProvider, props.serverStatus, loginStatusQuery.data, {
               isOverridden: props.isOverridden,
             })}
+            {props.isOverridden ? null : workflowAccessBadge(props.workflowAccess)}
           </div>
           <p className="truncate text-xs text-muted-foreground">
             {props.server.type === "stdio" ? props.server.command : props.server.url}
@@ -1046,6 +1123,17 @@ function McpServerRow(props: {
               aria-label={`Enable MCP server ${props.name}`}
             />
           </div>
+          {isCodexProvider &&
+          props.projectId !== null &&
+          !props.isOverridden &&
+          props.server.enabled !== false ? (
+            <WorkflowConnectorTrustControl
+              projectId={props.projectId}
+              instanceId={props.instanceId}
+              name={props.name}
+              entry={props.workflowAccess}
+            />
+          ) : null}
           {isCodexProvider && shouldShowLoginAction ? (
             loginDisabledReason ? (
               <Tooltip>
@@ -1078,6 +1166,9 @@ function McpServerRow(props: {
       ) : null}
       {props.serverStatus?.message ? (
         <p className="text-xs text-muted-foreground">{props.serverStatus.message}</p>
+      ) : null}
+      {!props.isOverridden && props.workflowAccess?.message ? (
+        <p className="text-xs text-muted-foreground">{props.workflowAccess.message}</p>
       ) : null}
       {props.codexCallbackSummary ? (
         <p className="text-xs text-muted-foreground">{props.codexCallbackSummary}</p>
@@ -1166,6 +1257,19 @@ export function McpServersSettings(props: {
 
       enabled: selectedProject !== null,
     }),
+  );
+  const workflowAccessQuery = useQuery(
+    mcpWorkflowConnectorAccessQueryOptions({
+      projectId: selectedProjectId,
+      enabled: selectedProject !== null,
+    }),
+  );
+  const workflowAccessByName = useMemo(
+    () =>
+      new Map(
+        (workflowAccessQuery.data?.connectors ?? []).map((entry) => [entry.serverName, entry]),
+      ),
+    [workflowAccessQuery.data],
   );
 
   useEffect(() => {
@@ -1633,6 +1737,7 @@ export function McpServersSettings(props: {
                       }
                       isOverridden={selectedScope === "common" && overriddenServerNames.has(name)}
                       overrideTargetEnabled={overriddenServersByName.get(name)?.enabled !== false}
+                      workflowAccess={workflowAccessByName.get(name)}
                       onToggleEnabled={(checked) => {
                         const nextServers = toWritableProjectServers(activeServers);
                         const currentServer = nextServers[name];

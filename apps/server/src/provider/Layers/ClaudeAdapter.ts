@@ -3,8 +3,11 @@ import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { randomUUID } from "node:crypto";
 import {
+  type ClaudeMandatoryPolicy,
   claudeMandatoryPolicyOptions,
   evaluateClaudeMandatoryPolicy,
+  evaluateClaudeMandatoryPolicyWithLiveTools,
+  type ResolveLiveConnectorTool,
 } from "../claudeMandatoryPolicy.ts";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import type { ProviderSessionStartInput } from "@t3tools/contracts";
@@ -36,6 +39,7 @@ import * as NodeReadline from "node:readline";
 
 import {
   type CanUseTool,
+  type McpServerStatus,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -175,6 +179,9 @@ import {
 
 const PROVIDER = "claudeAgent" as const;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
+const MAX_HOST_DENIED_TOOL_USE_IDS = 512;
+/** Live connector declarations are re-read at most this often per session. */
+const LIVE_CONNECTOR_TOOLS_TTL_MS = 30_000;
 type ClaudeTextStreamKind = Extract<RuntimeContentStreamKind, "assistant_text" | "reasoning_text">;
 type ClaudeToolResultStreamKind = Extract<
   RuntimeContentStreamKind,
@@ -329,6 +336,8 @@ interface ClaudeSessionContext {
     approximateChars: number;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  /** Tool-use IDs the host denied; their later stream/result events are ignored. */
+  readonly hostDeniedToolUseIds: Set<string>;
   readonly taskStates: Map<string, ClaudeTaskState>;
   readonly taskModelsByTool: Map<string, string>;
   readonly lifecycle: ClaudeTurnLifecycle;
@@ -3364,6 +3373,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
 
+          // A host denial can arrive before the stream reports the tool; its
+          // terminal item was already emitted.
+          if (context.hostDeniedToolUseIds.has(block.id)) {
+            return;
+          }
           const toolName = block.name;
           const requestKind = classifyToolRequestKind(toolName, { blockType: block.type });
           const toolInput =
@@ -3438,6 +3452,99 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
         }
+      });
+
+    /**
+     * Record a host-enforced denial once per tool-use ID: an approval receipt
+     * marked `hostEnforcedDenial` (so ingestion does not treat it as a pending
+     * approval) and a terminal failed tool item, whether or not the stream has
+     * reported the tool yet. Later stream and result events for the ID are ignored.
+     */
+    const emitHostEnforcedDenial = (
+      context: ClaudeSessionContext,
+      input: {
+        readonly toolName: string;
+        readonly toolInput: Record<string, unknown>;
+        readonly toolUseId: string | undefined;
+        readonly reason: string;
+        readonly rawMethod: string;
+      },
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (input.toolUseId !== undefined) {
+          if (context.hostDeniedToolUseIds.has(input.toolUseId)) return;
+          if (context.hostDeniedToolUseIds.size >= MAX_HOST_DENIED_TOOL_USE_IDS) {
+            const oldest = context.hostDeniedToolUseIds.values().next().value;
+            if (oldest !== undefined) context.hostDeniedToolUseIds.delete(oldest);
+          }
+          context.hostDeniedToolUseIds.add(input.toolUseId);
+        }
+        const turnRef = context.turnState
+          ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+          : {};
+        const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
+        const requestType = classifyRequestType(input.toolName);
+        const detail = summarizeToolRequest(input.toolName, input.toolInput);
+        const openedStamp = yield* makeEventStamp(context.session.threadId);
+        yield* offerRuntimeEvent({
+          type: "request.opened",
+          eventId: openedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: openedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...turnRef,
+          requestId: asRuntimeRequestId(requestId),
+          payload: {
+            requestType,
+            detail,
+            args: {
+              toolName: input.toolName,
+              input: input.toolInput,
+              ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
+            },
+            hostEnforcedDenial: { reason: input.reason },
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: input.toolUseId }),
+          raw: {
+            source: "claude.sdk.permission",
+            method: input.rawMethod,
+            payload: { toolName: input.toolName, input: input.toolInput },
+          },
+        });
+        if (input.toolUseId === undefined) return;
+
+        const toolEntry = findInFlightToolEntryByItemId(context, input.toolUseId);
+        if (toolEntry) context.inFlightTools.delete(toolEntry[0]);
+        const tool = toolEntry?.[1];
+        const itemType = tool?.itemType ?? classifyToolItemType(input.toolName);
+        const completedStamp = yield* makeEventStamp(context.session.threadId);
+        yield* offerRuntimeEvent({
+          type: "item.completed",
+          eventId: completedStamp.eventId,
+          provider: PROVIDER,
+          createdAt: completedStamp.createdAt,
+          threadId: context.session.threadId,
+          ...turnRef,
+          itemId: asRuntimeItemId(input.toolUseId),
+          payload: {
+            itemType,
+            status: "failed",
+            title: tool?.title ?? titleForTool(itemType, input.toolInput),
+            detail: input.reason,
+            ...(tool?.requestKind ? { requestKind: tool.requestKind } : {}),
+            data: buildToolLifecycleData({
+              toolName: input.toolName,
+              toolInput: tool?.input ?? input.toolInput,
+              result: { is_error: true, content: input.reason, hostEnforcedDenial: true },
+            }),
+          },
+          providerRefs: nativeProviderRefs(context, { providerItemId: input.toolUseId }),
+          raw: {
+            source: "claude.sdk.permission",
+            method: input.rawMethod,
+            payload: { toolName: input.toolName, reason: input.reason },
+          },
+        });
       });
 
     const handleUserMessage = (
@@ -5465,6 +5572,49 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
           );
 
+        // Read-only stages: one host-computed policy for discovery (query
+        // options) and execution (hook and canUseTool).
+        const mandatoryPolicy: ClaudeMandatoryPolicy = {
+          workflowExecutionProfile: input.workflowExecutionProfile,
+          workflowCapabilities: input.workflowCapabilities,
+          subagentsEnabled: providerOptions?.subagentsEnabled,
+        };
+        let liveMcpStatusSource: { mcpServerStatus(): Promise<McpServerStatus[]> } | undefined;
+        let liveMcpStatusCache:
+          | { readonly at: number; readonly statuses: Promise<McpServerStatus[]> }
+          | undefined;
+        // Trusted connector operations are re-checked against the declaration
+        // the connector reports now, not only the one pinned at trust time.
+        const resolveLiveConnectorTool: ResolveLiveConnectorTool = async (serverName, toolName) => {
+          if (!liveMcpStatusSource) return undefined;
+          const now = Date.now();
+          if (!liveMcpStatusCache || now - liveMcpStatusCache.at > LIVE_CONNECTOR_TOOLS_TTL_MS) {
+            liveMcpStatusCache = { at: now, statuses: liveMcpStatusSource.mcpServerStatus() };
+          }
+          let statuses: McpServerStatus[];
+          try {
+            statuses = await liveMcpStatusCache.statuses;
+          } catch (error) {
+            liveMcpStatusCache = undefined;
+            throw error;
+          }
+          const tool = statuses
+            .find((status) => status.name === serverName)
+            ?.tools?.find((candidate) => candidate.name === toolName);
+          return tool
+            ? {
+                name: tool.name,
+                ...(tool.description !== undefined ? { description: tool.description } : {}),
+                ...(tool.annotations?.readOnly !== undefined
+                  ? { readOnlyHint: tool.annotations.readOnly }
+                  : {}),
+                ...(tool.annotations?.destructive !== undefined
+                  ? { destructiveHint: tool.annotations.destructive }
+                  : {}),
+              }
+            : undefined;
+        };
+
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {
@@ -5596,62 +5746,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (input.workflowExecutionProfile) {
-                if (
-                  !evaluateClaudeMandatoryPolicy(
-                    { workflowExecutionProfile: input.workflowExecutionProfile },
+                const reason = yield* Effect.promise(() =>
+                  evaluateClaudeMandatoryPolicyWithLiveTools(
+                    mandatoryPolicy,
                     toolName,
-                  )
-                ) {
+                    callbackOptions.mcpServer,
+                    resolveLiveConnectorTool,
+                  ),
+                );
+                if (!reason) {
                   return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
                 }
-                const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
-                const requestType = classifyRequestType(toolName);
-                const detail = summarizeToolRequest(toolName, toolInput);
-                const stamp = yield* makeEventStamp(context.session.threadId);
-                yield* offerRuntimeEvent({
-                  type: "request.opened",
-                  eventId: stamp.eventId,
-                  provider: PROVIDER,
-                  createdAt: stamp.createdAt,
-                  threadId: context.session.threadId,
-                  ...(context.turnState
-                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
-                    : {}),
-                  requestId: asRuntimeRequestId(requestId),
-                  payload: {
-                    requestType,
-                    detail,
-                    args: { toolName, input: toolInput },
-                  },
-                  providerRefs: nativeProviderRefs(context, {
-                    providerItemId: callbackOptions.toolUseID,
-                  }),
-                  raw: {
-                    source: "claude.sdk.permission",
-                    method: "canUseTool/workflow-profile-denial",
-                    payload: { toolName, input: toolInput },
-                  },
+                yield* emitHostEnforcedDenial(context, {
+                  toolName,
+                  toolInput,
+                  toolUseId: callbackOptions.toolUseID,
+                  reason,
+                  rawMethod: "canUseTool/workflow-profile-denial",
                 });
-                const resolvedStamp = yield* makeEventStamp(context.session.threadId);
-                yield* offerRuntimeEvent({
-                  type: "request.resolved",
-                  eventId: resolvedStamp.eventId,
-                  provider: PROVIDER,
-                  createdAt: resolvedStamp.createdAt,
-                  threadId: context.session.threadId,
-                  ...(context.turnState
-                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
-                    : {}),
-                  requestId: asRuntimeRequestId(requestId),
-                  payload: { requestType, decision: "decline" },
-                  providerRefs: nativeProviderRefs(context, {
-                    providerItemId: callbackOptions.toolUseID,
-                  }),
-                });
-                return {
-                  behavior: "deny",
-                  message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
-                } satisfies PermissionResult;
+                return { behavior: "deny", message: reason } satisfies PermissionResult;
               }
               const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
               switch (runtimeMode) {
@@ -5952,20 +6065,33 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           ...claudeMandatoryPolicyOptions(
-            {
-              workflowExecutionProfile: input.workflowExecutionProfile,
-              subagentsEnabled: providerOptions?.subagentsEnabled,
-            },
+            mandatoryPolicy,
             undefined,
-            async (hook, signal) => {
-              // Reuse host question/plan/denial receipts even when native approval
-              // would skip canUseTool. The mandatory hook still returns deny.
-              await canUseTool(hook.tool_name, asUnknownRecord(hook.tool_input) ?? {}, {
-                signal,
-                toolUseID: hook.tool_use_id,
-                requestId: `mandatory:${hook.tool_use_id}`,
-              });
+            async (hook, signal, reason) => {
+              const toolInput = asUnknownRecord(hook.tool_input) ?? {};
+              // Questions and plans keep their host receipts (user-input and
+              // proposed-plan events); the mandatory hook still returns deny.
+              if (hook.tool_name === "AskUserQuestion" || hook.tool_name === "ExitPlanMode") {
+                await canUseTool(hook.tool_name, toolInput, {
+                  signal,
+                  toolUseID: hook.tool_use_id,
+                  requestId: `mandatory:${hook.tool_use_id}`,
+                });
+                return;
+              }
+              const context = await Effect.runPromise(Ref.get(contextRef));
+              if (!context) return;
+              await Effect.runPromise(
+                emitHostEnforcedDenial(context, {
+                  toolName: hook.tool_name,
+                  toolInput,
+                  toolUseId: hook.tool_use_id,
+                  reason,
+                  rawMethod: "PreToolUse/mandatory-denial",
+                }),
+              );
             },
+            resolveLiveConnectorTool,
           ),
           canUseTool,
           onUserDialog,
@@ -5974,10 +6100,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           systemPrompt,
         } satisfies ClaudeQueryOptions;
-        if (translatedMcpServers) {
-          queryOptions.mcpServers = translatedMcpServers as NonNullable<
-            ClaudeQueryOptions["mcpServers"]
-          >;
+        const inspection = input.workflowCapabilities?.inspection;
+        if (translatedMcpServers || inspection) {
+          queryOptions.mcpServers = {
+            ...(translatedMcpServers as NonNullable<ClaudeQueryOptions["mcpServers"]> | undefined),
+            ...(inspection
+              ? {
+                  [inspection.serverName]: {
+                    type: "http",
+                    url: inspection.url,
+                    headers: { Authorization: `Bearer ${inspection.token}` },
+                  },
+                }
+              : {}),
+          };
         }
 
         const existingContext = sessions.get(threadId);
@@ -6009,6 +6145,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               cause,
             }),
         });
+        const statusSource = queryRuntime as Partial<{
+          mcpServerStatus(): Promise<McpServerStatus[]>;
+        }>;
+        if (typeof statusSource.mcpServerStatus === "function") {
+          liveMcpStatusSource = { mcpServerStatus: () => statusSource.mcpServerStatus!() };
+        }
 
         // Reuse the last observed total across restarts without requiring get_usage.
         // Older cursors remain unknown until the first positive result.
@@ -6075,6 +6217,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             approximateChars: 0,
           })),
           inFlightTools,
+          hostDeniedToolUseIds: new Set<string>(),
           taskStates,
           taskModelsByTool: new Map(),
           lifecycle: createClaudeTurnLifecycle(),

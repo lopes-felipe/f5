@@ -46,6 +46,7 @@ import {
   loadOpenCodeSkills,
   buildOpenCodePermissionRules,
   buildOpenCodeWorkflowPermissionRules,
+  withOpenCodeInspectionServer,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
@@ -1290,10 +1291,15 @@ export function makeOpenCodeAdapter(
               // The runtime binds the server's lifetime to the Scope.Scope
               // we provide below — closing `sessionScope` kills the child
               // process automatically. No manual `server.close()` needed.
+              // The inspection server can only be injected into a server F5 spawns.
+              const inspection = serverUrl ? undefined : input.workflowCapabilities?.inspection;
+              const environment = inspection
+                ? withOpenCodeInspectionServer(options?.environment ?? process.env, inspection)
+                : options?.environment;
               const server = yield* openCodeRuntime.connectToOpenCodeServer({
                 binaryPath,
                 serverUrl,
-                ...(options?.environment ? { environment: options.environment } : {}),
+                ...(environment ? { environment } : {}),
               });
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
@@ -1304,7 +1310,9 @@ export function makeOpenCodeAdapter(
                 client.session.create({
                   title: `T3 Code ${input.threadId}`,
                   permission: input.workflowExecutionProfile
-                    ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
+                    ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile, {
+                        inspectionServerName: inspection?.serverName,
+                      })
                     : buildOpenCodePermissionRules(input.runtimeMode),
                 }),
               );

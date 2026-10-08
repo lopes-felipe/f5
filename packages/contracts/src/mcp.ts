@@ -246,3 +246,49 @@ export const McpStatusUpdatedPayload = Schema.Struct({
   configVersion: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpStatusUpdatedPayload = typeof McpStatusUpdatedPayload.Type;
+
+/**
+ * How a project connector participates in read-only workflow stages.
+ * - verified: F5 recognizes the connector and exposes only its known read operations.
+ * - trusted: the user trusted the connector's own read-only declarations.
+ * - trust-stale: trust was granted but the configuration changed; nothing is exposed.
+ * - unavailable: neither verified nor trusted; nothing is exposed.
+ */
+export const WorkflowConnectorAccessState = Schema.Literals([
+  "verified",
+  "trusted",
+  "trust-stale",
+  "unavailable",
+]);
+export type WorkflowConnectorAccessState = typeof WorkflowConnectorAccessState.Type;
+
+export const WorkflowConnectorAccessEntry = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  state: WorkflowConnectorAccessState,
+  verifiedConnector: Schema.NullOr(TrimmedNonEmptyString),
+  operations: Schema.Array(TrimmedNonEmptyString),
+  trustedAt: Schema.NullOr(IsoDateTime),
+  message: Schema.optional(TrimmedNonEmptyString),
+});
+export type WorkflowConnectorAccessEntry = typeof WorkflowConnectorAccessEntry.Type;
+
+export const McpGetWorkflowConnectorAccessRequest = Schema.Struct({
+  projectId: ProjectId,
+});
+export type McpGetWorkflowConnectorAccessRequest = typeof McpGetWorkflowConnectorAccessRequest.Type;
+
+export const McpWorkflowConnectorAccessResult = Schema.Struct({
+  projectId: ProjectId,
+  connectors: Schema.Array(WorkflowConnectorAccessEntry),
+});
+export type McpWorkflowConnectorAccessResult = typeof McpWorkflowConnectorAccessResult.Type;
+
+export const McpSetWorkflowConnectorTrustRequest = Schema.Struct({
+  projectId: ProjectId,
+  serverName: TrimmedNonEmptyString,
+  trusted: Schema.Boolean,
+  instanceId: Schema.optional(ProviderInstanceId),
+  binaryPath: Schema.optional(TrimmedNonEmptyString),
+  homePath: Schema.optional(TrimmedNonEmptyString),
+});
+export type McpSetWorkflowConnectorTrustRequest = typeof McpSetWorkflowConnectorTrustRequest.Type;

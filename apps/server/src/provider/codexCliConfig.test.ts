@@ -85,4 +85,22 @@ describe("prependCodexCliTelemetryDisabledConfig", () => {
       "app-server",
     ]);
   });
+
+  it("disables native shell, patch, web, app, and delegation tools for read-only stages", () => {
+    const args = prependCodexCliTelemetryDisabledConfig([], { readOnlyWorkflow: true });
+    for (const setting of [
+      "features.shell_tool=false",
+      "features.unified_exec=false",
+      "features.apps=false",
+      "features.browser_use=false",
+      "features.computer_use=false",
+      "features.plugins=false",
+      "features.multi_agent=false",
+      "include_apply_patch_tool=false",
+      'web_search="disabled"',
+    ]) {
+      expect(args).toContain(setting);
+    }
+    expect(prependCodexCliTelemetryDisabledConfig([])).not.toContain("features.shell_tool=false");
+  });
 });

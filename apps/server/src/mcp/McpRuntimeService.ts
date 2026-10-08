@@ -17,7 +17,12 @@ import {
   type McpStartLoginRequest,
   type McpStatusUpdatedReason,
   type McpServerDefinition,
+  type McpGetWorkflowConnectorAccessRequest,
+  type McpSetWorkflowConnectorTrustRequest,
+  type McpWorkflowConnectorAccessResult,
+  type ProjectId,
   type ProviderStartOptions,
+  type WorkflowConnectorTrust,
 } from "@t3tools/contracts";
 import { Effect, FiberSet, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -31,7 +36,16 @@ import {
   findCodexServerStatusByName,
   listAllCodexServerStatuses,
 } from "../codex/codexMcpServerStatus.ts";
-import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
+import {
+  ProjectMcpConfigService,
+  type StoredEffectiveMcpConfig,
+} from "./ProjectMcpConfigService.ts";
+import {
+  connectorConfigFingerprint,
+  parseConnectorToolInventory,
+  pinConnectorTools,
+  planWorkflowConnectors,
+} from "../workflowInspection/connectorRegistry.ts";
 import { combineStatusMessage } from "./combineStatusMessage.ts";
 import { reloadCodexMcpConfigAfterLogin } from "./reloadCodexMcpConfigAfterLogin.ts";
 import {
@@ -414,6 +428,12 @@ export interface McpRuntimeServiceShape {
     input: McpStartLoginRequest,
   ) => Effect.Effect<McpLoginStatusResult, McpRuntimeServiceError>;
   readonly getLoginStatus: (input: McpGetLoginStatusRequest) => Effect.Effect<McpLoginStatusResult>;
+  readonly getWorkflowConnectorAccess: (
+    input: McpGetWorkflowConnectorAccessRequest,
+  ) => Effect.Effect<McpWorkflowConnectorAccessResult, McpRuntimeServiceError>;
+  readonly setWorkflowConnectorTrust: (
+    input: McpSetWorkflowConnectorTrustRequest,
+  ) => Effect.Effect<McpWorkflowConnectorAccessResult, McpRuntimeServiceError>;
 }
 
 export class McpRuntimeService extends ServiceMap.Service<
@@ -663,6 +683,135 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       } satisfies McpProviderStatusResult;
     });
 
+  const listCodexControlStatuses = (
+    input: {
+      readonly projectId: ProjectId;
+      readonly provider: McpGetProviderStatusRequest["provider"];
+      readonly binaryPath?: string | undefined;
+      readonly homePath?: string | undefined;
+    },
+    effectiveConfig: StoredEffectiveMcpConfig,
+  ) =>
+    Effect.gen(function* () {
+      const providerOptions = readProviderOptions(input);
+      const translatedServers = translateMcpForCodex(effectiveConfig.servers) ?? {};
+      const oauthCallbackConfig = yield* readCodexMcpOAuthCallbackConfigOrError(
+        effectiveConfig.servers,
+      );
+      const client = yield* codexControlClientRegistry
+        .getAdminClient({
+          projectId: input.projectId,
+          ...(providerOptions ? { providerOptions } : {}),
+          mcpEffectiveConfigVersion: effectiveConfig.effectiveVersion,
+          mcpServers: translatedServers,
+          ...(oauthCallbackConfig.port ? { mcpOAuthCallbackPort: oauthCallbackConfig.port } : {}),
+          ...(oauthCallbackConfig.url ? { mcpOAuthCallbackUrl: oauthCallbackConfig.url } : {}),
+        })
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new McpRuntimeServiceError({
+                message: error.message,
+              }),
+          ),
+        );
+
+      return yield* Effect.tryPromise({
+        try: () => listAllCodexServerStatuses(client),
+        catch: (cause) =>
+          new McpRuntimeServiceError({
+            message:
+              cause instanceof Error ? cause.message : "Failed to load Codex MCP server statuses.",
+          }),
+      });
+    });
+
+  const readWorkflowConnectorTrust = (projectId: ProjectId) =>
+    Effect.gen(function* () {
+      if (Option.isNone(accountSettings)) return undefined;
+      const settings = yield* accountSettings.value.getSettings.pipe(
+        Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })),
+      );
+      return settings.projectSettingsOverrides[projectId]?.workflowTrustedConnectors;
+    });
+
+  const getWorkflowConnectorAccess: McpRuntimeServiceShape["getWorkflowConnectorAccess"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const effectiveConfig = yield* projectMcpConfigService
+        .readEffectiveStoredConfig(input.projectId)
+        .pipe(Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })));
+      const trusted = yield* readWorkflowConnectorTrust(input.projectId);
+      const plan = planWorkflowConnectors({ servers: effectiveConfig.servers, trusted });
+      return { projectId: input.projectId, connectors: plan.access };
+    });
+
+  /**
+   * Trusting pins the connector's current configuration and tool declarations.
+   * Any later change to either makes the trust stale until the user trusts it again.
+   */
+  const setWorkflowConnectorTrust: McpRuntimeServiceShape["setWorkflowConnectorTrust"] = (input) =>
+    Effect.gen(function* () {
+      if (Option.isNone(accountSettings)) {
+        return yield* new McpRuntimeServiceError({
+          message: "Project settings are unavailable, so connector trust cannot be saved.",
+        });
+      }
+      const settingsService = accountSettings.value;
+      const effectiveConfig = yield* projectMcpConfigService
+        .readEffectiveStoredConfig(input.projectId)
+        .pipe(Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })));
+      const definition = effectiveConfig.servers[input.serverName];
+      let trust: WorkflowConnectorTrust | null = null;
+      if (input.trusted) {
+        if (!definition) {
+          return yield* new McpRuntimeServiceError({
+            message: `MCP server '${input.serverName}' is not defined in the shared effective config.`,
+          });
+        }
+        const statuses = yield* listCodexControlStatuses(
+          { ...input, provider: "codex" },
+          effectiveConfig,
+        );
+        const status = findCodexServerStatusByName(statuses, input.serverName);
+        const tools = parseConnectorToolInventory(status?.tools);
+        if (!status || status.startupStatus === "failed" || tools.length === 0) {
+          return yield* new McpRuntimeServiceError({
+            message: `F5 could not list the tools of '${input.serverName}'${
+              status?.error ? `: ${status.error}` : ""
+            }. Sign in to the connector and try again.`,
+          });
+        }
+        trust = {
+          configFingerprint: connectorConfigFingerprint(definition),
+          trustedAt: nowIso(),
+          tools: pinConnectorTools(tools),
+        };
+      }
+      const current = yield* settingsService.getSettings.pipe(
+        Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })),
+      );
+      const overrides = current.projectSettingsOverrides[input.projectId] ?? {};
+      const { [input.serverName]: _previous, ...remaining } =
+        overrides.workflowTrustedConnectors ?? {};
+      const nextTrusted = trust ? { ...remaining, [input.serverName]: trust } : remaining;
+      const { workflowTrustedConnectors: _omitted, ...otherOverrides } = overrides;
+      yield* settingsService
+        .updateSettings({
+          projectSettingsOverrides: {
+            [input.projectId]: {
+              ...otherOverrides,
+              ...(Object.keys(nextTrusted).length > 0
+                ? { workflowTrustedConnectors: nextTrusted }
+                : {}),
+            },
+          },
+        })
+        .pipe(Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })));
+      return yield* getWorkflowConnectorAccess({ projectId: input.projectId });
+    });
+
   const getServerStatuses: McpRuntimeServiceShape["getServerStatuses"] = (input) =>
     Effect.gen(function* () {
       const providerStatus = yield* getProviderStatus(input);
@@ -711,37 +860,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         } satisfies McpServerStatusesResult;
       }
 
-      const providerOptions = readProviderOptions(input);
-      const translatedServers = translateMcpForCodex(effectiveConfig.servers) ?? {};
-      const oauthCallbackConfig = yield* readCodexMcpOAuthCallbackConfigOrError(
-        effectiveConfig.servers,
-      );
-      const client = yield* codexControlClientRegistry
-        .getAdminClient({
-          projectId: input.projectId,
-          ...(providerOptions ? { providerOptions } : {}),
-          mcpEffectiveConfigVersion: effectiveConfig.effectiveVersion,
-          mcpServers: translatedServers,
-          ...(oauthCallbackConfig.port ? { mcpOAuthCallbackPort: oauthCallbackConfig.port } : {}),
-          ...(oauthCallbackConfig.url ? { mcpOAuthCallbackUrl: oauthCallbackConfig.url } : {}),
-        })
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new McpRuntimeServiceError({
-                message: error.message,
-              }),
-          ),
-        );
-
-      const controlStatuses = yield* Effect.tryPromise({
-        try: () => listAllCodexServerStatuses(client),
-        catch: (cause) =>
-          new McpRuntimeServiceError({
-            message:
-              cause instanceof Error ? cause.message : "Failed to load Codex MCP server statuses.",
-          }),
-      });
+      const controlStatuses = yield* listCodexControlStatuses(input, effectiveConfig);
       const runtimeDiagnostics = yield* mcpRuntimeDiagnostics.listLatestServerDiagnostics({
         projectId: input.projectId,
         provider: "codex",
@@ -1066,6 +1185,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
     getServerStatuses,
     startLogin,
     getLoginStatus,
+    getWorkflowConnectorAccess,
+    setWorkflowConnectorTrust,
   } satisfies McpRuntimeServiceShape;
 });
 

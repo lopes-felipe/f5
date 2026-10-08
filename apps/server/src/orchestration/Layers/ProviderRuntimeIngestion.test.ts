@@ -3834,6 +3834,90 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
+  it("records host-enforced denials as receipts and only stops a turn that keeps retrying", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-host-denial");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-host-denial-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "claudeAgent",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+        },
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-host-denial-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+
+    const emitDenial = (index: number) =>
+      harness.emit({
+        type: "request.opened",
+        eventId: asEventId(`evt-host-denial-${index}`),
+        provider: "claudeAgent",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId,
+        requestId: ApprovalRequestId.makeUnsafe(`req-host-denial-${index}`),
+        payload: {
+          requestType: "command_execution_approval",
+          detail: "git status",
+          hostEnforcedDenial: {
+            reason: "Tool 'Bash' is not permitted in a read-only workflow stage.",
+          },
+        },
+      });
+
+    emitDenial(0);
+    const recorded = await waitForThread(harness.engine, (thread) =>
+      thread.activities.some((activity) => activity.id === "evt-host-denial-0"),
+    );
+    const receipt = recorded.activities.find((activity) => activity.id === "evt-host-denial-0");
+    expect(receipt?.kind).toBe("runtime.warning");
+    expect(recorded.activities.some((activity) => activity.kind === "approval.requested")).toBe(
+      false,
+    );
+    expect(recorded.session?.status).toBe("running");
+    expect(harness.requestResponses).toEqual([]);
+    expect(harness.interruptedTurns).toEqual([]);
+
+    for (let index = 1; index <= 12; index += 1) emitDenial(index);
+    const failed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "error",
+    );
+    expect(failed.session?.lastError).toContain("kept requesting tools that are not permitted");
+    expect(harness.requestResponses).toEqual([]);
+  });
+
   it("settles unattended workflow user-input requests without failing the turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

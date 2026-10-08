@@ -10,7 +10,7 @@ import {
   type CodeReviewWorkflow,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -59,6 +59,9 @@ import {
 } from "../workflowBehavior.ts";
 import { buildCodeReviewWorkflowRecord } from "../workflowRecordBuilders.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
+import type { CodeReviewTargetSnapshot } from "../../persistence/Services/CodeReviewTargetSnapshots.ts";
+import { WorkflowEvidenceLedger } from "../../workflowInspection/evidenceLedger.ts";
+import { ReviewTargetError, ReviewTargetService } from "../../workflowInspection/reviewTarget.ts";
 
 type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly workflowId: CodeReviewWorkflowId;
@@ -452,6 +455,7 @@ function startReviewerTurn(input: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: CodeReviewWorkflow;
   reviewer: CodeReviewReviewer;
+  target: CodeReviewTargetSnapshot | null;
   createdAt: string;
   retry: WorkflowRetryContext;
 }) {
@@ -464,6 +468,7 @@ function startReviewerTurn(input: {
     lensBranch: input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b",
     branch: input.workflow.branch,
     reviewerSlot: input.reviewer.slot,
+    target: input.target,
     retry: input.retry,
   });
   if (prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
@@ -585,12 +590,44 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
+  const reviewTargets = yield* Effect.serviceOption(ReviewTargetService);
+  const evidenceLedger = yield* Effect.serviceOption(WorkflowEvidenceLedger);
   const getWorkflowProviders =
     providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
   const orchestrationEngine = withWorkflowModelSelectionGuard(
     baseOrchestrationEngine,
     getWorkflowProviders,
   );
+
+  /**
+   * The workflow's pinned target. Reviews created before targets were pinned
+   * capture one the first time a reviewer starts again, and keep it from then on.
+   */
+  const ensureReviewTarget = (workflow: CodeReviewWorkflow) =>
+    Effect.gen(function* () {
+      if (reviewTargets._tag === "None") return null;
+      const existing = yield* reviewTargets.value.getByWorkflowId(workflow.id);
+      if (Option.isSome(existing)) return existing.value;
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const project = readModel.projects.find((entry) => entry.id === workflow.projectId);
+      if (!project) {
+        return yield* new ReviewTargetError({ message: "The review's project no longer exists." });
+      }
+      return yield* reviewTargets.value.capture({
+        workflowId: workflow.id,
+        projectId: workflow.projectId,
+        workspaceRoot: project.workspaceRoot,
+        reviewPrompt: workflow.reviewPrompt,
+        comparisonRef: workflow.branch,
+      });
+    });
+
+  const startReviewerTurnWithTarget = (
+    input: Omit<Parameters<typeof startReviewerTurn>[0], "target">,
+  ) =>
+    ensureReviewTarget(input.workflow).pipe(
+      Effect.flatMap((target) => startReviewerTurn({ ...input, target })),
+    );
 
   const runningStageReconciliationError = (
     threadId: ThreadId,
@@ -840,7 +877,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       for (const reviewer of pendingReviewers) {
         const reviewerThread = snapshot.threads.find((thread) => thread.id === reviewer.threadId);
         const outcome = yield* Effect.exit(
-          startReviewerTurn({
+          startReviewerTurnWithTarget({
             orchestrationEngine,
             workflow,
             reviewer,
@@ -888,6 +925,25 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
       const reviewer = reviewerMatch(workflow, threadId);
       if (reviewer && canConsumeCompletedStageTurn(reviewer.reviewer, thread)) {
+        // A reviewer that could not read the pinned evidence has not reviewed it,
+        // whatever its final message says; consolidation must not claim otherwise.
+        const evidenceFailure =
+          evidenceLedger._tag === "Some" && thread?.latestTurn
+            ? yield* evidenceLedger.value.unresolvedFailureSince({
+                threadId,
+                since: thread.latestTurn.requestedAt,
+              })
+            : undefined;
+        if (evidenceFailure) {
+          const failedWorkflow = withReviewerError({
+            workflow,
+            reviewerKey: reviewer.reviewerKey,
+            error: `${reviewer.reviewer.label} could not read the pinned review evidence: ${evidenceFailure.message}`,
+            updatedAt,
+          });
+          yield* upsertWorkflow(orchestrationEngine, failedWorkflow, updatedAt);
+          return failedWorkflow;
+        }
         const nextWorkflow = resetConsolidationAfterReviewerUpdate(
           withCompletedReviewer({
             workflow,
@@ -1335,6 +1391,21 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           defaultTitle: "New code review",
         });
       const slug = nextWorkflowSlug(existingSlugs, initialTitle);
+      // Pin the review target before anything is created: an ambiguous target,
+      // missing access, or an incomplete diff fails the request outright.
+      if (reviewTargets._tag === "Some") {
+        const project = snapshot.projects.find((entry) => entry.id === input.projectId);
+        if (!project) {
+          return yield* new ReviewTargetError({ message: "Project not found." });
+        }
+        yield* reviewTargets.value.capture({
+          workflowId,
+          projectId: input.projectId,
+          workspaceRoot: project.workspaceRoot,
+          reviewPrompt: input.reviewPrompt,
+          comparisonRef: input.branch ?? null,
+        });
+      }
       const workflow = buildCodeReviewWorkflowRecord({
         workflowId,
         projectId: input.projectId,
@@ -1715,7 +1786,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
               allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
             });
           } else if (mode === "fresh") {
-            yield* startReviewerTurn({
+            yield* startReviewerTurnWithTarget({
               orchestrationEngine,
               workflow: currentWorkflow,
               reviewer,

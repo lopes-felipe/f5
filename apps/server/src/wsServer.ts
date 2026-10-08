@@ -5348,6 +5348,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case WS_METHODS.mcpGetWorkflowConnectorAccess: {
+        const body = stripRequestTag(request.body);
+        return yield* mcpRuntimeService.getWorkflowConnectorAccess(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.mcpSetWorkflowConnectorTrust: {
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
+        return yield* mcpRuntimeService.setWorkflowConnectorTrust(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
       case WS_METHODS.mcpGetLoginStatus: {
         const requestBody = stripRequestTag(request.body);
         const body = yield* profileCall(() => resolveMcpAccount(requestBody));

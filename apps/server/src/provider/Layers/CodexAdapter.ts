@@ -2295,10 +2295,26 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           options?.defaultProviderOptions,
           input.providerOptions,
         );
-        const baseProviderMcpServers = providerOptions?.mcpServers;
+        // Read-only stages get only host-planned connectors plus the inspection
+        // server; the browser preview server is not offered.
+        const inspection = input.workflowCapabilities?.inspection;
+        const baseProviderMcpServers = inspection
+          ? {
+              ...providerOptions?.mcpServers,
+              [inspection.serverName]: {
+                type: "http" as const,
+                url: inspection.url,
+                enabled: true,
+                bearerTokenEnvVar: inspection.envVarName,
+                startupTimeoutSec: 10,
+                toolTimeoutSec: 120,
+              },
+            }
+          : providerOptions?.mcpServers;
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
+          input.workflowExecutionProfile === undefined &&
           serverConfig.mode === "desktop" &&
           (!options?.canAccessBrowser || (yield* options.canAccessBrowser(input.threadId)))
             ? options?.previewMcpHttpServer?.createSessionConfig({
@@ -2315,6 +2331,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               [previewMcpSession.serverName]: previewMcpSession.serverDefinition,
             }
           : baseProviderMcpServers;
+        const mcpEnvironment = {
+          ...previewMcpSession?.env,
+          ...(inspection ? { [inspection.envVarName]: inspection.token } : {}),
+        };
         const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
               try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
@@ -2365,7 +2385,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(previewMcpSession ? { mcpEnvironment: previewMcpSession.env } : {}),
+          ...(Object.keys(mcpEnvironment).length > 0 ? { mcpEnvironment } : {}),
+          ...(input.workflowExecutionProfile
+            ? { workflowExecutionProfile: input.workflowExecutionProfile }
+            : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
             : {}),

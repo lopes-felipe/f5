@@ -88,6 +88,18 @@ import { KeybindingsLive } from "./keybindings";
 import { GitManagerLive } from "./git/Layers/GitManager";
 import { GitCoreLive } from "./git/Layers/GitCore";
 import { GitHubCliLive } from "./git/Layers/GitHubCli";
+import { CodeReviewTargetSnapshotRepositoryLive } from "./persistence/Layers/CodeReviewTargetSnapshots";
+import { CodeReviewTargetSnapshotRepository } from "./persistence/Services/CodeReviewTargetSnapshots";
+import {
+  WorkflowEvidenceLedger,
+  WorkflowEvidenceLedgerLive,
+} from "./workflowInspection/evidenceLedger";
+import {
+  InspectionMcpHttpServer,
+  InspectionMcpHttpServerError,
+  InspectionMcpHttpServerLive,
+} from "./workflowInspection/InspectionMcpHttpServer";
+import { ReviewTargetService, ReviewTargetServiceLive } from "./workflowInspection/reviewTarget";
 import { TextGenerationLive } from "./git/Layers/TextGenerationLive";
 import { GitServiceLive } from "./git/Layers/GitService";
 import { ObservabilityLive } from "./observability/Layers/Observability";
@@ -153,10 +165,15 @@ export function makeServerProviderLayer(): Layer.Layer<
   | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
   | ProviderAdapterRegistry
-  | ServerSettingsService,
+  | ServerSettingsService
+  | ReviewTargetService
+  | CodeReviewTargetSnapshotRepository
+  | WorkflowEvidenceLedger
+  | InspectionMcpHttpServer,
   | ProviderUnsupportedError
   | PlatformError.PlatformError
   | PreviewMcpHttpServerError
+  | InspectionMcpHttpServerError
   | SecretStoreError,
   | SqlClient.SqlClient
   | ServerConfig
@@ -221,10 +238,24 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
     );
+    // Read-only workflow inspection. The ledger and snapshot service are shared
+    // with the code review workflow so evidence failures reach consolidation.
+    const inspectionGitHubCliLayer = GitHubCliLive.pipe(Layer.provide(ServerSecretStoreLive));
+    const reviewTargetServiceLayer = ReviewTargetServiceLive.pipe(
+      Layer.provideMerge(CodeReviewTargetSnapshotRepositoryLive),
+      Layer.provide(inspectionGitHubCliLayer),
+    );
+    const workflowEvidenceLedgerLayer = WorkflowEvidenceLedgerLive;
+    const inspectionMcpHttpServerLayer = InspectionMcpHttpServerLive.pipe(
+      Layer.provide(inspectionGitHubCliLayer),
+      Layer.provide(reviewTargetServiceLayer),
+      Layer.provide(workflowEvidenceLedgerLayer),
+    );
     const providerServiceLayer = makeProviderServiceLive({
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
       recordTerminalEvent: providerTerminalEventRepository.record,
     }).pipe(
+      Layer.provide(inspectionMcpHttpServerLayer),
       Layer.provide(adapterRegistryLayer),
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerSessionDirectoryLayer),
@@ -269,6 +300,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       projectMcpConfigServiceLayer,
       previewAutomationBrokerLayer,
       previewMcpHttpServerLayer,
+      reviewTargetServiceLayer,
+      workflowEvidenceLedgerLayer,
+      inspectionMcpHttpServerLayer,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);
 }
