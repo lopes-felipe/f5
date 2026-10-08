@@ -5955,6 +5955,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             {
               workflowExecutionProfile: input.workflowExecutionProfile,
               subagentsEnabled: providerOptions?.subagentsEnabled,
+              plansDirectory: NodePath.join(
+                resolveClaudeConfigDir(queryEnvironment, input.cwd),
+                "plans",
+              ),
             },
             undefined,
             async (hook, signal) => {

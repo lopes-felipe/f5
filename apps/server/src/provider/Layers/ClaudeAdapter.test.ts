@@ -1355,6 +1355,50 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("leaves Bash to native plan-mode evaluation in read-only workflows", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.permissionMode, "plan");
+      const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const response = yield* Effect.promise(() =>
+        hook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "native",
+            cwd: "/tmp",
+            transcript_path: "/tmp/transcript",
+            tool_name: "Bash",
+            tool_input: { command: "git diff" },
+            tool_use_id: "workflow-bash-hook",
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        ),
+      );
+      assert.deepEqual(response, {});
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+      assert.isFalse(events.some((event) => event.type === "request.opened"));
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("does not inject a transcript contract into legacy sessions by default", () => {
     const harness = makeHarness({ processEnvironment: {} });
     return Effect.gen(function* () {
