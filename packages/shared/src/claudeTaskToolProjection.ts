@@ -143,6 +143,30 @@ interface ReduceResult {
   readonly tracking: ThreadTaskTracking;
 }
 
+/**
+ * Attribute tasks F5 first learned about to the call that revealed them, so a
+ * revert of that turn drops and suppresses them like created tasks.
+ */
+function withProvenance(
+  tracking: ThreadTaskTracking,
+  taskIds: ReadonlyArray<string>,
+  nativeCallId: string,
+  turnId: TurnId | null,
+): ThreadTaskTracking {
+  if (taskIds.length === 0) return tracking;
+  const added = new Set(taskIds);
+  return {
+    ...tracking,
+    provenance: keepNewest(
+      [
+        ...tracking.provenance.filter((entry) => !added.has(entry.taskId)),
+        ...taskIds.map((taskId) => ({ taskId, nativeCallId, turnId })),
+      ],
+      MAX_THREAD_TASKS,
+    ),
+  };
+}
+
 function applyTaskCreate(
   tasks: TaskItem[],
   tracking: ThreadTaskTracking,
@@ -179,16 +203,7 @@ function applyTaskCreate(
   };
   return {
     tasks: [...tasks, created],
-    tracking: {
-      ...tracking,
-      provenance: keepNewest(
-        [
-          ...tracking.provenance.filter((entry) => entry.taskId !== id),
-          { taskId: id, nativeCallId, turnId },
-        ],
-        MAX_THREAD_TASKS,
-      ),
-    },
+    tracking: withProvenance(tracking, [id], nativeCallId, turnId),
   };
 }
 
@@ -253,6 +268,8 @@ function applyTaskList(
   tasks: TaskItem[],
   tracking: ThreadTaskTracking,
   output: UnknownRecord | undefined,
+  nativeCallId: string,
+  turnId: TurnId | null,
 ): ReduceResult {
   if (!Array.isArray(output?.tasks)) {
     return { tasks, tracking: markSyncRequired(tracking, "A task list result was malformed.") };
@@ -294,13 +311,19 @@ function applyTaskList(
     };
   }
   const retained = new Set(next.map((task) => task.id));
+  const recovered = next.filter((task) => !previous.has(task.id)).map((task) => task.id);
   return {
     tasks: next,
     tracking: withSync(
-      {
-        ...tracking,
-        provenance: tracking.provenance.filter((entry) => retained.has(entry.taskId)),
-      },
+      withProvenance(
+        {
+          ...tracking,
+          provenance: tracking.provenance.filter((entry) => retained.has(entry.taskId)),
+        },
+        recovered,
+        nativeCallId,
+        turnId,
+      ),
       "synced",
     ),
   };
@@ -311,6 +334,8 @@ function applyTaskGet(
   tracking: ThreadTaskTracking,
   input: UnknownRecord | undefined,
   output: UnknownRecord | undefined,
+  nativeCallId: string,
+  turnId: TurnId | null,
 ): ReduceResult {
   const requestedId = asNonEmptyString(input?.taskId);
   if (output?.task === null) {
@@ -356,7 +381,10 @@ function applyTaskGet(
   // The task exists natively but F5 missed its creation: add it from the read.
   return {
     tasks: [...tasks, { id, activeForm: subject, ...fields }],
-    tracking: markSyncRequired(tracking, `Task ${id} was missing from F5's list.`),
+    tracking: markSyncRequired(
+      withProvenance(tracking, [id], nativeCallId, turnId),
+      `Task ${id} was missing from F5's list.`,
+    ),
   };
 }
 
@@ -433,6 +461,7 @@ export function reduceTaskToolLifecycle(
 
   const { completion } = input;
   let tracking = base;
+  let currentTasks = state.tasks;
   if (pending && pending.generation !== base.generation) {
     return { tasks: [...state.tasks], tracking: resolveCall(base, nativeCallId) };
   }
@@ -441,18 +470,23 @@ export function reduceTaskToolLifecycle(
   }
   const sessionId = completion.nativeSessionId ?? null;
   if (sessionId && tracking.nativeSessionId && tracking.nativeSessionId !== sessionId) {
-    // A new native session has its own task list; F5's snapshot may be stale.
-    tracking = markSyncRequired(tracking, "The provider session changed.");
+    // A new native session has its own task list and restarts task ids at 1,
+    // so the old session's tasks, provenance and suppressions no longer apply.
+    currentTasks = [];
+    tracking = markSyncRequired(
+      { ...tracking, provenance: [], suppressedTaskIds: [] },
+      "The provider session changed; tasks resync on the next task list read.",
+    );
   }
   if (sessionId) tracking = { ...tracking, nativeSessionId: sessionId };
   tracking = resolveCall(tracking, nativeCallId);
 
   if (!completion.semanticSuccess) {
-    return { tasks: [...state.tasks], tracking };
+    return { tasks: [...currentTasks], tracking };
   }
   if (completion.outputOmission || completion.inputOmission) {
     return {
-      tasks: [...state.tasks],
+      tasks: [...currentTasks],
       tracking: markSyncRequired(
         tracking,
         `A ${input.toolName} result was not retained (${completion.outputOmission?.reason ?? completion.inputOmission?.reason}).`,
@@ -462,24 +496,78 @@ export function reduceTaskToolLifecycle(
 
   const toolInput = asRecord(completion.input);
   const output = asRecord(completion.structuredOutput);
-  const tasks = [...state.tasks];
+  const tasks = [...currentTasks];
+  const turnId = pending?.turnId ?? input.turnId;
   switch (input.toolName) {
     case "TaskCreate":
-      return applyTaskCreate(
-        tasks,
-        tracking,
-        toolInput,
-        output,
-        nativeCallId,
-        pending?.turnId ?? input.turnId,
-      );
+      return applyTaskCreate(tasks, tracking, toolInput, output, nativeCallId, turnId);
     case "TaskUpdate":
       return applyTaskUpdate(tasks, tracking, toolInput, output);
     case "TaskList":
-      return applyTaskList(tasks, tracking, output);
+      return applyTaskList(tasks, tracking, output, nativeCallId, turnId);
     case "TaskGet":
-      return applyTaskGet(tasks, tracking, toolInput, output);
+      return applyTaskGet(tasks, tracking, toolInput, output, nativeCallId, turnId);
   }
+}
+
+/**
+ * Record a call from a turn that a revert already discarded, without applying
+ * it. A start is remembered as invalidated so its later result is ignored; a
+ * result or abandonment is marked handled. Returns `undefined` when nothing
+ * changes.
+ */
+export function discardTaskToolCall(
+  state: TaskToolState,
+  input: TaskToolLifecycleInput,
+): ReduceResult | undefined {
+  const tracking = state.tracking ?? emptyTaskToolTracking();
+  const { nativeCallId } = input;
+  if (tracking.handledCallIds.includes(nativeCallId)) return undefined;
+  if (input.phase === "started") {
+    if (tracking.invalidatedCallIds.includes(nativeCallId)) return undefined;
+    return {
+      tasks: [...state.tasks],
+      tracking: {
+        ...tracking,
+        pendingCalls: tracking.pendingCalls.filter((call) => call.nativeCallId !== nativeCallId),
+        invalidatedCallIds: keepNewest(
+          [...tracking.invalidatedCallIds, nativeCallId],
+          MAX_INVALIDATED_CALL_IDS,
+        ),
+      },
+    };
+  }
+  return {
+    tasks: [...state.tasks],
+    tracking: resolveCall(
+      {
+        ...tracking,
+        invalidatedCallIds: tracking.invalidatedCallIds.filter((id) => id !== nativeCallId),
+      },
+      nativeCallId,
+    ),
+  };
+}
+
+/**
+ * Release every unresolved call when the provider session ends or restarts:
+ * no result can arrive for them any more (for example after a crash that
+ * never emitted `item.completed`). Returns `undefined` when none are pending.
+ */
+export function abandonPendingTaskToolCalls(state: TaskToolState): ReduceResult | undefined {
+  const tracking = state.tracking;
+  if (!tracking || tracking.pendingCalls.length === 0) return undefined;
+  const released = tracking.pendingCalls.reduce(
+    (next, call) => resolveCall(next, call.nativeCallId),
+    tracking,
+  );
+  return {
+    tasks: [...state.tasks],
+    tracking: markSyncRequired(
+      released,
+      "Task tool calls were interrupted when the provider session ended.",
+    ),
+  };
 }
 
 /**

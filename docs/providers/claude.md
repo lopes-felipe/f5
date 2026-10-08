@@ -459,18 +459,28 @@ to Claude; it applies tool results as they arrive:
   last valid snapshot and shows an overflow notice.
 - Revert and checkpoint restore drop tasks created in discarded turns, remember their
   ids so a later `TaskList` cannot resurrect them, invalidate in-flight calls, and bump a
-  tracking generation. Writes computed against an older generation are rejected, so
-  late results from a discarded turn are ignored.
+  tracking generation. Writes computed against an older generation are rejected, and
+  Task tool events that arrive later from a discarded turn are recorded but never
+  applied. Tasks F5 first learns about from a `TaskList` or `TaskGet` are attributed to
+  that call's turn, so reverting it drops them too.
+- A new native session (for example a fresh session after a failed resume) has its own
+  task list with ids starting at 1, so F5 clears the previous session's tasks and
+  suppressions and waits for the next `TaskList`. Calls still pending when the provider
+  session ends or restarts are released, since no result can arrive for them.
 - Task tool calls do not appear as work-log rows. Their typed completion (native call id,
   correlated input, structured result, transport and semantic success) is persisted once
   on `item.completed`; results above 64 KiB are stored as a thread-scoped JSON
-  attachment and referenced with omission metadata. Other tools record ids and success
-  flags only.
+  attachment and referenced with omission metadata, and F5 reads that attachment back
+  (checksum-verified, up to 8 MiB) so a large `TaskList` still resynchronizes. Other
+  tools record ids and transport success only; `success: false` marks only Task tools
+  as failed.
 - Only the main session's Task tools drive the panel; child-agent task lists stay with
   the child.
 
 Tracking state is stored with the thread (`tasks_tracking_json`). `TodoWrite`
-snapshots keep their previous behavior and clear on revert.
+snapshots keep their previous behavior and clear on revert; a `TodoWrite` snapshot in a
+thread that used the native tools (for example after an operator sets
+`CLAUDE_CODE_ENABLE_TASKS=0`) clears the native tracking state.
 
 Wire protocol 16 adds the tracking state, task dependency fields, and the completion
 envelope; clients and servers must both run Release 1.

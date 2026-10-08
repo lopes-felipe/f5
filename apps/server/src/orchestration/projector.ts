@@ -1111,7 +1111,7 @@ export function projectEvent(
             tasksTurnId: payload.turnId,
             tasksUpdatedAt: payload.updatedAt,
             // Omitted tracking (TodoWrite) leaves native Task tool state untouched.
-            ...(payload.tracking ? { tasksTracking: payload.tracking } : {}),
+            ...(payload.tracking !== undefined ? { tasksTracking: payload.tracking } : {}),
             lastInteractionAt: payload.updatedAt,
             updatedAt: payload.updatedAt,
           }),

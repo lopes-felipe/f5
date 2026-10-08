@@ -1130,7 +1130,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             tasks: event.payload.tasks,
             tasksTurnId: event.payload.turnId,
             tasksUpdatedAt: event.payload.updatedAt,
-            ...(event.payload.tracking ? { tasksTracking: event.payload.tracking } : {}),
+            ...(event.payload.tracking !== undefined
+              ? { tasksTracking: event.payload.tracking }
+              : {}),
             lastInteractionAt: event.payload.updatedAt,
             updatedAt: event.payload.updatedAt,
           });

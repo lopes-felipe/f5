@@ -72,6 +72,13 @@ describe("buildClaudeToolCompletion", () => {
       structuredOutput: undefined,
     }).envelope;
     expect(transport).toMatchObject({ transportError: true, semanticSuccess: false });
+    // Other tools' `success` fields are not a failure contract.
+    const other = buildClaudeToolCompletion({
+      ...base,
+      toolName: "WebFetch",
+      structuredOutput: { success: false },
+    }).envelope;
+    expect(other).toMatchObject({ transportError: false, semanticSuccess: true });
   });
 
   it("refuses to attribute an output shared by several tool results", () => {

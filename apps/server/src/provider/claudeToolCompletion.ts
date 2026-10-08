@@ -79,8 +79,12 @@ export function buildClaudeToolCompletion(input: {
 }): ClaudeToolCompletionDraft {
   const retained = retainsStructuredOutput(input.toolName);
   const hasOutput = input.structuredOutput !== undefined && input.structuredOutput !== null;
+  // `success: false` is a documented failure signal only for the Task tools;
+  // other tools keep the transport-level status.
   const failure =
-    input.correlated && hasOutput ? readSemanticFailure(input.structuredOutput) : undefined;
+    retained && input.correlated && hasOutput
+      ? readSemanticFailure(input.structuredOutput)
+      : undefined;
 
   let structuredOutput: unknown;
   let outputOmission: ToolCompletionOmission | undefined;

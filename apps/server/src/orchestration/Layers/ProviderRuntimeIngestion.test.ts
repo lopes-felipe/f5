@@ -1,6 +1,8 @@
 import { ServerSettingsService } from "../../serverSettings";
 import { UsageService, type UsageServiceShape } from "../../usage/Services/UsageService.ts";
-import { RuntimeRequestId } from "@t3tools/contracts";
+import { RuntimeRequestId, type ToolCompletionEnvelope } from "@t3tools/contracts";
+import { createHash } from "node:crypto";
+import { createAttachmentId } from "../../attachmentStore.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -214,6 +216,7 @@ describe("ProviderRuntimeIngestion", () => {
     | ThreadFileChangeQuery
     | UsageFactRepository
     | ProviderTerminalEventRepository
+    | ServerConfig
     | SqlClient.SqlClient,
     unknown
   > | null = null;
@@ -244,6 +247,8 @@ describe("ProviderRuntimeIngestion", () => {
     readonly startIngestion?: boolean;
     readonly refreshAccount?: UsageServiceShape["refreshAccount"];
     readonly settings?: Partial<import("@t3tools/contracts").ServerSettings>;
+    /** Isolated state dir for tests that write attachments. */
+    readonly stateDir?: string;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
@@ -289,7 +294,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(UsageFactRepositoryLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), options?.stateDir ?? process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -397,6 +402,7 @@ describe("ProviderRuntimeIngestion", () => {
       startIngestion,
       drain,
       workspaceRoot,
+      attachmentsDir: (await runtime.runPromise(Effect.service(ServerConfig))).attachmentsDir,
     };
   }
 
@@ -7166,6 +7172,212 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.tasks).toEqual([]);
     expect(thread.tasksTracking).toMatchObject({ pendingCalls: [], syncState: "sync-required" });
+  });
+
+  type IngestionHarness = Awaited<ReturnType<typeof createHarness>>;
+  function emitTaskToolCall(
+    harness: IngestionHarness,
+    input: {
+      readonly callId: string;
+      readonly turnId: string;
+      readonly toolName: string;
+      readonly toolInput: Record<string, unknown>;
+      readonly completion?: Partial<ToolCompletionEnvelope> | null;
+    },
+  ) {
+    const base = {
+      provider: "claudeAgent" as const,
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId(input.turnId),
+      itemId: asItemId(input.callId),
+    };
+    const payload = {
+      itemType: "dynamic_tool_call" as const,
+      title: input.toolName,
+      data: { toolName: input.toolName, input: input.toolInput },
+    };
+    harness.emit({
+      ...base,
+      type: "item.started",
+      eventId: asEventId(`evt-${input.callId}-start`),
+      payload: { ...payload, status: "inProgress" },
+    });
+    if (input.completion === null) return;
+    harness.emit({
+      ...base,
+      type: "item.completed",
+      eventId: asEventId(`evt-${input.callId}-complete`),
+      payload: {
+        ...payload,
+        status: "completed",
+        completion: {
+          version: 1,
+          nativeCallId: input.callId,
+          nativeSessionId: "native-session-1",
+          toolName: input.toolName,
+          input: input.toolInput,
+          transportError: false,
+          semanticSuccess: true,
+          ...input.completion,
+        },
+      },
+    });
+  }
+
+  it("ignores Task tool events from a turn a revert discarded", async () => {
+    const harness = await createHarness();
+    // Tracking that has already seen one revert.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.tasks.update",
+        commandId: CommandId.makeUnsafe("cmd-seed-tracking"),
+        threadId: asThreadId("thread-1"),
+        tasks: [],
+        tracking: {
+          version: 1,
+          source: "claude-task-tools",
+          nativeSessionId: "native-session-1",
+          generation: 1,
+          syncState: "synced",
+          pendingCalls: [],
+          invalidatedCallIds: [],
+          handledCallIds: [],
+          provenance: [],
+          suppressedTaskIds: [],
+        },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    emitTaskToolCall(harness, {
+      callId: "late-create",
+      turnId: "turn-discarded",
+      toolName: "TaskCreate",
+      toolInput: { subject: "Discarded work" },
+      completion: { structuredOutput: { task: { id: "1", subject: "Discarded work" } } },
+    });
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-live-turn"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-live"),
+      createdAt: new Date().toISOString(),
+    });
+    emitTaskToolCall(harness, {
+      callId: "live-create",
+      turnId: "turn-live",
+      toolName: "TaskCreate",
+      toolInput: { subject: "Live work" },
+      completion: { structuredOutput: { task: { id: "2", subject: "Live work" } } },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.tasksTracking?.handledCallIds.includes("live-create") === true,
+    );
+    expect(thread.tasks.map((task) => task.id)).toEqual(["2"]);
+    expect(thread.tasksTracking?.handledCallIds).toContain("late-create");
+    expect(thread.tasksTracking?.invalidatedCallIds).toEqual([]);
+  });
+
+  it("abandons pending Task tool calls when the provider session exits", async () => {
+    const harness = await createHarness();
+    emitTaskToolCall(harness, {
+      callId: "crashed-update",
+      turnId: "turn-crash",
+      toolName: "TaskUpdate",
+      toolInput: { taskId: "1", status: "completed" },
+      completion: null,
+    });
+    await waitForThread(harness.engine, (entry) => entry.tasksTracking?.pendingCalls.length === 1);
+    harness.emit({
+      type: "session.exited",
+      eventId: asEventId("evt-session-exited"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { reason: "Provider process crashed." },
+    });
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.tasksTracking?.pendingCalls.length === 0,
+    );
+    expect(thread.tasksTracking).toMatchObject({ syncState: "sync-required" });
+    expect(thread.tasksTracking?.handledCallIds).toContain("crashed-update");
+  });
+
+  it("resynchronizes from an oversize TaskList result stored as an attachment", async () => {
+    const harness = await createHarness({ stateDir: makeTempDir("t3-task-artifact-") });
+    const listed = {
+      tasks: [
+        { id: "1", subject: "First", status: "completed", blockedBy: [] },
+        { id: "2", subject: "Second", status: "pending", blockedBy: ["1"] },
+      ],
+    };
+    const json = JSON.stringify(listed);
+    const attachmentId = createAttachmentId("thread-1")!;
+    fs.mkdirSync(harness.attachmentsDir, { recursive: true });
+    fs.writeFileSync(path.join(harness.attachmentsDir, `${attachmentId}.json`), json);
+    emitTaskToolCall(harness, {
+      callId: "big-list",
+      turnId: "turn-list",
+      toolName: "TaskList",
+      toolInput: {},
+      completion: {
+        outputOmission: {
+          reason: "too-large",
+          bytes: Buffer.byteLength(json),
+          sha256: createHash("sha256").update(json).digest("hex"),
+          artifact: { kind: "attachment", attachmentId, mimeType: "application/json" },
+        },
+      },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.tasksTracking?.handledCallIds.includes("big-list") === true,
+    );
+    expect(thread.tasks.map((task) => [task.id, task.status])).toEqual([
+      ["1", "completed"],
+      ["2", "pending"],
+    ]);
+    expect(thread.tasksTracking?.syncState).toBe("synced");
+  });
+
+  it("clears native task tracking when a TodoWrite snapshot takes over", async () => {
+    const harness = await createHarness();
+    emitTaskToolCall(harness, {
+      callId: "native-create",
+      turnId: "turn-native",
+      toolName: "TaskCreate",
+      toolInput: { subject: "Native" },
+      completion: { structuredOutput: { task: { id: "1", subject: "Native" } } },
+    });
+    await waitForThread(harness.engine, (entry) => entry.tasksTracking != null);
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-todo-takeover"),
+      provider: "claudeAgent",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-todo"),
+      itemId: asItemId("item-todo-takeover"),
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "inProgress",
+        title: "Tool call",
+        data: {
+          toolName: "TodoWrite",
+          input: { todos: [{ content: "Todo", activeForm: "Doing todo", status: "pending" }] },
+        },
+      },
+    });
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.tasksTracking === null && entry.tasks.length === 1,
+    );
+    expect(thread.tasks[0]?.content).toBe("Todo");
   });
 
   it.each(["turn.completed", "turn.aborted"] as const)(

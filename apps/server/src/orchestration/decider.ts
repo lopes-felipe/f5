@@ -2054,7 +2054,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           tasks: command.tasks,
           turnId: command.turnId ?? null,
-          ...(command.tracking ? { tracking: command.tracking } : {}),
+          ...(command.tracking !== undefined ? { tracking: command.tracking } : {}),
           updatedAt: command.createdAt,
         },
       };

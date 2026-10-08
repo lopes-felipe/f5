@@ -1629,8 +1629,11 @@ const ThreadTasksUpdateCommand = Schema.Struct({
   threadId: ThreadId,
   tasks: Schema.Array(TaskItem),
   turnId: Schema.optional(TurnId),
-  /** Omitted: tracking unchanged (TodoWrite). Present: replaces it atomically. */
-  tracking: Schema.optional(ThreadTaskTracking),
+  /**
+   * Omitted: tracking unchanged. Present: replaces it atomically. `null` clears
+   * native tracking when a TodoWrite snapshot takes over the task list.
+   */
+  tracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)),
   /**
    * Generation the update was computed from. The decider rejects the command
    * when a revert advanced the thread's generation in the meantime.
@@ -2215,7 +2218,7 @@ export const ThreadTasksUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   tasks: Schema.Array(TaskItem),
   turnId: Schema.NullOr(TurnId),
-  tracking: Schema.optional(ThreadTaskTracking),
+  tracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)),
   updatedAt: IsoDateTime,
 });
 

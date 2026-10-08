@@ -1556,7 +1556,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           ? mergeTasks(thread.tasks, event.payload.tasks)
           : thread.tasks;
         const tasksTracking =
-          detailGate.applyDetailMutations && event.payload.tracking
+          detailGate.applyDetailMutations && event.payload.tracking !== undefined
             ? event.payload.tracking
             : thread.tasksTracking;
         if (

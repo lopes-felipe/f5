@@ -2,6 +2,8 @@ import type { TaskItem, ToolCompletionEnvelope, TurnId } from "@t3tools/contract
 import { describe, expect, it } from "vitest";
 
 import {
+  abandonPendingTaskToolCalls,
+  discardTaskToolCall,
   emptyTaskToolTracking,
   reduceTaskToolLifecycle,
   revertTaskToolState,
@@ -254,7 +256,8 @@ describe("reduceTaskToolLifecycle", () => {
       },
     ]);
     expect(state.tracking?.syncState).toBe("synced");
-    expect(state.tracking?.provenance.map((entry) => entry.taskId)).toEqual(["1"]);
+    // Task 3 is attributed to the TaskList call that revealed it.
+    expect(state.tracking?.provenance.map((entry) => entry.taskId)).toEqual(["1", "3"]);
   });
 
   it("reconciles TaskGet and removes a task the runtime reports missing", () => {
@@ -384,6 +387,140 @@ describe("reduceTaskToolLifecycle", () => {
     const listed = call(base, "big-list", "TaskList", {}, many);
     expect(listed.tasks).toEqual(base.tasks);
     expect(listed.tracking?.syncState).toBe("overflow");
+  });
+
+  it("resets tasks, provenance and suppression when the native session changes", () => {
+    let state = create(create(empty, "1", "Old one"), "2", "Old two", TURN_2);
+    // A revert suppresses old task 2; the new session reuses ids 1 and 2.
+    state = revertTaskToolState(state, new Set([TURN_1]));
+    expect(state.tracking?.suppressedTaskIds).toEqual(["2"]);
+    const newSession = { nativeSessionId: "session-2" };
+    state = call(
+      state,
+      "new-1",
+      "TaskCreate",
+      { subject: "New one" },
+      { task: { id: "1", subject: "New one" } },
+      { overrides: newSession },
+    );
+    expect(state.tasks.map((task) => [task.id, task.content])).toEqual([["1", "New one"]]);
+    expect(state.tracking).toMatchObject({
+      nativeSessionId: "session-2",
+      suppressedTaskIds: [],
+      syncState: "sync-required",
+    });
+    expect(state.tracking?.provenance).toEqual([
+      { taskId: "1", nativeCallId: "new-1", turnId: TURN_1 },
+    ]);
+    state = call(
+      state,
+      "new-list",
+      "TaskList",
+      {},
+      {
+        tasks: [
+          { id: "1", subject: "New one", status: "pending", blockedBy: [] },
+          { id: "2", subject: "New two", status: "pending", blockedBy: [] },
+        ],
+      },
+      { overrides: newSession },
+    );
+    // New task 2 is not hidden by the old session's suppression.
+    expect(state.tasks.map((task) => task.id)).toEqual(["1", "2"]);
+    expect(state.tracking?.syncState).toBe("synced");
+  });
+
+  it("attributes tasks recovered by TaskList or TaskGet so a revert drops them", () => {
+    let state = create(empty, "1", "Known", TURN_1);
+    state = call(
+      state,
+      "list",
+      "TaskList",
+      {},
+      {
+        tasks: [
+          { id: "1", subject: "Known", status: "pending", blockedBy: [] },
+          { id: "7", subject: "Recovered", status: "pending", blockedBy: [] },
+        ],
+      },
+      { turnId: TURN_2 },
+    );
+    state = call(
+      state,
+      "get",
+      "TaskGet",
+      { taskId: "8" },
+      { task: { id: "8", subject: "Read", status: "pending", blocks: [], blockedBy: [] } },
+      { turnId: TURN_2 },
+    );
+    expect(state.tracking?.provenance).toEqual([
+      { taskId: "1", nativeCallId: "create-1", turnId: TURN_1 },
+      { taskId: "7", nativeCallId: "list", turnId: TURN_2 },
+      { taskId: "8", nativeCallId: "get", turnId: TURN_2 },
+    ]);
+    const reverted = revertTaskToolState(state, new Set([TURN_1]));
+    expect(reverted.tasks.map((task) => task.id)).toEqual(["1"]);
+    expect(reverted.tracking?.suppressedTaskIds).toEqual(["7", "8"]);
+  });
+
+  it("discards calls from reverted turns without applying their results", () => {
+    const base = create(empty, "1", "Build");
+    const started = discardTaskToolCall(base, {
+      phase: "started",
+      nativeCallId: "late",
+      toolName: "TaskCreate",
+      turnId: TURN_2,
+    })!;
+    expect(started.tracking.pendingCalls).toEqual([]);
+    expect(started.tracking.invalidatedCallIds).toEqual(["late"]);
+    // Even through the normal reducer, its result is now ignored.
+    const result = reduceTaskToolLifecycle(started, {
+      phase: "completed",
+      nativeCallId: "late",
+      toolName: "TaskCreate",
+      turnId: TURN_2,
+      completion: completion(
+        "late",
+        "TaskCreate",
+        { subject: "Late" },
+        { task: { id: "2", subject: "Late" } },
+      ),
+    });
+    expect(result?.tasks).toEqual(base.tasks);
+    // A result for a call never seen is marked handled and not applied.
+    const orphan = discardTaskToolCall(base, {
+      phase: "completed",
+      nativeCallId: "orphan",
+      toolName: "TaskCreate",
+      turnId: TURN_2,
+      completion: completion(
+        "orphan",
+        "TaskCreate",
+        { subject: "X" },
+        { task: { id: "3", subject: "X" } },
+      ),
+    });
+    expect(orphan?.tasks).toEqual(base.tasks);
+    expect(orphan?.tracking.handledCallIds).toContain("orphan");
+    expect(orphan?.tracking.syncState).toBe("synced");
+  });
+
+  it("abandons every pending call when the session ends", () => {
+    expect(abandonPendingTaskToolCalls(create(empty, "1", "Build"))).toBeUndefined();
+    let state = create(empty, "1", "Build");
+    for (const callId of ["a", "b"]) {
+      state = reduceTaskToolLifecycle(state, {
+        phase: "started",
+        nativeCallId: callId,
+        toolName: "TaskUpdate",
+        turnId: TURN_1,
+      })!;
+    }
+    const abandoned = abandonPendingTaskToolCalls(state)!;
+    expect(abandoned.tasks).toEqual(state.tasks);
+    expect(abandoned.tracking.pendingCalls).toEqual([]);
+    expect(abandoned.tracking.handledCallIds).toEqual(expect.arrayContaining(["a", "b"]));
+    expect(abandoned.tracking.syncState).toBe("sync-required");
   });
 
   it("releases a call that ended without a result and marks sync required", () => {

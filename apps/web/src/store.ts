@@ -947,6 +947,14 @@ function mapThreadTailFieldsFromReadModel(
     incoming.oldestLoadedCommandExecutionCursor,
   );
   const tasks = mapTasksFromReadModel(incoming.tasks, existing?.tasks ?? []);
+  // Snapshots carry a fresh tracking object; keep the old one when unchanged
+  // so threads are not rebuilt on every sync.
+  const tasksTracking = areUnknownEqual(
+    existing?.tasksTracking ?? null,
+    incoming.tasksTracking ?? null,
+  )
+    ? (existing?.tasksTracking ?? null)
+    : (incoming.tasksTracking ?? null);
   const sessionNotes = mapThreadSessionNotesFromReadModel(
     incoming.sessionNotes,
     existing?.sessionNotes,
@@ -997,7 +1005,7 @@ function mapThreadTailFieldsFromReadModel(
     existing.tasks === tasks &&
     existing.tasksTurnId === incoming.tasksTurnId &&
     existing.tasksUpdatedAt === incoming.tasksUpdatedAt &&
-    (existing.tasksTracking ?? null) === (incoming.tasksTracking ?? null) &&
+    (existing.tasksTracking ?? null) === tasksTracking &&
     existing.sessionNotes === sessionNotes &&
     existing.threadReferences === threadReferences &&
     existingHistory.hasOlderMessages === hasOlderMessages &&
@@ -1021,7 +1029,7 @@ function mapThreadTailFieldsFromReadModel(
     tasks,
     tasksTurnId: incoming.tasksTurnId,
     tasksUpdatedAt: incoming.tasksUpdatedAt,
-    tasksTracking: incoming.tasksTracking ?? null,
+    tasksTracking,
     sessionNotes,
     threadReferences,
     history: historyUnchanged
