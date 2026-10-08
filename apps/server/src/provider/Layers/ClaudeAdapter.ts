@@ -1,6 +1,12 @@
 import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
+import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
+import {
+  buildClaudeToolCompletion,
+  isClaudeTaskToolName,
+  storeClaudeToolCompletionArtifact,
+} from "../claudeToolCompletion.ts";
 import { randomUUID } from "node:crypto";
 import {
   claudeMandatoryPolicyOptions,
@@ -89,6 +95,7 @@ import {
   supportsClaudeContextWindow,
   supportsClaudeFastMode,
   supportsClaudeThinkingToggle,
+  claudeModelSupportsAdaptiveThinking,
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
@@ -130,6 +137,7 @@ import {
 } from "../providerContext.ts";
 import {
   buildClaudeAssistantInstructions,
+  buildClaudePlanModeInstructions,
   buildInstructionProfile,
   CLAUDE_SUPPLEMENT_VERSION,
   INSTRUCTION_PROFILE_CONFIG_KEY,
@@ -400,7 +408,6 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly interrupt: () => Promise<unknown>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
-  readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly applyFlagSettings: (settings: ClaudeRuntimeFlagSettings) => Promise<void>;
   readonly initializationResult?: () => Promise<unknown>;
   readonly supportedModels?: () => Promise<ReadonlyArray<unknown>>;
@@ -797,7 +804,9 @@ function classifyToolItemType(
   }
 
   const normalized = toolName.toLowerCase();
-  if (normalized === "todowrite") {
+  // Task-tracking tools are bookkeeping, not file edits ("TaskCreate" would
+  // otherwise match the "create" heuristic below) and not sub-agent delegation.
+  if (normalized === "todowrite" || isClaudeTaskToolName(toolName)) {
     return "dynamic_tool_call";
   }
   if (normalized.includes("agent")) {
@@ -1179,6 +1188,33 @@ function claudeRuntimeSettings(traits: {
   };
 }
 
+/**
+ * Launch-time thinking for every SDK path. The per-turn toggle (`traits.thinking`)
+ * also feeds `alwaysThinkingEnabled` through `claudeRuntimeSettings`, which the
+ * resolver keeps consistent with the `thinking` option.
+ */
+function resolveClaudeLaunchThinking(
+  providerOptions: ProviderStartOptions["claudeAgent"] | undefined,
+  traits: { readonly thinking?: boolean } | undefined,
+  model: string | undefined,
+): ClaudeThinkingResolution {
+  return claudeThinkingConfig({
+    toggle: traits?.thinking,
+    typed: providerOptions?.thinking,
+    legacyMaxThinkingTokens: providerOptions?.maxThinkingTokens,
+    supportsAdaptive: claudeModelSupportsAdaptiveThinking(model),
+    model,
+  });
+}
+
+function claudeThinkingConfiguredFields(resolution: ClaudeThinkingResolution) {
+  return {
+    ...(resolution.thinking ? { thinking: resolution.thinking } : {}),
+    thinkingSource: resolution.source,
+    ...(resolution.fallback ? { thinkingFallback: resolution.fallback } : {}),
+  };
+}
+
 function withClaudeRuntimeTraitsConfig(
   config: Record<string, unknown>,
   traits: ReturnType<typeof resolveClaudeRuntimeTraits>,
@@ -1396,12 +1432,15 @@ export function buildClaudeQueryEnv(
   providerOptions: { readonly subagentModel?: string | undefined } | undefined,
   environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  // New models omit task tools by default. Keep the TodoWrite surface required
-  // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
+  // In SDK mode ENABLE_TODO_TOOLS is the master switch for task tracking and
+  // ENABLE_TASKS picks the surface (verified on Claude Code 2.1.292): with
+  // TODO_TOOLS unset neither TodoWrite nor TaskCreate is exposed. F5 projects
+  // both surfaces and defaults to the native Task tools. Explicit operator
+  // values always win.
   const taskEnvironment = {
     CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-    CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
-    CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "0",
+    CLAUDE_CODE_ENABLE_TODO_TOOLS: environment.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? "1",
+    CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "1",
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {
@@ -3453,7 +3492,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           context.turnState.items.push(message.message);
         }
 
-        for (const toolResult of toolResultBlocksFromUserMessage(message)) {
+        const toolResultBlocks = toolResultBlocksFromUserMessage(message);
+        for (const toolResult of toolResultBlocks) {
           const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
             continue;
@@ -3554,7 +3594,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             continue;
           }
 
-          const itemStatus = toolResult.isError ? "failed" : "completed";
+          const completionDraft = buildClaudeToolCompletion({
+            toolUseId: tool.itemId,
+            toolName: tool.toolName,
+            toolInput: tool.input,
+            structuredOutput: (message as { readonly tool_use_result?: unknown }).tool_use_result,
+            // `tool_use_result` is per message; attribute it only when unambiguous.
+            correlated: toolResultBlocks.length === 1,
+            isError: toolResult.isError,
+            nativeSessionId: message.session_id,
+          });
+          const completion = completionDraft.oversizeOutput
+            ? yield* Effect.tryPromise(() =>
+                storeClaudeToolCompletionArtifact({
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  threadId: context.session.threadId,
+                  draft: completionDraft,
+                }),
+              ).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("failed to store oversize Claude tool output", {
+                    threadId: context.session.threadId,
+                    toolUseId: tool.itemId,
+                    cause: toMessage(cause, "unknown error"),
+                  }).pipe(Effect.as(completionDraft.envelope)),
+                ),
+              )
+            : completionDraft.envelope;
+          const itemStatus = completion.semanticSuccess ? "completed" : "failed";
           const toolData = buildToolLifecycleData({
             toolName: tool.toolName,
             toolInput: tool.input,
@@ -3626,6 +3693,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...(tool.detail ? { detail: tool.detail } : {}),
               ...(tool.requestKind ? { requestKind: tool.requestKind } : {}),
               data: toolData,
+              completion,
             },
             providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
             raw: {
@@ -4973,6 +5041,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             })
           : undefined;
         const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
+        const thinkingResolution = yield* Effect.try({
+          try: () =>
+            resolveClaudeLaunchThinking(
+              providerOptions,
+              traits,
+              selection?.baseModel ?? input.model,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "runOneOffPrompt",
+              issue: toMessage(cause, "Invalid Claude thinking configuration."),
+            }),
+        });
         const settings = {
           cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(traits ? claudeRuntimeSettings(traits) : {}),
@@ -5015,9 +5097,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ),
                 settingSources: [...CLAUDE_SETTING_SOURCES],
                 ...(permissionMode ? { permissionMode } : {}),
-                ...(providerOptions?.maxThinkingTokens !== undefined
-                  ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-                  : {}),
+                ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
                 ...(() => {
                   const filtered = filterReservedClaudeLaunchArgs(
                     providerOptions?.launchArgs,
@@ -5826,6 +5906,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
+        const thinkingResolution = yield* Effect.try({
+          try: () =>
+            resolveClaudeLaunchThinking(
+              providerOptions,
+              typeof thinking === "boolean" ? { thinking } : undefined,
+              selectedModel,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: toMessage(cause, "Invalid Claude thinking configuration."),
+            }),
+        });
         const settings = {
           cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(providerOptions?.autoCompactWindow
@@ -5844,9 +5938,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ? { context_window: runtimeModelSelection.contextWindow }
             : {}),
           ...(permissionMode ? { permissionMode } : {}),
-          ...(providerOptions?.maxThinkingTokens !== undefined
-            ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-            : {}),
+          ...claudeThinkingConfiguredFields(thinkingResolution),
           ...(fastMode ? { fastMode: true } : {}),
           ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
           [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({
@@ -5889,6 +5981,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           append: appendInstructionText,
           snapshot: false,
         } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
+        // Sent on every launch: Claude Code applies it only while the permission
+        // mode is plan, so later plan/default switches pick it up natively.
+        const planModeInstructions = buildClaudePlanModeInstructions({
+          workflowExecutionProfile: input.workflowExecutionProfile,
+        });
 
         const sdkExecutableOptions = yield* Effect.try({
           try: () =>
@@ -5923,9 +6020,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }
             : {}),
-          ...(providerOptions?.maxThinkingTokens !== undefined
-            ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
-            : {}),
+          ...(thinkingResolution.thinking ? { thinking: thinkingResolution.thinking } : {}),
           // `extraArgs` is forwarded by the SDK to the Claude CLI *after* its
           // own required flags, so user-supplied duplicates win last. We run
           // through `filterReservedClaudeLaunchArgs` as a defense-in-depth
@@ -5977,6 +6072,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           env: queryEnvironment,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           systemPrompt,
+          planModeInstructions,
         } satisfies ClaudeQueryOptions;
         if (translatedMcpServers) {
           queryOptions.mcpServers = translatedMcpServers as NonNullable<

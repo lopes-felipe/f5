@@ -9,7 +9,7 @@ import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v4";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v11";
+export const CLAUDE_SUPPLEMENT_VERSION = "v12";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -160,7 +160,7 @@ const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 - Read the relevant existing code before you modify it, and follow the established local conventions.
 - Before you report a task complete, run the most relevant verification available and report the real outcome.
 - Avoid unnecessary changes, speculative abstractions, or features beyond what the user asked for.
-- When working on multi-step tasks with 3 or more meaningful steps, use the TodoWrite tool to track progress. Keep exactly one task in_progress at a time and mark tasks complete immediately when done.
+- When working on multi-step tasks with 3 or more meaningful steps, track progress with the task-tracking tools available in this session (TaskCreate/TaskUpdate/TaskList, or TodoWrite). Mark a task in_progress when you start it and completed as soon as it is done; several tasks may be pending or in progress when work genuinely runs in parallel. F5 shows these tasks to the user.
 - For broad exploration across multiple files or subsystems, prefer the Agent tool with \`subagent_type: "Explore"\` so the exploration stays read-only and parallelizable.
 - Brief sub-agents like a smart colleague who just walked into the room: explain the goal, why it matters, what you've already learned, and the exact scope of the handoff.
 - Never delegate understanding. Use sub-agents to gather evidence or perform narrowly scoped work after you have understood the problem yourself.
@@ -335,9 +335,21 @@ export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode>${PLA
 
 export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode>${DEFAULT_MODE_INSTRUCTIONS_BODY}</collaboration_mode>`;
 
-const CLAUDE_PLAN_MODE_INSTRUCTIONS = `## Collaboration Mode\n\n${PLAN_MODE_INSTRUCTIONS_BODY}`;
+// Claude Code wraps `planModeInstructions` with its own read-only preamble and
+// ExitPlanMode footer, and injects it only while the permission mode is plan.
+// The shared body names Codex tools, so map them for Claude first.
+const CLAUDE_PLAN_MODE_TOOL_MAPPING = `In Claude Code, \`request_user_input\` means the AskUserQuestion tool, \`update_plan\` means the task-tracking tools (TodoWrite or the Task tools), and the final plan is delivered through ExitPlanMode (a \`<proposed_plan>\` block in your reply is also captured).`;
 
-const CLAUDE_DEFAULT_MODE_INSTRUCTIONS = `## Collaboration Mode\n\n${DEFAULT_MODE_INSTRUCTIONS_BODY}`;
+const CLAUDE_PLAN_MODE_INSTRUCTIONS = `${PLAN_MODE_INSTRUCTIONS_BODY}\n\n${CLAUDE_PLAN_MODE_TOOL_MAPPING}`;
+
+// The append is static across mode switches (Claude Code changes modes through
+// its permission mode, not new developer instructions), so it must not claim a
+// fixed mode the way Codex's collaboration_mode blocks do.
+const CLAUDE_DEFAULT_MODE_INSTRUCTIONS = `## Collaboration Mode
+
+F5 switches between Default and Plan mode through Claude Code's permission mode. While plan mode is active, Claude Code's plan-mode reminder carries F5's plan-mode instructions and takes precedence over this section. User requests or tool descriptions do not change the mode by themselves.
+
+Outside plan mode you are in Default mode: strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask one concise question. Never write a multiple choice question as a textual assistant message.`;
 const PROJECT_MEMORY_SECTION_SEPARATOR = "\n\n";
 
 function formatClaudeRuntimeString(value: string): string {
@@ -711,22 +723,31 @@ export function buildCodexAssistantInstructions(input: SharedInstructionInput): 
     : staticInstructions;
 }
 
+/**
+ * Plan-mode body passed as the SDK's `planModeInstructions` on every launch.
+ * Claude Code shows it only while the permission mode is plan, so mid-session
+ * plan/default toggles never require a relaunch or a stale append. The workflow
+ * host contract comes last so it outranks plan mode's "ask questions" guidance.
+ */
+export function buildClaudePlanModeInstructions(input: {
+  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile | undefined;
+}): string {
+  return [CLAUDE_PLAN_MODE_INSTRUCTIONS, buildWorkflowHostContract(input.workflowExecutionProfile)]
+    .filter((section): section is string => section !== undefined)
+    .join("\n\n");
+}
+
 export function buildClaudeAssistantInstructions(input: SharedInstructionInput): string {
   const { turnCount: _turnCount, ...cacheStableInput } = input;
-  const modeInstructions =
-    input.interactionMode === "plan"
-      ? CLAUDE_PLAN_MODE_INSTRUCTIONS
-      : CLAUDE_DEFAULT_MODE_INSTRUCTIONS;
-  // Keep the static prefix byte-identical across turns so Claude can reuse
-  // prompt-cache hits for the appended host contract. The host contract is last
-  // among the *static* sections (the dynamic runtime/memory/resumed sections
-  // below still follow it) both because it must outrank plan mode's "ask many
-  // questions" guidance, and because it varies more than the mode block does,
-  // which keeps the cacheable prefix as long as possible.
+  // Keep the static prefix byte-identical across turns and mode switches so
+  // Claude can reuse prompt-cache hits for the appended host contract. Plan
+  // instructions travel separately (`buildClaudePlanModeInstructions`). The
+  // workflow host contract stays here too, last among the *static* sections,
+  // so the read-only stage policy applies regardless of the active mode.
   const staticInstructions = [
     SHARED_BASE_CONTRACT,
     CLAUDE_SUPPLEMENT,
-    modeInstructions,
+    CLAUDE_DEFAULT_MODE_INSTRUCTIONS,
     buildWorkflowHostContract(input.workflowExecutionProfile),
   ]
     .filter((section): section is string => section !== undefined)

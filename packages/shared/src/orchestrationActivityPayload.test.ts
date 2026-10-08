@@ -814,3 +814,35 @@ describe("orchestrationActivityPayload", () => {
     });
   });
 });
+
+describe("tool completion envelopes", () => {
+  const completion = {
+    version: 1,
+    nativeCallId: "toolu-1",
+    toolName: "TaskCreate",
+    structuredOutput: { task: { id: "1", subject: "Run tests" } },
+    transportError: false,
+    semanticSuccess: true,
+  };
+
+  it("survive compaction and re-compaction on replay unchanged", () => {
+    const first = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: { itemType: "dynamic_tool_call", status: "completed", completion },
+    });
+    expect(first.completion).toEqual(completion);
+    expect(compactThreadActivityPayload({ kind: "tool.completed", payload: first })).toEqual(first);
+    expect(readToolActivityPayload(first)?.completion).toEqual(completion);
+  });
+
+  it("drop malformed envelopes instead of persisting them", () => {
+    const compacted = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: {
+        itemType: "dynamic_tool_call",
+        completion: { ...completion, semanticSuccess: "yes" },
+      },
+    });
+    expect(compacted.completion).toBeUndefined();
+  });
+});

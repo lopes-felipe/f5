@@ -1,14 +1,43 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  auditCodexResponseFields,
   diffCodexProtocolSurface,
   extractCodexTaggedUnionValues,
   isExpectedCodexProtocolVersion,
 } from "@t3tools/shared/codexProtocolAudit";
 import { parseCodexCliVersion } from "@t3tools/shared/codexCliVersion";
-import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
+import {
+  CODEX_DECODED_RESPONSE_FIELDS,
+  CODEX_PROTOCOL_BASELINE_VERSION,
+} from "@t3tools/shared/codexProtocolManifest";
+
+const FIXTURE_PATH = path.resolve(
+  import.meta.dirname,
+  "fixtures/codex-protocol",
+  `${CODEX_PROTOCOL_BASELINE_VERSION}.json`,
+);
+/** Generated TypeScript files that define the classified protocol surface. */
+const SURFACE_FILES = [
+  "ServerNotification.ts",
+  "ServerRequest.ts",
+  "ClientRequest.ts",
+  "v2/ThreadItem.ts",
+] as const;
+
+interface CodexProtocolFixture {
+  readonly cliVersion: string;
+  readonly sourceRevision: string;
+  readonly experimental: boolean;
+  readonly sha256: Record<string, string>;
+}
+
+function sha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 async function runCommand(command: string, args: ReadonlyArray<string>): Promise<string> {
   const process = Bun.spawn([command, ...args], {
@@ -64,12 +93,21 @@ async function main(): Promise<void> {
 
     const outputDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-audit-"));
     temporaryDirectories.push(outputDirectory);
+    const schemaDirectory = await mkdtemp(path.join(tmpdir(), "f5-codex-protocol-schema-"));
+    temporaryDirectories.push(schemaDirectory);
     const installedVersion = await runCommand(binary, ["--version"]);
     await runCommand(binary, [
       "app-server",
       "generate-ts",
       "--out",
       outputDirectory,
+      "--experimental",
+    ]);
+    await runCommand(binary, [
+      "app-server",
+      "generate-json-schema",
+      "--out",
+      schemaDirectory,
       "--experimental",
     ]);
 
@@ -86,6 +124,32 @@ async function main(): Promise<void> {
       clientRequests: extractCodexTaggedUnionValues(clientRequestSource, "method"),
     };
     const report = diffCodexProtocolSurface(actual);
+
+    // Layer 2: field-level certification for the responses F5 decodes.
+    const schemaSources = new Map<string, string>();
+    await Promise.all(
+      Object.values(CODEX_DECODED_RESPONSE_FIELDS).map(async ({ schema: schemaFile }) => {
+        const source = await readFile(path.join(schemaDirectory, schemaFile), "utf8").catch(
+          () => undefined,
+        );
+        if (source !== undefined) schemaSources.set(schemaFile, source);
+      }),
+    );
+    const responseReport = auditCodexResponseFields((schemaFile) => {
+      const source = schemaSources.get(schemaFile);
+      return source === undefined ? undefined : JSON.parse(source);
+    }, new Set(actual.clientRequests));
+    const surfaceSources = new Map<string, string>();
+    await Promise.all(
+      SURFACE_FILES.map(async (file) => {
+        surfaceSources.set(file, await readFile(path.join(outputDirectory, file), "utf8"));
+      }),
+    );
+    const checksums = Object.fromEntries(
+      [...surfaceSources, ...schemaSources]
+        .map(([file, source]) => [file, sha256(source)] as const)
+        .toSorted(([left], [right]) => left.localeCompare(right)),
+    );
     const installedProtocolVersion = parseCodexCliVersion(installedVersion);
     const hasVersionMismatch = !isExpectedCodexProtocolVersion(
       installedVersion,
@@ -97,6 +161,13 @@ async function main(): Promise<void> {
     printDrift("Notifications", actual.notifications.length, report.notifications);
     printDrift("Server requests", actual.requests.length, report.requests);
     printDrift("Thread items", actual.items.length, report.items);
+    console.log(
+      `Decoded response fields: ${Object.values(CODEX_DECODED_RESPONSE_FIELDS).flatMap((entry) => entry.fields).length} certified`,
+    );
+    for (const skipped of responseReport.skippedMethods)
+      console.log(`  - ${skipped} (not offered)`);
+    for (const missing of responseReport.missingSchemas) console.log(`  ! schema ${missing}`);
+    for (const missing of responseReport.missingFields) console.log(`  ! field ${missing}`);
     console.log(
       `Client requests used by F5: ${report.clientRequests.unsupported.length} unsupported`,
     );
@@ -124,7 +195,50 @@ async function main(): Promise<void> {
         "Protocol drift detected. Classify every added surface before updating the manifest.",
       );
     }
-    if (hasVersionMismatch || report.hasDrift) {
+    const responseDrift =
+      responseReport.missingFields.length > 0 || responseReport.missingSchemas.length > 0;
+    if (responseDrift) {
+      console.error("A response field F5 decodes is missing from the generated schema.");
+    }
+
+    let checksumDrift = false;
+    if (!hasVersionMismatch) {
+      if (process.argv.includes("--write-fixture")) {
+        const sourceRevision = process.env.CODEX_SOURCE_REVISION?.trim();
+        if (!sourceRevision) {
+          throw new Error("Set CODEX_SOURCE_REVISION to the release's source commit.");
+        }
+        const fixture: CodexProtocolFixture = {
+          cliVersion: CODEX_PROTOCOL_BASELINE_VERSION,
+          sourceRevision,
+          experimental: true,
+          sha256: checksums,
+        };
+        await writeFile(FIXTURE_PATH, `${JSON.stringify(fixture, null, 2)}\n`);
+        console.log(`Wrote ${path.relative(process.cwd(), FIXTURE_PATH)}`);
+      } else {
+        const fixture = JSON.parse(await readFile(FIXTURE_PATH, "utf8")) as CodexProtocolFixture;
+        for (const [file, checksum] of Object.entries(checksums)) {
+          if (fixture.sha256[file] !== checksum) {
+            checksumDrift = true;
+            console.error(`  ~ generated ${file} differs from the committed fixture`);
+          }
+        }
+        for (const file of Object.keys(fixture.sha256)) {
+          if (!(file in checksums)) {
+            checksumDrift = true;
+            console.error(`  ~ fixture lists ${file}, which was not generated`);
+          }
+        }
+        if (checksumDrift) {
+          console.error(
+            `Generated schemas differ from ${path.basename(FIXTURE_PATH)} (source ${fixture.sourceRevision}). Re-certify and refresh with --write-fixture.`,
+          );
+        }
+      }
+    }
+
+    if (hasVersionMismatch || report.hasDrift || responseDrift || checksumDrift) {
       process.exitCode = 1;
       return;
     }

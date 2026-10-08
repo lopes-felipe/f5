@@ -660,6 +660,27 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       } satisfies ProviderEvent);
       lifecycleManager.emit("event", {
         ...base,
+        id: asEventId("evt-function-call-output"),
+        method: "item/completed",
+        itemId: asItemId("function-output-1"),
+        payload: {
+          item: { type: "functionCallOutput", id: "function-output-1", name: "shell", output: "" },
+        },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        ...base,
+        id: asEventId("evt-raw-response-usage"),
+        method: "rawResponse/completed",
+        payload: { threadId: "thread-1", turnId: "turn-1", responseId: "resp-1", usage: null },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        ...base,
+        id: asEventId("evt-queue-changed"),
+        method: "thread/queue/changed",
+        payload: { threadId: "thread-1" },
+      } satisfies ProviderEvent);
+      lifecycleManager.emit("event", {
+        ...base,
         id: asEventId("evt-after-duplicates"),
         method: "warning",
         payload: { message: "Visible event" },

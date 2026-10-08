@@ -5,7 +5,14 @@ import { toOrchestrationUsageLimit } from "../providerTerminalLifecycle.ts";
 import { ServerSettingsService } from "../../serverSettings";
 import { readProjectSettings } from "../../project/projectSettings";
 import { createHash } from "node:crypto";
+import * as NodeFs from "node:fs/promises";
 
+import { ServerConfig } from "../../config.ts";
+import {
+  parseThreadSegmentFromAttachmentId,
+  toSafeThreadAttachmentSegment,
+} from "../../attachmentStore.ts";
+import { resolveAttachmentRelativePath } from "../../attachmentPaths.ts";
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
@@ -15,6 +22,7 @@ import {
   OrchestrationCommandExecutionId,
   type OrchestrationCommandExecutionStatus,
   type OrchestrationEvent,
+  type OrchestrationReadModel,
   OrchestrationFileChangeId,
   type OrchestrationFileChangeStatus,
   type OrchestrationProposedPlanId,
@@ -76,7 +84,15 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
-import { validateThreadTasks } from "../threadTasks.ts";
+import { validateThreadTaskTracking, validateThreadTasks } from "../threadTasks.ts";
+import {
+  abandonPendingTaskToolCalls,
+  discardTaskToolCall,
+  isTaskToolName,
+  reduceTaskToolLifecycle,
+  type TaskToolLifecycleInput,
+  type TaskToolName,
+} from "@t3tools/shared/claudeTaskToolProjection";
 import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
 import { increment, providerProjectionWriteFailuresTotal } from "../../observability/Metrics.ts";
 import {
@@ -1070,6 +1086,72 @@ function todoWriteInputFromLifecycleEvent(
   return asRecord(data?.input);
 }
 
+function taskToolNameFromLifecycleEvent(
+  event: ItemLifecycleRuntimeEvent,
+): TaskToolName | undefined {
+  const toolName = asRecord(event.payload.data)?.toolName;
+  return isTaskToolName(toolName) ? toolName : undefined;
+}
+
+/** TodoWrite and native Task tool calls feed the task panel, not the work log. */
+function isTaskTrackingLifecycleEvent(event: ItemLifecycleRuntimeEvent): boolean {
+  return (
+    todoWriteInputFromLifecycleEvent(event) !== undefined ||
+    taskToolNameFromLifecycleEvent(event) !== undefined
+  );
+}
+
+function taskToolLifecycleInput(
+  event: ItemLifecycleRuntimeEvent,
+  turnId: TurnId | null,
+): TaskToolLifecycleInput | undefined {
+  const toolName = taskToolNameFromLifecycleEvent(event);
+  if (!toolName || !event.itemId) return undefined;
+  if (event.type === "item.started") {
+    return { phase: "started", nativeCallId: event.itemId, toolName, turnId };
+  }
+  if (event.type === "item.completed" && event.payload.completion) {
+    return {
+      phase: "completed",
+      nativeCallId: event.payload.completion.nativeCallId,
+      toolName,
+      turnId,
+      completion: event.payload.completion,
+    };
+  }
+  if (event.type === "item.completed") {
+    // Turn end, interrupt, and stop complete in-flight tools without a result.
+    return { phase: "abandoned", nativeCallId: event.itemId, toolName, turnId };
+  }
+  return undefined;
+}
+
+/** Spilled Task tool outputs above this are left for the native log. */
+const MAX_TASK_TOOL_ARTIFACT_BYTES = 8 * 1024 * 1024;
+
+function attachmentIdBelongsToThread(attachmentId: string, threadId: ThreadId): boolean {
+  const segment = parseThreadSegmentFromAttachmentId(attachmentId);
+  return segment !== null && segment === toSafeThreadAttachmentSegment(threadId)?.toLowerCase();
+}
+
+/**
+ * Whether a Task tool event belongs to a turn a revert discarded. Only threads
+ * whose task tracking has seen a revert (generation > 0) are checked; a turn
+ * is kept while it is active, latest, or still has messages or checkpoints.
+ */
+function isDiscardedTaskToolTurn(
+  thread: OrchestrationReadModel["threads"][number],
+  turnId: TurnId | null,
+): boolean {
+  if (turnId === null || (thread.tasksTracking?.generation ?? 0) === 0) return false;
+  return !(
+    thread.session?.activeTurnId === turnId ||
+    thread.latestTurn?.turnId === turnId ||
+    thread.messages.some((message) => message.turnId === turnId) ||
+    thread.checkpoints.some((checkpoint) => checkpoint.turnId === turnId)
+  );
+}
+
 function buildTodoTaskId(content: string, activeForm: string, occurrence: number): string {
   const slug = content
     .toLowerCase()
@@ -1178,6 +1260,10 @@ function buildCompactToolLifecyclePayload(
     ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
     ...(event.payload.requestKind ? { requestKind: event.payload.requestKind } : {}),
     ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+    // Persist the typed result once, on completion only.
+    ...(event.type === "item.completed" && event.payload.completion
+      ? { completion: event.payload.completion }
+      : {}),
     ...(fileChangeId ? { fileChangeId } : {}),
   };
 }
@@ -1945,7 +2031,7 @@ function runtimeEventToActivities(
     }
 
     case "item.updated": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (shouldSuppressCollaborationUpdate(event)) {
@@ -1976,7 +2062,7 @@ function runtimeEventToActivities(
     }
 
     case "item.completed": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -2004,7 +2090,7 @@ function runtimeEventToActivities(
     }
 
     case "item.started": {
-      if (todoWriteInputFromLifecycleEvent(event)) {
+      if (isTaskTrackingLifecycleEvent(event)) {
         return [];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
@@ -2037,6 +2123,7 @@ function runtimeEventToActivities(
 
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
   const providerService = yield* ProviderService;
   const usageService = yield* Effect.serviceOption(UsageService);
@@ -3159,6 +3246,146 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Read, reduce and dispatch one native Task tool event. The serial ingestion
+   * worker orders events per thread; the generation fence in the decider covers
+   * a revert landing between the read and the dispatch, in which case the
+   * update is recomputed once from the post-revert snapshot.
+   */
+  /**
+   * Read the oversize structured output a Task tool spilled to a thread
+   * attachment, so a large TaskList can still resynchronize. Falls back to the
+   * envelope as-is (the reducer then marks sync required) when the artifact is
+   * missing, too large, or does not match its recorded checksum.
+   */
+  const hydrateTaskToolCompletion = (
+    threadId: ThreadId,
+    input: TaskToolLifecycleInput,
+  ): Effect.Effect<TaskToolLifecycleInput> => {
+    if (input.phase !== "completed") return Effect.succeed(input);
+    const { completion } = input;
+    const omission = completion.outputOmission;
+    const artifact = omission?.artifact;
+    if (
+      completion.structuredOutput !== undefined ||
+      omission?.reason !== "too-large" ||
+      !artifact ||
+      (omission.bytes ?? 0) > MAX_TASK_TOOL_ARTIFACT_BYTES ||
+      !attachmentIdBelongsToThread(artifact.attachmentId, threadId)
+    ) {
+      return Effect.succeed(input);
+    }
+    const filePath = resolveAttachmentRelativePath({
+      attachmentsDir: serverConfig.attachmentsDir,
+      relativePath: `${artifact.attachmentId}.json`,
+    });
+    if (!filePath) return Effect.succeed(input);
+    return Effect.tryPromise(() => NodeFs.readFile(filePath, "utf8")).pipe(
+      Effect.map((json): TaskToolLifecycleInput => {
+        if (Buffer.byteLength(json, "utf8") > MAX_TASK_TOOL_ARTIFACT_BYTES) return input;
+        if (omission.sha256 && createHash("sha256").update(json).digest("hex") !== omission.sha256)
+          return input;
+        const { outputOmission: _omitted, ...rest } = completion;
+        return { ...input, completion: { ...rest, structuredOutput: JSON.parse(json) as unknown } };
+      }),
+      Effect.catch((cause) =>
+        Effect.logWarning("could not read native task tool output artifact", {
+          threadId,
+          attachmentId: artifact.attachmentId,
+          cause: String(cause),
+        }).pipe(Effect.as(input)),
+      ),
+    );
+  };
+
+  const applyTaskToolLifecycle = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly input: TaskToolLifecycleInput;
+    readonly now: string;
+  }) =>
+    Effect.gen(function* () {
+      const lifecycle = yield* hydrateTaskToolCompletion(input.threadId, input.input);
+      yield* applyTaskToolReduction({
+        event: input.event,
+        threadId: input.threadId,
+        turnId: lifecycle.turnId,
+        now: input.now,
+        // Re-checked on every attempt: a revert that lands between the read
+        // and the dispatch discards this turn, so the retry must not apply it.
+        reduce: (thread) =>
+          isDiscardedTaskToolTurn(thread, lifecycle.turnId)
+            ? discardTaskToolCall(
+                { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
+                lifecycle,
+              )
+            : reduceTaskToolLifecycle(
+                { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
+                lifecycle,
+              ),
+      });
+    });
+
+  const applyTaskToolReduction = (input: {
+    readonly event: ProviderRuntimeEvent;
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId | null;
+    readonly now: string;
+    readonly reduce: (
+      thread: OrchestrationReadModel["threads"][number],
+    ) => ReturnType<typeof reduceTaskToolLifecycle>;
+  }) => {
+    const attempt = (attemptIndex: 0 | 1) =>
+      Effect.gen(function* () {
+        const readModel = yield* orchestrationEngine.getReadModel();
+        const current = readModel.threads.find((entry) => entry.id === input.threadId);
+        if (!current) return "done" as const;
+        const tracking = current.tasksTracking ?? null;
+        const result = input.reduce(current);
+        if (!result) return "done" as const;
+        const invalid =
+          validateThreadTasks(result.tasks) ?? validateThreadTaskTracking(result.tracking);
+        if (invalid) {
+          yield* Effect.logWarning("skipping invalid native task snapshot", {
+            eventId: input.event.eventId,
+            threadId: input.threadId,
+            detail: invalid,
+          });
+          return "done" as const;
+        }
+        return yield* orchestrationEngine
+          .dispatch({
+            type: "thread.tasks.update",
+            commandId: providerCommandId(
+              input.event,
+              attemptIndex === 0 ? "thread-task-tools-update" : "thread-task-tools-update-retry",
+            ),
+            threadId: input.threadId,
+            tasks: result.tasks,
+            ...(input.turnId ? { turnId: input.turnId } : {}),
+            tracking: result.tracking,
+            expectedTrackingGeneration: tracking?.generation ?? 0,
+            createdAt: input.now,
+          })
+          .pipe(
+            Effect.as("done" as const),
+            Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+              error.detail.startsWith("Stale task tracking generation")
+                ? Effect.succeed("stale" as const)
+                : Effect.fail(error),
+            ),
+          );
+      });
+    return Effect.gen(function* () {
+      if ((yield* attempt(0)) === "done") return;
+      if ((yield* attempt(1)) === "done") return;
+      yield* Effect.logWarning("dropping native task update after repeated reverts", {
+        eventId: input.event.eventId,
+        threadId: input.threadId,
+      });
+    });
+  };
+
   const processRuntimeEvent = (incomingEvent: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       let event = incomingEvent;
@@ -3903,16 +4130,44 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             detail: taskValidationError,
           });
-        } else if (!areTaskListsEqual(thread.tasks, todoWriteTasks)) {
+        } else if (!areTaskListsEqual(thread.tasks, todoWriteTasks) || thread.tasksTracking) {
           yield* orchestrationEngine.dispatch({
             type: "thread.tasks.update",
             commandId: providerCommandId(event, "thread-tasks-update"),
             threadId: thread.id,
             tasks: [...todoWriteTasks],
             ...(eventTurnId ? { turnId: eventTurnId } : {}),
+            // A TodoWrite snapshot replaces native Task tool state entirely.
+            ...(thread.tasksTracking ? { tracking: null } : {}),
             createdAt: now,
           });
         }
+      }
+
+      const taskToolInput =
+        event.type === "item.started" || event.type === "item.completed"
+          ? taskToolLifecycleInput(event, eventTurnId ?? null)
+          : undefined;
+      if (taskToolInput) {
+        yield* applyTaskToolLifecycle({ event, threadId: thread.id, input: taskToolInput, now });
+      }
+      // A session that ends or (re)starts can no longer deliver results for
+      // calls still pending, e.g. after a crash that never sent item.completed.
+      if (
+        (event.type === "session.started" || event.type === "session.exited") &&
+        (thread.tasksTracking?.pendingCalls.length ?? 0) > 0
+      ) {
+        yield* applyTaskToolReduction({
+          event,
+          threadId: thread.id,
+          turnId: null,
+          now,
+          reduce: (current) =>
+            abandonPendingTaskToolCalls({
+              tasks: current.tasks,
+              tracking: current.tasksTracking ?? null,
+            }),
+        });
       }
 
       if (event.type === "compaction.recommended") {

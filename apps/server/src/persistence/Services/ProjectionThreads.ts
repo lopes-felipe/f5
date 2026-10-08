@@ -16,6 +16,7 @@ import {
   RuntimeMode,
   TaskItem,
   ThreadCompaction,
+  ThreadTaskTracking,
   ThreadId,
   ThreadReference,
   ThreadSessionNotes,
@@ -43,6 +44,9 @@ export const ProjectionThread = Schema.Struct({
   tasks: Schema.Array(TaskItem),
   tasksTurnId: Schema.NullOr(TurnId),
   tasksUpdatedAt: Schema.NullOr(IsoDateTime),
+  tasksTracking: Schema.optional(Schema.NullOr(ThreadTaskTracking)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   compaction: Schema.NullOr(ThreadCompaction),
   estimatedContextTokens: Schema.NullOr(NonNegativeInt),
   modelContextWindowTokens: Schema.NullOr(NonNegativeInt),

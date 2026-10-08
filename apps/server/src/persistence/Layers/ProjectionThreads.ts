@@ -2,7 +2,12 @@ import { ProjectId } from "@t3tools/contracts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { Effect, Layer, Schema, Struct } from "effect";
-import { ThreadCompaction, ThreadReference, ThreadSessionNotes } from "@t3tools/contracts";
+import {
+  ThreadCompaction,
+  ThreadReference,
+  ThreadSessionNotes,
+  ThreadTaskTracking,
+} from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -17,6 +22,9 @@ import {
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     tasks: Schema.fromJsonString(ProjectionThread.fields.tasks),
+    tasksTracking: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadTaskTracking))).pipe(
+      Schema.withDecodingDefault(() => null),
+    ),
     modelSelection: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.modelSelection)),
     compaction: Schema.NullOr(Schema.fromJsonString(ThreadCompaction)),
     sessionNotes: Schema.NullOr(Schema.fromJsonString(ThreadSessionNotes)),
@@ -45,6 +53,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           tasks_json,
           tasks_turn_id,
           tasks_updated_at,
+          tasks_tracking_json,
           compaction_json,
           estimated_context_tokens,
           model_context_window_tokens,
@@ -80,6 +89,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${JSON.stringify(row.tasks)},
           ${row.tasksTurnId},
           ${row.tasksUpdatedAt},
+          ${row.tasksTracking == null ? null : JSON.stringify(row.tasksTracking)},
           ${row.compaction === null ? null : JSON.stringify(row.compaction)},
           ${row.estimatedContextTokens},
           ${row.modelContextWindowTokens},
@@ -115,6 +125,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           tasks_json = excluded.tasks_json,
           tasks_turn_id = excluded.tasks_turn_id,
           tasks_updated_at = excluded.tasks_updated_at,
+          tasks_tracking_json = excluded.tasks_tracking_json,
           compaction_json = excluded.compaction_json,
           estimated_context_tokens = excluded.estimated_context_tokens,
           model_context_window_tokens = excluded.model_context_window_tokens,
@@ -157,6 +168,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
           tasks_updated_at AS "tasksUpdatedAt",
+          tasks_tracking_json AS "tasksTracking",
           compaction_json AS "compaction",
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
@@ -201,6 +213,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
           tasks_updated_at AS "tasksUpdatedAt",
+          tasks_tracking_json AS "tasksTracking",
           compaction_json AS "compaction",
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",

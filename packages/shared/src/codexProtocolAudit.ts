@@ -1,5 +1,6 @@
 import {
   CODEX_CLIENT_REQUEST_METHODS,
+  CODEX_DECODED_RESPONSE_FIELDS,
   CODEX_NOTIFICATION_METHODS,
   CODEX_SERVER_REQUEST_METHODS,
   CODEX_THREAD_ITEM_TYPES,
@@ -98,4 +99,111 @@ export function diffCodexProtocolSurface(actual: CodexProtocolSurface): CodexPro
         (drift) => drift.added.length > 0 || drift.removed.length > 0,
       ),
   };
+}
+
+type JsonSchemaNode = { readonly [key: string]: unknown };
+
+function asSchemaNode(value: unknown): JsonSchemaNode | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonSchemaNode)
+    : undefined;
+}
+
+/** Expand `$ref`, `allOf`, `anyOf` and `oneOf` into the concrete alternatives. */
+function expandSchemaNode(
+  root: JsonSchemaNode,
+  node: JsonSchemaNode,
+  seen: Set<JsonSchemaNode> = new Set(),
+): JsonSchemaNode[] {
+  if (seen.has(node)) return [];
+  seen.add(node);
+  const expanded: JsonSchemaNode[] = [node];
+  const ref = node.$ref;
+  if (typeof ref === "string" && ref.startsWith("#/")) {
+    let target: unknown = root;
+    for (const segment of ref.slice(2).split("/")) target = asSchemaNode(target)?.[segment];
+    const resolved = asSchemaNode(target);
+    if (resolved) expanded.push(...expandSchemaNode(root, resolved, seen));
+  }
+  for (const combinator of ["allOf", "anyOf", "oneOf"] as const) {
+    const branches = node[combinator];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) {
+      const branchNode = asSchemaNode(branch);
+      if (branchNode) expanded.push(...expandSchemaNode(root, branchNode, seen));
+    }
+  }
+  return expanded;
+}
+
+/**
+ * True when every step of `fieldPath` exists in at least one alternative of
+ * the JSON schema. `a.b[]` steps into the array items of `b`.
+ */
+export function codexJsonSchemaHasField(root: unknown, fieldPath: string): boolean {
+  const rootNode = asSchemaNode(root);
+  if (!rootNode) return false;
+  let current: JsonSchemaNode[] = [rootNode];
+  for (const rawSegment of fieldPath.split(".")) {
+    const isArray = rawSegment.endsWith("[]");
+    const name = isArray ? rawSegment.slice(0, -2) : rawSegment;
+    const next: JsonSchemaNode[] = [];
+    for (const node of current.flatMap((candidate) => expandSchemaNode(rootNode, candidate))) {
+      const property = asSchemaNode(asSchemaNode(node.properties)?.[name]);
+      if (property) next.push(property);
+    }
+    if (next.length === 0) return false;
+    if (!isArray) {
+      current = next;
+      continue;
+    }
+    const items: JsonSchemaNode[] = [];
+    for (const node of next.flatMap((candidate) => expandSchemaNode(rootNode, candidate))) {
+      const itemNode = asSchemaNode(node.items);
+      if (itemNode) items.push(itemNode);
+    }
+    if (items.length === 0) return false;
+    current = items;
+  }
+  return true;
+}
+
+export interface CodexResponseFieldReport {
+  /** `<method> <schema file>: <field path>` entries the generated schema lacks. */
+  readonly missingFields: ReadonlyArray<string>;
+  /** Schemas absent from the bundle although the CLI offers their method. */
+  readonly missingSchemas: ReadonlyArray<string>;
+  /** Methods skipped because the CLI does not offer them. */
+  readonly skippedMethods: ReadonlyArray<string>;
+}
+
+export type CodexDecodedResponseFields = Readonly<
+  Record<string, { readonly schema: string; readonly fields: ReadonlyArray<string> }>
+>;
+
+export function auditCodexResponseFields(
+  readSchema: (schemaFile: string) => unknown,
+  availableMethods?: ReadonlySet<string>,
+  decoded: CodexDecodedResponseFields = CODEX_DECODED_RESPONSE_FIELDS,
+): CodexResponseFieldReport {
+  const missingFields: string[] = [];
+  const missingSchemas: string[] = [];
+  const skippedMethods: string[] = [];
+  for (const [method, { schema: schemaFile, fields }] of Object.entries(decoded)) {
+    if (availableMethods !== undefined && !availableMethods.has(method)) {
+      skippedMethods.push(method);
+      continue;
+    }
+    const schema = readSchema(schemaFile);
+    if (schema === undefined) {
+      missingSchemas.push(`${method} ${schemaFile}`);
+      continue;
+    }
+    for (const fieldPath of fields) {
+      if (!codexJsonSchemaHasField(schema, fieldPath)) {
+        missingFields.push(`${method} ${schemaFile}: ${fieldPath}`);
+      }
+    }
+  }
+  return { missingFields, missingSchemas, skippedMethods };
 }

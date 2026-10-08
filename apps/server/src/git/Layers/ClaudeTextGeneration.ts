@@ -10,6 +10,10 @@
 import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
+import {
+  claudeThinkingCliArgs,
+  claudeThinkingConfig,
+} from "../../provider/claudeProviderOptions.ts";
 
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
@@ -39,6 +43,7 @@ import {
   applyClaudePromptEffortPrefix,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
+  claudeModelSupportsAdaptiveThinking,
 } from "@t3tools/shared/model";
 import {
   getClaudeModelCapabilities,
@@ -137,9 +142,18 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       thinkingDescriptor?.type === "boolean" ? thinkingDescriptor.currentValue : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
+    // Same resolver as SDK launches. Text generation has no provider-start
+    // thinking options, so only the per-turn toggle applies here.
+    const thinkingResolution = claudeThinkingConfig({
+      toggle: thinking,
+      supportsAdaptive: claudeModelSupportsAdaptiveThinking(modelSelection.model),
+      model: modelSelection.model,
+    });
     const settings = {
       disableAllHooks: true,
-      ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
+      ...(typeof thinkingResolution.alwaysThinkingEnabled === "boolean"
+        ? { alwaysThinkingEnabled: thinkingResolution.alwaysThinkingEnabled }
+        : {}),
       ...(fastMode ? { fastMode: true } : {}),
     };
 
@@ -158,6 +172,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         "--model",
         resolveClaudeApiModelId(modelSelection),
         ...(cliEffort ? ["--effort", cliEffort] : []),
+        ...claudeThinkingCliArgs(thinkingResolution.thinking),
         "--settings",
         JSON.stringify(settings),
         "--tools",

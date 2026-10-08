@@ -71,6 +71,7 @@ import {
   MAX_THREAD_PROPOSED_PLANS,
 } from "./readModelRetention.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "./turnStateTransitions.ts";
+import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -114,6 +115,22 @@ function threadProviderName(
 ): ProviderKind | undefined {
   const providerName = thread?.session?.providerName;
   return isKnownProviderKind(providerName) ? providerName : undefined;
+}
+
+function revertedTaskFields(
+  thread: Pick<OrchestrationThread, "tasks" | "tasksTracking">,
+  retainedTurnIds: ReadonlyArray<string> | undefined,
+): Pick<OrchestrationThread, "tasks" | "tasksTurnId" | "tasksUpdatedAt" | "tasksTracking"> {
+  const reverted = revertTaskToolState(
+    { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
+    retainedTurnIds ? new Set(retainedTurnIds) : undefined,
+  );
+  return {
+    tasks: [...reverted.tasks],
+    tasksTurnId: null,
+    tasksUpdatedAt: null,
+    tasksTracking: reverted.tracking,
+  };
 }
 
 function updateThread(
@@ -676,6 +693,7 @@ export function projectEvent(
             tasks: [],
             tasksTurnId: null,
             tasksUpdatedAt: null,
+            tasksTracking: null,
             compaction: null,
             sessionNotes: null,
             threadReferences: payload.threadReferences,
@@ -1092,6 +1110,8 @@ export function projectEvent(
             tasks: payload.tasks,
             tasksTurnId: payload.turnId,
             tasksUpdatedAt: payload.updatedAt,
+            // Omitted tracking (TodoWrite) leaves native Task tool state untouched.
+            ...(payload.tracking !== undefined ? { tasksTracking: payload.tracking } : {}),
             lastInteractionAt: payload.updatedAt,
             updatedAt: payload.updatedAt,
           }),
@@ -1487,11 +1507,9 @@ export function projectEvent(
                 type: "thread.reverted",
                 payload: { ...payload, retainedTurnIds: [...retainedTurnIds] },
               }),
-              // TodoWrite tasks are stored as the latest runtime snapshot.
-              // Revert clears them so discarded-turn tasks do not remain visible.
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
+              // TodoWrite snapshots are cleared; native Task tool state drops and
+              // suppresses tasks from discarded turns and bumps its generation.
+              ...revertedTaskFields(thread, [...retainedTurnIds]),
               compaction: null,
               ...(session !== thread.session ? { session } : {}),
               estimatedContextTokens: null,

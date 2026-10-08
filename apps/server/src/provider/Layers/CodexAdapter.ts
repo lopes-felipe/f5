@@ -2214,13 +2214,6 @@ function mapToRuntimeEvents(
     if (disposition !== undefined) {
       return [];
     }
-    // Newer CLIs announce `thread/revert` results. F5 verifies the retained
-    // history through its own read-back, so the notification is state-only.
-    // It is listed here until the protocol baseline moves past 0.144.3.
-    if (event.method === "thread/reverted") {
-      return [];
-    }
-
     if (!event.method.startsWith("codex/event/")) {
       return [
         protocolWarningEvent(

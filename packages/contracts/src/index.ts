@@ -10,6 +10,7 @@ export * from "./worktreeSetup";
 export * from "./globalSearch";
 export * from "./workflowPlatform";
 export * from "./providerRuntime";
+export * from "./toolLifecycle";
 export * from "./model";
 export * from "./ws";
 export * from "./keybindings";

@@ -69,6 +69,7 @@ import {
 } from "../Services/ProjectionPipeline.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { canRepairErroredTurnFromSuccessfulSettlement } from "../turnStateTransitions.ts";
+import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -1129,6 +1130,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             tasks: event.payload.tasks,
             tasksTurnId: event.payload.turnId,
             tasksUpdatedAt: event.payload.updatedAt,
+            ...(event.payload.tracking !== undefined
+              ? { tasksTracking: event.payload.tracking }
+              : {}),
             lastInteractionAt: event.payload.updatedAt,
             updatedAt: event.payload.updatedAt,
           });
@@ -1226,14 +1230,37 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) {
             return;
           }
+          // Events without retainedTurnIds fall back to the first turnCount
+          // turns, as message and activity projections do.
+          const retainedTurnIds = new Set<string>(
+            event.payload.retainedTurnIds ??
+              retainedProjectionTurns(
+                yield* projectionTurnRepository.listByThreadId({
+                  threadId: event.payload.threadId,
+                }),
+                event.payload.turnCount,
+              ).flatMap((turn) => (turn.turnId === null ? [] : [turn.turnId])),
+          );
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: null,
-            // TodoWrite tasks are stored as the latest runtime snapshot.
-            // Revert clears them so discarded-turn tasks do not remain visible.
-            tasks: [],
-            tasksTurnId: null,
-            tasksUpdatedAt: null,
+            // Same rule as the in-memory projector: TodoWrite snapshots clear;
+            // native Task tool state suppresses discarded-turn tasks.
+            ...(() => {
+              const reverted = revertTaskToolState(
+                {
+                  tasks: existingRow.value.tasks,
+                  tracking: existingRow.value.tasksTracking ?? null,
+                },
+                retainedTurnIds,
+              );
+              return {
+                tasks: [...reverted.tasks],
+                tasksTurnId: null,
+                tasksUpdatedAt: null,
+                tasksTracking: reverted.tracking,
+              };
+            })(),
             compaction: null,
             estimatedContextTokens: null,
             lastInteractionAt: event.occurredAt,

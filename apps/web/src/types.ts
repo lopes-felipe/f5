@@ -15,6 +15,7 @@ import type {
   ProjectSkill as ContractProjectSkill,
   ProjectScript as ContractProjectScript,
   TaskItem as ContractTaskItem,
+  ThreadTaskTracking,
   ThreadId,
   ThreadReference as ContractThreadReference,
   ThreadSessionNotes as ContractThreadSessionNotes,
@@ -198,6 +199,7 @@ export interface Thread {
   tasks: TaskItem[];
   tasksTurnId: TurnId | null;
   tasksUpdatedAt: string | null;
+  tasksTracking?: ThreadTaskTracking | null | undefined;
   sessionNotes?: ThreadSessionNotes | null | undefined;
   threadReferences?: ThreadReference[] | undefined;
 }

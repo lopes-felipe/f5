@@ -2,7 +2,7 @@ import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
-import { ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
+import { describeTaskSync, ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
@@ -519,13 +519,15 @@ function summarizeTaskCounts(tasks: ReadonlyArray<ThreadTaskItem>): string {
     counts[task.status] += 1;
   }
 
-  return [
-    counts.in_progress > 0 ? `${counts.in_progress} active` : null,
-    counts.pending > 0 ? `${counts.pending} pending` : null,
-    counts.completed > 0 ? `${counts.completed} done` : null,
-  ]
-    .filter((entry): entry is string => entry !== null)
-    .join(" · ");
+  return (
+    [
+      counts.in_progress > 0 ? `${counts.in_progress} active` : null,
+      counts.pending > 0 ? `${counts.pending} pending` : null,
+      counts.completed > 0 ? `${counts.completed} done` : null,
+    ]
+      .filter((entry): entry is string => entry !== null)
+      .join(" · ") || "No tasks"
+  );
 }
 
 function deriveFallbackTasksFromPlan(
@@ -1870,6 +1872,9 @@ export default function ChatView({
     () => summarizeTaskCounts(effectiveThreadTasks),
     [effectiveThreadTasks],
   );
+  // A sync notice can apply before the first task lands in the snapshot.
+  const showThreadTasksPanel =
+    effectiveThreadTasks.length > 0 || describeTaskSync(activeThread?.tasksTracking) !== null;
   useEffect(() => {
     const activeThreadId = activeThread?.id ?? null;
     const threadChanged = previousTaskPanelThreadIdRef.current !== activeThreadId;
@@ -6933,13 +6938,12 @@ export default function ChatView({
                         // Tasks come only from the detail payload, so keep this
                         // gated on `detailsLoaded` even though the timeline can
                         // render from live events earlier.
-                        !composerRedesign &&
-                        activeThread.detailsLoaded &&
-                        effectiveThreadTasks.length > 0 ? (
+                        !composerRedesign && activeThread.detailsLoaded && showThreadTasksPanel ? (
                           <div className="mx-auto mb-4 w-full max-w-(--chat-content-max-width)">
                             <ThreadTasksPanel
                               threadId={activeThread.id}
                               tasks={effectiveThreadTasks}
+                              tracking={activeThread.tasksTracking}
                               open={tasksPanelOpen}
                               summary={taskPanelSummary}
                               onToggle={onToggleTasksPanel}
@@ -6973,13 +6977,12 @@ export default function ChatView({
                     {/* The redesign attaches the task list to the composer;
                         otherwise it stays at the end of the timeline. Tasks
                         come only from the detail payload. */}
-                    {composerRedesign &&
-                    activeThread.detailsLoaded &&
-                    effectiveThreadTasks.length > 0 ? (
+                    {composerRedesign && activeThread.detailsLoaded && showThreadTasksPanel ? (
                       <ThreadTasksPanel
                         attached
                         threadId={activeThread.id}
                         tasks={effectiveThreadTasks}
+                        tracking={activeThread.tasksTracking}
                         open={tasksPanelOpen}
                         summary={taskPanelSummary}
                         onToggle={onToggleTasksPanel}

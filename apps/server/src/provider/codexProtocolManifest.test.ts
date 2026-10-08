@@ -16,14 +16,14 @@ import {
   codexThreadItemDisposition,
 } from "@t3tools/shared/codexProtocolManifest";
 
-describe("Codex 0.144 protocol manifest", () => {
+describe("Codex 0.160.1 protocol manifest", () => {
   it("classifies every notification, request, and thread item exactly once", () => {
-    expect(CODEX_NOTIFICATION_METHODS).toHaveLength(69);
+    expect(CODEX_NOTIFICATION_METHODS).toHaveLength(85);
     expect(CODEX_SERVER_REQUEST_METHODS).toHaveLength(11);
-    expect(CODEX_THREAD_ITEM_TYPES).toHaveLength(18);
-    expect(Object.keys(CODEX_NOTIFICATION_DISPOSITIONS)).toHaveLength(69);
+    expect(CODEX_THREAD_ITEM_TYPES).toHaveLength(19);
+    expect(Object.keys(CODEX_NOTIFICATION_DISPOSITIONS)).toHaveLength(85);
     expect(Object.keys(CODEX_SERVER_REQUEST_DISPOSITIONS)).toHaveLength(11);
-    expect(Object.keys(CODEX_THREAD_ITEM_DISPOSITIONS)).toHaveLength(18);
+    expect(Object.keys(CODEX_THREAD_ITEM_DISPOSITIONS)).toHaveLength(19);
 
     for (const method of CODEX_NOTIFICATION_METHODS) {
       expect(codexNotificationDisposition(method)).toBeDefined();
@@ -34,6 +34,24 @@ describe("Codex 0.144 protocol manifest", () => {
     for (const itemType of CODEX_THREAD_ITEM_TYPES) {
       expect(codexThreadItemDisposition(itemType)).toBeDefined();
     }
+  });
+
+  it("pins the Release 1 dispositions for re-baselined surfaces", () => {
+    expect(codexNotificationDisposition("thread/reverted")).toBe("state-only");
+    expect(codexNotificationDisposition("rawResponseItem/completed")).toBe("internal-duplicate");
+    expect(codexNotificationDisposition("rawResponse/completed")).toBe("internal-duplicate");
+    expect(codexNotificationDisposition("item/fileChange/outputDelta")).toBe("diagnostics-only");
+    expect(codexNotificationDisposition("thread/compacted")).toBe("canonical");
+    expect(codexNotificationDisposition("thread/queue/changed")).toBe("state-only");
+    expect(codexNotificationDisposition("modelProvider/authRecoveryStarted")).toBe(
+      "diagnostics-only",
+    );
+    expect(codexNotificationDisposition("autoApprovalReview/strictReviewRequired")).toBe(
+      "diagnostics-only",
+    );
+    expect(codexThreadItemDisposition("functionCallOutput")).toBe("internal-duplicate");
+    // Older CLIs still send this server request; its handler stays.
+    expect(codexServerRequestDisposition("currentTime/read")).toBe("canonical");
   });
 
   it("extracts generated tagged unions without accepting unrelated string literals", () => {

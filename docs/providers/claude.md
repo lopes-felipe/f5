@@ -34,11 +34,12 @@ your normal home directory.
 F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
-F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
-to expose the legacy `TodoWrite` surface required by its assistant instructions. Set
-`CLAUDE_CODE_ENABLE_TASKS=1` in the server environment to opt into the newer task-tracking
-surface instead; F5 preserves this explicit operator override. That surface replaces
-`TodoWrite` with task-tracking tools.
+F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
+exposes the native Task tools (`TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`). In SDK
+mode `CLAUDE_CODE_ENABLE_TODO_TOOLS` is the master switch for task tracking (unset, neither
+surface appears) and `CLAUDE_CODE_ENABLE_TASKS` picks the surface. Set
+`CLAUDE_CODE_ENABLE_TASKS=0` in the server environment to return to `TodoWrite`. Explicit
+operator values for either variable are preserved. See [Native Task tools](#native-task-tools-release-1).
 
 With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
 advisory. Known versions below v2.1.280 also omit Opus 5.5 and show the upgrade advisory.
@@ -80,7 +81,7 @@ failures fail the live run rather than being reported as passes or automatic ski
 
 The suite uses the bundled executable and the adapter's production query environment. It checks
 account usage through `normalizeClaudeAccountUsage`, native 1M context, cancellation and child
-process exit, streamed `TodoWrite` calls completing a three-step task, and structured `xhigh`
+process exit, streamed task-tracking calls (native Task tools, or `TodoWrite` when opted out) completing a three-step task, and structured `xhigh`
 generation through the production generator and schema validator.
 
 ## I Want Work And Personal Claude Accounts
@@ -329,8 +330,9 @@ Release 0 sends F5's full host contract through the type-checked Claude Code pre
 `systemPrompt.append`, with `snapshot: false`, on every start and resume. The previous
 `appendSystemPrompt` option was ignored by the SDK. The append includes workflow policy,
 project memory, preserved transcript and post-compaction prior-work context. Threads
-compacted before this fix regain that context on their next restart. Instruction profiles
-now identify Claude supplement `v11`. Turn counters are omitted from this append so normal
+compacted before this fix regain that context on their next restart. Release 0 instruction
+profiles identified Claude supplement `v11`; Release 1 uses `v12` (see
+[Plan-mode instructions](#plan-mode-instructions-release-1)). Turn counters are omitted from this append so normal
 turns do not invalidate its prompt cache; date, model and effort update on relaunch.
 
 Transcript injection is disabled by default pending the authenticated snapshot-replacement
@@ -354,6 +356,19 @@ carry SDK human origin. Automation and legacy queue entries remain unattributed.
 reply UUIDs fence unrelated assistant/stream output and background results from human turns.
 Unstamped native results use the carried reply ownership, origin and resume reason. Observed
 unrelated costs advance the baseline without charging the human turn.
+
+### Plan-mode instructions (Release 1)
+
+Plan-mode guidance is no longer part of the append. Every launch passes it as the SDK's
+`planModeInstructions`; Claude Code shows it, wrapped in its own read-only preamble and
+ExitPlanMode footer, only while the permission mode is `plan`. The append therefore stays
+byte-identical across plan/default switches (better prompt caching) and never claims a
+fixed mode. For workflow stages the read-only host contract follows the plan body, so it
+outranks plan mode's "ask questions" guidance, and it also stays in the append. Instruction
+profiles identify these threads as Claude supplement `v12` (shared with the native Task
+tools change). Live check, Claude Code 2.1.292, 2026-10-07: a sentinel in
+`planModeInstructions` appeared in plan turns only, across default → plan → default → plan
+switches made with `setPermissionMode` in one session.
 
 ## Transcript retention
 
@@ -388,3 +403,84 @@ fix in 0.3.287. Release 0 preserves these identities without adopting later-rele
 Conversation resets clear persisted rewind boundaries and context estimates. Explicit
 `clear` triggers also reset the cost baseline, as documented by SDK 0.3.292; other reset
 triggers preserve it. Authenticated live `/clear` observation remains unverified.
+
+## Thinking configuration
+
+Claude provider options accept a typed `thinking` value mirroring the Agent SDK:
+`{ "type": "adaptive" }`, `{ "type": "enabled", "budgetTokens": 8000 }` or
+`{ "type": "disabled" }`, with an optional `display` of `summarized` or `omitted`.
+The deprecated `maxThinkingTokens` is still read and is never rewritten in saved
+settings, but F5 no longer sends it to the SDK.
+
+One resolver (`claudeThinkingConfig` in `apps/server/src/provider/claudeProviderOptions.ts`)
+serves sessions, one-off prompts and git text generation. Precedence:
+
+1. The composer's per-turn thinking toggle (only on models that offer it). Off sends
+   `disabled`. On keeps the shape chosen by a lower layer, but never sends `disabled`.
+2. Typed `thinking`.
+3. Legacy `maxThinkingTokens`: `0` → `disabled`; a positive value → `adaptive` on
+   adaptive models (the budget is ignored, and the session reports
+   `thinkingFallback`), otherwise `{ enabled, budgetTokens }`.
+4. Native defaults (no `thinking` option).
+
+`thinking` and `alwaysThinkingEnabled` are never sent with conflicting values. An explicit
+`adaptive` config for a model F5 knows lacks adaptive thinking is rejected before
+launch; unknown models are passed through for the runtime to validate. The effective
+mode and its source appear in the session configuration (`thinking`, `thinkingSource`).
+
+Launch identity: settings that use only `maxThinkingTokens` keep their exact
+environment key and launch fingerprint, so upgrading restarts nothing. Typed `thinking`
+adds an extra fingerprint component and applies at the next session start.
+
+Live finding (Claude Code 2.1.292, Haiku 4.5, 2026-10-07): a mid-session
+`applyFlagSettings({ alwaysThinkingEnabled })` did not change thinking in either
+direction, with or without a launch `thinking` option. F5 still sends it on model
+changes, but in practice a thinking toggle change takes effect at the next session
+start. This predates Release 1. The deprecated `setMaxThinkingTokens` control was
+removed from F5's runtime interface; it was never called.
+
+## Native Task tools (Release 1)
+
+The task panel is a projection of the native Task tools. F5 never writes tasks back
+to Claude; it applies tool results as they arrive:
+
+- Only successful results change tasks. `TaskCreate` appends the returned id;
+  `TaskUpdate` applies its input unless the result reports `success: false`, and
+  `status: "deleted"` removes the task; `TaskList` and `TaskGet` reconcile by id while
+  keeping fields the read omitted (for example `activeForm` and `description`).
+- Each call is applied once per `tool_use_id`, in order per thread. Several tasks may be
+  pending or in progress at once. Owner and blocking dependencies appear in the panel.
+- When F5 cannot tell what changed — a result without a matching start, a call that
+  ended without a result (interrupt, stream failure, stop), an unknown task id, a new
+  native session, or output it could not retain — the panel shows
+  "Task list may be out of date" until the next `TaskList` resynchronizes it. F5 never
+  invents tasks from unmatched results.
+- Bounds: 512 tasks and 64 unresolved calls per thread. Beyond them the panel keeps the
+  last valid snapshot and shows an overflow notice.
+- Revert and checkpoint restore drop tasks created in discarded turns, remember their
+  ids so a later `TaskList` cannot resurrect them, invalidate in-flight calls, and bump a
+  tracking generation. Writes computed against an older generation are rejected, and
+  Task tool events that arrive later from a discarded turn are recorded but never
+  applied. Tasks F5 first learns about from a `TaskList` or `TaskGet` are attributed to
+  that call's turn, so reverting it drops them too.
+- A new native session (for example a fresh session after a failed resume) has its own
+  task list with ids starting at 1, so F5 clears the previous session's tasks and
+  suppressions and waits for the next `TaskList`. Calls still pending when the provider
+  session ends or restarts are released, since no result can arrive for them.
+- Task tool calls do not appear as work-log rows. Their typed completion (native call id,
+  correlated input, structured result, transport and semantic success) is persisted once
+  on `item.completed`; results above 64 KiB are stored as a thread-scoped JSON
+  attachment and referenced with omission metadata, and F5 reads that attachment back
+  (checksum-verified, up to 8 MiB) so a large `TaskList` still resynchronizes. Other
+  tools record ids and transport success only; `success: false` marks only Task tools
+  as failed.
+- Only the main session's Task tools drive the panel; child-agent task lists stay with
+  the child.
+
+Tracking state is stored with the thread (`tasks_tracking_json`). `TodoWrite`
+snapshots keep their previous behavior and clear on revert; a `TodoWrite` snapshot in a
+thread that used the native tools (for example after an operator sets
+`CLAUDE_CODE_ENABLE_TASKS=0`) clears the native tracking state.
+
+Wire protocol 16 adds the tracking state, task dependency fields, and the completion
+envelope; clients and servers must both run Release 1.

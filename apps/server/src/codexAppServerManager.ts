@@ -765,6 +765,10 @@ export function buildCodexInitializeParams() {
     capabilities: {
       experimentalApi: true,
       requestAttestation: false,
+      // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
+      // `openai/form` in `capabilities.extensions`; switch once the private
+      // elicitation answer path (Release 3) passes end-to-end and the supported
+      // minimum is past 0.147. Until then F5 must not advertise form support.
       mcpServerOpenaiFormElicitation: false,
       // Current servers suppress this high-volume diagnostic. The adapter and
       // UI still accept starts from older servers and persisted worklogs.
