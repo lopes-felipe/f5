@@ -1,4 +1,5 @@
 import * as FS from "node:fs/promises";
+import * as OS from "node:os";
 import * as Path from "node:path";
 
 import type {
@@ -37,10 +38,21 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
 import { pruneStorageAutomationAudit, recordStorageAutomationAudit } from "./automationAudit.ts";
+import {
+  CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS,
+  type CodexMarketplaceLeftover,
+  listCodexMarketplaceLeftovers,
+  removeCodexMarketplaceLeftover,
+  resolveCodexLaunchHomes,
+} from "./codexMarketplaceStaging.ts";
 
 /**
  * Automatic storage cleanup: removes idle managed worktrees under the rules a
  * project resolves to, and provider logs past their retention. Off by default.
+ *
+ * One job runs even when cleanup is off: removing Codex marketplace upgrade
+ * clones that Codex app-servers F5 spawned left behind (see
+ * `codexMarketplaceStaging.ts`). F5 causes that data and nothing uses it.
  *
  * A worktree is removed only when it lives under this profile's managed
  * worktrees directory, contains no project root, is a linked worktree, has a
@@ -70,6 +82,16 @@ const CLEANUP_INTERVAL = "1 hour";
 const EVALUATION_CONCURRENCY = 2;
 
 export { blockingIgnoredEntries } from "../project/worktreeClaims.ts";
+
+/** Audit and dry-run label for a path: `~`-relative when under the user's home. */
+export function redactHomePath(value: string, home: string = OS.homedir()): string {
+  const relative = Path.relative(home, value);
+  return relative.length > 0 && !relative.startsWith("..") && !Path.isAbsolute(relative)
+    ? Path.join("~", relative)
+    : value;
+}
+
+const CODEX_LEFTOVER_MIN_AGE_HOURS = CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS / (60 * 60 * 1_000);
 
 /** Which rule makes a worktree eligible, or null when none applies. */
 export function matchWorktreeCleanupRule(input: {
@@ -404,6 +426,63 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       }),
     );
 
+  const codexMarketplaceLeftovers = Effect.gen(function* () {
+    const settings = yield* settingsService.getSettings.pipe(Effect.orElseSucceed(() => null));
+    if (settings === null) return [] as ReadonlyArray<CodexMarketplaceLeftover>;
+    const homes = resolveCodexLaunchHomes({
+      settings,
+      profile: config.profile,
+      stateDir: config.stateDir,
+    });
+    return yield* Effect.promise(() => listCodexMarketplaceLeftovers({ homes, nowMs: Date.now() }));
+  });
+
+  const codexLeftoverDryRunTargets = (leftovers: ReadonlyArray<CodexMarketplaceLeftover>) => {
+    const byHome = new Map<string, number>();
+    for (const leftover of leftovers) {
+      byHome.set(leftover.home, (byHome.get(leftover.home) ?? 0) + 1);
+    }
+    return [...byHome].map(
+      ([home, count]): StorageAutomationTarget => ({
+        job: "codex-marketplace-staging",
+        target: redactHomePath(Path.join(home, ".tmp", "marketplaces")),
+        projectId: null,
+        threadId: null,
+        action: "remove",
+        reason: `${count} leftover marketplace upgrade dir(s) older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours`,
+      }),
+    );
+  };
+
+  const removeCodexMarketplaceLeftovers = (operationId: string) =>
+    Effect.gen(function* () {
+      const leftovers = yield* codexMarketplaceLeftovers;
+      for (const leftover of leftovers) {
+        const outcome = yield* Effect.promise(() => removeCodexMarketplaceLeftover(leftover));
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "codex-marketplace-staging",
+            target: redactHomePath(leftover.path),
+            result: outcome.warning ? "failed" : "removed",
+            reason: outcome.warning
+              ? outcome.warning.reason
+              : `${leftover.kind === "staging" ? "upgrade clone" : "upgrade backup"} older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours; ${outcome.reclaimedBytes} bytes`,
+            // A dir that cannot be deleted fails again on every pass.
+          },
+          { skipIfRepeated: outcome.warning !== undefined },
+        ).pipe(Effect.provideServices(services));
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("codex marketplace staging cleanup failed", {
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+
   const dryRun: StorageCleanupWorkerShape["dryRun"] = Effect.gen(function* () {
     const { global, evaluations } = yield* evaluateAll;
     const targets: StorageAutomationTarget[] = evaluations.flatMap((evaluation) =>
@@ -422,6 +501,7 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         });
       }
     }
+    targets.push(...codexLeftoverDryRunTargets(yield* codexMarketplaceLeftovers));
     return {
       storageCleanupEnabled: global?.storageCleanup.enabled ?? false,
       generatedAt: new Date().toISOString(),
@@ -463,6 +543,9 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         }).pipe(Effect.provideServices(services));
       }
     }
+    // Runs regardless of `storageCleanup.enabled`: F5-spawned app-servers
+    // leave these behind and nothing else ever removes them.
+    yield* removeCodexMarketplaceLeftovers(operationId);
     yield* pruneStorageAutomationAudit.pipe(Effect.provideServices(services));
     return results;
   }).pipe(

@@ -149,6 +149,30 @@ should use the shared-home plus shadow-home setup instead.
 
 [Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.160.1 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
 
+## Disk space from Codex marketplace upgrades
+
+When a Codex home has a Git-sourced plugin marketplace configured, each `codex app-server`
+start clones the whole marketplace into `.tmp/marketplaces/.staging/marketplace-upgrade-*`
+and then swaps it in. If the process stops before the swap, Codex never removes the clone.
+These clones can be hundreds of MB each.
+
+F5 limits this in three ways:
+
+- Session-note, compaction and harness-validation prompts share one warm app-server per
+  Codex launch config instead of starting one per prompt. The warm process stops after
+  5 minutes idle, after 50 prompts, or after any failed prompt. It is not tied to the
+  signed-in account: after `codex login` switches accounts in the same home, background
+  prompts can use the previous login until the warm process stops.
+- These one-off app-servers, and the `codex exec` runs that generate titles, commit messages,
+  PR text and branch names, start with `-c features.plugins=false`, so they never begin a
+  marketplace upgrade. Thread sessions keep plugins on.
+- Every hour, F5 deletes `marketplace-upgrade-*` dirs older than 2 hours in every Codex home
+  it launches, even when automatic storage cleanup is off. It deletes a
+  `marketplace-backup-*` dir only when an installed marketplace from the same source sits
+  next to it; a backup Codex kept after a failed rollback may be the only copy and is left
+  alone. Each deletion is recorded in the automatic cleanup history. **Settings → Storage →
+  Provider homes** offers the same cleanup on demand.
+
 ## Release 0 rewind compatibility
 
 F5 resolves the retained history boundary once, then tries `thread/revert`, legacy

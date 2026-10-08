@@ -27,6 +27,7 @@ import {
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
 import { withHomeSandbox } from "../testing/homeSandbox.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import { StorageMaintenance } from "./StorageMaintenance.ts";
 import { StorageMaintenanceLive } from "./StorageMaintenance.ts";
 import { sizeIfExists } from "./diskUsage.ts";
@@ -139,8 +140,15 @@ function makeStorageTestLayer(input?: {
   readonly checkpointStore?: CheckpointStoreShape;
   readonly gitCore?: GitCoreShape;
   readonly orchestrationEngine?: OrchestrationEngineShape;
+  /** Provide server settings; without them the Codex staging category is omitted. */
+  readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
 }) {
-  return StorageMaintenanceLive.pipe(
+  const maintenance = input?.settings
+    ? StorageMaintenanceLive.pipe(
+        Layer.provideMerge(ServerSettingsService.layerTest(input.settings)),
+      )
+    : StorageMaintenanceLive;
+  return maintenance.pipe(
     Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(
@@ -1501,3 +1509,61 @@ function countRows(sql: SqlClient.SqlClient, tableName: CountedThreadTable, thre
       `.pipe(mapCount);
   }
 }
+
+const codexStagingHome = NodePath.join(
+  NodeOS.tmpdir(),
+  `f5-storage-codex-home-${Math.random().toString(36).slice(2)}`,
+);
+
+it.layer(
+  makeStorageTestLayer({ settings: { providers: { codex: { homePath: codexStagingHome } } } }),
+)("StorageMaintenance Codex marketplace staging", (it) => {
+  it.effect("offers old marketplace upgrade leftovers and deletes only confirmed ones", () =>
+    Effect.gen(function* () {
+      const storage = yield* StorageMaintenance;
+      const marketplaces = NodePath.join(codexStagingHome, ".tmp", "marketplaces");
+      const oldClone = NodePath.join(marketplaces, ".staging", "marketplace-upgrade-old");
+      const freshClone = NodePath.join(marketplaces, ".staging", "marketplace-upgrade-fresh");
+      const lateClone = NodePath.join(marketplaces, ".staging", "marketplace-upgrade-late");
+      const makeDir = async (target: string, ageMs: number) => {
+        await writeFile(NodePath.join(target, "pack"), "x".repeat(4096));
+        const when = new Date(Date.now() - ageMs);
+        await NodeFS.utimes(target, when, when);
+      };
+      yield* Effect.promise(async () => {
+        await makeDir(oldClone, 3 * 60 * 60 * 1_000);
+        await makeDir(freshClone, 0);
+      });
+
+      try {
+        const report = yield* storage.inspect({ force: true });
+        const category = report.categories.find((entry) => entry.id === "codexMarketplaceStaging");
+        assert.equal(category?.section, "providers");
+        assert.equal(category?.availability, "ready");
+        assert.deepEqual(
+          category?.targets.map((target) => target.path),
+          [oldClone],
+        );
+        assert.isAtLeast(category?.reclaimableBytes ?? 0, 4096);
+
+        // A leftover that ages past the guard after the scan was not confirmed.
+        yield* Effect.promise(() => makeDir(lateClone, 3 * 60 * 60 * 1_000));
+        const result = yield* storage.cleanup({
+          operationId: "operation-codex-staging",
+          scanId: report.scanId,
+          confirmationNonce: report.confirmationNonce,
+          categoryIds: ["codexMarketplaceStaging"],
+        });
+
+        assert.equal(result.results.length, 1);
+        assert.equal(result.results[0]?.status, "Cleaned");
+        assert.isAtLeast(result.reclaimedBytes, 4096);
+        assert.equal(yield* Effect.promise(() => pathExists(oldClone)), false);
+        assert.equal(yield* Effect.promise(() => pathExists(freshClone)), true);
+        assert.equal(yield* Effect.promise(() => pathExists(lateClone)), true);
+      } finally {
+        yield* Effect.promise(() => NodeFS.rm(codexStagingHome, { recursive: true, force: true }));
+      }
+    }),
+  );
+});

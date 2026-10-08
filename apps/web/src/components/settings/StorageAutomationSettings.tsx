@@ -20,6 +20,7 @@ const JOB_LABELS = {
   "worktree-cleanup": "Worktree",
   "provider-logs": "Provider logs",
   "auto-pull": "Auto-pull",
+  "codex-marketplace-staging": "Codex marketplace staging",
 } as const satisfies Record<StorageAutomationTarget["job"], string>;
 
 const ACTION_LABELS = {

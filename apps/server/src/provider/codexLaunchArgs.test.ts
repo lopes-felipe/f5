@@ -20,6 +20,21 @@ describe("Codex launch arguments", () => {
       'cli_auth_credentials_store="file"',
     );
   });
+  it("disables plugins only when asked, and after user arguments so it wins", () => {
+    const disabled = buildCodexAppServerCommand({
+      environment: {},
+      providerLaunchArgs: ["--strict-config", "-c", "features.plugins=true"],
+      disablePlugins: true,
+    });
+    expect(disabled.dropped).toEqual(["-c", "features.plugins=true"]);
+    const index = disabled.argv.indexOf("features.plugins=false");
+    expect(index).toBeGreaterThan(disabled.argv.indexOf("--strict-config"));
+    expect(disabled.argv[index - 1]).toBe("-c");
+    expect(buildCodexAppServerCommand({ environment: {} }).argv).not.toContain(
+      "features.plugins=false",
+    );
+  });
+
   it("combines F5 environment and instance arguments without a shell", () => {
     expect(
       resolveCodexLaunchArgv({

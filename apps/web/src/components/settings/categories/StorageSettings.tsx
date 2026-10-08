@@ -44,6 +44,7 @@ const SECTION_TITLES = {
   worktrees: "Worktrees",
   logs: "Logs",
   attachments: "Attachments",
+  providers: "Provider homes",
   legacy: "Legacy T3/F5 data",
 } as const;
 
@@ -754,7 +755,7 @@ export function StorageSettings() {
 
       {report ? (
         <>
-          {(["database", "worktrees", "logs", "legacy"] as const).map((sectionId) => {
+          {(["database", "worktrees", "logs", "providers", "legacy"] as const).map((sectionId) => {
             const categories = sections.get(sectionId) ?? [];
             if (categories.length === 0) return null;
             const sectionBytes =
@@ -764,7 +765,9 @@ export function StorageSettings() {
                   ? report.worktreesBytes
                   : sectionId === "logs"
                     ? report.logsBytes
-                    : report.legacyBytes;
+                    : sectionId === "providers"
+                      ? categories.reduce((total, category) => total + category.bytes, 0)
+                      : report.legacyBytes;
             return (
               <section key={sectionId} className="rounded-xl border border-border bg-card p-5">
                 <div className="mb-4 flex items-start justify-between gap-3">
@@ -776,6 +779,10 @@ export function StorageSettings() {
                       <p className="mt-1 text-xs text-muted-foreground">
                         Provider event logs across {report.providerLogSegmentCount} thread segments.
                         Server, observability, and terminal logs are kept.
+                      </p>
+                    ) : sectionId === "providers" ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Data that agent CLIs launched by F5 leave in their home directories.
                       </p>
                     ) : sectionId === "legacy" && report.legacyCleanupDisabledReason ? (
                       <p className="mt-1 text-xs text-muted-foreground">
