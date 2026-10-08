@@ -1,4 +1,9 @@
-import { isKnownProviderKind, type ProviderRuntimeCapabilities } from "@t3tools/contracts";
+import {
+  isKnownProviderKind,
+  type ProviderRuntimeCapabilities,
+  type ProviderSessionAction,
+  type ProviderSessionCapabilities,
+} from "@t3tools/contracts";
 import { providerMaxImages } from "./attachmentLimits";
 
 export function supportsCodexAsyncQuestions(version: string | null | undefined): boolean {
@@ -18,5 +23,23 @@ export function providerRuntimeCapabilities(
     rollbackAffectsFiles: driver === "opencode",
     asyncQuestions: driver === "codex" && supportsCodexAsyncQuestions(version),
     maxImagesPerTurn: isKnownProviderKind(driver) ? providerMaxImages(driver) : 0,
+    // Claude reports models through SDK initialization; Codex through `model/list`.
+    reportedModels: driver === "claudeAgent" || driver === "codex",
+    sessionCommandCatalog: driver === "claudeAgent" || driver === "codex" || driver === "grok",
+    instanceInventory: driver === "claudeAgent" || driver === "codex",
+    nativeSessionCleanup: driver === "claudeAgent",
   };
+}
+
+/**
+ * Whether a session action is available. The session snapshot (when the thread
+ * has one) is authoritative; otherwise the adapter-wide fallback decides.
+ */
+export function isSessionActionSupported(
+  session: ProviderSessionCapabilities | null | undefined,
+  action: ProviderSessionAction,
+  fallback: boolean,
+): boolean {
+  const support = session?.actions.find((entry) => entry.action === action);
+  return support ? support.supported : fallback;
 }

@@ -37,6 +37,7 @@ import { ServerConfig } from "../../config.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
 import {
+  isReportedModel,
   orderProviderSnapshots,
   readProviderStatusCache,
   resolveProviderStatusCachePath,
@@ -108,6 +109,17 @@ const mergeProviderModels = (
   const previousBySlug = new Map(previousModels.map((model) => [model.slug, model] as const));
   const mergedModels = nextModels.map((model) => {
     const previousModel = previousBySlug.get(model.slug);
+    // A probe that could not read the executable's catalog falls back to
+    // built-ins; keep the capabilities the executable reported earlier.
+    if (
+      previousModel &&
+      !model.isCustom &&
+      isReportedModel(previousModel) &&
+      !isReportedModel(model) &&
+      retainMissingModels
+    ) {
+      return { ...model, capabilities: previousModel.capabilities };
+    }
     if (!previousModel || hasModelCapabilities(model) || !hasModelCapabilities(previousModel)) {
       return model;
     }

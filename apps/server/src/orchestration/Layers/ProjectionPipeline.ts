@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
+import { mergeSessionCapabilities } from "../../provider/sessionCapabilities.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   estimateModelContextWindowTokens,
@@ -1566,7 +1567,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadCommandExecutionRepository.upsert({
             ...existingRow,
             output: nextOutput.output,
-            outputTruncated: existingRow.outputTruncated || nextOutput.outputTruncated,
+            outputTruncated:
+              existingRow.outputTruncated ||
+              nextOutput.outputTruncated ||
+              event.payload.outputTruncated === true,
             updatedAt: event.payload.updatedAt,
             lastUpdatedSequence: event.sequence,
           });
@@ -1700,6 +1704,12 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             tokenUsageSource:
               event.payload.session.tokenUsageSource ??
               (Option.isSome(existingRow) ? existingRow.value.tokenUsageSource : null),
+            // Omitted keeps the current snapshot, null clears it, older never wins.
+            capabilities:
+              mergeSessionCapabilities(
+                Option.isSome(existingRow) ? existingRow.value.capabilities : undefined,
+                event.payload.session.capabilities,
+              ) ?? null,
             updatedAt: event.payload.session.updatedAt,
           });
           return;

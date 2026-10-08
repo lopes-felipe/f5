@@ -29,7 +29,15 @@ export type ComposerCommandItem =
       label: string;
       description: string;
       argumentHint: string | null;
+      /** Catalog the entry came from; session and instance catalogs are private. */
+      source?: "session" | "instance" | "project";
     };
+
+const SKILL_SOURCE_LABELS = {
+  session: "session",
+  instance: "instance",
+  project: "project",
+} as const;
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
   items: ComposerCommandItem[];
@@ -117,6 +125,14 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       </span>
       {props.item.type === "skill" && props.item.argumentHint ? (
         <span className="truncate text-2xs text-muted-foreground">{props.item.argumentHint}</span>
+      ) : null}
+      {props.item.type === "skill" && props.item.source ? (
+        <span
+          className="shrink-0 rounded-sm border border-border/60 px-1 text-2xs text-muted-foreground"
+          title={`From the ${SKILL_SOURCE_LABELS[props.item.source]} catalog`}
+        >
+          {SKILL_SOURCE_LABELS[props.item.source]}
+        </span>
       ) : null}
     </CommandItem>
   );

@@ -181,6 +181,43 @@ export function providerModelsFromSettings(
   return [...resolvedBuiltInModels, ...customEntries];
 }
 
+/** A model the executable itself described (Claude initialization, Codex `model/list`). */
+export interface ReportedProviderModel {
+  readonly slug: string;
+  readonly name: string;
+  readonly capabilities: ModelCapabilities;
+}
+
+/**
+ * Reported capabilities override same-slug built-ins; executable-only models
+ * are appended. Built-ins are never dropped, so a slug a persisted thread uses
+ * keeps resolving when the executable stops listing it.
+ */
+export function mergeReportedProviderModels(
+  models: ReadonlyArray<ServerProviderModel>,
+  reported: ReadonlyArray<ReportedProviderModel> | undefined,
+): ReadonlyArray<ServerProviderModel> {
+  if (!reported || reported.length === 0) return models;
+  const reportedBySlug = new Map(reported.map((model) => [model.slug, model] as const));
+  const known = new Set(models.map((model) => model.slug));
+  return [
+    ...models.map((model) => {
+      const match = model.isCustom ? undefined : reportedBySlug.get(model.slug);
+      return match ? { ...model, capabilities: match.capabilities } : model;
+    }),
+    ...reported
+      .filter((model) => !known.has(model.slug))
+      .map(
+        (model): ServerProviderModel => ({
+          slug: model.slug,
+          name: model.name,
+          isCustom: false,
+          capabilities: model.capabilities,
+        }),
+      ),
+  ];
+}
+
 export function buildSelectOptionDescriptor(input: {
   readonly id: string;
   readonly label: string;

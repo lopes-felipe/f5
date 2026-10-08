@@ -171,6 +171,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+    capabilities: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.capabilities)),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -1210,6 +1211,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
+          capabilities_json AS "capabilities",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -2537,6 +2539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ? { estimatedContextTokens: row.estimatedContextTokens }
             : {}),
           ...(row.tokenUsageSource !== null ? { tokenUsageSource: row.tokenUsageSource } : {}),
+          ...(row.capabilities ? { capabilities: row.capabilities } : {}),
           updatedAt: row.updatedAt,
         });
       }

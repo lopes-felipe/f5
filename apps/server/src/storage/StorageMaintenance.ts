@@ -39,6 +39,15 @@ import {
   removeCodexMarketplaceLeftover,
   resolveCodexLaunchHomes,
 } from "./codexMarketplaceStaging.ts";
+import {
+  AUTO_VACUUM_INCREMENTAL,
+  freeDatabaseBytes,
+  incrementalVacuum,
+  liveDatabaseBytes,
+  readDatabasePages,
+  vacuumFreeSpaceShortfall,
+  vacuumToIncremental,
+} from "./databaseSpace.ts";
 import { enumerateFiles, recursiveSize, sizeIfExists, type EnumeratedFile } from "./diskUsage.ts";
 import { probeLegacyState, type LegacyProbeResult } from "./legacyStateProbe.ts";
 import {
@@ -52,6 +61,12 @@ const USAGE_CACHE_TTL_MS = 30_000;
 const NONCE_TTL_MS = 5 * 60_000;
 const EVENTS_ROTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const ARCHIVED_THREAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Free pages worth one full VACUUM to switch to incremental auto-vacuum. */
+const AUTO_CONVERT_MIN_FREE_BYTES = 256 * 1024 * 1024;
+const AUTO_CONVERT_MIN_FREE_FRACTION = 0.2;
+/** The full VACUUM blocks the server, so it waits until nobody has used a thread for this long. */
+const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
+export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 const TYPED_CONFIRM_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 const WORKTREE_SCAN_MAX_DEPTH = 4;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
@@ -73,6 +88,25 @@ export interface StorageCleanupContext {
   ) => Effect.Effect<void, never, never>;
 }
 
+/** What the cleanup helpers need from a request: progress and cancellation key on it. */
+type CleanupOperation = Pick<StorageCleanupRequest, "operationId">;
+
+export interface AutomaticThreadPurgeResult {
+  readonly purgedThreadIds: ReadonlyArray<ThreadId>;
+  /** Archived threads soft-deleted for this purge. */
+  readonly archivedThreadIds: ReadonlyArray<ThreadId>;
+  readonly reclaimedBytes: number;
+  readonly warnings: ReadonlyArray<StoragePathWarning>;
+}
+
+export interface DatabaseSpaceResult {
+  /** `converted`: one full VACUUM switched the database to incremental auto-vacuum. */
+  readonly action: "incremental" | "converted" | "none";
+  readonly reclaimedBytes: number;
+  /** Why a needed conversion did not run. */
+  readonly skippedReason?: string;
+}
+
 export interface StorageMaintenanceShape {
   readonly inspect: (
     request?: StorageGetUsageRequest,
@@ -82,6 +116,51 @@ export interface StorageMaintenanceShape {
     context?: StorageCleanupContext,
   ) => Effect.Effect<StorageCleanupResult, StorageMaintenanceError>;
   readonly cancel: (operationId: string) => Effect.Effect<void>;
+  /**
+   * Automatic purge for the storage cleanup worker: threads deleted at or
+   * before `deletedBefore`, and threads archived at or before `archivedBefore`
+   * (soft-deleted first, guarded on their archive time). Null skips a kind.
+   * Same per-thread steps and safety checks as the manual purge. Takes the
+   * oldest `maxThreads` threads that are not busy; the rest wait for the
+   * next call. A thread this skipped or failed to purge goes to the back of
+   * the order for {@link PURGE_FAILURE_BACKOFF_MS}, so a few stuck threads
+   * cannot hold every slot.
+   * `reclaimedBytes` counts files only: sizing the rows would read every
+   * deleted thread's events.
+   */
+  readonly purgeThreads: (input: {
+    readonly operationId: string;
+    readonly deletedBefore: string | null;
+    readonly archivedBefore: string | null;
+    readonly maxThreads: number;
+  }) => Effect.Effect<AutomaticThreadPurgeResult, StorageMaintenanceError>;
+  /**
+   * Returns free database pages to the file system: bounded incremental
+   * vacuum steps on an incremental database. A non-incremental database with
+   * enough free pages is switched with one full VACUUM, but only while no
+   * agent is working, no thread was used for a while, and free disk covers it.
+   */
+  readonly reclaimDatabaseSpace: (input: {
+    readonly maxDurationMs: number;
+  }) => Effect.Effect<DatabaseSpaceResult, StorageMaintenanceError>;
+  /**
+   * Per-thread provider logs last written before `modifiedBefore` whose
+   * thread is deleted or gone (or archived, with `includeArchived`), and not
+   * busy. Live threads keep their logs: transcript repair rebuilds from them.
+   */
+  readonly listTerminalThreadLogs: (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<ReadonlyArray<EnumeratedFile>, StorageMaintenanceError>;
+  /**
+   * Deletes the logs {@link StorageMaintenanceShape.listTerminalThreadLogs}
+   * lists, re-listing them under the maintenance lock.
+   */
+  readonly pruneTerminalThreadLogs: (input: {
+    readonly operationId: string;
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<StorageCleanupCategoryResult, StorageMaintenanceError>;
 }
 
 export class StorageMaintenance extends ServiceMap.Service<
@@ -504,6 +583,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const git = yield* GitCore;
   const eventStore = yield* OrchestrationEventStore;
   const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+  const withSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const readPages = withSql(readDatabasePages);
+  const vacuumIncremental = withSql(vacuumToIncremental);
 
   let cachedReport: {
     readonly stateDir: string;
@@ -513,6 +595,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
   let activeNonce: UsageNonceState | null = null;
   const cancelledOperations = new Set<string>();
   let activeOperationId: string | null = null;
+  /** Threads the automatic purge could not remove, and when to try them first again. */
+  const purgeRetryAtMs = new Map<string, number>();
 
   const queryThreadRows = () =>
     sql<ThreadRow>`
@@ -892,11 +976,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return busySegments;
     });
 
-  const computeProviderLogCandidates = (allThreads: ReadonlyArray<ThreadRow>) =>
+  const computeProviderLogCandidates = (
+    allThreads: ReadonlyArray<ThreadRow>,
+    options?: {
+      /** Keep archived threads' logs: they can be unarchived. */
+      readonly archivedAlive?: boolean;
+    },
+  ) =>
     Effect.gen(function* () {
       const aliveSegments = new Set(
         allThreads
-          .filter(isActiveStorageThread)
+          .filter((thread) =>
+            options?.archivedAlive ? thread.deletedAt === null : isActiveStorageThread(thread),
+          )
           .map((thread) => toSafeThreadAttachmentSegment(thread.threadId))
           .filter((segment): segment is string => segment !== null),
       );
@@ -1745,7 +1837,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     });
 
   const publishProgress = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context: StorageCleanupContext | undefined,
     event: Omit<StorageCleanupProgressPayload, "operationId">,
   ) =>
@@ -1757,7 +1849,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const checkCancelled = (operationId: string) => cancelledOperations.has(operationId);
 
   const deleteProviderLogFiles = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context: StorageCleanupContext | undefined,
     categoryId: StorageCleanupCategoryId,
     files: ReadonlyArray<EnumeratedFile>,
@@ -1816,12 +1908,17 @@ const makeStorageMaintenance = Effect.gen(function* () {
     });
 
   const purgeDeletedThreads = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context?: StorageCleanupContext,
     input?: {
       readonly categoryId?: StorageCleanupCategoryId;
       readonly threadIds?: ReadonlyArray<ThreadId>;
       readonly warnings?: ReadonlyArray<StoragePathWarning>;
+      /**
+       * Sizing reads every deleted thread's payloads. The hourly purge skips
+       * it and reports only file bytes.
+       */
+      readonly estimateDatabaseBytes?: boolean;
     },
   ) =>
     Effect.gen(function* () {
@@ -1866,7 +1963,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
           .map((thread) => toSafeThreadAttachmentSegment(thread.threadId))
           .filter((segment): segment is string => segment !== null),
       );
-      const deletedDbBytes = yield* estimateDeletedThreadDbBytes();
+      const deletedDbBytes =
+        input?.estimateDatabaseBytes === false ? 0 : yield* estimateDeletedThreadDbBytes();
       const estimatedDbBytesPerThread =
         deletedThreads.length > 0 ? Math.floor(deletedDbBytes / deletedThreads.length) : 0;
       let completedTargets = 0;
@@ -1970,6 +2068,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 `;
               }
               yield* eventStore.deleteForThreadStream(thread.threadId);
+              yield* sql`DELETE FROM orchestration_event_compaction WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_threads WHERE thread_id = ${thread.threadId}`;
             }),
           ),
@@ -2159,21 +2258,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
       });
     });
 
+  /**
+   * Soft-deletes the archived targets that are still archived at or before
+   * `cutoffIso`, guarded on their archive time, so the purge can remove them.
+   */
   const dispatchArchivedThreadDeletes = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context: StorageCleanupContext | undefined,
-    category: StorageCleanupCategoryUsage | undefined,
+    targets: ReadonlyArray<Pick<StorageCleanupTarget, "id" | "label">>,
+    cutoffIso: string,
   ) =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const deletedThreadIds: ThreadId[] = [];
-      if (!category) {
-        return { deletedThreadIds, warnings };
-      }
-
-      const cutoffIso = new Date(Date.now() - ARCHIVED_THREAD_RETENTION_MS).toISOString();
       let completedTargets = 0;
-      for (const target of category.targets) {
+      for (const target of targets) {
         if (checkCancelled(request.operationId)) {
           break;
         }
@@ -2182,7 +2281,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           phase: "deleting",
           message: `Deleting archived thread ${target.label}`,
           completedTargets,
-          totalTargets: category.targets.length,
+          totalTargets: targets.length,
         });
 
         const threadId = ThreadId.makeUnsafe(target.id);
@@ -2694,11 +2793,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
           message: "Filesystem free-space inspection is unavailable.",
         });
       }
-      const freeSpace = yield* Effect.tryPromise({
-        try: async () => {
-          const stat = await statfs(Path.dirname(config.dbPath));
-          return stat.bavail * stat.bsize;
-        },
+      // VACUUM copies only live pages, so free pages need no room.
+      const pages = yield* readPages;
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
         catch: (cause) =>
           new StorageMaintenanceError({
             operation: "StorageMaintenance.cleanup.databaseVacuum.statfs",
@@ -2706,21 +2809,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
             cause,
           }),
       });
-      if (freeSpace < beforeBytes * 1.2) {
+      if (shortfall !== null) {
         return resultFor({
           categoryId: "databaseVacuum",
           status: "Skipped",
-          warnings: [
-            warningFor(
-              config.dbPath,
-              "Skipped VACUUM because available disk space is below 1.2x database size.",
-            ),
-          ],
+          warnings: [warningFor(config.dbPath, `Skipped VACUUM because ${shortfall}.`)],
           message: "Not enough free disk space to compact the database.",
         });
       }
-      yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
-      yield* sql`VACUUM`;
+      yield* vacuumIncremental;
       const afterBytes = yield* Effect.tryPromise({
         try: () => fileSizeIfExists(config.dbPath),
         catch: (cause) =>
@@ -2966,7 +3063,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         ? yield* dispatchArchivedThreadDeletes(
             request,
             context,
-            requestedCategoryById.get("purgeArchivedThreads"),
+            requestedCategoryById.get("purgeArchivedThreads")?.targets ?? [],
+            new Date(Date.now() - ARCHIVED_THREAD_RETENTION_MS).toISOString(),
           )
         : { deletedThreadIds: [] as ThreadId[], warnings: [] as StoragePathWarning[] };
       const f5WorktreeReferenceWarnings = categoryIds.includes("inactiveF5Worktrees")
@@ -3093,10 +3191,211 @@ const makeStorageMaintenance = Effect.gen(function* () {
       }
     });
 
+  const purgeThreads: StorageMaintenanceShape["purgeThreads"] = (input) =>
+    Effect.gen(function* () {
+      const allThreads = yield* queryThreadRows();
+      const busySegments = yield* readBusyThreadSegments(allThreads);
+      const nowMs = Date.now();
+      for (const [threadId, retryAtMs] of purgeRetryAtMs) {
+        if (retryAtMs <= nowMs) purgeRetryAtMs.delete(threadId);
+      }
+      const { deletedBefore, archivedBefore } = input;
+      const purgeable = (thread: ThreadRow) => {
+        const segment = toSafeThreadAttachmentSegment(thread.threadId);
+        return segment === null || !busySegments.has(segment);
+      };
+      // Threads that failed recently go last, then oldest first.
+      const order = (at: (thread: ThreadRow) => string) => (left: ThreadRow, right: ThreadRow) =>
+        Number(purgeRetryAtMs.has(left.threadId)) - Number(purgeRetryAtMs.has(right.threadId)) ||
+        at(left).localeCompare(at(right));
+      // At most `maxThreads` in total: the purge holds the maintenance lock,
+      // which pauses command dispatch until it finishes.
+      const deleted = (
+        deletedBefore === null
+          ? []
+          : allThreads.filter(
+              (thread) =>
+                thread.deletedAt !== null && thread.deletedAt <= deletedBefore && purgeable(thread),
+            )
+      )
+        .toSorted(order((thread) => thread.deletedAt!))
+        .slice(0, input.maxThreads);
+      const archived = (
+        archivedBefore === null
+          ? []
+          : allThreads.filter(
+              (thread) =>
+                thread.deletedAt === null &&
+                thread.archivedAt !== null &&
+                thread.archivedAt <= archivedBefore &&
+                purgeable(thread),
+            )
+      )
+        .toSorted(order((thread) => thread.archivedAt!))
+        .slice(0, Math.max(0, input.maxThreads - deleted.length));
+      if (deleted.length === 0 && archived.length === 0) {
+        return { purgedThreadIds: [], archivedThreadIds: [], reclaimedBytes: 0, warnings: [] };
+      }
+      const operation = { operationId: input.operationId };
+      // Dispatching needs the engine, so it runs before the exclusive lock.
+      const archivedDeletes =
+        archivedBefore !== null && archived.length > 0
+          ? yield* dispatchArchivedThreadDeletes(
+              operation,
+              undefined,
+              archived.map((thread) => ({ id: thread.threadId, label: thread.title })),
+              archivedBefore,
+            )
+          : { deletedThreadIds: [] as ThreadId[], warnings: [] as StoragePathWarning[] };
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      const result = yield* purgeDeletedThreads(operation, undefined, {
+        threadIds: [
+          ...deleted.map((thread) => thread.threadId),
+          ...archivedDeletes.deletedThreadIds,
+        ],
+        warnings: archivedDeletes.warnings,
+        estimateDatabaseBytes: false,
+      }).pipe(
+        Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            cachedReport = null;
+          }),
+        ),
+      );
+      const purgedThreadIds = result.perTargetReclaimed.map((target) =>
+        ThreadId.makeUnsafe(target.id),
+      );
+      const purged = new Set<string>(purgedThreadIds);
+      for (const thread of [...deleted, ...archived]) {
+        if (!purged.has(thread.threadId)) {
+          purgeRetryAtMs.set(thread.threadId, Date.now() + PURGE_FAILURE_BACKOFF_MS);
+        }
+      }
+      return {
+        purgedThreadIds,
+        archivedThreadIds: archivedDeletes.deletedThreadIds,
+        reclaimedBytes: result.reclaimedBytes,
+        warnings: result.warnings,
+      };
+    }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.purgeThreads")));
+
+  const reclaimDatabaseSpace: StorageMaintenanceShape["reclaimDatabaseSpace"] = (input) =>
+    Effect.gen(function* () {
+      const pages = yield* readPages;
+      if (pages.autoVacuum === AUTO_VACUUM_INCREMENTAL) {
+        const released = yield* withSql(incrementalVacuum(input));
+        return {
+          action: released > 0 ? "incremental" : "none",
+          reclaimedBytes: released * pages.pageSize,
+        } satisfies DatabaseSpaceResult;
+      }
+      const freeBytes = freeDatabaseBytes(pages);
+      if (
+        pages.autoVacuum !== 0 ||
+        freeBytes < AUTO_CONVERT_MIN_FREE_BYTES ||
+        freeBytes < pages.pageCount * pages.pageSize * AUTO_CONVERT_MIN_FREE_FRACTION
+      ) {
+        return { action: "none", reclaimedBytes: 0 } satisfies DatabaseSpaceResult;
+      }
+      const skipped = (skippedReason: string): DatabaseSpaceResult => ({
+        action: "none",
+        reclaimedBytes: 0,
+        skippedReason,
+      });
+      const quietSince = new Date(Date.now() - AUTO_CONVERT_QUIET_MS).toISOString();
+      const recent = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM projection_threads
+        WHERE deleted_at IS NULL AND last_interaction_at >= ${quietSince}
+      `;
+      if ((recent[0]?.count ?? 0) > 0) return skipped("a thread was used recently");
+      const busy = yield* readBusyThreadSegments(yield* queryThreadRows());
+      if (busy.size > 0) return skipped("an agent is working");
+      const statfs = yield* Effect.tryPromise({
+        try: () => loadStatfs(),
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.reclaimDatabaseSpace.loadStatfs",
+            message: "Failed to load filesystem free-space inspection.",
+            cause,
+          }),
+      });
+      if (!statfs) return skipped("free disk space cannot be inspected");
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.reclaimDatabaseSpace.statfs",
+            message: "Failed to inspect free disk space.",
+            cause,
+          }),
+      });
+      if (shortfall !== null) return skipped(shortfall);
+      const beforeBytes = yield* Effect.promise(() => fileSizeIfExists(config.dbPath));
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      yield* vacuumIncremental.pipe(
+        Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)),
+      );
+      const afterBytes = yield* Effect.promise(() => fileSizeIfExists(config.dbPath));
+      cachedReport = null;
+      return {
+        action: "converted",
+        reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
+      } satisfies DatabaseSpaceResult;
+    }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.reclaimDatabaseSpace")));
+
+  const terminalThreadLogs = (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const cutoffMs = Date.parse(input.modifiedBefore);
+      const candidates = yield* computeProviderLogCandidates(yield* queryThreadRows(), {
+        archivedAlive: !input.includeArchived,
+      });
+      return candidates.files.filter((file) => file.mtimeMs < cutoffMs);
+    });
+
+  const listTerminalThreadLogs: StorageMaintenanceShape["listTerminalThreadLogs"] = (input) =>
+    terminalThreadLogs(input).pipe(
+      Effect.mapError(toStorageMaintenanceError("StorageMaintenance.listTerminalThreadLogs")),
+    );
+
+  const pruneTerminalThreadLogs: StorageMaintenanceShape["pruneTerminalThreadLogs"] = (input) =>
+    Effect.gen(function* () {
+      // Listed and deleted under the maintenance lock, which holds back every
+      // command: no thread can be unarchived or resumed between the check
+      // and the delete.
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      const result = yield* Effect.gen(function* () {
+        const files = yield* terminalThreadLogs(input);
+        const deleted = yield* deleteProviderLogFiles(
+          { operationId: input.operationId },
+          undefined,
+          "providerLogsForTerminalThreads",
+          files,
+        );
+        if (files.length > 0) cachedReport = null;
+        return deleted;
+      }).pipe(Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)));
+      return result;
+    }).pipe(
+      Effect.mapError(toStorageMaintenanceError("StorageMaintenance.pruneTerminalThreadLogs")),
+    );
+
   return {
     inspect,
     cleanup,
     cancel,
+    purgeThreads,
+    reclaimDatabaseSpace,
+    listTerminalThreadLogs,
+    pruneTerminalThreadLogs,
   } satisfies StorageMaintenanceShape;
 });
 

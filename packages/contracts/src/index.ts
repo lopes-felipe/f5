@@ -4,6 +4,8 @@ export * from "./ipc";
 export * from "./prHub";
 export * from "./terminal";
 export * from "./provider";
+export * from "./sessionCapabilities";
+export * from "./providerInventory";
 export * from "./providerInstance";
 export * from "./nextTurnQueue";
 export * from "./worktreeSetup";

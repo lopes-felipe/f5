@@ -32,6 +32,10 @@ const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA busy_timeout = 5000;`;
+    // Takes effect only before the first table exists, so new databases start
+    // incremental; an existing one switches at its next VACUUM (see
+    // storage/databaseSpace.ts).
+    yield* sql`PRAGMA auto_vacuum = INCREMENTAL;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations;

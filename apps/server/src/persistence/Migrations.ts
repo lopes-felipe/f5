@@ -1,6 +1,8 @@
+import Migration0107 from "./Migrations/107_DatabaseCompaction.ts";
 import Migration0106 from "./Migrations/106_StorageAutomationAuditCodexStaging.ts";
 import Migration0104 from "./Migrations/104_ProviderSubmissionProvenance.ts";
 import Migration0105 from "./Migrations/105_ProjectionThreadTaskTracking.ts";
+import Migration0108 from "./Migrations/108_ProjectionThreadSessionCapabilities.ts";
 import Migration0093 from "./Migrations/093_AttachmentUploads.ts";
 import Migration0092 from "./Migrations/092_ThreadPullRequestSearch.ts";
 import Migration0091 from "./Migrations/091_PrHubRepositoryProvenance.ts";
@@ -140,10 +142,12 @@ import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
   "102_ForgeAccounts": Migration0102,
+  "108_ProjectionThreadSessionCapabilities": Migration0108,
   "105_ProjectionThreadTaskTracking": Migration0105,
   "104_ProviderSubmissionProvenance": Migration0104,
   // 105 is taken by ProjectionThreadTaskTracking in PR #84, which must land first.
   "106_StorageAutomationAuditCodexStaging": Migration0106,
+  "107_DatabaseCompaction": Migration0107,
   "103_UsageLimitResume": Migration0103,
   "101_UsageResetCreditRequests": Migration0101,
   "100_ProjectionThreadTitleState": Migration0100,

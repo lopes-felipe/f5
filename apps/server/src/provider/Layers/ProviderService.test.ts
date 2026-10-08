@@ -609,6 +609,52 @@ it.effect("persists Codex fork adoption before a failed final read", () => {
   }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]))));
 });
 const routing = makeProviderServiceLayer();
+it.effect("advances the session generation and refuses steering from a stale browser", () => {
+  const codex = makeFakeCodexAdapter();
+  const steerTurn = vi.fn((input: ProviderAdapterSendTurnInput) =>
+    Effect.succeed({ threadId: input.threadId, turnId: TurnId.makeUnsafe("turn-steered") }),
+  );
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const threadId = asThreadId("session-generation");
+    const start = {
+      provider: "codex" as const,
+      threadId,
+      cwd: process.cwd(),
+      runtimeMode: "full-access" as const,
+    };
+    const first = yield* service.startSession(threadId, start);
+    assert.equal(first.capabilities?.generation, 1);
+    const second = yield* service.startSession(threadId, start);
+    assert.equal(second.capabilities?.generation, 2);
+    assert.equal((yield* service.getSessionCapabilities(threadId))?.generation, 2);
+
+    const stale = yield* service
+      .sendTurn({
+        threadId,
+        input: "steer",
+        expectedTurnId: TurnId.makeUnsafe("turn-active"),
+        expectedSessionGeneration: 1,
+      })
+      .pipe(Effect.flip);
+    assert.equal(stale._tag, "ProviderSessionActionUnavailableError");
+    if (stale._tag === "ProviderSessionActionUnavailableError")
+      assert.equal(stale.reason.code, "stale-generation");
+    assert.equal(steerTurn.mock.calls.length, 0);
+
+    yield* service.sendTurn({
+      threadId,
+      input: "steer",
+      expectedTurnId: TurnId.makeUnsafe("turn-active"),
+      expectedSessionGeneration: 2,
+    });
+    assert.equal(steerTurn.mock.calls.length, 1);
+  }).pipe(
+    Effect.provide(
+      makeProviderServiceLayerForAdapters(new Map([["codex", { ...codex.adapter, steerTurn }]])),
+    ),
+  );
+});
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
   const codex = makeFakeCodexAdapter();
   const compactConversation = vi.fn(() => Effect.succeed({ summary: "unexpected" }));

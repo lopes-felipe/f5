@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import type { ProjectId } from "@t3tools/contracts";
+import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { afterEach, describe, expect, it } from "vitest";
@@ -442,6 +442,103 @@ describe("StorageCleanupWorker Codex marketplace staging", () => {
         ).toBe(true);
       }).pipe(Effect.provide(layer), Effect.scoped),
     );
+  });
+
+  it("purges deleted threads, prunes terminal logs and reclaims space even with cleanup off", async () => {
+    const world = makeWorld();
+    world.threads.push(
+      thread({
+        id: "thread-deleted",
+        projectId: "project-1",
+        worktreePath: null,
+        deletedAt: new Date(Date.now() - 10 * DAY_MS).toISOString(),
+      }),
+    );
+    world.purgeResult = {
+      purgedThreadIds: ["thread-deleted" as ThreadId],
+      archivedThreadIds: [],
+      reclaimedBytes: 2_048,
+      warnings: [],
+    };
+    world.spaceResult = { action: "incremental", reclaimedBytes: 8_192 };
+    // An archive retention is ignored while automatic cleanup is off.
+    const layer = StorageCleanupWorkerLive.pipe(
+      Layer.provideMerge(
+        automationLayer(
+          world,
+          { storageCleanup: { archivedThreadsPurgeAfterDays: 30 } },
+          "f5-cleanup-maintenance-",
+        ),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const worker = yield* StorageCleanupWorker;
+        const preview = yield* worker.dryRun;
+        expect(preview.targets).toContainEqual({
+          job: "thread-purge",
+          target: "deleted threads",
+          projectId: null,
+          threadId: null,
+          action: "remove",
+          reason: "1 thread(s) deleted more than 7 days ago",
+        });
+
+        yield* worker.runOnce;
+
+        const calls = new Map(world.maintenanceCalls.map((entry) => [entry.method, entry.input]));
+        const purge = calls.get("purgeThreads") as {
+          readonly deletedBefore: string;
+          readonly archivedBefore: string | null;
+        };
+        expect(purge.archivedBefore).toBeNull();
+        expect(Math.abs(Date.parse(purge.deletedBefore) - (Date.now() - 7 * DAY_MS))).toBeLessThan(
+          60_000,
+        );
+        const logs = calls.get("pruneTerminalThreadLogs") as {
+          readonly modifiedBefore: string;
+          readonly includeArchived: boolean;
+        };
+        expect(Math.abs(Date.parse(logs.modifiedBefore) - (Date.now() - 14 * DAY_MS))).toBeLessThan(
+          60_000,
+        );
+        // Archived threads can be unarchived: their logs stay while cleanup is off.
+        expect(logs.includeArchived).toBe(false);
+        expect(calls.has("reclaimDatabaseSpace")).toBe(true);
+
+        const audit = yield* listStorageAutomationAudit(10);
+        expect(audit.map((entry) => [entry.job, entry.result, entry.target]).toSorted()).toEqual(
+          [
+            ["thread-purge", "removed", "thread-deleted"],
+            ["database-vacuum", "removed", "state database"],
+          ].toSorted(),
+        );
+      }).pipe(Effect.provide(layer), Effect.scoped),
+    );
+  });
+
+  it("purges archived threads only with cleanup on, and can turn purging off", async () => {
+    const run = async (storageCleanup: Record<string, unknown>) => {
+      const world = makeWorld();
+      const layer = StorageCleanupWorkerLive.pipe(
+        Layer.provideMerge(automationLayer(world, { storageCleanup }, "f5-cleanup-purge-")),
+      );
+      await Effect.runPromise(
+        Effect.flatMap(StorageCleanupWorker.asEffect(), (worker) => worker.runOnce).pipe(
+          Effect.provide(layer),
+          Effect.scoped,
+        ),
+      );
+      return world.maintenanceCalls.find((entry) => entry.method === "purgeThreads")?.input as
+        | { readonly deletedBefore: string | null; readonly archivedBefore: string | null }
+        | undefined;
+    };
+
+    const enabled = await run({ enabled: true, archivedThreadsPurgeAfterDays: 30 });
+    expect(enabled?.archivedBefore).not.toBeNull();
+    expect(enabled?.deletedBefore).not.toBeNull();
+    expect(await run({ deletedThreadsPurgeAfterDays: null })).toBeUndefined();
   });
 
   it("labels paths under the user's home with ~", () => {

@@ -79,6 +79,10 @@ import type {
 } from "./checkedInProjectFile";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
+  ProviderInstanceInventory,
+  ServerGetProviderInventoryInput,
+} from "./providerInventory";
+import type {
   ServerConfig,
   ServerAddKeybindingInput,
   ServerHarnessValidationResult,
@@ -715,6 +719,9 @@ export interface NativeApi {
     validateHarnesses: (input?: {
       providerOptions?: ProviderStartOptions;
     }) => Promise<{ results: ReadonlyArray<ServerHarnessValidationResult> }>;
+    getProviderInventory: (
+      input: ServerGetProviderInventoryInput,
+    ) => Promise<ProviderInstanceInventory>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     addKeybinding: (input: ServerAddKeybindingInput) => Promise<ServerKeybindingMutationResult>;
     updateKeybinding: (

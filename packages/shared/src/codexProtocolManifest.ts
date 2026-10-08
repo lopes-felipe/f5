@@ -271,6 +271,10 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
   ["config/mcpServer/reload"],
   ["mcpServer/oauth/login"],
   ["mcpServerStatus/list"],
+  // Read-only instance inventory (Release 2).
+  ["hooks/list"],
+  ["plugin/list"],
+  ["app/list"],
 ] as const satisfies ReadonlyArray<readonly [string, ...string[]]>;
 
 /**
@@ -297,7 +301,23 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
   },
   "turn/start": { schema: "v2/TurnStartResponse.json", fields: ["turn.id"] },
   "turn/steer": { schema: "v2/TurnSteerResponse.json", fields: ["turnId"] },
-  "model/list": { schema: "v2/ModelListResponse.json", fields: ["data[].id", "data[].model"] },
+  "model/list": {
+    schema: "v2/ModelListResponse.json",
+    fields: [
+      "data[].id",
+      "data[].model",
+      "data[].displayName",
+      "data[].hidden",
+      "data[].supportedReasoningEfforts[].reasoningEffort",
+      "data[].defaultReasoningEffort",
+      "data[].serviceTiers[].id",
+      "data[].serviceTiers[].name",
+      "data[].serviceTiers[].description",
+      "data[].defaultServiceTier",
+      "data[].upgrade",
+      "nextCursor",
+    ],
+  },
   "account/read": {
     schema: "v2/GetAccountResponse.json",
     fields: ["account.type", "account.planType"],
@@ -311,6 +331,7 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
       "data[].skills[].shortDescription",
       "data[].skills[].interface.shortDescription",
       "data[].skills[].path",
+      "data[].skills[].scope",
     ],
   },
   "account/rateLimits/read": {
@@ -326,6 +347,36 @@ export const CODEX_DECODED_RESPONSE_FIELDS = {
   "mcpServerStatus/list": {
     schema: "v2/ListMcpServerStatusResponse.json",
     fields: ["data[].name", "nextCursor"],
+  },
+  "hooks/list": {
+    schema: "v2/HooksListResponse.json",
+    fields: [
+      "data[].hooks[].key",
+      "data[].hooks[].eventName",
+      "data[].hooks[].matcher",
+      "data[].hooks[].handlerType",
+      "data[].hooks[].command",
+      "data[].hooks[].source",
+      "data[].hooks[].sourcePath",
+      "data[].hooks[].enabled",
+      "data[].hooks[].isManaged",
+      "data[].hooks[].pluginId",
+    ],
+  },
+  "plugin/list": {
+    schema: "v2/PluginListResponse.json",
+    fields: [
+      "marketplaces[].name",
+      "marketplaces[].path",
+      "marketplaces[].plugins[].id",
+      "marketplaces[].plugins[].name",
+      "marketplaces[].plugins[].installed",
+      "marketplaces[].plugins[].enabled",
+    ],
+  },
+  "app/list": {
+    schema: "v2/AppsListResponse.json",
+    fields: ["data[].id", "data[].name", "data[].isEnabled", "data[].isAccessible", "nextCursor"],
   },
 } as const satisfies Record<
   string,

@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
+import { ProviderSessionCapabilities } from "./sessionCapabilities";
 import {
   ApprovalRequestId,
   CommandId,
@@ -53,6 +54,8 @@ export const ProviderSession = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Set by ProviderService for the session generation it started or resumed. */
+  capabilities: Schema.optional(ProviderSessionCapabilities),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 
@@ -92,6 +95,8 @@ export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
   deliveryId: Schema.optional(CommandId),
   expectedTurnId: Schema.optional(TurnId),
+  /** Steering only: the session generation the browser saw. */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
   input: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),

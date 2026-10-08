@@ -254,6 +254,24 @@ export const StorageCleanupSettings = Schema.Struct({
   providerLogsAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
   /** Desktop preview screenshots and recordings; null keeps the 7-day default. */
   previewArtifactRetentionDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
+  /**
+   * Permanently purge archived threads this many days after archiving. Needs
+   * `enabled`; null (the default) keeps archived threads.
+   */
+  archivedThreadsPurgeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => null)),
+  /**
+   * Purge deleted threads' rows, events, attachments and logs this many days
+   * after deletion. Runs even when `enabled` is off: nothing can open a
+   * deleted thread again. Null never purges.
+   */
+  deletedThreadsPurgeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => 7)),
+  /**
+   * Delete per-thread provider logs of deleted threads once they have not
+   * been written for this many days, even when `enabled` is off. Archived
+   * threads can be unarchived, so their logs are included only when `enabled`
+   * is on. Live threads keep their logs for transcript repair. Null keeps them.
+   */
+  terminalThreadLogsAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(() => 14)),
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
@@ -269,6 +287,9 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   ),
   providerLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
   previewArtifactRetentionDays: Schema.optionalKey(StorageRetentionDays),
+  archivedThreadsPurgeAfterDays: Schema.optionalKey(StorageRetentionDays),
+  deletedThreadsPurgeAfterDays: Schema.optionalKey(StorageRetentionDays),
+  terminalThreadLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
 });
 
 export const ProjectSettingsOverrides = Schema.Struct({

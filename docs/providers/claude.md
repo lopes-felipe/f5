@@ -383,8 +383,7 @@ not restart running sessions.
 
 StorageMaintenance and per-profile Claude config directories now retain transcripts
 for the intended lifetime of F5 threads. This consumes local disk; monitor profile
-storage. Permanent thread deletion will own native transcript cleanup in Release 2;
-that hook is not part of Release 0. Already swept transcripts cannot be recovered and
+storage. Permanent thread deletion owns native transcript cleanup (Release 2, below). Already swept transcripts cannot be recovered and
 continue using F5's prior-work summary fallback. Full alpha `sessionStore` backups are
 not enabled.
 
@@ -484,3 +483,79 @@ thread that used the native tools (for example after an operator sets
 
 Wire protocol 16 adds the tracking state, task dependency fields, and the completion
 envelope; clients and servers must both run Release 1.
+
+## Release 2: models, catalogs, inventory and cleanup
+
+### Reported models
+
+The capability probe reads the models from SDK initialization. Alias rows such as
+`default` resolve through `resolvedModel`, the `[1m]`/`[200k]` suffixes are stripped, and
+only `claude-*` ids are kept. Reported effort levels, fast mode, adaptive thinking and
+auto mode override F5's built-in table for the same slug. Models only the CLI knows are
+appended. Built-ins stay the offline fallback, and a slug a persisted thread uses is
+never dropped. The composer and the launch path both go through
+`resolveModelCapabilities`, so an effort the picker offers is the effort the query
+receives. Context windows and the `ultrathink` keyword still come from F5's metadata.
+
+### Command catalogs
+
+Catalogs are split by owner:
+
+- Project skills are repository files only (`.claude/skills`, `.agents/skills` and the
+  other provider folders in the workspace). They are shared by every instance.
+- The instance catalog holds commands and skills from the instance's private config dir
+  and installed plugins, as reported at initialization.
+- The session catalog holds the live session's native commands.
+
+F5 no longer scans the server's `~/.claude` for the shared project list. The composer
+shows the session catalog when the thread's session belongs to the selected instance,
+and otherwise the selected instance's catalog. Switching instance drops the previous
+instance's commands. Native commands win name collisions with project skills, then
+instance skills fill the remaining names. F5's own `/model`, `/plan` and `/default`
+always stay F5's. Menu items carry a source badge. `system/commands_changed` replaces
+the session catalog (removed commands disappear) and is no longer silent.
+
+### Inventory (read-only)
+
+Settings → Providers → an instance → **Hooks, plugins and connectors** lists the
+following, each with its source (project, local, instance, managed or plugin):
+
+- hooks, showing the program name only (arguments may carry secrets)
+- installed plugins, with their hooks and agents
+- MCP servers, without env, headers or args
+- sub-agent definitions
+
+Instance-private files (`settings.json`, `.claude.json`, `plugins/`, `agents/`) resolve
+through the instance's config dir (`CLAUDE_CONFIG_DIR`, or the instance home). They
+never resolve through the F5 server's home, so two profiles on one project only share
+the project entries. Managed settings come from the platform path or
+`CLAUDE_CODE_MANAGED_SETTINGS_PATH`. F5 never installs, removes or edits any of these.
+
+Each sub-agent shows its `memory` scope and directory:
+
+| Scope     | Directory                                       | Owner          |
+| --------- | ----------------------------------------------- | -------------- |
+| `user`    | `<instance config dir>/agent-memory/<agent>/`   | the instance   |
+| `project` | `<project>/.claude/agent-memory/<agent>/`       | project-shared |
+| `local`   | `<project>/.claude/agent-memory-local/<agent>/` | this checkout  |
+
+The browser sends a project id, never a path. The server resolves the project's
+workspace root.
+
+### Transcript cleanup on thread deletion
+
+When a thread is deleted, F5 removes `<config dir>/projects/*/<session>.jsonl` and the
+`<session>/` sidecar directory. The config dir is the bound instance's isolated one,
+never the server-global home. It does not call the SDK's `deleteSession`, because that
+resolves the store from the server's own environment and cannot target an isolated
+profile. Cleanup applies only when F5 owns the store: either a non-default profile or a
+configured `homePath`. A store that resolves to `~/.claude` or to the server's own config
+dir is shared with the user's CLI, so it is never touched. If the bound session is still
+live, it is stopped first. If it is still running after that, the transcript is kept. If
+any other live thread binds the same Claude session id (a fork or import), the cleanup is
+skipped. Cleanup is best-effort: failures are logged and never block the deletion.
+Snoozed and archived threads keep their transcripts. Symlinks are unlinked, never
+followed.
+
+Wire protocol 17 adds session capability snapshots, reported model capabilities,
+catalog sources and the inventory RPC. Clients and servers must both run Release 2.

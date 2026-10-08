@@ -181,6 +181,8 @@ async function createHarness(input?: {
     stopSession:
       input?.stopSession ?? (() => Effect.void as ReturnType<ProviderServiceShape["stopSession"]>),
     listSessions: () => Effect.succeed([]),
+    getSessionCapabilities: () => Effect.succeed(null),
+    assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "restart-session" }),
     readThread: () => unsupported(),
     rollbackConversation: () => unsupported(),

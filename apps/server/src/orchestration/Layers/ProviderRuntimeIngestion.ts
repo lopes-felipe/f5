@@ -34,6 +34,7 @@ import {
   TurnId,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type ProviderSessionCapabilities,
   type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
 import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
@@ -105,6 +106,17 @@ import {
   runtimeTurnErrorMessage,
   runtimeTurnState,
 } from "../providerTerminalLifecycle.ts";
+
+/** Equal snapshots differ only in when they were taken. */
+function sameSessionCapabilities(
+  left: ProviderSessionCapabilities | null,
+  right: ProviderSessionCapabilities | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  const { checkedAt: _leftCheckedAt, ...leftRest } = left;
+  const { checkedAt: _rightCheckedAt, ...rightRest } = right;
+  return JSON.stringify(leftRest) === JSON.stringify(rightRest);
+}
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const DEFAULT_ASSISTANT_DELIVERY_MODE: AssistantDeliveryMode = "buffered";
@@ -4686,6 +4698,29 @@ const make = Effect.gen(function* () {
             },
             createdAt: now,
           });
+        }
+
+        // A published command catalog ends native discovery; re-snapshot the
+        // session so the browser learns which session actions are now available.
+        if (configuredConfig && "slashCommands" in configuredConfig) {
+          const capabilities = yield* providerService
+            .getSessionCapabilities(thread.id)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (
+            capabilities &&
+            thread.session &&
+            !sameSessionCapabilities(thread.session.capabilities ?? null, capabilities)
+          ) {
+            // Only the snapshot changes; every other session field (usage
+            // limit, retryability, token usage) stays as projected.
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: providerCommandId(event, "thread-session-capabilities-set"),
+              threadId: thread.id,
+              session: { ...thread.session, capabilities, updatedAt: now },
+              createdAt: now,
+            });
+          }
         }
       }
 

@@ -84,6 +84,7 @@ const harness = (
     };
     const rewind = yield* makeConversationRewind.pipe(
       Effect.provideService(ProviderService, {
+        getSessionCapabilities: () => Effect.succeed(null),
         getCapabilities: () =>
           Effect.succeed({
             runtimeCapabilities: {

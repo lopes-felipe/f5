@@ -78,22 +78,54 @@ function normalizeComposerInsertedSkillName(value: string): string {
   return value.trim().replace(/^\/+/, "");
 }
 
+type RuntimeSlashCommands = NonNullable<CompactRuntimeConfiguredActivityPayload["slashCommands"]>;
+
+/**
+ * Native commands for the composer: the live session's catalog when the
+ * thread's session belongs to the selected instance, otherwise the selected
+ * instance's own (private) catalog. Switching instance therefore drops the
+ * previous instance's commands instead of mixing two private catalogs.
+ */
+export function resolveComposerNativeSlashCommands(input: {
+  readonly runtimeSlashCommands: RuntimeSlashCommands | null | undefined;
+  readonly sessionInstanceId: string | null | undefined;
+  readonly selectedInstanceId: string | null | undefined;
+  readonly instanceSlashCommands: ServerProvider["slashCommands"] | null | undefined;
+}): { readonly commands: RuntimeSlashCommands; readonly source: "session" | "instance" } {
+  const sessionMatches =
+    !input.sessionInstanceId ||
+    !input.selectedInstanceId ||
+    input.sessionInstanceId === input.selectedInstanceId;
+  if (input.runtimeSlashCommands && sessionMatches) {
+    return { commands: input.runtimeSlashCommands, source: "session" };
+  }
+  return {
+    commands: (input.instanceSlashCommands ?? []).map((command) => ({
+      name: command.name,
+      description: command.description ?? `Run /${command.name}`,
+      ...(command.input?.hint ? { argumentHint: command.input.hint } : {}),
+    })),
+    source: "instance",
+  };
+}
+
 export function buildSlashComposerMenuItems(input: {
   query: string;
-  runtimeSlashCommands?:
-    | CompactRuntimeConfiguredActivityPayload["slashCommands"]
-    | null
-    | undefined;
+  runtimeSlashCommands?: RuntimeSlashCommands | null | undefined;
+  /** Where `runtimeSlashCommands` came from; defaults to the live session. */
+  runtimeSlashCommandsSource?: "session" | "instance";
   provider?: ProviderKind | null | undefined;
   projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
   providerSkills?: ReadonlyArray<ServerProviderSkill> | undefined;
 }): Array<Extract<ComposerCommandItem, { type: "slash-command" | "skill" }>> {
   const seenSkillNames = new Set<string>();
+  const runtimeSource = input.runtimeSlashCommandsSource ?? "session";
   const runtimeSkillItems: Array<Extract<ComposerCommandItem, { type: "skill" }>> = (
     input.runtimeSlashCommands ?? []
   ).flatMap((command) => {
     const name = normalizeHostCompatibleRuntimeSlashCommandName(command.name);
-    if (!name || seenSkillNames.has(name)) {
+    // Host-reserved commands (/model, /plan, /default) stay F5's.
+    if (!name || isReservedHostLocalSlashCommandName(name) || seenSkillNames.has(name)) {
       return [];
     }
     seenSkillNames.add(name);
@@ -105,6 +137,7 @@ export function buildSlashComposerMenuItems(input: {
         label: `/${name}`,
         description: command.description,
         argumentHint: command.argumentHint ?? null,
+        source: runtimeSource,
       },
     ];
   });
@@ -121,8 +154,8 @@ export function buildSlashComposerMenuItems(input: {
       if (!name || isReservedHostLocalSlashCommandName(name) || seenSkillNames.has(name)) {
         return [];
       }
-      // Runtime commands are authoritative when both sources publish the same
-      // menu name, so project skills only fill names runtime did not claim.
+      // Native (session/instance) commands are authoritative when both sources
+      // publish the same menu name, so project skills only fill unclaimed names.
       seenSkillNames.add(name);
       return [
         {
@@ -132,10 +165,12 @@ export function buildSlashComposerMenuItems(input: {
           label: `/${name}`,
           description: skill.description,
           argumentHint: skill.argumentHint,
+          source: "project" as const,
         },
       ];
     });
 
+  // Instance skills only fill names neither native commands nor project files claimed.
   const providerSkillItems = (input.providerSkills ?? []).flatMap((skill) => {
     const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.name);
     if (!skill.enabled || !name || seenSkillNames.has(name)) return [];
@@ -148,6 +183,7 @@ export function buildSlashComposerMenuItems(input: {
         label: `/${name}`,
         description: skill.description ?? `Use ${name}`,
         argumentHint: null,
+        source: "instance" as const,
       },
     ];
   });

@@ -19,7 +19,7 @@ import {
   ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import { createModelSelection, createReportedClaudeModelCapabilities } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -220,6 +220,7 @@ function makeHarness(config?: {
   readonly readResumeTranscript?: ClaudeAdapterLiveOptions["readResumeTranscript"];
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
   readonly resumeConfirmationTimeoutMs?: number;
+  readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -260,6 +261,9 @@ function makeHarness(config?: {
     // The fake CLI only emits messages when a test pushes them, so most tests
     // cannot confirm a resume while sendTurn waits. Tests of that wait opt in.
     resumeConfirmationTimeoutMs: config?.resumeConfirmationTimeoutMs ?? 0,
+    ...(config?.reportedModelCapabilities
+      ? { reportedModelCapabilities: config.reportedModelCapabilities }
+      : {}),
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -1779,6 +1783,35 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("forwards a CLI-only model's reported effort into query options", () => {
+    const reported = createReportedClaudeModelCapabilities({
+      value: "claude-cli-only-9",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "xhigh"],
+    });
+    const harness = makeHarness({
+      reportedModelCapabilities: (model) =>
+        Effect.succeed(model === "claude-cli-only-9" ? reported : undefined),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-cli-only-9",
+        runtimeMode: "full-access",
+        modelOptions: { claudeAgent: { effort: "xhigh" } },
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-cli-only-9");
+      assert.equal(createInput?.options.effort, "xhigh");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards Claude Fable 5 default high effort into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2739,6 +2772,53 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("replaces the slash command catalog from commands_changed", () => {
+    const harness = makeHarness();
+    harness.query.setSupportedCommandsResult([
+      { name: "review", description: "Review the current diff", argumentHint: "<target>" },
+    ]);
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "session.configured"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        commands: [{ name: "deploy", description: "Deploy the app", argumentHint: "" }],
+        session_id: "sdk-session-commands",
+        uuid: "commands-changed-1",
+      } as unknown as SDKMessage);
+
+      const configured = Array.from(yield* Fiber.join(configuredFiber));
+      const last = configured.at(-1) as Extract<
+        ProviderRuntimeEvent,
+        { type: "session.configured" }
+      >;
+      assert.deepEqual(
+        (
+          (last.payload.config as Record<string, unknown>).slashCommands as ReadonlyArray<{
+            name: string;
+          }>
+        ).map((command) => command.name),
+        ["deploy"],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("omits slashCommands until supportedCommands has been loaded", () => {
     const harness = makeHarness();
