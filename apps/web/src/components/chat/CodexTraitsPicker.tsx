@@ -1,15 +1,17 @@
-import type {
-  CodexModelOptions,
-  CodexReasoningEffort,
-  ProviderModelOptions,
-  ThreadId,
+import {
+  ProviderDriverKind,
+  type CodexModelOptions,
+  type CodexReasoningEffort,
+  type ProviderModelOptions,
+  type ServerProviderModel,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
-  getDefaultReasoningEffort,
-  getReasoningEffortOptions,
   normalizeCodexModelOptions,
   resolveCodexReasoningEffortForModel,
+  resolveModelCapabilities,
 } from "@t3tools/shared/model";
+import { getProviderModelCapabilities } from "../../providerModels";
 import { memo, useState } from "react";
 import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
@@ -37,30 +39,59 @@ const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
   low: "Low",
 };
 
+const CODEX_PROVIDER = ProviderDriverKind.make("codex");
+
+/** Same resolver the server uses for `turn/start`, fed with reported capabilities. */
+function resolveCodexTraitCapabilities(
+  model: string,
+  models: ReadonlyArray<ServerProviderModel> | undefined,
+) {
+  return resolveModelCapabilities(
+    "codex",
+    model,
+    models ? getProviderModelCapabilities(models, model, CODEX_PROVIDER) : undefined,
+  );
+}
+
 function getSelectedCodexTraits(
   model: string,
   modelOptions: CodexModelOptions | null | undefined,
+  models?: ReadonlyArray<ServerProviderModel>,
 ): {
   effort: CodexReasoningEffort;
   fastModeEnabled: boolean;
 } {
+  const capabilities = resolveCodexTraitCapabilities(model, models);
+  const requested = modelOptions?.reasoningEffort;
+  const effort =
+    capabilities.source === "reported"
+      ? ((requested && capabilities.effortOptions.includes(requested)
+          ? requested
+          : capabilities.defaultEffort) as CodexReasoningEffort | undefined)
+      : undefined;
   return {
-    effort: resolveCodexReasoningEffortForModel(model, modelOptions?.reasoningEffort),
-    fastModeEnabled: modelOptions?.fastMode === true,
+    effort: effort ?? resolveCodexReasoningEffortForModel(model, requested),
+    fastModeEnabled: modelOptions?.fastMode === true && capabilities.supportsFastMode,
   };
 }
 
 function CodexTraitsMenuContentImpl(props: {
   threadId: ThreadId;
   model: string;
+  models?: ReadonlyArray<ServerProviderModel>;
   onSelectionComplete?: () => void;
 }) {
   const draft = useComposerThreadDraft(props.threadId);
   const modelOptions = draft.modelOptions?.codex;
   const setModelOptions = useComposerDraftStore((store) => store.setModelOptions);
-  const options = getReasoningEffortOptions("codex", props.model);
-  const defaultReasoningEffort = getDefaultReasoningEffort("codex", props.model);
-  const { effort, fastModeEnabled } = getSelectedCodexTraits(props.model, modelOptions);
+  const capabilities = resolveCodexTraitCapabilities(props.model, props.models);
+  const options = capabilities.effortOptions as ReadonlyArray<CodexReasoningEffort>;
+  const defaultReasoningEffort = capabilities.defaultEffort;
+  const { effort, fastModeEnabled } = getSelectedCodexTraits(
+    props.model,
+    modelOptions,
+    props.models,
+  );
 
   const setCodexModelOptions = (nextCodexModelOptions: CodexModelOptions | undefined) => {
     const { codex: _discardedCodex, ...otherProviderModelOptions } = draft.modelOptions ?? {};
@@ -103,25 +134,27 @@ function CodexTraitsMenuContentImpl(props: {
           ))}
         </MenuRadioGroup>
       </MenuGroup>
-      <MenuDivider />
-      <MenuGroup>
-        <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Fast Mode</div>
-        <MenuRadioGroup
-          value={fastModeEnabled ? "on" : "off"}
-          onValueChange={(value) => {
-            setCodexModelOptions(
-              normalizeCodexModelOptions(props.model, {
-                ...modelOptions,
-                fastMode: value === "on",
-              }),
-            );
-            props.onSelectionComplete?.();
-          }}
-        >
-          <MenuRadioItem value="off">off</MenuRadioItem>
-          <MenuRadioItem value="on">on</MenuRadioItem>
-        </MenuRadioGroup>
-      </MenuGroup>
+      {capabilities.supportsFastMode ? <MenuDivider /> : null}
+      {capabilities.supportsFastMode ? (
+        <MenuGroup>
+          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Fast Mode</div>
+          <MenuRadioGroup
+            value={fastModeEnabled ? "on" : "off"}
+            onValueChange={(value) => {
+              setCodexModelOptions(
+                normalizeCodexModelOptions(props.model, {
+                  ...modelOptions,
+                  fastMode: value === "on",
+                }),
+              );
+              props.onSelectionComplete?.();
+            }}
+          >
+            <MenuRadioItem value="off">off</MenuRadioItem>
+            <MenuRadioItem value="on">on</MenuRadioItem>
+          </MenuRadioGroup>
+        </MenuGroup>
+      ) : null}
     </>
   );
 }
@@ -131,10 +164,15 @@ export const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
 export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
   threadId: ThreadId;
   model: string;
+  models?: ReadonlyArray<ServerProviderModel>;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const modelOptions = useComposerThreadDraft(props.threadId).modelOptions?.codex;
-  const { effort, fastModeEnabled } = getSelectedCodexTraits(props.model, modelOptions);
+  const { effort, fastModeEnabled } = getSelectedCodexTraits(
+    props.model,
+    modelOptions,
+    props.models,
+  );
   const triggerLabel = CODEX_REASONING_LABELS[effort];
 
   return (
@@ -169,6 +207,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
         <CodexTraitsMenuContent
           threadId={props.threadId}
           model={props.model}
+          {...(props.models ? { models: props.models } : {})}
           onSelectionComplete={() => {
             setIsMenuOpen(false);
           }}

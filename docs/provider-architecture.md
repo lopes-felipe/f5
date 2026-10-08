@@ -34,4 +34,32 @@ Provider runtime events flow through queue-based workers:
 2. **ProviderCommandReactor** — reacts to orchestration intent events, dispatches provider calls.
 3. **CheckpointReactor** — captures git checkpoints on turn start/complete, publishes runtime receipts.
 
-All three use `DrainableWorker` internally and expose `drain()` for deterministic test synchronization.
+4. **NativeSessionCleanupReactor**: on `thread.deleted`, removes the thread's native
+   transcript from the bound instance's own store, unless another live thread binds the
+   same session.
+
+All four use `DrainableWorker` internally and expose `drain()` for deterministic test synchronization.
+
+## Capabilities
+
+There are three layers, each with its own owner:
+
+- **Executable**: `providerRuntimeCapabilities(driver, version)` in
+  `@t3tools/shared/providerRuntimeCapabilities` describes what an adapter and CLI
+  version can do. New flags decode to `false` when an older peer omits them.
+- **Session**: `ProviderService.getSessionCapabilities(threadId)` returns a snapshot of
+  one session generation. It is routed through the persisted binding and never starts a
+  session. The snapshot holds the generation, the instance, the executable version, the
+  discovery outcome, and per-action support with a structured `unavailableReason`. It is
+  projected onto `thread.session.capabilities` and refreshed when the native command
+  catalog arrives. The generation is persisted in the binding's runtime payload: it is
+  incremented on start and resume, and kept when an existing session is adopted.
+  `assertSessionAction` re-checks the generation, executable support and policy before an
+  action is routed, and refuses a stale browser with `stale-generation`.
+  `getCapabilities(provider)` remains for adapter-wide facts.
+- **Model**: `resolveModelCapabilities(provider, slug, reported?)` in
+  `@t3tools/shared/model` merges executable-reported capabilities over F5's built-ins.
+  Both the composer and the launch path use it.
+
+Instances may also expose `inventory` (read-only hooks, plugins, connectors and agents,
+served by `server.getProviderInventory`) and `deleteNativeSession`.

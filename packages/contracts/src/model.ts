@@ -158,8 +158,30 @@ function canonicalSelectionsToLegacyObject(
   return out;
 }
 
+export const ModelServiceTier = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(TrimmedNonEmptyString),
+});
+export type ModelServiceTier = typeof ModelServiceTier.Type;
+
+export const ModelCapabilitiesSource = Schema.Literals(["built-in", "reported"]);
+export type ModelCapabilitiesSource = typeof ModelCapabilitiesSource.Type;
+
 export const ModelCapabilities = Schema.Struct({
   optionDescriptors: Schema.optional(Schema.Array(ProviderOptionDescriptor)),
+  /**
+   * `reported` when the executable (Claude SDK initialization, Codex
+   * `model/list`) described this model. Reported capabilities override
+   * built-in metadata for the same slug; absent means built-in.
+   */
+  source: Schema.optional(ModelCapabilitiesSource),
+  supportsAdaptiveThinking: Schema.optional(Schema.Boolean),
+  supportsAutoMode: Schema.optional(Schema.Boolean),
+  serviceTiers: Schema.optional(Schema.Array(ModelServiceTier)),
+  defaultServiceTier: Schema.optional(TrimmedNonEmptyString),
+  /** Model the executable recommends upgrading to; advisory only. */
+  upgradeTo: Schema.optional(TrimmedNonEmptyString),
 });
 export type ModelCapabilities = typeof ModelCapabilities.Type;
 

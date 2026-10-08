@@ -7,10 +7,12 @@ import readline from "node:readline";
 
 import {
   ApprovalRequestId,
+  CODEX_REASONING_EFFORT_OPTIONS,
   type CodexMcpServerEntry,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_RUNTIME_MODE,
   EventId,
+  type ModelCapabilities,
   type ProjectMemory,
   ProviderItemId,
   ProviderRequestKind,
@@ -28,7 +30,13 @@ import {
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
-import { normalizeModelSlug, resolveCodexReasoningEffortForModel } from "@t3tools/shared/model";
+import {
+  normalizeModelSlug,
+  resolveCodexReasoningEffortForModel,
+  resolveModelCapabilities,
+  resolveReasoningEffortForProvider,
+} from "@t3tools/shared/model";
+import { readCodexReportedModelCapabilities } from "./provider/codexModelCatalog.ts";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { Effect, ServiceMap } from "effect";
@@ -128,6 +136,8 @@ interface CodexSessionContext {
   configuredBase?: Record<string, unknown>;
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   modelContextWindowCatalog: ReadonlyMap<string, number>;
+  /** Capabilities this session's `model/list` reported, keyed by slug. */
+  reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
   availableSkills: ReadonlyArray<SupportedSlashCommand>;
   supportedCommandsFingerprint: string;
   skillsLoaded: boolean;
@@ -658,6 +668,26 @@ export function normalizeCodexModelSlug(
   return normalized;
 }
 
+/**
+ * Same downgrade rule as `resolveCodexReasoningEffortForModel` (walk towards
+ * lower efforts until one is supported), over the reported effort list.
+ */
+function resolveReportedCodexEffort(
+  model: string,
+  effort: string,
+  reported: ModelCapabilities,
+): string | undefined {
+  const capabilities = resolveModelCapabilities("codex", model, reported);
+  const requested = resolveReasoningEffortForProvider("codex", effort);
+  if (requested) {
+    const start = CODEX_REASONING_EFFORT_OPTIONS.indexOf(requested);
+    for (const candidate of CODEX_REASONING_EFFORT_OPTIONS.slice(start)) {
+      if (capabilities.effortOptions.includes(candidate)) return candidate;
+    }
+  }
+  return capabilities.defaultEffort;
+}
+
 export function buildCodexTurnStartParams(
   input: CodexAppServerSendTurnInput,
   state: {
@@ -666,6 +696,7 @@ export function buildCodexTurnStartParams(
     readonly account: CodexAccountSnapshot;
     readonly instructionContext?: Partial<SharedInstructionInput> | undefined;
     readonly resumedContextSent?: boolean | undefined;
+    readonly reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities> | undefined;
   },
 ) {
   const turnInput: Array<
@@ -728,14 +759,17 @@ export function buildCodexTurnStartParams(
     turnStartParams.serviceTier = input.serviceTier;
   }
   // Persisted state and non-web callers can supply stale or invalid values;
-  // resolve them to a model-supported effort at the provider boundary.
+  // resolve them to a model-supported effort at the provider boundary. Efforts
+  // the session's `model/list` reported win over F5's built-in table, so a
+  // CLI-only model receives the effort the composer offered for it.
+  const effortModel = normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
+  const reportedCapabilities = state.reportedModelCapabilities?.get(effortModel);
   const resolvedEffort =
-    input.effort !== undefined
-      ? resolveCodexReasoningEffortForModel(
-          normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
-          input.effort,
-        )
-      : undefined;
+    input.effort === undefined
+      ? undefined
+      : reportedCapabilities
+        ? resolveReportedCodexEffort(effortModel, input.effort, reportedCapabilities)
+        : resolveCodexReasoningEffortForModel(effortModel, input.effort);
   if (resolvedEffort) {
     turnStartParams.effort = resolvedEffort;
   }
@@ -1125,6 +1159,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       try {
         const modelListResponse = await this.sendRequest(context, "model/list", {});
         context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
+        context.reportedModelCapabilities = readCodexReportedModelCapabilities(modelListResponse);
       } catch (error) {
         await Effect.logWarning("codex model/list did not expose context window metadata", {
           threadId,
@@ -1301,6 +1336,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       account: context.account,
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
+      reportedModelCapabilities: context.reportedModelCapabilities,
     });
 
     if (input.expectedTurnId !== undefined) {
@@ -2122,6 +2158,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   hasSession(threadId: ThreadId): boolean {
     return this.sessions.has(threadId);
+  }
+
+  /** Native discovery state: the skills catalog is Codex's session command catalog. */
+  getSessionDiscovery(
+    threadId: ThreadId,
+  ):
+    | { readonly outcome: "pending" | "discovered" | "failed"; readonly nativeCommands?: boolean }
+    | undefined {
+    const context = this.sessions.get(threadId);
+    if (!context || context.stopping) return undefined;
+    if (context.skillsLoaded) return { outcome: "discovered", nativeCommands: true };
+    // After the one retry a missing catalog is final for this session.
+    return context.initialSkillsRetryAttempted && !context.skillRefreshInFlight
+      ? { outcome: "failed", nativeCommands: false }
+      : { outcome: "pending" };
   }
 
   stopAll(): void {

@@ -167,6 +167,7 @@ import {
   ServerValidateHarnessesInput,
 } from "./server";
 import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
+import { ServerGetProviderInventoryInput } from "./providerInventory";
 import {
   StorageAutomationAuditInput,
   StorageAutomationDryRunInput,
@@ -351,6 +352,7 @@ export const WS_METHODS = {
   serverMigrateClientSetting: "server.migrateClientSetting",
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
+  serverGetProviderInventory: "server.getProviderInventory",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverAddKeybinding: "server.addKeybinding",
   serverUpdateKeybinding: "server.updateKeybinding",
@@ -658,6 +660,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
+  tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
   tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),

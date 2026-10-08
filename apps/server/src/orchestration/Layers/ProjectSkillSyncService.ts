@@ -1,7 +1,6 @@
 import { CommandId, type OrchestrationEvent, type ProjectId } from "@t3tools/contracts";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Deferred, Effect, Exit, FileSystem, Layer, Path, Ref, Scope, Stream } from "effect";
-import os from "node:os";
 
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
@@ -26,7 +25,6 @@ const make = Effect.gen(function* () {
   const startedDeferred = yield* Deferred.make<void, never>();
   const pendingRefreshRef = yield* Ref.make(false);
   const watcherScopeRef = yield* Ref.make<Scope.Closeable | null>(null);
-  const userHome = os.homedir();
 
   const closeWatcherScope = Effect.gen(function* () {
     const watcherScope = yield* Ref.get(watcherScopeRef);
@@ -47,7 +45,6 @@ const make = Effect.gen(function* () {
     scanProjectSkills({
       projectId,
       workspaceRoot,
-      userHome,
     }).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),

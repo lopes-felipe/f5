@@ -54,6 +54,7 @@ import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
 import { RuntimeReceiptBusLive } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
+import { NativeSessionCleanupReactor } from "../src/orchestration/Services/NativeSessionCleanupReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ThreadBackgroundWorkLive } from "../src/orchestration/Layers/ThreadBackgroundWork.ts";
@@ -459,6 +460,10 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(investigationWorkflowServiceLayer),
       Layer.provideMerge(nextTurnQueueDispatcherLayer),
       Layer.provideMerge(providerTurnDeliveryWorkerLayer),
+      // The harness has no provider instances, so there is nothing to clean up.
+      Layer.provideMerge(
+        Layer.succeed(NativeSessionCleanupReactor, { start: Effect.void, drain: Effect.void }),
+      ),
     );
     const layer = orchestrationReactorLayer.pipe(
       Layer.provide(persistenceLayer),

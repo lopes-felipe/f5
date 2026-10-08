@@ -1226,6 +1226,9 @@ export function projectEvent(
           thread.session?.tokenUsageSource !== undefined
             ? { tokenUsageSource: thread.session.tokenUsageSource }
             : {}),
+          ...(session.capabilities === undefined && thread.session?.capabilities !== undefined
+            ? { capabilities: thread.session.capabilities }
+            : {}),
           ...(session.workflowExecutionProfile === undefined &&
           session.activeTurnId !== null &&
           thread.session?.activeTurnId === session.activeTurnId &&

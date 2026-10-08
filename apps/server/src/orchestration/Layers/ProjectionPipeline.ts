@@ -1700,6 +1700,13 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             tokenUsageSource:
               event.payload.session.tokenUsageSource ??
               (Option.isSome(existingRow) ? existingRow.value.tokenUsageSource : null),
+            // Omitted keeps the current generation's snapshot; null clears it.
+            capabilities:
+              event.payload.session.capabilities !== undefined
+                ? event.payload.session.capabilities
+                : Option.isSome(existingRow)
+                  ? (existingRow.value.capabilities ?? null)
+                  : null,
             updatedAt: event.payload.session.updatedAt,
           });
           return;

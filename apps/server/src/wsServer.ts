@@ -855,6 +855,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const providerInstanceRegistry = yield* ProviderInstanceRegistry;
   const providerUpdateAdvisor = yield* ProviderUpdateAdvisor;
   const providerAdvisoryProjection = yield* ProviderAdvisoryProjection;
   const harnessValidation = yield* HarnessValidation;
@@ -4443,6 +4444,46 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         yield* providerUpdateAdvisor.refreshAdvisories({ force: true }).pipe(Effect.forkChild);
         const providers = yield* providerAdvisoryProjection.getProviders;
         return { providers };
+      }
+
+      case WS_METHODS.serverGetProviderInventory: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance) {
+          return yield* new RouteRequestError({ message: "Provider instance not found." });
+        }
+        let projectRoot: string | undefined;
+        if (body.projectId) {
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          const project = model.projects.find(
+            (p) => p.id === body.projectId && p.deletedAt === null,
+          );
+          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+          projectRoot = project.workspaceRoot;
+        }
+        const entries = instance.inventory
+          ? yield* instance
+              .inventory({ projectRoot })
+              .pipe(
+                Effect.mapError(
+                  (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+                ),
+              )
+          : {
+              hooks: [],
+              plugins: [],
+              connectors: [],
+              agents: [],
+              warnings: ["This provider does not report an inventory."],
+            };
+        return {
+          instanceId: instance.instanceId,
+          driver: instance.driverKind,
+          generatedAt: new Date().toISOString(),
+          ...(body.projectId ? { projectId: body.projectId } : {}),
+          ...entries,
+        };
       }
 
       case WS_METHODS.serverValidateHarnesses: {

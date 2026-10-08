@@ -26,11 +26,10 @@ function writeSkill(rootPath: string, segments: string[], content: string) {
   return skillDir;
 }
 
-async function runScan(input: { readonly userHome: string; readonly workspaceRoot: string }) {
+async function runScan(input: { readonly workspaceRoot: string }) {
   return await Effect.runPromise(
     scanProjectSkills({
       projectId: PROJECT_ID,
-      userHome: input.userHome,
       workspaceRoot: input.workspaceRoot,
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -45,16 +44,10 @@ describe("projectSkills", () => {
     }
   });
 
-  it("discovers provider directories and prefers a project skill over a user skill", async () => {
+  it("discovers provider directories in the repository only", async () => {
     const root = createTempRoot();
     tempRoots.push(root);
-    const userHome = path.join(root, "home");
     const workspaceRoot = path.join(root, "repo");
-    writeSkill(
-      userHome,
-      [".codex", "skills", "review"],
-      "---\ndescription: User review\n---\nReview.",
-    );
     writeSkill(
       workspaceRoot,
       [".agents", "skills", "review"],
@@ -65,7 +58,7 @@ describe("projectSkills", () => {
       [".opencode", "skills", "deploy"],
       "---\ndescription: Deploy\n---\nDeploy.",
     );
-    const result = await runScan({ userHome, workspaceRoot });
+    const result = await runScan({ workspaceRoot });
     expect(result.skills.filter((skill) => skill.commandName === "review")).toHaveLength(1);
     expect(result.skills.find((skill) => skill.commandName === "review")?.scope).toBe("project");
     expect(result.skills.some((skill) => skill.commandName === "deploy")).toBe(true);
@@ -73,7 +66,6 @@ describe("projectSkills", () => {
   it("keeps provider-native definitions on a same-scope collision", async () => {
     const root = createTempRoot();
     tempRoots.push(root);
-    const userHome = path.join(root, "home");
     const workspaceRoot = path.join(root, "repo");
     for (const directory of [".agents", ".claude", ".codex"])
       writeSkill(
@@ -81,7 +73,7 @@ describe("projectSkills", () => {
         [directory, "skills", "review"],
         `---\ndescription: ${directory} review\n---\nReview.`,
       );
-    const result = await runScan({ userHome, workspaceRoot });
+    const result = await runScan({ workspaceRoot });
     expect(result.skills).toHaveLength(1);
     expect((result.skills[0]?.providerVariants?.claudeAgent ?? result.skills[0])?.sourcePath).toBe(
       ".claude/skills/review/SKILL.md",
@@ -90,14 +82,14 @@ describe("projectSkills", () => {
       ".codex/skills/review/SKILL.md",
     );
   });
-  it("watches the closest existing ancestor of a new nested user skill root", async () => {
+  it("watches the workspace root until a skill directory appears", async () => {
     const root = createTempRoot();
     tempRoots.push(root);
-    const userHome = path.join(root, "home");
     const workspaceRoot = path.join(root, "repo");
-    mkdirSync(path.join(userHome, ".gemini"), { recursive: true });
-    const result = await runScan({ userHome, workspaceRoot });
-    expect(result.watchPaths).toContain(path.join(userHome, ".gemini"));
+    mkdirSync(workspaceRoot, { recursive: true });
+    const result = await runScan({ workspaceRoot });
+    expect(result.watchPaths).toContain(workspaceRoot);
+    expect(result.watchPaths.every((watchPath) => watchPath.startsWith(workspaceRoot))).toBe(true);
   });
   it("parses supported Claude skill frontmatter fields", () => {
     expect(
@@ -157,12 +149,11 @@ Use the existing code patterns.
   it("omits missing SKILL.md folders and warns on reserved and invalid skills", async () => {
     const tempRoot = createTempRoot();
     tempRoots.push(tempRoot);
-    const userHome = path.join(tempRoot, "home");
     const workspaceRoot = path.join(tempRoot, "workspace");
 
-    mkdirSync(path.join(userHome, ".claude", "skills", "missing-doc"), { recursive: true });
+    mkdirSync(path.join(workspaceRoot, ".claude", "skills", "missing-doc"), { recursive: true });
     writeSkill(
-      userHome,
+      workspaceRoot,
       [".claude", "skills", "plan"],
       `---
 description: Should never load.
@@ -178,10 +169,7 @@ description: [unterminated
 `,
     );
 
-    const result = await runScan({
-      userHome,
-      workspaceRoot,
-    });
+    const result = await runScan({ workspaceRoot });
 
     expect(result.skills).toEqual([]);
     expect(result.warnings).toEqual(
@@ -189,7 +177,7 @@ description: [unterminated
         expect.objectContaining({
           commandName: "plan",
           reason: expect.stringContaining("Reserved command name"),
-          scope: "user",
+          scope: "project",
         }),
         expect.objectContaining({
           commandName: "broken",
@@ -200,59 +188,12 @@ description: [unterminated
     );
   });
 
-  it("resolves project-over-user collisions by command name", async () => {
+  it("never publishes user-scope skills to the shared project list", async () => {
     const tempRoot = createTempRoot();
     tempRoots.push(tempRoot);
-    const userHome = path.join(tempRoot, "home");
     const workspaceRoot = path.join(tempRoot, "workspace");
-
-    writeSkill(
-      userHome,
-      [".claude", "skills", "review"],
-      `---
-name: User Review
-description: User-scoped review helper.
----
-`,
-    );
-    writeSkill(
-      workspaceRoot,
-      [".claude", "skills", "review"],
-      `---
-name: Project Review
-description: Project-scoped review helper.
----
-`,
-    );
-
-    const result = await runScan({
-      userHome,
-      workspaceRoot,
-    });
-
-    expect(result.skills).toHaveLength(1);
-    expect(result.skills[0]).toMatchObject({
-      commandName: "review",
-      displayName: "Project Review",
-      description: "Project-scoped review helper.",
-      scope: "project",
-    });
-  });
-
-  it("keeps distinct user and project skills when command names differ", async () => {
-    const tempRoot = createTempRoot();
-    tempRoots.push(tempRoot);
-    const userHome = path.join(tempRoot, "home");
-    const workspaceRoot = path.join(tempRoot, "workspace");
-
-    writeSkill(
-      userHome,
-      [".claude", "skills", "research"],
-      `---
-description: Research a question before implementation.
----
-`,
-    );
+    // The scan has no home or config dir input; a skill there belongs to one
+    // provider instance's private catalog, never to the project.
     writeSkill(
       workspaceRoot,
       [".claude", "skills", "implement"],
@@ -262,21 +203,16 @@ description: Implement the approved plan.
 `,
     );
 
-    const result = await runScan({
-      userHome,
-      workspaceRoot,
-    });
+    const result = await runScan({ workspaceRoot });
 
     expect(result.skills.map((skill) => `${skill.scope}:${skill.commandName}`)).toEqual([
       "project:implement",
-      "user:research",
     ]);
   });
   it("discovers flat Antigravity skills and rejects oversized documents", async () => {
     const root = createTempRoot();
     tempRoots.push(root);
     const workspaceRoot = path.join(root, "workspace");
-    const userHome = path.join(root, "home");
     const skills = path.join(workspaceRoot, ".gemini", "skills");
     mkdirSync(skills, { recursive: true });
     writeFileSync(
@@ -284,7 +220,7 @@ description: Implement the approved plan.
       "---\ndescription: Review changes\n---\nReview the diff.",
     );
     writeSkill(workspaceRoot, [".agents", "skills", "huge"], "x".repeat(1024 * 1024 + 1));
-    const result = await runScan({ userHome, workspaceRoot });
+    const result = await runScan({ workspaceRoot });
     expect(result.skills.map((skill) => skill.commandName)).toEqual(["review"]);
     expect(result.skills[0]?.sourcePath).toBe(".gemini/skills/review.md");
     expect(result.warnings.some((warning) => warning.reason.includes("1 MiB"))).toBe(true);

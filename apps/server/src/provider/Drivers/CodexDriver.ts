@@ -19,7 +19,7 @@ import {
   type ProviderStartOptions,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
@@ -43,7 +43,9 @@ import {
 } from "./CodexHomeLayout.ts";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { providerModelsFromSettings } from "../providerSnapshot.ts";
+import { mergeReportedProviderModels, providerModelsFromSettings } from "../providerSnapshot.ts";
+import { type CodexInstanceCatalog, probeCodexInstanceCatalog } from "../codexModelCatalog.ts";
+import { readCodexInventory } from "../codexInventory.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -115,6 +117,7 @@ const toSnapshot = (input: {
   readonly continuationKey?: string;
   readonly checkedAt?: string;
   readonly status?: ProviderPreflightStatus;
+  readonly catalog?: CodexInstanceCatalog;
 }): ServerProvider => {
   const status = input.status;
   const enabled = input.settings.enabled;
@@ -144,9 +147,10 @@ const toSnapshot = (input: {
             : (status?.message ?? "Codex CLI is unavailable."),
         }
       : { availability: "available" as const }),
-    models: codexModels(input.settings),
+    models: mergeReportedProviderModels(codexModels(input.settings), input.catalog?.models),
     slashCommands: [],
-    skills: [],
+    // Instance-private skills (CODEX_HOME, system, admin); repo skills are project-shared.
+    skills: input.catalog?.skills ?? [],
   };
 };
 
@@ -328,6 +332,48 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         },
       );
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnvironment);
+      // One catalog probe per instance and CLI version: models change with the
+      // executable, not with the five-minute status refresh.
+      const instanceCatalog = yield* Ref.make<{
+        readonly version: string;
+        readonly catalog: CodexInstanceCatalog;
+      } | null>(null);
+      const catalogFor = (status: ProviderPreflightStatus) =>
+        Effect.gen(function* () {
+          if (!enabled || !status.available || !status.version) return undefined;
+          const cached = yield* Ref.get(instanceCatalog);
+          if (cached?.version === status.version) return cached.catalog;
+          const probed = yield* Effect.tryPromise({
+            try: () =>
+              probeCodexInstanceCatalog({
+                binaryPath: effectiveConfig.binaryPath,
+                homePath: effectiveConfig.homePath,
+                ...(defaultProviderOptions.codex?.launchArgs
+                  ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+                  : {}),
+                cwd: serverConfig.cwd,
+                processEnvironment,
+              }),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: cause instanceof Error ? cause.message : String(cause),
+                cause,
+              }),
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.logWarning("codex catalog probe failed; using built-in models", {
+                instanceId,
+                cause: error.detail,
+              }),
+            ),
+            Effect.option,
+          );
+          if (probed._tag === "None") return cached?.catalog;
+          yield* Ref.set(instanceCatalog, { version: status.version, catalog: probed.value });
+          return probed.value;
+        });
       const checkProvider = checkCodexProviderPreflight({
         providerOptions: defaultProviderOptions,
         processEnvironment,
@@ -335,15 +381,20 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
-        Effect.map((status) =>
-          toSnapshot({
-            instance: instanceIdentity,
-            settings: effectiveConfig,
-            continuationKey: homeLayout.continuationKey,
-            status: withCodexIsolationCompatibility(
-              status,
+        Effect.flatMap((rawStatus) =>
+          Effect.gen(function* () {
+            const status = withCodexIsolationCompatibility(
+              rawStatus,
               serverConfig.profile?.isDefault === false,
-            ),
+            );
+            const catalog = yield* catalogFor(status);
+            return toSnapshot({
+              instance: instanceIdentity,
+              settings: effectiveConfig,
+              continuationKey: homeLayout.continuationKey,
+              status,
+              ...(catalog ? { catalog } : {}),
+            });
           }),
         ),
       );
@@ -400,6 +451,30 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           .digest("hex")}`,
         consumeResetCredit,
         accountUsage,
+        inventory: ({ projectRoot }) =>
+          Effect.tryPromise({
+            try: () =>
+              readCodexInventory(
+                {
+                  binaryPath: effectiveConfig.binaryPath,
+                  homePath: effectiveConfig.homePath,
+                  ...(defaultProviderOptions.codex?.launchArgs
+                    ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+                    : {}),
+                  cwd: serverConfig.cwd,
+                  processEnvironment,
+                },
+                { projectRoot },
+              ),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail:
+                  cause instanceof Error ? cause.message : "Could not read the Codex inventory.",
+                cause,
+              }),
+          }).pipe(Effect.map((inventory) => ({ ...inventory, agents: [] }))),
       } satisfies ProviderInstance;
     }),
 };

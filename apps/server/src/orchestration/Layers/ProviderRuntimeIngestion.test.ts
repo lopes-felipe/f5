@@ -127,6 +127,8 @@ function createProviderServiceHarness() {
     respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
+    getSessionCapabilities: () => Effect.succeed(null),
+    assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     readThread: (threadId) =>
       Effect.succeed(

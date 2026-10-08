@@ -8,6 +8,7 @@ import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
 import { checkpointRefForThreadTurn } from "../checkpointing/Utils.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { checkSessionAction } from "../provider/sessionCapabilities.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 
@@ -100,6 +101,15 @@ export const makeConversationRewind = Effect.gen(function* () {
       const model = yield* engine.getReadModel();
       const thread = model.threads.find((thread) => thread.id === request.threadId);
       if (!thread) return yield* fail("The conversation no longer exists.");
+      // Re-check against the routed session generation (instance and executable
+      // version), not only the adapter-wide default for the provider kind.
+      const sessionCapabilities = yield* provider
+        .getSessionCapabilities(thread.id)
+        .pipe(Effect.orElseSucceed(() => null));
+      const rollbackRefusal = sessionCapabilities
+        ? checkSessionAction({ capabilities: sessionCapabilities, action: "rollback" })
+        : undefined;
+      if (rollbackRefusal) return yield* fail(rollbackRefusal.message);
       const caps = thread.session?.providerName
         ? (yield* provider.getCapabilities(
             thread.session.providerName as import("@t3tools/contracts").ProviderKind,

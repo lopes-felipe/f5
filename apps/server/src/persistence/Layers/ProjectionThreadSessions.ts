@@ -34,6 +34,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           estimated_context_tokens,
           model_context_window_tokens,
           token_usage_source,
+          capabilities_json,
           updated_at
         )
         VALUES (
@@ -51,6 +52,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           ${row.estimatedContextTokens},
           ${row.modelContextWindowTokens},
           ${row.tokenUsageSource},
+          ${row.capabilities ? JSON.stringify(row.capabilities) : null},
           ${row.updatedAt}
         )
         ON CONFLICT (thread_id)
@@ -68,6 +70,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           estimated_context_tokens = excluded.estimated_context_tokens,
           model_context_window_tokens = excluded.model_context_window_tokens,
           token_usage_source = excluded.token_usage_source,
+          capabilities_json = excluded.capabilities_json,
           updated_at = excluded.updated_at
       `,
   });
@@ -77,6 +80,9 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
     Result: ProjectionThreadSession.mapFields(
       Struct.assign({
         usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+        capabilities: Schema.NullOr(
+          Schema.fromJsonString(ProjectionThreadSession.fields.capabilities),
+        ),
       }),
     ),
     execute: ({ threadId }) =>
@@ -96,6 +102,7 @@ const makeProjectionThreadSessionRepository = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
+          capabilities_json AS "capabilities",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         WHERE thread_id = ${threadId}

@@ -13,6 +13,7 @@ import {
   NonNegativeInt,
   OrchestrationSessionStatus,
   ProviderInstanceId,
+  ProviderSessionCapabilities,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -38,6 +39,7 @@ export const ProjectionThreadSession = Schema.Struct({
   estimatedContextTokens: Schema.NullOr(NonNegativeInt),
   modelContextWindowTokens: Schema.NullOr(NonNegativeInt),
   tokenUsageSource: Schema.NullOr(Schema.Literals(["provider", "estimated"])),
+  capabilities: Schema.optional(Schema.NullOr(ProviderSessionCapabilities)),
   updatedAt: IsoDateTime,
 });
 export type ProjectionThreadSession = typeof ProjectionThreadSession.Type;

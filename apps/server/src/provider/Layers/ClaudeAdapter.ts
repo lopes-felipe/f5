@@ -58,6 +58,7 @@ import {
   type CanonicalRequestType,
   EventId,
   type ClaudeCodeEffort,
+  type ModelCapabilities,
   type ModelSelection,
   type ProviderStartOptions,
   type ProviderApprovalDecision,
@@ -83,20 +84,17 @@ import {
   applyClaudePromptEffortPrefix,
   claudeModelOptionsToProviderOptionSelections,
   createModelSelection,
-  getDefaultReasoningEffort,
   getClaudeContextWindowTokens,
   getEffectiveClaudeCodeEffort,
   getProviderOptionBooleanSelectionValue,
   getProviderOptionStringSelectionValue,
-  getReasoningEffortOptions,
   normalizeClaudeContextWindow,
   normalizeModelSlug,
+  resolveModelCapabilities,
   resolveReasoningEffortForProvider,
+  resolveSupportedEffort,
   supportsClaudeContextWindow,
-  supportsClaudeFastMode,
-  supportsClaudeThinkingToggle,
   claudeModelSupportsAdaptiveThinking,
-  supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 import { assertNever } from "@t3tools/shared/exhaustive";
@@ -441,6 +439,8 @@ export interface ClaudeAdapterLiveOptions {
    * saved conversation. Zero skips the wait.
    */
   readonly resumeConfirmationTimeoutMs?: number;
+  /** Executable-reported model capabilities for this instance (SDK initialization). */
+  readonly reportedModelCapabilities?: ClaudeReportedModelCapabilitiesLookup;
 }
 
 export interface ClaudeSessionProbeInput {
@@ -1115,9 +1115,15 @@ function resolveClaudeRuntimeModelSelection(input: {
   };
 }
 
+/** Looks up executable-reported capabilities for a model slug, when the instance has them. */
+export type ClaudeReportedModelCapabilitiesLookup = (
+  model: string,
+) => Effect.Effect<ModelCapabilities | undefined>;
+
 function resolveClaudeRuntimeTraits(
   selection: ReturnType<typeof resolveClaudeRuntimeModelSelection>,
   fallbackModel?: string,
+  reported?: ModelCapabilities,
 ): {
   readonly selectedModel?: string;
   readonly effectiveEffort?: ClaudeSdkEffort;
@@ -1131,26 +1137,22 @@ function resolveClaudeRuntimeTraits(
     };
   }
 
+  // Shared with the composer so the UI never offers what execution drops.
+  const capabilities = resolveModelCapabilities("claudeAgent", selectedModel, reported);
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",
     getProviderOptionStringSelectionValue(selection.options, "effort") ?? null,
   );
-  const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", selectedModel);
-  const defaultEffort = requestedEffort
-    ? null
-    : getDefaultReasoningEffort("claudeAgent", selectedModel);
-  const effort =
-    requestedEffort && supportedEffortOptions.includes(requestedEffort)
-      ? requestedEffort
-      : defaultEffort && supportedEffortOptions.includes(defaultEffort)
-        ? defaultEffort
-        : null;
+  // An unsupported explicit effort is dropped rather than replaced by the default.
+  const effort = requestedEffort
+    ? (resolveSupportedEffort(capabilities, requestedEffort) as ClaudeCodeEffort | null)
+    : ((capabilities.defaultEffort as ClaudeCodeEffort | undefined) ?? null);
   const fastMode =
     getProviderOptionBooleanSelectionValue(selection.options, "fastMode") === true &&
-    supportsClaudeFastMode(selectedModel);
+    capabilities.supportsFastMode;
   const thinkingSelection = getProviderOptionBooleanSelectionValue(selection.options, "thinking");
   const thinking =
-    typeof thinkingSelection === "boolean" && supportsClaudeThinkingToggle(selectedModel)
+    typeof thinkingSelection === "boolean" && capabilities.supportsThinkingToggle
       ? thinkingSelection
       : undefined;
   const effectiveEffort = getEffectiveClaudeCodeEffort(effort);
@@ -1197,12 +1199,15 @@ function resolveClaudeLaunchThinking(
   providerOptions: ProviderStartOptions["claudeAgent"] | undefined,
   traits: { readonly thinking?: boolean } | undefined,
   model: string | undefined,
+  reported?: ModelCapabilities,
 ): ClaudeThinkingResolution {
   return claudeThinkingConfig({
     toggle: traits?.thinking,
     typed: providerOptions?.thinking,
     legacyMaxThinkingTokens: providerOptions?.maxThinkingTokens,
-    supportsAdaptive: claudeModelSupportsAdaptiveThinking(model),
+    supportsAdaptive: reported
+      ? resolveModelCapabilities("claudeAgent", model, reported).supportsAdaptiveThinking
+      : claudeModelSupportsAdaptiveThinking(model),
     model,
   });
 }
@@ -1489,26 +1494,26 @@ function applyClaudeModelPromptEffort(
   prompt: string,
   model: string | undefined,
   effort: string | undefined,
+  reported?: ModelCapabilities,
 ) {
-  const requestedEffort = resolveReasoningEffortForProvider("claudeAgent", effort ?? null);
-  const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", model);
-  const promptEffort =
-    requestedEffort === "ultrathink" && supportsClaudeUltrathinkKeyword(model)
-      ? "ultrathink"
-      : requestedEffort && supportedEffortOptions.includes(requestedEffort)
-        ? requestedEffort
-        : null;
+  const capabilities = resolveModelCapabilities("claudeAgent", model, reported);
+  const promptEffort = resolveSupportedEffort(capabilities, effort) as ClaudeCodeEffort | null;
   return applyClaudePromptEffortPrefix(prompt, promptEffort);
 }
 
 function buildPromptText(
   input: ProviderAdapterSendTurnInput,
-  options: { readonly activeModel?: string; readonly allowsWorkspaceEdits: boolean },
+  options: {
+    readonly activeModel?: string;
+    readonly allowsWorkspaceEdits: boolean;
+    readonly reportedCapabilities?: ModelCapabilities;
+  },
 ): string {
   const userPrompt = applyClaudeModelPromptEffort(
     input.input?.trim() ?? "",
     input.model,
     input.modelOptions?.claudeAgent?.effort,
+    options.reportedCapabilities,
   );
   // Claude Code slash commands must remain the leading prompt text so the CLI
   // can recognize them before normal model dispatch.
@@ -1564,12 +1569,16 @@ function buildUserMessageEffect(
     readonly activeModel?: string;
     readonly allowsWorkspaceEdits: boolean;
     readonly hostContractUpdate?: string | undefined;
+    readonly reportedCapabilities?: ModelCapabilities | undefined;
   },
 ): Effect.Effect<SDKUserMessage, ProviderAdapterRequestError> {
   return Effect.gen(function* () {
     const promptText = buildPromptText(input, {
       ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
       allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
+      ...(dependencies.reportedCapabilities
+        ? { reportedCapabilities: dependencies.reportedCapabilities }
+        : {}),
     });
     const text = dependencies.hostContractUpdate
       ? `# F5 host contract (session update)
@@ -2060,6 +2069,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* ServerConfig;
+    const reportedCapabilitiesFor = (
+      model: string | undefined,
+    ): Effect.Effect<ModelCapabilities | undefined> =>
+      model && options?.reportedModelCapabilities
+        ? options.reportedModelCapabilities(model).pipe(Effect.orElseSucceed(() => undefined))
+        : Effect.succeed(undefined);
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -4068,9 +4083,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }
             return;
           }
+          case "commands_changed": {
+            // The SDK sends the full catalog; replace, never merge, so removed
+            // commands (uninstalled plugin, deleted skill) leave the composer.
+            const commands = rawMessage.commands;
+            if (!Array.isArray(commands)) return;
+            const normalizedCommands = normalizeSupportedSlashCommands(
+              commands.filter(
+                (command): command is { name: string; description: string } =>
+                  typeof command?.name === "string",
+              ),
+            );
+            const fingerprint = fingerprintSupportedSlashCommands(normalizedCommands);
+            if (context.slashCommandsLoaded && fingerprint === context.supportedCommandsFingerprint)
+              return;
+            context.slashCommandsLoaded = true;
+            context.availableSlashCommands = normalizedCommands;
+            context.supportedCommandsFingerprint = fingerprint;
+            yield* emitSessionConfigured(context, context.configuredBase);
+            return;
+          }
           case "vcs_state_changed":
           case "code_change_published":
-          case "commands_changed":
           case "local_command_output":
           case "plugin_install":
           case "memory_recall":
@@ -5040,13 +5074,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               providerInstanceId: input.modelSelection.instanceId,
             })
           : undefined;
-        const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
+        const oneOffReported = yield* reportedCapabilitiesFor(selection?.baseModel ?? input.model);
+        const traits = selection
+          ? resolveClaudeRuntimeTraits(selection, undefined, oneOffReported)
+          : undefined;
         const thinkingResolution = yield* Effect.try({
           try: () =>
             resolveClaudeLaunchThinking(
               providerOptions,
               traits,
               selection?.baseModel ?? input.model,
+              oneOffReported,
             ),
           catch: (cause) =>
             new ProviderAdapterValidationError({
@@ -5064,6 +5102,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               input.prompt,
               selection?.baseModel,
               getProviderOptionStringSelectionValue(input.modelSelection.options, "effort"),
+              oneOffReported,
             )
           : input.prompt;
         const promptMessage = buildUserMessage({
@@ -5882,9 +5921,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           modelOptions: input.modelOptions,
           modelSelection: input.modelSelection,
         });
+        const launchReported = yield* reportedCapabilitiesFor(
+          runtimeModelSelection.baseModel ?? input.model,
+        );
         const { selectedModel, effectiveEffort, fastMode, thinking } = resolveClaudeRuntimeTraits(
           runtimeModelSelection,
           input.model,
+          launchReported,
         );
         const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
         const runtimePermissionMode = (() => {
@@ -5912,6 +5955,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               providerOptions,
               typeof thinking === "boolean" ? { thinking } : undefined,
               selectedModel,
+              launchReported,
             ),
           catch: (cause) =>
             new ProviderAdapterValidationError({
@@ -6370,6 +6414,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             const runtimeTraits = resolveClaudeRuntimeTraits(
               runtimeModelSelection,
               context.session.model,
+              yield* reportedCapabilitiesFor(runtimeModelSelection.baseModel),
             );
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||
@@ -6496,6 +6541,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           attachmentsDir: serverConfig.attachmentsDir,
           ...(activeModel ? { activeModel } : {}),
           allowsWorkspaceEdits,
+          reportedCapabilities: yield* reportedCapabilitiesFor(input.model),
           hostContractUpdate:
             context.processEnvironment.F5_CLAUDE_LEGACY_HOST_CONTRACT_UPDATE === "1" &&
             !context.hostContractVersion &&
@@ -6605,6 +6651,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             fileSystem,
             attachmentsDir: serverConfig.attachmentsDir,
             allowsWorkspaceEdits: context.configuredBase.permissionMode !== "plan",
+            reportedCapabilities: yield* reportedCapabilitiesFor(input.model),
           });
           if (context.stopped || context.turnState?.turnId !== input.expectedTurnId) {
             return yield* new ProviderAdapterRequestError({
@@ -6761,6 +6808,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return context !== undefined && !context.stopped && !context.retiring;
       });
 
+    const getSessionDiscovery: NonNullable<ClaudeAdapterShape["getSessionDiscovery"]> = (
+      threadId,
+    ) =>
+      Effect.sync(() => {
+        const context = sessions.get(threadId);
+        if (!context || context.stopped) return undefined;
+        if (context.slashCommandsLoaded) return { outcome: "discovered", nativeCommands: true };
+        return context.query.supportedCommands
+          ? { outcome: "pending" }
+          : { outcome: "failed", nativeCommands: false };
+      });
+
     const stopAll: ClaudeAdapterShape["stopAll"] = () =>
       Effect.forEach(
         sessions,
@@ -6801,6 +6860,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       stopSession,
       listSessions,
       hasSession,
+      getSessionDiscovery,
       stopAll,
       streamEvents: Stream.fromQueue(runtimeEventQueue),
     } satisfies ClaudeAdapterShape;

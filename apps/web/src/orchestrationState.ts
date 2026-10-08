@@ -136,6 +136,12 @@ export function mapSessionFromReadModel(
       : previous?.tokenUsageSource
         ? { tokenUsageSource: previous.tokenUsageSource }
         : {}),
+    // Omitted keeps the previous generation's snapshot, matching the server.
+    ...(incoming.capabilities !== undefined
+      ? { capabilities: incoming.capabilities }
+      : previous?.capabilities !== undefined
+        ? { capabilities: previous.capabilities }
+        : {}),
   };
 
   if (
@@ -151,7 +157,8 @@ export function mapSessionFromReadModel(
     previous.lastErrorId === next.lastErrorId &&
     previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     areUnknownEqual(previous.usageLimit ?? null, next.usageLimit ?? null) &&
-    previous.tokenUsageSource === next.tokenUsageSource
+    previous.tokenUsageSource === next.tokenUsageSource &&
+    areUnknownEqual(previous.capabilities ?? null, next.capabilities ?? null)
   ) {
     return previous;
   }

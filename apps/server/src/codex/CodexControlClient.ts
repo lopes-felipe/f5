@@ -548,6 +548,64 @@ export class CodexControlClient extends EventEmitter<{
     };
   }
 
+  /**
+   * Page through `model/list`. Hidden models are excluded by the server
+   * default (`includeHidden` omitted); callers filter again defensively.
+   */
+  async listModels(maxPages = 10): Promise<ReadonlyArray<Record<string, unknown>>> {
+    return this.listPaged("model/list", {}, maxPages);
+  }
+
+  /** `skills/list` entries (one per requested cwd) with their skills. */
+  async listSkills(cwds: ReadonlyArray<string>): Promise<ReadonlyArray<Record<string, unknown>>> {
+    const result = await this.sendRequest<Record<string, unknown>>("skills/list", {
+      cwds: [...cwds],
+      forceReload: false,
+    });
+    return Array.isArray(result.data) ? result.data.filter(isObject) : [];
+  }
+
+  /** `hooks/list` for the given working directories (empty: the server cwd). */
+  async listHooks(cwds: ReadonlyArray<string>): Promise<ReadonlyArray<Record<string, unknown>>> {
+    const result = await this.sendRequest<Record<string, unknown>>("hooks/list", {
+      cwds: [...cwds],
+    });
+    return Array.isArray(result.data) ? result.data.filter(isObject) : [];
+  }
+
+  /** Installed plugins only; F5 never queries remote marketplaces. */
+  async listPlugins(cwds: ReadonlyArray<string>): Promise<Record<string, unknown>> {
+    return this.sendRequest<Record<string, unknown>>("plugin/list", {
+      ...(cwds.length > 0 ? { cwds: [...cwds] } : {}),
+      forceRefetch: false,
+      marketplaceKinds: ["local"],
+    });
+  }
+
+  /** Apps/connectors visible to this account (experimental upstream). */
+  async listApps(maxPages = 5): Promise<ReadonlyArray<Record<string, unknown>>> {
+    return this.listPaged("app/list", { forceRefetch: false }, maxPages);
+  }
+
+  private async listPaged(
+    method: string,
+    params: Record<string, unknown>,
+    maxPages: number,
+  ): Promise<ReadonlyArray<Record<string, unknown>>> {
+    const entries: Record<string, unknown>[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < maxPages; page += 1) {
+      const result = await this.sendRequest<Record<string, unknown>>(method, {
+        ...params,
+        ...(cursor ? { cursor } : {}),
+      });
+      if (Array.isArray(result.data)) entries.push(...result.data.filter(isObject));
+      cursor = asTrimmedString(result.nextCursor);
+      if (!cursor) break;
+    }
+    return entries;
+  }
+
   async reloadMcpServer(): Promise<void> {
     await this.sendRequest<Record<string, never>>("config/mcpServer/reload", undefined);
   }

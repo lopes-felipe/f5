@@ -594,6 +594,9 @@ const make = Effect.gen(function* () {
                 lastErrorId: tokenUsage.lastErrorId,
                 lastErrorOccurredAt: tokenUsage.lastErrorOccurredAt,
                 ...tokenUsage.tokenUsage,
+                // Started or resumed sessions carry their generation's snapshot;
+                // re-binding an already running session keeps the projected one.
+                ...(input.session.capabilities ? { capabilities: input.session.capabilities } : {}),
                 updatedAt: input.session.updatedAt,
               },
               createdAt: input.createdAt,

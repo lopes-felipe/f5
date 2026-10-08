@@ -15,6 +15,7 @@ import {
   WorkflowModelSlot,
 } from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
+import { ProviderSessionCapabilities } from "./sessionCapabilities";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
@@ -640,6 +641,11 @@ export const OrchestrationSession = Schema.Struct({
   estimatedThinkingTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
   tokenUsageSource: Schema.optional(Schema.Literals(["provider", "estimated"])),
+  /**
+   * Capabilities of the session generation the thread is bound to. Omitted
+   * updates keep the previous snapshot; `null` clears it.
+   */
+  capabilities: Schema.optional(Schema.NullOr(ProviderSessionCapabilities)),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationSession = typeof OrchestrationSession.Type;

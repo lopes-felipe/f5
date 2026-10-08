@@ -170,6 +170,38 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     );
   });
 
+  it("lets cached reported capabilities override same-slug built-ins", () => {
+    const reported = {
+      ...createModelCapabilities({ optionDescriptors: [] }),
+      source: "reported" as const,
+    };
+    const fallbackCodex = makeProvider(CODEX_DRIVER, {
+      models: [
+        { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: emptyCapabilities },
+        { slug: "gpt-old", name: "GPT Old", isCustom: false, capabilities: emptyCapabilities },
+      ],
+    });
+    const cachedCodex = makeProvider(CODEX_DRIVER, {
+      models: [
+        { slug: "gpt-5.4", name: "GPT-5.4", isCustom: false, capabilities: reported },
+        { slug: "gpt-cli-only", name: "CLI Only", isCustom: false, capabilities: reported },
+      ],
+    });
+    const hydrated = hydrateCachedProvider({
+      cachedProvider: cachedCodex,
+      fallbackProvider: fallbackCodex,
+    });
+    assert.deepStrictEqual(
+      hydrated.models.map((model) => [model.slug, model.capabilities?.source ?? "built-in"]),
+      [
+        ["gpt-5.4", "reported"],
+        // Never dropped: a persisted thread may still use it.
+        ["gpt-old", "built-in"],
+        ["gpt-cli-only", "reported"],
+      ],
+    );
+  });
+
   it("rejects cached snapshots that are not correlated to the fallback instance", () => {
     const fallbackCodex = makeProvider(CODEX_DRIVER, {
       models: [

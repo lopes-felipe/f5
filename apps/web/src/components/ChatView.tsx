@@ -1,4 +1,5 @@
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
+import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
@@ -342,6 +343,7 @@ import {
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
+  resolveComposerNativeSlashCommands,
   applyUserMessageAttachmentPreviewHandoff,
   deriveProviderRuntimeInfoEntries,
   buildExpiredTerminalContextToastCopy,
@@ -1692,6 +1694,21 @@ export default function ChatView({
     }
     return null;
   }, [threadActivities]);
+  const composerNativeSlashCommands = useMemo(
+    () =>
+      resolveComposerNativeSlashCommands({
+        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        sessionInstanceId: activeThread?.session?.providerInstanceId,
+        selectedInstanceId: selectedProviderInstanceId,
+        instanceSlashCommands: selectedProviderSnapshot?.slashCommands,
+      }),
+    [
+      activeThread?.session?.providerInstanceId,
+      latestConfiguredRuntimeActivity?.slashCommands,
+      selectedProviderInstanceId,
+      selectedProviderSnapshot?.slashCommands,
+    ],
+  );
   const latestModelRerouteActivity = useMemo(() => {
     for (let index = threadActivities.length - 1; index >= 0; index -= 1) {
       const activity = threadActivities[index];
@@ -2387,7 +2404,8 @@ export default function ChatView({
 
     const items = buildSlashComposerMenuItems({
       query: composerTrigger.query,
-      runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+      runtimeSlashCommands: composerNativeSlashCommands.commands,
+      runtimeSlashCommandsSource: composerNativeSlashCommands.source,
       provider: selectedProvider,
       projectSkills: activeProject?.skills,
       providerSkills: selectedProviderSnapshot?.skills,
@@ -2397,7 +2415,7 @@ export default function ChatView({
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
     composerTrigger,
-    latestConfiguredRuntimeActivity?.slashCommands,
+    composerNativeSlashCommands,
     selectedProvider,
     workspaceEntries,
   ]);
@@ -4721,7 +4739,7 @@ export default function ChatView({
       rewriteComposerRuntimeSkillInvocationForSend({
         text: promptForSend,
         provider: selectedProvider,
-        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        runtimeSlashCommands: composerNativeSlashCommands.commands,
         projectSkills: activeProject?.skills,
         providerSkills: selectedProviderSnapshot?.skills,
       });
@@ -5213,7 +5231,7 @@ export default function ChatView({
         {
           text: trimmed,
           provider: selectedProvider,
-          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          runtimeSlashCommands: composerNativeSlashCommands.commands,
           projectSkills: activeProject?.skills,
           providerSkills: selectedProviderSnapshot?.skills,
         },
@@ -5364,7 +5382,7 @@ export default function ChatView({
       hasPendingTurnDispatch,
       isConnecting,
       isServerThread,
-      latestConfiguredRuntimeActivity?.slashCommands,
+      composerNativeSlashCommands,
       persistThreadSettingsForNextTurn,
       removeOptimisticMessage,
       restoreComposerRollback,
@@ -6008,7 +6026,8 @@ export default function ChatView({
         !buildSlashComposerMenuItems({
           query: candidate.query,
           provider: selectedProvider,
-          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          runtimeSlashCommands: composerNativeSlashCommands.commands,
+          runtimeSlashCommandsSource: composerNativeSlashCommands.source,
           projectSkills: activeProject?.skills,
           providerSkills: selectedProviderSnapshot?.skills,
         }).some((item) => item.type === "skill"))
@@ -6018,7 +6037,7 @@ export default function ChatView({
   }, [
     readComposerSnapshot,
     selectedProvider,
-    latestConfiguredRuntimeActivity?.slashCommands,
+    composerNativeSlashCommands,
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
   ]);
@@ -6450,9 +6469,13 @@ export default function ChatView({
   ]);
   const activeProviderLabel =
     PROVIDER_OPTIONS.find((option) => option.value === activeProvider)?.label ?? "This provider";
-  const revertSupported = Boolean(
-    activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
-    activeProviderStatus.runtimeCapabilities.rollbackReadback,
+  const revertSupported = isSessionActionSupported(
+    activeThread?.session?.capabilities,
+    "rollback",
+    Boolean(
+      activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
+      activeProviderStatus.runtimeCapabilities.rollbackReadback,
+    ),
   );
   // Every user message gets a revert trigger once the provider is known; when it
   // can't roll back, the trigger stays visible and says why instead of vanishing.
@@ -7025,10 +7048,14 @@ export default function ChatView({
                     {isServerThread ? (
                       <NextTurnQueuePanel
                         variant="tray"
-                        turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
+                        turnSteering={isSessionActionSupported(
+                          activeThread.session?.capabilities,
+                          "steer",
+                          activeProviderStatus?.runtimeCapabilities?.turnSteering === true,
+                        )}
                         threadId={activeThread.id}
                         provider={selectedProvider}
-                        runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
+                        runtimeSlashCommands={composerNativeSlashCommands.commands}
                         projectSkills={activeProject?.skills}
                       />
                     ) : null}

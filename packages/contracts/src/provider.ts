@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
+import { ProviderSessionCapabilities } from "./sessionCapabilities";
 import {
   ApprovalRequestId,
   CommandId,
@@ -53,6 +54,8 @@ export const ProviderSession = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** Set by ProviderService for the session generation it started or resumed. */
+  capabilities: Schema.optional(ProviderSessionCapabilities),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 

@@ -9,6 +9,7 @@ import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { CodeReviewWorkflowService } from "../Services/CodeReviewWorkflowService.ts";
 import { CompactionService } from "../Services/CompactionService.ts";
 import { InvestigationWorkflowService } from "../Services/InvestigationWorkflowService.ts";
+import { NativeSessionCleanupReactor } from "../Services/NativeSessionCleanupReactor.ts";
 import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { ProjectSkillSyncService } from "../Services/ProjectSkillSyncService.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
@@ -31,6 +32,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const codeReviewWorkflowService = yield* CodeReviewWorkflowService;
   const investigationWorkflowService = yield* InvestigationWorkflowService;
   const nextTurnQueueDispatcher = yield* NextTurnQueueDispatcher;
+  const nativeSessionCleanupReactor = yield* NativeSessionCleanupReactor;
   const orchestrationEngine = yield* OrchestrationEngineService;
 
   const start: OrchestrationReactorShape["start"] = Effect.gen(function* () {
@@ -110,6 +112,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* codeReviewWorkflowService.start;
     yield* investigationWorkflowService.start;
     yield* nextTurnQueueDispatcher.start;
+    yield* nativeSessionCleanupReactor.start;
     yield* startThreadSnoozeReactor(orchestrationEngine);
   });
 

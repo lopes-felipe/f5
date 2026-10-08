@@ -79,9 +79,17 @@ import {
 } from "../../observability/Metrics.ts";
 import {
   type ProviderAdapterError,
+  ProviderSessionActionUnavailableError,
   ProviderValidationError,
   ProviderTurnDeliveryError,
 } from "../Errors.ts";
+import {
+  buildProviderSessionCapabilities,
+  checkSessionAction,
+  readPersistedSessionGeneration,
+  sessionGenerationPayload,
+} from "../sessionCapabilities.ts";
+import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
 import type { SharedInstructionInput } from "../sharedAssistantContract.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
@@ -210,6 +218,7 @@ function toRuntimePayloadFromSession(
   extra?: {
     readonly startConfig?: Record<string, unknown>;
     readonly instructionContext?: Partial<SharedInstructionInput> | null;
+    readonly sessionGeneration?: number;
   },
 ): Record<string, unknown> {
   return {
@@ -217,6 +226,9 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    ...(extra?.sessionGeneration !== undefined
+      ? sessionGenerationPayload(extra.sessionGeneration)
+      : {}),
     ...(extra?.startConfig !== undefined ? { startConfig: extra.startConfig } : {}),
     ...(extra?.instructionContext !== undefined
       ? { instructionContext: extra.instructionContext }
@@ -307,6 +319,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const registry = yield* ProviderAdapterRegistry;
     const directory = yield* ProviderSessionDirectory;
+    // Optional so narrow test layers need not build provider snapshots; without
+    // it, session snapshots omit the executable version.
+    const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
     // Terminal receipts are persisted in order within each thread. Bound the
@@ -340,6 +355,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         readonly startConfig?: Record<string, unknown>;
         readonly instructionContext?: Partial<SharedInstructionInput> | null;
         readonly clearMissingResumeCursor?: boolean;
+        readonly sessionGeneration?: number;
       },
     ) =>
       directory.upsert({
@@ -363,6 +379,48 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ? { resumeCursor: null }
             : {}),
         runtimePayload: toRuntimePayloadFromSession(session, extra),
+      });
+
+    const readExecutableVersion = (instanceId: ProviderInstanceId) =>
+      Option.match(providerRegistry, {
+        onNone: () => Effect.succeed<string | undefined>(undefined),
+        onSome: (service) =>
+          service.getProviders.pipe(
+            Effect.map(
+              (providers) =>
+                providers.find((provider) => provider.instanceId === instanceId)?.version ??
+                undefined,
+            ),
+          ),
+      });
+
+    const snapshotSessionCapabilities = (input: {
+      readonly threadId: ThreadId;
+      readonly instanceId: ProviderInstanceId;
+      readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+      readonly generation: number;
+    }) =>
+      Effect.gen(function* () {
+        const active = yield* input.adapter.hasSession(input.threadId);
+        const discovery =
+          active && input.adapter.getSessionDiscovery
+            ? yield* input.adapter.getSessionDiscovery(input.threadId)
+            : undefined;
+        const instanceInfo = yield* registry
+          .getInstanceInfo(input.instanceId)
+          .pipe(Effect.option, Effect.map(Option.getOrUndefined));
+        return buildProviderSessionCapabilities({
+          generation: input.generation,
+          driver: instanceInfo?.driverKind ?? input.adapter.provider,
+          providerInstanceId: input.instanceId,
+          executableVersion: yield* readExecutableVersion(input.instanceId),
+          adapterCapabilities: input.adapter.capabilities,
+          hasSteer: input.adapter.steerTurn !== undefined,
+          hasMcpReload: input.adapter.reloadMcpConfig !== undefined,
+          active,
+          discovery,
+          checkedAt: new Date().toISOString(),
+        });
       });
 
     const persistResumeCursorFromRuntimeEvent = (
@@ -667,6 +725,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               input.binding.threadId,
               { launchFingerprint },
             );
+            const adopted = {
+              ...existing,
+              capabilities: yield* snapshotSessionCapabilities({
+                threadId: input.binding.threadId,
+                instanceId: bindingInstanceId,
+                adapter,
+                generation: readPersistedSessionGeneration(input.binding.runtimePayload),
+              }),
+            };
             yield* Effect.logInfo("provider service adopted existing provider session", {
               operation: input.operation,
               threadId: input.binding.threadId,
@@ -679,7 +746,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               strategy: "adopt-existing",
               hasResumeCursor: existing.resumeCursor !== undefined,
             });
-            return { adapter, session: existing, orphanedTurnId: undefined } as const;
+            return { adapter, session: adopted, orphanedTurnId: undefined } as const;
           }
         } else if (hasActiveSession) {
           yield* Effect.logWarning("provider launch identity changed; replacing active session", {
@@ -744,6 +811,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
 
+        const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
         yield* upsertSessionBinding(
           { ...resumed, providerInstanceId: bindingInstanceId },
           input.binding.threadId,
@@ -757,8 +825,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ...(recoveredInstructionContext
               ? { instructionContext: recoveredInstructionContext }
               : {}),
+            sessionGeneration: resumedGeneration,
           },
         );
+        const resumedWithCapabilities = {
+          ...resumed,
+          capabilities: yield* snapshotSessionCapabilities({
+            threadId: input.binding.threadId,
+            instanceId: bindingInstanceId,
+            adapter,
+            generation: resumedGeneration,
+          }),
+        };
         yield* Effect.logInfo("provider service resumed provider session from persisted binding", {
           operation: input.operation,
           threadId: input.binding.threadId,
@@ -771,7 +849,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           strategy: "resume-thread",
           hasResumeCursor: resumed.resumeCursor !== undefined,
         });
-        return { adapter, session: resumed, orphanedTurnId } as const;
+        return { adapter, session: resumedWithCapabilities, orphanedTurnId } as const;
       }).pipe(
         withAccountAdmission(
           serverConfig.stateDir,
@@ -1054,19 +1132,33 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
             );
           }
+          // Generations only grow per thread, across instance switches too, so a
+          // browser can never mistake a new session for the one it looked at.
+          const sessionGeneration =
+            readPersistedSessionGeneration(previousBinding?.runtimePayload) + 1;
+          yield* upsertSessionBinding(
+            { ...session, providerInstanceId: requestedInstanceId },
+            threadId,
+            {
+              ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+              mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+              launchFingerprint,
+              startConfig: persistedStartConfig,
+              instructionContext: toInstructionContextFromSessionStartInput(input),
+              clearMissingResumeCursor: !sameProvenance,
+              sessionGeneration,
+            },
+          );
           const sessionWithInstance = {
             ...session,
             providerInstanceId: requestedInstanceId,
+            capabilities: yield* snapshotSessionCapabilities({
+              threadId,
+              instanceId: requestedInstanceId,
+              adapter,
+              generation: sessionGeneration,
+            }),
           };
-
-          yield* upsertSessionBinding(sessionWithInstance, threadId, {
-            ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-            mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
-            launchFingerprint,
-            startConfig: persistedStartConfig,
-            instructionContext: toInstructionContextFromSessionStartInput(input),
-            clearMissingResumeCursor: !sameProvenance,
-          });
           yield* Effect.logInfo("provider service started provider session", {
             threadId,
             provider: sessionWithInstance.provider,
@@ -1577,6 +1669,48 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const getCapabilities: ProviderServiceShape["getCapabilities"] = (provider) =>
       registry.getByProvider(provider).pipe(Effect.map((adapter) => adapter.capabilities));
 
+    const getSessionCapabilities: ProviderServiceShape["getSessionCapabilities"] = (threadId) =>
+      Effect.gen(function* () {
+        const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        if (!binding) return null;
+        const instanceId = resolveBindingInstanceId(binding);
+        const adapter = yield* registry.getByInstance(instanceId);
+        return yield* snapshotSessionCapabilities({
+          threadId,
+          instanceId,
+          adapter,
+          generation: readPersistedSessionGeneration(binding.runtimePayload),
+        });
+      });
+
+    const assertSessionAction: ProviderServiceShape["assertSessionAction"] = (input) =>
+      Effect.gen(function* () {
+        const capabilities = yield* getSessionCapabilities(input.threadId);
+        if (!capabilities) {
+          return yield* new ProviderSessionActionUnavailableError({
+            threadId: input.threadId,
+            action: input.action,
+            reason: {
+              code: "no-session",
+              message: "This conversation has no provider session yet.",
+            },
+          });
+        }
+        const reason = checkSessionAction({
+          capabilities,
+          action: input.action,
+          expectedGeneration: input.expectedGeneration,
+        });
+        if (reason) {
+          return yield* new ProviderSessionActionUnavailableError({
+            threadId: input.threadId,
+            action: input.action,
+            reason,
+          });
+        }
+        return capabilities;
+      });
+
     const readThread: ProviderServiceShape["readThread"] = (rawThreadId) =>
       Effect.gen(function* () {
         const threadId = yield* decodeInputOrValidationError({
@@ -1907,6 +2041,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       stopSession,
       listSessions,
       getCapabilities,
+      getSessionCapabilities,
+      assertSessionAction,
       readThread: (threadId) => withProviderThreadAccess(threadId, readThread(threadId)),
       rollbackConversation: (input) =>
         withProviderThreadAccess(input.threadId, rollbackConversation(input)),

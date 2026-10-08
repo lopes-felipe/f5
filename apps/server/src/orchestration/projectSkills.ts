@@ -486,25 +486,28 @@ function resolveProjectSkillCollisions(
   });
 }
 
+/**
+ * Scan repository skill directories only. The project list is shared by every
+ * provider instance, so user-scope skills (home or config dir) never enter it;
+ * each instance publishes those through its own private catalog instead.
+ */
 export const scanProjectSkills = Effect.fn(function* (input: {
   readonly projectId: ProjectId;
   readonly workspaceRoot: string;
-  readonly userHome: string;
 }): Effect.fn.Return<ProjectSkillScanResult, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
 
   const scopes = yield* Effect.all(
-    (["user", "project"] as const).flatMap((scope) => {
-      const root = scope === "user" ? input.userHome : input.workspaceRoot;
+    (["project"] as const).flatMap((scope) => {
+      const root = input.workspaceRoot;
       const directories = [
         ".claude",
         ".agents",
         ".opencode",
         ".codex",
         ".grok",
-        ...(scope === "project"
-          ? [".gemini", ".agent"]
-          : [path.join(".gemini", "config"), path.join(".gemini", "antigravity-cli")]),
+        ".gemini",
+        ".agent",
       ];
       return directories.map((directory) =>
         scanSkillScope({

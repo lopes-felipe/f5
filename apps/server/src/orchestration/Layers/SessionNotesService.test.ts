@@ -175,6 +175,8 @@ async function createHarness(input: {
     respondToUserInput: () => unsupported(),
     stopSession: () => Effect.void,
     listSessions: () => Effect.succeed([]),
+    getSessionCapabilities: () => Effect.succeed(null),
+    assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "restart-session" }),
     readThread: () => unsupported(),
     rollbackConversation: () => unsupported(),
