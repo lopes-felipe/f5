@@ -12,6 +12,7 @@ Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains
 | `F5_STATE_DIR`                     | Directory for persistent state; defaults to `~/.f5/userdata`                                 |
 | `F5_PORT_OFFSET`                   | Dev-runner port offset alias                                                                 |
 | `F5_DEV_INSTANCE`                  | Dev-runner deterministic port-offset seed                                                    |
+| `F5_COMPOSER_REDESIGN`             | Composer redesign (attached state drawers, scroll collapse); on by default, `0` disables it  |
 | `F5_BACKUP_MAX_COMPRESSED_BYTES`   | Maximum compressed restore upload; defaults to 2 GiB                                         |
 | `F5_BACKUP_MAX_DECOMPRESSED_BYTES` | Maximum decompressed restore archive; defaults to 8 GiB                                      |
 | `F5_BACKUP_MAX_TEMPORARY_BYTES`    | Maximum combined restore staging footprint; defaults to 16 GiB                               |
