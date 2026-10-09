@@ -461,6 +461,34 @@ export function createWsNativeApi(): NativeApi {
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.terminalEvent, (message) => callback(message.data)),
     },
+    computer: {
+      access: {
+        revoke: (input) => transport.request(WS_METHODS.computerAccessRevoke, input),
+        list: (input) => transport.request(WS_METHODS.computerAccessList, input),
+        listRemembered: (input) =>
+          transport.request(WS_METHODS.computerAccessListRemembered, input),
+        forgetRemembered: (input) =>
+          transport.request(WS_METHODS.computerAccessForgetRemembered, input),
+        onRequested: (listener) =>
+          transport.subscribe(WS_CHANNELS.computerAccessRequested, (message) =>
+            listener(message.data),
+          ),
+        onSettled: (listener) =>
+          transport.subscribe(WS_CHANNELS.computerAccessSettled, (message) =>
+            listener(message.data),
+          ),
+        onGrantsChanged: (listener) =>
+          transport.subscribe(WS_CHANNELS.computerAccessGrantsChanged, (message) =>
+            listener(message.data),
+          ),
+      },
+      onActivity: (listener) =>
+        transport.subscribe(WS_CHANNELS.computerActivity, (message) => listener(message.data)),
+      onLeaseChanged: (listener) =>
+        transport.subscribe(WS_CHANNELS.agentComputerUseChanged, (message) =>
+          listener(message.data),
+        ),
+    },
     preview: {
       open: (input) => transport.request(WS_METHODS.previewOpen, input),
       navigate: (input) => transport.request(WS_METHODS.previewNavigate, input),

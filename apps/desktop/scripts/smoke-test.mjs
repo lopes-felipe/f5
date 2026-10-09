@@ -78,6 +78,27 @@ try {
     .waitFor({ timeout: 60_000 });
   await page.screenshot({ path: join(directory, "welcome.png") });
   await page.evaluate(async () => {
+    const computer = window.desktopBridge.computerAutomation;
+    if (
+      !computer ||
+      typeof computer.status !== "function" ||
+      "execute" in computer ||
+      "request" in computer
+    )
+      throw new Error("Computer bridge must expose controls without an execution path");
+    const computerStatus = await computer.status();
+    if (
+      !computerStatus.available &&
+      ![
+        "not-certified",
+        "helper-missing",
+        "missing-permissions",
+        "monitor-unhealthy",
+        "unsupported-platform",
+        "other-instance",
+      ].includes(computerStatus.reason)
+    )
+      throw new Error(`Unexpected computer backend status: ${computerStatus.reason}`);
     const bridge = window.desktopBridge.preview;
     const original = await bridge.getPreviewConfig();
     const persistent = await bridge.profiles.create("Smoke work", true);

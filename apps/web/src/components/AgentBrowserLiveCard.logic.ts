@@ -94,9 +94,18 @@ export function describeAgentBrowserCapabilities(
     });
   }
   if (agentBrowser.computerUse && agentBrowser.computerUse.state !== "off") {
+    const backend = agentBrowser.computerUse.backend;
+    const name =
+      backend === "native"
+        ? "F5 computer control"
+        : backend === "claude-builtin"
+          ? "Claude computer control"
+          : backend === "codex-builtin"
+            ? "Codex computer control"
+            : "Computer use";
     items.push({
       key: "computerUse",
-      label: `Computer use ${STATE_LABEL[agentBrowser.computerUse.state] ?? agentBrowser.computerUse.state}`,
+      label: `${name} ${STATE_LABEL[agentBrowser.computerUse.state] ?? agentBrowser.computerUse.state}`,
       tone: stateTone(agentBrowser.computerUse.state),
       ...(agentBrowser.computerUse.detail ? { detail: agentBrowser.computerUse.detail } : {}),
     });

@@ -1,3 +1,6 @@
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
+import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
@@ -197,6 +200,7 @@ import {
   CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL,
   type ClaudeAgentBrowserState,
   classifyF5PreviewTool,
+  classifyF5ComputerTool,
   writesPreviewArtifact,
   COMPUTER_USE_UNAVAILABLE_DETAIL,
   forceClaudeChromeFlag,
@@ -204,6 +208,7 @@ import {
   isClaudeInChromeTool,
   isVerifiedSdkServer,
   makeClaudePreviewMcpServer,
+  makeClaudeComputerMcpServer,
 } from "./claudeAgentBrowser.ts";
 import { resolveClaudeSdkExecutableOptions } from "../claudeSdkExecutable.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
@@ -406,6 +411,7 @@ interface ClaudeSessionContext {
   compactionRecommendationEmitted: boolean;
   resumeCompactionDialogShown: boolean;
   resumeAttemptSessionId: string | undefined;
+  resumeRejected?: boolean;
   resumeConfirmed: boolean;
   /**
    * Settles once the CLI confirms the resumed conversation, or the session
@@ -421,6 +427,8 @@ interface ClaudeSessionContext {
   retiring: boolean;
   /** Agent browser/computer capabilities installed for this session generation. */
   agentBrowser: ClaudeAgentBrowserState | undefined;
+  computerDispose?: () => void;
+  computerEndTurn?: (turnId: string) => void;
 }
 
 // Streaming-input results carry a running total. Resumes may restore transcript
@@ -495,6 +503,7 @@ export interface ClaudeAdapterLiveOptions {
    * supplies live agent browser policy. Absent outside desktop mode.
    */
   readonly previewAutomationBroker?: PreviewAutomationBrokerShape;
+  readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   /** Executable-reported model capabilities for this instance (SDK initialization). */
   readonly reportedModelCapabilities?: ClaudeReportedModelCapabilitiesLookup;
 }
@@ -2165,6 +2174,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       toolName: string,
     ): Effect.Effect<string | undefined> =>
       Effect.gen(function* () {
+        const computerClass = classifyF5ComputerTool(
+          toolName,
+          sessions.get(threadId)?.agentBrowser,
+          undefined,
+        );
+        if (computerClass) {
+          const policy = yield* resolveSessionBrowserPolicy(threadId);
+          if (!policy.computerUse)
+            return "Computer use is turned off for this project in F5 settings.";
+        }
         if (isClaudeInChromeTool(toolName)) {
           const policy = yield* resolveSessionBrowserPolicy(threadId);
           if (!policy.claudeInChrome) {
@@ -2374,6 +2393,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (!isCurrent()) return;
           if (statuses) {
             const before = JSON.stringify(agentBrowserConfigPayload(state));
+            if (state.computer && state.computer.verified === undefined) {
+              state.computer.verified = isVerifiedSdkServer(statuses, state.computer.serverName);
+              automationEventSanitizer.register(context.session.threadId, {
+                serverName: state.computer.serverName,
+                verified: true,
+                kind: "f5-computer",
+              });
+            }
             if (!previewChecked && state.preview) {
               previewChecked = true;
               state.preview.verified = isVerifiedSdkServer(statuses, state.preview.serverName);
@@ -2493,7 +2520,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 : {}),
               ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
               ...(itemId ? { itemId: ProviderItemId.makeUnsafe(itemId) } : {}),
-              payload: message,
+              payload: automationEventSanitizer.sanitize(context.session.threadId, message),
             },
           },
           context.session.threadId,
@@ -2565,9 +2592,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       context: ClaudeSessionContext,
       settlement: ClaudeResumeSettlement,
     ): Effect.Effect<void> =>
-      context.resumeSettlement
-        ? Deferred.succeed(context.resumeSettlement, settlement).pipe(Effect.asVoid)
-        : Effect.void;
+      Effect.gen(function* () {
+        if (settlement.outcome === "failed" && settlement.resumeRejected)
+          context.resumeRejected = true;
+        if (context.resumeSettlement) yield* Deferred.succeed(context.resumeSettlement, settlement);
+      });
 
     const invalidateClaudeResumeState = (
       context: ClaudeSessionContext,
@@ -3319,6 +3348,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const lastSegmentResult = context.lifecycle.latestResult;
+        context.computerEndTurn?.(turnState.turnId);
         const usage = context.lifecycle.usage ?? result?.usage;
         // Error placeholders can zero accounting fields. Retain the last
         // cumulative snapshot from this logical turn, never sum snapshots.
@@ -4170,6 +4200,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (turnStatusFromResult(message) === "failed") {
             recordClaudeResult(context.lifecycle, message);
             const originalError = resultUserFacingError(message);
+            // A resume may fail before the CLI acknowledges the queued first turn.
+            // Preserve the rejection before generic session cleanup settles the wait.
+            if (context.resumeAttemptSessionId && !context.resumeConfirmed)
+              yield* settleResume(context, {
+                outcome: "failed",
+                resumeRejected: isProviderResumeFailureText(originalError),
+              });
             const rejected = [...(context.rejectedUsageLimits?.values() ?? [])].filter(
               (limit) => limit.resettable,
             );
@@ -4922,6 +4959,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (Exit.isSuccess(exit)) return;
           if (!isClaudeMissingResumeMessageError(Cause.pretty(exit.cause)))
             return yield* Effect.failCause(exit.cause);
+          // Recovery may replace the cause with a generic repair error. The queued
+          // first turn still failed to resume and must never be retried automatically.
+          if (context.resumeAttemptSessionId && !context.resumeConfirmed)
+            yield* settleResume(context, { outcome: "failed", resumeRejected: true });
           const threadId = context.session.threadId;
           if (context.lastAssistantUuid)
             context.recoveryMetadata.missingResumePoint ??=
@@ -5202,6 +5243,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.stopped) return;
 
         context.stopped = true;
+        context.computerDispose?.();
         yield* settleResume(context, { outcome: "failed", resumeRejected: false });
         if (context.settlementWatchdog) {
           yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
@@ -5957,6 +5999,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               // F5's own preview tools, identified by exact server name and
               // `sdk` provenance. Observing never prompts; mutating follows the
               // runtime mode with one session-wide grant for the whole family.
+              if (classifyF5ComputerTool(toolName, context.agentBrowser, callbackOptions.mcpServer))
+                return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
               const previewToolClass = classifyF5PreviewTool(
                 toolName,
                 context.agentBrowser,
@@ -6351,6 +6395,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             })
           : undefined;
         const startBrowserPolicy = yield* resolveSessionBrowserPolicy(threadId);
+        const computerBroker = options?.computerAutomationBroker;
+        const computerStatus = computerBroker?.host.status();
+        const computerDecision = yield* resolveComputerBackendSelection({
+          provider: "claude",
+          enabled: startBrowserPolicy.computerUse,
+          nativeStatus: computerStatus ?? { available: false, reason: "no-host" },
+        });
+        const computerServer =
+          serverConfig.mode === "desktop" &&
+          !input.workflowExecutionProfile &&
+          startBrowserPolicy.computerUse &&
+          computerDecision.selection?.kind === "native" &&
+          computerBroker
+            ? makeClaudeComputerMcpServer({
+                broker: computerBroker,
+                threadId,
+                existingServerNames: new Set([
+                  ...Object.keys(translatedMcpServers ?? {}),
+                  ...(previewServer ? [previewServer.serverName] : []),
+                ]),
+              })
+            : undefined;
         // Computer use and Claude in Chrome stay uncertified (see claudeAgentBrowser.ts):
         // enabling them reports "unavailable" and their tools are denied.
         const chromeAllowed = startBrowserPolicy.claudeInChrome && CLAUDE_IN_CHROME_CERTIFIED;
@@ -6364,6 +6430,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     },
                   }
                 : {}),
+              ...(computerServer
+                ? { computer: { serverName: computerServer.serverName, installed: true } }
+                : {}),
               chrome: !startBrowserPolicy.claudeInChrome
                 ? { state: "off" }
                 : chromeAllowed
@@ -6371,7 +6440,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   : { state: "unavailable", detail: CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL },
               computerUse: !startBrowserPolicy.computerUse
                 ? { state: "off" }
-                : { state: "unavailable", detail: COMPUTER_USE_UNAVAILABLE_DETAIL },
+                : computerServer && computerDecision.status.available
+                  ? {
+                      state: "connected",
+                      backend: "native",
+                      detail: computerDecision.selection?.fallbackFrom
+                        ? `Using F5 computer control; built-in unavailable: ${computerDecision.selection.fallbackFrom.reason}.`
+                        : "Using F5 computer control.",
+                    }
+                  : {
+                      state: "unavailable",
+                      detail:
+                        computerStatus && !computerStatus.available
+                          ? (computerStatus.detail ?? computerStatus.reason)
+                          : COMPUTER_USE_UNAVAILABLE_DETAIL,
+                    },
               mutatingPreviewGranted: false,
             }
           : undefined;
@@ -6551,10 +6634,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           systemPrompt,
           planModeInstructions,
         } satisfies ClaudeQueryOptions;
-        if (translatedMcpServers || previewServer) {
+        if (translatedMcpServers || previewServer || computerServer) {
           queryOptions.mcpServers = {
             ...(translatedMcpServers as NonNullable<ClaudeQueryOptions["mcpServers"]> | undefined),
             ...(previewServer ? { [previewServer.serverName]: previewServer.config } : {}),
+            ...(computerServer ? { [computerServer.serverName]: computerServer.config } : {}),
           };
         }
 
@@ -6593,6 +6677,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const lastTotalCostUsd = existingResumeSessionId ? resumeState?.lastTotalCostUsd : 0;
 
         const session: ProviderSession = {
+          computerConfigurationFingerprint: computerDecision.fingerprint,
+          ...(computerDecision.selection
+            ? { computerBackendSelection: computerDecision.selection }
+            : {}),
+          computerToolsInstalled: computerServer !== undefined,
           threadId,
           provider: PROVIDER,
           status: "ready",
@@ -6619,6 +6708,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const context: ClaudeSessionContext = {
+          ...(computerServer?.dispose ? { computerDispose: computerServer.dispose } : {}),
+          ...(computerServer?.endTurn ? { computerEndTurn: computerServer.endTurn } : {}),
           startInput: input,
           turnBoundaries: [...(resumeState?.turnBoundaries ?? [])],
           hostContractVersion: existingResumeSessionId
@@ -6811,7 +6902,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   detail: "Claude session stopped while preparing the turn.",
                   // Every ensureLive check runs before the prompt is queued.
                   deliveryCertainty: "not_sent",
-                  deliveryRetryable: true,
+                  deliveryRetryable: !context.resumeRejected,
                 }),
               )
             : Effect.void,

@@ -451,16 +451,16 @@ describe("sharedAssistantContract", () => {
   });
 
   it("exposes stable version metadata", () => {
-    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v5");
+    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v6");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
     expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v12");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
-      contractVersion: "v5",
+      contractVersion: "v6",
       providerSupplementVersion: "v4",
       strategy: "codex.developer_instructions",
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
-      contractVersion: "v5",
+      contractVersion: "v6",
       providerSupplementVersion: "v12",
       strategy: "claude.append_system_prompt",
     });

@@ -111,6 +111,19 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Check computer tier table drift
+        run: node scripts/generate-computer-tiers.ts --check
+
+      - name: Build and test Windows computer helper
+        run: |
+          cargo test --manifest-path apps/desktop/native/windows/Cargo.toml
+          node scripts/build-computer-helper.ts --platform win --arch x64 --check
+
       - name: Typecheck
         run: bun run typecheck
 
@@ -142,6 +155,11 @@ jobs:
         with:
           bun-version: 1.3.9
       - run: bun install --frozen-lockfile
+      - name: Build and test macOS computer helper
+        run: |
+          node scripts/generate-computer-tiers.ts --check
+          swift test --package-path apps/desktop/native/macos
+          node scripts/build-computer-helper.ts --platform mac --arch universal --check
       - name: Check profile locks, provisioning, homes and account lifecycle
         run: bun run --cwd apps/server test:file src/profiles src/provider/Drivers/ClaudeHome.test.ts src/provider/Drivers/CodexHomeLayout.test.ts
       # Native account/keychain certification requires dedicated accounts and is

@@ -1,3 +1,12 @@
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
+import {
+  callComputerTool,
+  COMPUTER_TOOL_DEFINITIONS,
+  COMPUTER_TOOL_TIMEOUT_MS,
+  ComputerToolGeometry,
+  classifyComputerTool,
+} from "../../computer/computerMcpTools";
 /**
  * Claude-side wiring for F5's agent browser: the in-process preview MCP server,
  * exact-provenance tool classification, and CLI launch flags for Claude in
@@ -37,8 +46,13 @@ export type AgentCapabilityState = "off" | "pending" | "connected" | "failed" | 
 export interface ClaudeAgentBrowserState {
   /** `verified` is undefined until the first `mcpServerStatus()` read checks provenance. */
   preview?: { readonly serverName: string; readonly installed: boolean; verified?: boolean };
+  computer?: { readonly serverName: string; readonly installed: boolean; verified?: boolean };
   chrome?: { state: AgentCapabilityState; detail?: string };
-  computerUse?: { state: AgentCapabilityState; backend?: "claude" | "native"; detail?: string };
+  computerUse?: {
+    state: AgentCapabilityState;
+    backend?: "claude-builtin" | "codex-builtin" | "native";
+    detail?: string;
+  };
   /** `acceptForSession` on any mutating preview tool grants the whole family. */
   mutatingPreviewGranted: boolean;
 }
@@ -75,6 +89,7 @@ export function agentBrowserConfigPayload(
           },
         }
       : {}),
+    ...(state.computer ? { computer: state.computer } : {}),
     ...(state.chrome
       ? {
           chrome: {
@@ -99,6 +114,8 @@ export function agentBrowserConfigPayload(
 export interface ClaudePreviewServer {
   readonly serverName: string;
   readonly config: McpSdkServerConfigWithInstance;
+  readonly dispose?: () => void;
+  readonly endTurn?: (turnId: string) => void;
 }
 
 /**
@@ -145,6 +162,95 @@ export function makeClaudePreviewMcpServer(input: {
       tools,
     }),
   };
+}
+
+export function makeClaudeComputerMcpServer(input: {
+  broker: ComputerAutomationBrokerRuntime;
+  threadId: ThreadId;
+  existingServerNames: ReadonlySet<string>;
+}): ClaudePreviewServer {
+  const serverName = chooseServerName("f5_computer", input.existingServerNames);
+  const sessionGeneration = `claude:${randomUUID()}`;
+  input.broker.bindSession(input.threadId, sessionGeneration, "claude");
+  automationEventSanitizer.register(input.threadId, {
+    serverName,
+    verified: true,
+    kind: "f5-computer",
+  });
+  const geometry = new ComputerToolGeometry();
+  const unsubscribe = input.broker.subscribe((event) => {
+    if (event.channel === "computer.access.grantsChanged" && event.data.threadId === input.threadId)
+      geometry.clear();
+    if (
+      event.channel === "computer.host" &&
+      (event.data.type === "pauseChanged" || event.data.type === "grantsChanged") &&
+      (event.data.type === "grantsChanged"
+        ? event.data.authorization.threadId
+        : event.data.threadId) === input.threadId
+    )
+      geometry.clear();
+  });
+  return {
+    serverName,
+    dispose: () => {
+      unsubscribe();
+      geometry.clear();
+      input.broker.releaseSession(input.threadId, sessionGeneration);
+    },
+    endTurn: (turnId) => input.broker.endTurn(input.threadId, turnId, sessionGeneration),
+    config: createSdkMcpServer({
+      name: serverName,
+      version: "2",
+      timeout: COMPUTER_TOOL_TIMEOUT_MS,
+      tools: COMPUTER_TOOL_DEFINITIONS.map((definition) =>
+        tool(
+          definition.name,
+          definition.description,
+          definition.shape,
+          async (args, extra) => {
+            const result = await callComputerTool(
+              {
+                broker: input.broker,
+                threadId: input.threadId,
+                sessionGeneration,
+                geometry,
+                ...(extra !== null &&
+                typeof extra === "object" &&
+                "requestId" in extra &&
+                (typeof extra.requestId === "string" || typeof extra.requestId === "number")
+                  ? { invocationId: JSON.stringify(extra.requestId) }
+                  : {}),
+              },
+              definition.name,
+              args,
+            );
+            return {
+              content: result.content.map((block) => ({ ...block })),
+              ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+              ...(result.isError ? { isError: true } : {}),
+            };
+          },
+          { annotations: definition.annotations, alwaysLoad: definition.alwaysLoad },
+        ),
+      ),
+    }),
+  };
+}
+export function classifyF5ComputerTool(
+  toolName: string,
+  state: ClaudeAgentBrowserState | undefined,
+  mcpServer: McpServerProvenance | undefined,
+): "observe" | "consent" | "mutate" | undefined {
+  const computer = state?.computer;
+  if (
+    !computer?.installed ||
+    !computer.verified ||
+    !toolName.startsWith(`mcp__${computer.serverName}__`)
+  )
+    return undefined;
+  if (mcpServer && (mcpServer.name !== computer.serverName || mcpServer.source !== "sdk"))
+    return undefined;
+  return classifyComputerTool(toolName.slice(`mcp__${computer.serverName}__`.length));
 }
 
 export interface McpServerProvenance {

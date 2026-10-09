@@ -7,7 +7,7 @@
     "dev": "bun run --parallel dev:bundle dev:electron",
     "dev:bundle": "node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts --watch",
     "dev:electron": "bun run scripts/dev-electron.mjs",
-    "build": "node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts",
+    "build": "node ../../scripts/build-computer-helper.ts && node node_modules/tsdown/dist/run.mjs --config tsdown.config.mts",
     "start": "bun run scripts/start-electron.mjs",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "test": "node node_modules/vitest/vitest.mjs run --passWithNoTests",

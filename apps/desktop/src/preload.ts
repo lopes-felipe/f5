@@ -55,9 +55,35 @@ const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
+// The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
+let computerGestureAt = -Infinity;
+for (const eventName of ["click", "keydown"] as const) {
+  window.addEventListener(
+    eventName,
+    (event) => {
+      if (event.isTrusted) computerGestureAt = performance.now();
+    },
+    true,
+  );
+}
 contextBridge.exposeInMainWorld("desktopBridge", {
   computerAutomation: {
     status: () => ipcRenderer.invoke("desktop-computer:status"),
+    requestPermission: (kind) => ipcRenderer.invoke("desktop-computer:request-permission", kind),
+    openPermissionSettings: (kind) => ipcRenderer.invoke("desktop-computer:open-permissions", kind),
+    retryHelper: () => ipcRenderer.invoke("desktop-computer:retry"),
+    answerAccess: (answer) => {
+      const trusted = performance.now() - computerGestureAt < 1000;
+      computerGestureAt = -Infinity;
+      return ipcRenderer.invoke("desktop-computer:answer", answer, trusted);
+    },
+    setPaused: (threadId, paused) => ipcRenderer.invoke("desktop-computer:pause", threadId, paused),
+    onStatus: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) =>
+        listener(status);
+      ipcRenderer.on("desktop-computer:status-changed", handler);
+      return () => ipcRenderer.removeListener("desktop-computer:status-changed", handler);
+    },
   },
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),

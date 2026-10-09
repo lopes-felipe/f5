@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3731,4 +3732,39 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
       rmSync(workspaceDir, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+it("ignores process callbacks from a replaced provider session", () => {
+  const manager = new CodexAppServerManager();
+  const output = new EventEmitter();
+  const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() });
+  const context = {
+    session: { threadId: "replaced" },
+    stopping: false,
+    output,
+    child,
+    writer: { close: vi.fn() },
+  };
+  const internal = manager as unknown as {
+    sessions: Map<string, unknown>;
+    attachProcessListeners: (context: unknown) => void;
+    handleStdoutLine: (...args: unknown[]) => void;
+    emitErrorEvent: (...args: unknown[]) => void;
+    emitLifecycleEvent: (...args: unknown[]) => void;
+  };
+  const stdout = vi.spyOn(internal, "handleStdoutLine");
+  const errors = vi.spyOn(internal, "emitErrorEvent");
+  const lifecycle = vi.spyOn(internal, "emitLifecycleEvent");
+  internal.sessions.set("replaced", context);
+  internal.attachProcessListeners(context);
+  const replacement = { session: { threadId: "replaced" } };
+  internal.sessions.set("replaced", replacement);
+  output.emit("line", '{"method":"turn/completed"}');
+  child.stderr.emit("data", Buffer.from("ERROR old process"));
+  child.emit("error", new Error("old process"));
+  child.emit("exit", 1, null);
+  expect(stdout).not.toHaveBeenCalled();
+  expect(errors).not.toHaveBeenCalled();
+  expect(lifecycle).not.toHaveBeenCalled();
+  expect(internal.sessions.get("replaced")).toBe(replacement);
 });

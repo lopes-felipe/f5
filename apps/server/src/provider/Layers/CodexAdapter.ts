@@ -1,3 +1,7 @@
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
+import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
+import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import {
   formatCodexUsageError,
@@ -22,6 +26,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type ProviderEvent,
+  type ProviderSession,
   type ProviderStartOptions,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
@@ -102,6 +107,7 @@ export interface CodexAdapterLiveOptions {
    * browser policy on each tool call, so settings apply without a restart.
    */
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly defaultProviderOptions?: ProviderStartOptions;
   readonly processEnvironment?: NodeJS.ProcessEnv;
 }
@@ -1085,8 +1091,10 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
 export function withAgentBrowserPreview(
   events: ReadonlyArray<ProviderRuntimeEvent>,
   previewServerName: string | undefined,
+  computerServerName?: string,
+  decision?: Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>,
 ): ReadonlyArray<ProviderRuntimeEvent> {
-  if (!previewServerName) return events;
+  if (!previewServerName && !computerServerName && !decision) return events;
   return events.map((runtimeEvent) =>
     runtimeEvent.type === "session.configured"
       ? {
@@ -1096,7 +1104,37 @@ export function withAgentBrowserPreview(
             config: {
               ...runtimeEvent.payload.config,
               agentBrowser: {
-                preview: { serverName: previewServerName, installed: true, verified: true },
+                ...(previewServerName
+                  ? { preview: { serverName: previewServerName, installed: true, verified: true } }
+                  : {}),
+                ...(computerServerName
+                  ? {
+                      computer: { serverName: computerServerName, installed: true, verified: true },
+                      computerUse: {
+                        state: decision && !decision.status.available ? "unavailable" : "connected",
+                        backend: "native",
+                        ...(decision && !decision.status.available
+                          ? { detail: decision.status.detail ?? decision.status.reason }
+                          : decision?.selection?.fallbackFrom
+                            ? { detail: decision.selection.fallbackFrom.reason }
+                            : {}),
+                      },
+                    }
+                  : decision
+                    ? {
+                        computerUse: {
+                          state:
+                            !decision.status.available && decision.status.reason === "disabled"
+                              ? "off"
+                              : "unavailable",
+                          backend: decision.selection?.kind ?? "native",
+                          ...(!decision.status.available ? { detail: decision.status.reason } : {}),
+                          ...(decision.selection?.fallbackFrom
+                            ? { detail: decision.selection.fallbackFrom.reason }
+                            : {}),
+                        },
+                      }
+                    : {}),
               },
             },
           },
@@ -2331,6 +2369,21 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    const computerDecisions = new Map<
+      ThreadId,
+      Effect.Success<ReturnType<typeof resolveComputerBackendSelection>>
+    >();
+    const computerSessionFields = (threadId: ThreadId): Partial<ProviderSession> => {
+      const decision = computerDecisions.get(threadId);
+      return decision
+        ? {
+            computerConfigurationFingerprint: decision.fingerprint,
+            ...(decision.selection ? { computerBackendSelection: decision.selection } : {}),
+            computerToolsInstalled: computerMcpSessions.has(threadId),
+          }
+        : {};
+    };
+    const computerMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
     // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
     // reload cannot change that set; a different desired set needs a restart.
@@ -2341,6 +2394,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const session of computerMcpSessions.values()) session.dispose();
+        computerMcpSessions.clear();
+        computerDecisions.clear();
       }),
     );
 
@@ -2355,8 +2411,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       }
 
+      let computerMcpSession: PreviewMcpSessionConfig | undefined;
       let previewMcpSession: PreviewMcpSessionConfig | undefined;
       const disposePreviewMcpSession = () => {
+        computerMcpSession?.dispose();
+        computerMcpSessions.delete(input.threadId);
+        computerDecisions.delete(input.threadId);
         previewMcpSession?.dispose();
         previewMcpSessions.delete(input.threadId);
       };
@@ -2381,12 +2441,54 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             : undefined;
         // Registered before launch so `session/configured` can report the installed server.
         if (previewMcpSession) previewMcpSessions.set(input.threadId, previewMcpSession);
-        const providerMcpServers = previewMcpSession
-          ? {
-              ...baseProviderMcpServers,
-              [previewMcpSession.serverName]: previewMcpSession.serverDefinition,
-            }
-          : baseProviderMcpServers;
+        computerMcpSessions.get(input.threadId)?.dispose();
+        computerMcpSessions.delete(input.threadId);
+        computerDecisions.delete(input.threadId);
+        const computerPolicy = yield* resolveAgentBrowserPolicy(input.threadId);
+        const computerDecision = yield* resolveComputerBackendSelection({
+          provider: "codex",
+          enabled: computerPolicy.computerUse,
+          nativeStatus: options?.computerAutomationBroker?.host.status() ?? {
+            available: false,
+            reason: "no-host",
+          },
+        });
+        computerDecisions.set(input.threadId, computerDecision);
+        computerMcpSession =
+          serverConfig.mode === "desktop" &&
+          !input.workflowExecutionProfile &&
+          !isSyntheticOneOffThreadId(input.threadId) &&
+          computerPolicy.computerUse &&
+          computerDecision.selection?.kind === "native"
+            ? options?.previewMcpHttpServer?.createSessionConfig({
+                threadId: input.threadId,
+                catalog: "computer",
+                existingServerNames: new Set([
+                  ...Object.keys(baseProviderMcpServers ?? {}),
+                  ...(previewMcpSession ? [previewMcpSession.serverName] : []),
+                ]),
+              })
+            : undefined;
+        if (computerMcpSession) {
+          computerMcpSessions.set(input.threadId, computerMcpSession);
+          automationEventSanitizer.register(input.threadId, {
+            serverName: computerMcpSession.serverName,
+            verified: true,
+            kind: "f5-computer",
+          });
+        }
+        const providerMcpServers =
+          previewMcpSession || computerMcpSession
+            ? {
+                ...baseProviderMcpServers,
+                ...(previewMcpSession
+                  ? { [previewMcpSession.serverName]: previewMcpSession.serverDefinition }
+                  : {}),
+                ...(computerMcpSession
+                  ? { [computerMcpSession.serverName]: computerMcpSession.serverDefinition }
+                  : {}),
+              }
+            : baseProviderMcpServers;
         const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
               try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
@@ -2437,7 +2539,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(previewMcpSession ? { mcpEnvironment: previewMcpSession.env } : {}),
+          ...(previewMcpSession || computerMcpSession
+            ? { mcpEnvironment: { ...previewMcpSession?.env, ...computerMcpSession?.env } }
+            : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
             : {}),
@@ -2456,6 +2560,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               cause,
             }),
         }).pipe(
+          Effect.map((session) => ({ ...session, ...computerSessionFields(input.threadId) })),
           Effect.tap(() =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
@@ -2663,12 +2768,19 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       Effect.sync(() => {
         previewMcpSessions.get(threadId)?.dispose();
         previewMcpSessions.delete(threadId);
+        computerMcpSessions.get(threadId)?.dispose();
+        computerMcpSessions.delete(threadId);
+        computerDecisions.delete(threadId);
         launchedMcpConfigKeys.delete(threadId);
         manager.stopSession(threadId);
       });
 
     const listSessions: CodexAdapterShape["listSessions"] = () =>
-      Effect.sync(() => manager.listSessions());
+      Effect.sync(() =>
+        manager
+          .listSessions()
+          .map((session) => ({ ...session, ...computerSessionFields(session.threadId) })),
+      );
 
     const hasSession: CodexAdapterShape["hasSession"] = (threadId) =>
       Effect.sync(() => manager.hasSession(threadId));
@@ -2725,6 +2837,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        for (const session of computerMcpSessions.values()) session.dispose();
+        computerMcpSessions.clear();
+        computerDecisions.clear();
         launchedMcpConfigKeys.clear();
         manager.stopAll();
       });
@@ -2743,7 +2858,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             if (!nativeEventLogger) {
               return;
             }
-            yield* nativeEventLogger.write(event, event.threadId);
+            yield* nativeEventLogger.write(
+              automationEventSanitizer.sanitize(event.threadId, event),
+              event.threadId,
+            );
           });
 
         const services = yield* Effect.services<never>();
@@ -2769,6 +2887,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               }
             }
             const previewServerName = previewMcpSessions.get(event.threadId)?.serverName;
+            if (event.method === "turn/completed" && event.turnId)
+              computerMcpSessions.get(event.threadId)?.endTurn?.(event.turnId);
             const runtimeEvents = withAgentBrowserPreview(
               mapToRuntimeEvents(
                 event,
@@ -2778,8 +2898,13 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 turnStartedAtByThread.get(event.threadId),
               ),
               previewServerName,
+              computerMcpSessions.get(event.threadId)?.serverName,
+              computerDecisions.get(event.threadId),
             );
             if (event.method === "session/exited" || event.method === "session/closed") {
+              computerMcpSessions.get(event.threadId)?.dispose();
+              computerMcpSessions.delete(event.threadId);
+              computerDecisions.delete(event.threadId);
               limitsByThread.delete(event.threadId);
               turnStartedAtByThread.delete(event.threadId);
             }

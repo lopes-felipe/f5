@@ -20,7 +20,14 @@ import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { installDesktopAttention } from "./desktopAttention";
-import { registerComputerAutomationIpc } from "./computerAutomation";
+import { computerCertificationStatus } from "./computer/certification";
+import { ComputerHelperClient } from "./computer/ComputerHelperClient";
+import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
+import { ComputerController } from "./computer/ComputerController";
+import { ComputerOverlay } from "./computer/ComputerOverlay";
+import { ComputerHostChannel } from "./computer/ComputerHostChannel";
+import { registerComputerIpc } from "./computer/registerComputerIpc";
+import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -49,6 +56,7 @@ import {
   nativeImage,
   nativeTheme,
   protocol,
+  Notification,
   shell,
   session as electronSession,
   webContents as electronWebContents,
@@ -241,6 +249,161 @@ function runtimeForRenderer(id: number): BackendRuntime {
   const runtime = profileId ? backends.get(profileId) : undefined;
   if (!runtime) throw new Error("Renderer does not own a profile.");
   return runtime;
+}
+let computerSystem:
+  | {
+      helper: ComputerHelperClient;
+      controller: ComputerController;
+      channel: ComputerHostChannel;
+      overlay: ComputerOverlay;
+    }
+  | undefined;
+function initializeComputerSystem(): void {
+  const root = app.isPackaged
+    ? Path.join(process.resourcesPath, "native")
+    : Path.resolve(
+        __dirname,
+        "../dist-native",
+        `${process.platform === "darwin" ? "mac" : "win"}-${process.arch}`,
+      );
+  const helper = new ComputerHelperClient(
+    root,
+    Path.join(root, process.platform === "win32" ? "f5-computer-helper.exe" : "f5-computer-helper"),
+  );
+  const lease = new ComputerLeaseAuthority();
+  const overlay = new ComputerOverlay();
+  const status = () => {
+    const gate = computerCertificationStatus(
+      process.platform,
+      app.isPackaged,
+      process.env.F5_COMPUTER_CONTROL_DEV,
+    );
+    if (!gate.available) return gate;
+    const native = helper.status();
+    if (process.platform === "darwin") {
+      const permissions = capturePermissions();
+      const missing: Array<"screen-recording" | "accessibility"> = [];
+      if (!permissions.screen) missing.push("screen-recording");
+      if (!permissions.accessibility) missing.push("accessibility");
+      if (native.available && missing.length)
+        return {
+          available: false as const,
+          reason: "missing-permissions" as const,
+          missing,
+          detail: "Helper permissions are not attributed to F5.",
+        };
+      if (!native.available && native.reason === "missing-permissions" && !missing.length)
+        return { ...native, detail: "Helper permissions are not attributed to F5." };
+    }
+    return native;
+  };
+  const controller = new ComputerController(lease, helper, overlay, {
+    f5Pids: () => [process.pid, ...app.getAppMetrics().map((metric) => metric.pid)],
+    f5BundlePath:
+      process.platform === "darwin"
+        ? Path.resolve(Path.dirname(process.execPath), "../..")
+        : Path.dirname(process.execPath),
+    platform: process.platform === "win32" ? "win32" : "darwin",
+    activity: (profileId, activity) =>
+      computerSystem?.channel.send(profileId, { type: "activity", activity }),
+    thumbnail: (screenshot) => {
+      const image = nativeImage.createFromDataURL(
+        `data:${screenshot.mimeType};base64,${screenshot.data}`,
+      );
+      if (image.isEmpty()) return undefined;
+      const bytes = image.resize({ width: 320 }).toJPEG(50);
+      const data = `data:image/jpeg;base64,${bytes.toString("base64")}`;
+      return Buffer.byteLength(data) <= 40 * 1024 ? data : undefined;
+    },
+    paused: (holder, cause) => {
+      computerSystem?.channel.send(holder.profileId, {
+        type: "pauseChanged",
+        threadId: holder.threadId,
+        paused: true,
+      });
+      if (cause === "kill-switch")
+        computerSystem?.channel.send(holder.profileId, {
+          type: "killSwitch",
+          threadId: holder.threadId,
+          sessionGeneration: holder.sessionGeneration,
+          turnId: holder.turnId,
+        });
+    },
+  });
+  const channel = new ComputerHostChannel(controller, status, (profileId, request) => {
+    if (!Notification.isSupported()) return;
+    const notice = new Notification({
+      title: "Computer access requested",
+      body:
+        request.kind === "session-actions"
+          ? "An agent wants permission to control approved apps."
+          : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
+    });
+    notice.on("click", () => {
+      void openProfile(profileId);
+    });
+    notice.show();
+  });
+  computerSystem = { helper, controller, channel, overlay };
+  const killChord =
+    process.platform === "darwin" ? "Control+Command+Escape" : "Control+Alt+Shift+F12";
+  lease.subscribe((holder) => {
+    channel.publishLease(holder);
+    globalShortcut.unregister(killChord);
+    if (holder) globalShortcut.register(killChord, () => controller.stop("kill-switch"));
+  });
+  let lastComputerStatus = "";
+  helper.onEvent((message) => {
+    if (message.type !== "status") return;
+    const currentStatus = status();
+    const serialized = JSON.stringify(currentStatus);
+    if (serialized === lastComputerStatus) return;
+    lastComputerStatus = serialized;
+    if (!currentStatus.available && lease.current()) controller.stop();
+    channel.broadcast({ type: "status", status: currentStatus });
+    for (const id of appRendererWebContentsIds)
+      electronWebContents.fromId(id)?.send("desktop-computer:status-changed", currentStatus);
+  });
+  registerComputerIpc(ipcMain, {
+    authorize: (event) => {
+      if (
+        !appRendererWebContentsIds.has(event.sender.id) ||
+        event.senderFrame !== event.sender.mainFrame
+      )
+        throw new Error("Computer controls require an F5 app main frame.");
+      const runtime = runtimeForRenderer(event.sender.id);
+      const expectedOrigin = isDevelopment
+        ? new URL(mainRendererUrl()).origin
+        : `${DESKTOP_SCHEME}://app`;
+      if (event.senderFrame.origin !== expectedOrigin)
+        throw new Error("Untrusted computer-control origin.");
+      return runtime.profile.id;
+    },
+    status,
+    retry: () => {
+      if (
+        computerCertificationStatus(
+          process.platform,
+          app.isPackaged,
+          process.env.F5_COMPUTER_CONTROL_DEV,
+        ).available
+      )
+        helper.retry();
+    },
+    answer: (profile, answer) => channel.answerAccess(profile, answer),
+    pause: (profileId, threadId, paused) => {
+      controller.setPaused(profileId, threadId, paused);
+      channel.send(profileId, { type: "pauseChanged", threadId, paused });
+    },
+  });
+  if (
+    computerCertificationStatus(
+      process.platform,
+      app.isPackaged,
+      process.env.F5_COMPUTER_CONTROL_DEV,
+    ).available
+  )
+    helper.start();
 }
 let isQuitting = false;
 
@@ -2626,6 +2789,7 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     return;
   }
 
+  const backendIncarnation = Crypto.randomUUID();
   const captureBackendLogs = app.isPackaged && backendLogSink !== null;
   const child = ChildProcess.spawn(process.execPath, [backendEntry], {
     cwd: resolveBackendCwd(),
@@ -2634,10 +2798,15 @@ function startBackend(runtime: BackendRuntime = defaultBackend): void {
     env: {
       ...backendEnv(runtime),
       ELECTRON_RUN_AS_NODE: "1",
+      F5_DESKTOP_COMPUTER_HOST: "ipc",
+      F5_DESKTOP_BACKEND_INCARNATION: backendIncarnation,
     },
-    stdio: captureBackendLogs ? ["ignore", "pipe", "pipe"] : "inherit",
+    stdio: captureBackendLogs
+      ? ["ignore", "pipe", "pipe", "ipc"]
+      : ["inherit", "inherit", "inherit", "ipc"],
   });
   runtime.backendProcess = child;
+  computerSystem?.channel.register(runtime.profile.id, backendIncarnation, child);
   let backendSessionClosed = false;
   const closeBackendSession = (details: string) => {
     if (backendSessionClosed) return;
@@ -3140,19 +3309,10 @@ function registerIpcHandlers(): void {
       capturePending = false;
     }
   };
-  previewHandle("snapshot:permissions", () => ({
-    supported: process.platform === "darwin",
-    screen:
-      process.platform === "darwin" &&
-      systemPreferences.getMediaAccessStatus("screen") === "granted",
-    accessibility:
-      process.platform === "darwin" && systemPreferences.isTrustedAccessibilityClient(false),
-  }));
+  previewHandle("snapshot:permissions", () => capturePermissions());
   previewHandle("snapshot:capture", (id) => capture(id));
   previewHandle("snapshot:permissions-open", () =>
-    shell.openExternal(
-      "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
-    ),
+    openComputerPermissionSettings("screen-recording"),
   );
   const captureShortcut = new CaptureShortcut(
     (key, run) => globalShortcut.register(key, run),
@@ -3555,6 +3715,7 @@ async function bootstrap(): Promise<void> {
     if (profileWatchTimer) clearTimeout(profileWatchTimer);
   });
   await previewRuntime.initialize();
+  initializeComputerSystem();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   configureBackendRequestAuthentication();
@@ -3570,7 +3731,6 @@ async function bootstrap(): Promise<void> {
 }
 
 installDesktopAttention((id) => profileByWebContentsId.get(id));
-registerComputerAutomationIpc(ipcMain);
 
 let shutdownPending = false;
 let shutdownComplete = false;
@@ -3582,6 +3742,9 @@ function cancelQuit(): void {
 }
 
 async function cleanupBeforeExit(): Promise<void> {
+  computerSystem?.controller.close();
+  computerSystem?.overlay.close();
+  computerSystem?.helper.close();
   clearUpdatePollTimer();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

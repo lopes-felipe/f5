@@ -1,0 +1,101 @@
+{
+  "tiers": {
+    "darwin": {
+      "blocked": [
+        "com.t3tools.t3code*",
+        "com.github.Electron",
+        "com.apple.SecurityAgent",
+        "com.apple.loginwindow",
+        "com.apple.systempreferences",
+        "com.apple.Passwords",
+        "com.apple.UserNotificationCenter",
+        "com.apple.CoreServicesUIAgent",
+        "com.apple.ActivityMonitor",
+        "com.apple.DiskUtility",
+        "com.apple.installer"
+      ],
+      "view": [
+        "com.agilebits.onepassword7",
+        "com.1password.1password",
+        "com.bitwarden.desktop",
+        "org.keepassxc.keepassxc",
+        "com.apple.keychainaccess"
+      ],
+      "click": [
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.Warp-Stable",
+        "com.mitchellh.ghostty",
+        "com.github.wez.wezterm",
+        "net.kovidgoyal.kitty",
+        "org.alacritty",
+        "com.microsoft.VSCode",
+        "com.todesktop.230313mzl4w4u92",
+        "com.jetbrains.*",
+        "com.apple.ScriptEditor2",
+        "com.apple.Automator",
+        "com.apple.shortcuts",
+        "com.anthropic.claudefordesktop",
+        "com.openai.chat",
+        "com.openai.codex"
+      ]
+    },
+    "win32": {
+      "blocked": [
+        "f5.exe",
+        "electron.exe",
+        "f5 (alpha).exe",
+        "f5 (beta).exe",
+        "t3 code.exe",
+        "t3code.exe",
+        "shellexperiencehost.exe",
+        "startmenuexperiencehost.exe",
+        "microsoft.windows.shellexperiencehost_*",
+        "microsoft.windows.startmenuexperiencehost_*",
+        "consent.exe",
+        "logonui.exe",
+        "credentialuibroker.exe",
+        "windows.immersivecontrolpanel_cw5n1h2txyewy!*",
+        "taskmgr.exe",
+        "regedit.exe",
+        "mmc.exe"
+      ],
+      "view": ["1password.exe", "bitwarden.exe", "keepassxc.exe", "keepass.exe"],
+      "click": [
+        "windowsterminal.exe",
+        "microsoft.windowsterminal_*",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "conhost.exe",
+        "code.exe",
+        "cursor.exe",
+        "idea64.exe",
+        "pycharm64.exe",
+        "webstorm64.exe",
+        "rider64.exe",
+        "clion64.exe",
+        "datagrip64.exe",
+        "goland64.exe",
+        "phpstorm64.exe",
+        "rubymine64.exe",
+        "claude.exe",
+        "chatgpt.exe",
+        "codex.exe",
+        "explorer.exe"
+      ]
+    }
+  },
+  "browsers": {
+    "darwin": [
+      "com.google.Chrome*",
+      "com.apple.Safari*",
+      "org.mozilla.firefox*",
+      "com.microsoft.edgemac*",
+      "com.brave.Browser*",
+      "company.thebrowser.Browser*",
+      "com.operasoftware.Opera*"
+    ],
+    "win32": ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "arc.exe"]
+  }
+}

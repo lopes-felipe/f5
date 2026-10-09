@@ -12,12 +12,12 @@ Preview tools are installed in every interactive desktop session. Each call reso
 live policy (`resolveAgentBrowserPolicy`), so toggling a setting applies on the next tool
 call without restarting the session. Policy lookups fail closed.
 
-| Capability                | Claude                                 | Codex                                  |
-| ------------------------- | -------------------------------------- | -------------------------------------- |
-| F5 preview (`preview_*`)  | In-process SDK MCP server `f5_preview` | Loopback HTTP MCP `__f5_preview`       |
-| External sites in preview | Allowlist (`previewExternalHosts`)     | Same allowlist                         |
-| Claude in Chrome          | Blocked: `--no-chrome` always forced   | Not available                          |
-| Computer use              | Blocked: never started, tools denied   | Not available (native backend blocked) |
+| Capability                | Claude                                                 | Codex                                                  |
+| ------------------------- | ------------------------------------------------------ | ------------------------------------------------------ |
+| F5 preview (`preview_*`)  | In-process SDK MCP server `f5_preview`                 | Loopback HTTP MCP `__f5_preview`                       |
+| External sites in preview | Allowlist (`previewExternalHosts`)                     | Same allowlist                                         |
+| Chrome integration        | Awaiting native-host certification (`--no-chrome`)     | Awaiting plugin certification                          |
+| Computer use              | F5 native catalog when available; built-in gate closed | F5 native catalog when available; built-in gate closed |
 
 ## F5 preview
 
@@ -75,75 +75,262 @@ A blocked navigation during an agent action fails it with
 opening the system browser. `preview_evaluate` is refused on any non-loopback page.
 Sign-in popups stay with the user; the agent sees `popupOpen` in status and snapshots.
 
-## Claude in Chrome: blocked on the native-host gate
+## Computer use v2 architecture
 
-`CLAUDE_IN_CHROME_CERTIFIED` (`claudeAgentBrowser.ts`) is `false`, so F5 always launches
-Claude with `--no-chrome`, strips any user `--chrome` override, reports the capability as
-"unavailable", and denies `mcp__claude-in-chrome__*` tools in the mandatory PreToolUse hook,
-including in full-access mode. Settings can only switch the option off.
+Computer control is opt-in and currently **awaiting certification** on both macOS and
+Windows. Linux reports `unsupported-platform`. The native implementation targets macOS
+14+ and Windows 10 2004+. Setting `F5_COMPUTER_CONTROL_DEV=1` enables local engineering
+validation only in unpackaged builds; it cannot enable a packaged release.
 
-Launching with `--chrome` lets the CLI install or rewrite a Chrome native-messaging host
-manifest, a persistent change to the user's browser setup. Certification must record, on a
-real machine:
+Electron main is the device authority. Every profile backend inherits a private Node IPC
+channel with an incarnation UUID and a versioned hello. There is no network computer host
+registration and no renderer execute method. Claude's native tools use the in-process
+`f5_computer` SDK MCP server; Codex uses catalog-scoped bearer credentials on
+`/mcp/computer` (`__f5_computer`). Preview and computer credentials cannot be exchanged.
 
-1. The manifests under `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`
-   (macOS) or the registry keys (Windows) before and after one `--chrome` launch.
-2. Whether the CLI replaces a manifest that points at another Claude install. If it does,
-   F5 must show a confirmation naming the old and new paths before the first launch.
-3. A connected session (chip `Chrome on`), a successful Chrome tool call, and a denial on the
-   next call after the setting is turned off.
+Main supervises an OS-specific helper, an execution lease across profiles, bounded
+mutation and observation queues, replay protection and capture-excluded overlays. A
+session chooses one backend. **Automatic** prefers a built-in only when its provider,
+platform and version have certified consent, per-call veto, stop, observation, F5
+isolation and profile isolation. **F5 only** forces the native implementation. This
+preference is user-level and cannot come from a checked-in project file. Settings and
+availability changes restart the provider session at the next turn. Session bindings record
+the selection, installed-tool state and configuration fingerprint; replaced Codex
+processes cannot deliver lifecycle or tool events into their replacement session.
 
-Until that record exists and the confirmation ships, the flag stays `false`.
+The built-in certification registry is empty. Claude's SDK app-access elicitation path
+and Codex's desktop plugin veto/profile isolation have no recorded certification here.
+F5 does not guess plugin configuration, copy ChatGPT resources, start
+`claude --computer-use-mcp` as an external server, or install two computer catalogs into
+one session. With those gates closed the selected available backend is native, with the
+built-in reason shown on both providers' capability chips. If native lacks a host, platform support or certification, no
+computer catalog is installed. Recoverable helper/permission/monitor failures keep the
+native catalog installed and fail calls with their current reason, without restarting
+the provider session. Adding a certification record alone does not install a
+provider built-in: its supported launch, consent and veto bridges must be wired before
+the availability probe can return true. That runtime wiring is still pending.
 
-## Claude computer use: blocked on the consent gate
+| Guarantee                                     | F5 native release gate     | Built-in provider gate             |
+| --------------------------------------------- | -------------------------- | ---------------------------------- |
+| F5-owned machine lease and global pause       | Required                   | Required                           |
+| Per-call pre-execution veto                   | Required                   | Required                           |
+| Consent that the agent cannot answer          | F5 app dialog              | F5 dialog or certified provider UI |
+| F5 cannot be targeted                         | Per-event ownership checks | Must be demonstrated               |
+| Ungranted content excluded from capture       | Required                   | No F5 guarantee                    |
+| Stop under 100 ms                             | Required                   | Current provider action may finish |
+| Per-event hit testing and secure focus checks | Required                   | No F5 guarantee                    |
+| Persistence sanitization                      | Required                   | Required                           |
 
-`CLAUDE_COMPUTER_USE_CERTIFIED` is `false`. Claude Code only starts its built-in
-`computer-use` server in interactive terminal sessions, and its per-app `request_access`
-consent needs an elicitation answer that an SDK host cannot give. Launching
-`claude --computer-use-mcp` as a separate stdio server is not a supported, session-bound
-backend, so F5 never starts it. With the setting on, the session reports computer use as
-"unavailable", and every `mcp__computer-use__*` tool is denied by both the mandatory hook and
-`canUseTool`, even if a server under that name (for example a user-configured one) connects.
-No approval prompt is shown, because there is nothing safe to approve.
+### App consent and protection tiers
 
-`computerUseLease` and the global **View** / **Stop** banner are in place for a certified
-backend: only one thread may hold the computer, and every window shows the banner while it
-does. Nothing acquires the lease in this build.
+Observe `computer_status` first, then `computer_list_apps` and `computer_request_access`.
+Requests show a desktop dialog and a timeline card. Only a trusted user gesture in the
+owning profile's registered main-frame renderer can answer, through preload and main's
+private host channel. Web clients show “Answer on the computer running F5”. Requests
+expire after 300 seconds; turn/session end closes them. Full-access runtime mode never
+bypasses app consent, pause or protected targets. Other runtime modes also require a
+session-actions approval; plan mode permits observation only.
 
-## F5-native computer control: blocked
+| Tier    | Examples                                                                                                            | Rights                                                 |
+| ------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| blocked | F5 (including dev Electron), security/permission/login UI, Settings, task management and system administration apps | Never grantable                                        |
+| view    | Password managers, Keychain Access                                                                                  | Capture and inspect only                               |
+| click   | Terminals, IDEs, automation apps, other agent apps; Windows Explorer app windows                                    | Interaction; typing requires separate **Allow typing** |
+| full    | Other apps, including browsers                                                                                      | Interaction and typing                                 |
 
-`packages/contracts/src/computerAutomation.ts` defines the native backend's status, input,
-and screenshot schemas. The desktop bridge exposes only
-`desktopBridge.computerAutomation.status()`, which returns `available: false` with reason
-`not-certified` on macOS and Windows and `unsupported-platform` elsewhere. No agent tool is installed
-while it is unavailable, and Codex sessions have no computer-use path.
+The authoritative catalog is `packages/shared/src/computerApps.ts`, generated into both
+native builds and checked for drift in CI. Dock, menu-bar status items, Control Center,
+Notification Center, Spotlight, Start, tray and desktop shell surfaces are never
+application grants. Browsers carry “This app can act on sites you are signed in to”.
+Typing into a click-tier app can run commands, so its typing checkbox starts off.
 
-Certification must demonstrate all of the following before `available: true` ships:
+Grants last for the provider session, across turns. “Always allow in this project” writes
+server-owned `computer-access.json` under `ServerConfig.stateDir`, through serialized
+atomic writes. Session deny overrides a remembered grant. Revoke narrows live access;
+Forget removes a remembered grant from project settings. Restart retains remembered
+grants and drops session grants. Settings patches and model tool calls cannot add grants.
+An agent with unrestricted filesystem write access can still edit these files; the
+no-widening guarantee applies to the tool and consent paths.
 
-1. Per-application consent that the agent cannot widen, matching Claude's `request_access`.
-2. A user kill switch (global hotkey plus the banner) that stops input in under 100 ms.
-3. Input isolation: synthesized events never reach F5's own windows or system dialogs
-   (password prompts, permission sheets).
-4. Screenshot redaction of F5 windows and of any app the user did not grant.
-5. Screen Recording and Accessibility permission failures reported as
-   `missing-permissions`, never retried silently.
+### Capture, coordinates and accessibility
 
-Failing any item keeps the backend blocked; weakening a requirement is not an option.
+Native screenshots include granted apps only. macOS uses ScreenCaptureKit include-only
+application filters; Windows composes granted top-level windows with `PrintWindow` onto a
+neutral canvas and never reads desktop pixels. F5 and overlays are excluded; known secure
+fields in the focused window are masked before encoding. `hiddenContent` indicates that
+on-screen windows were omitted or privacy masking hid content. Capture enables Chromium
+accessibility before reading password fields; a truncated or unreadable masking tree hides
+the focused window conservatively. AX calls have a process-wide 250 ms timeout.
+An unreadable accessibility tree produces an empty,
+inaccessible inspect result; it does not expose secure values through inspect/setValue.
 
-## Validation
+Each display has a geometry generation covering bounds, physical pixel size, scale and
+rotation. Negative origins and mixed DPI are supported by the coordinate contracts.
+macOS pixel dimensions use the display mode backing resolution. Windows full-window
+captures are cropped to the visible DWM frame before composition, preserving coordinates.
+Coordinate input uses the actual Windows hit recipient, rejects cloaked, transparent and
+ambiguous layered targets, and verifies window regions.
+Model dimensions use `s = min(1, 1456 / longEdgePx, sqrt(1150000 / areaPx))` and floor the
+scaled dimensions. Coordinates are integer pixels in that display's screenshot, with
+exclusive upper bounds. They map through pixel centers into native space. Zoom is viewing
+only; clicks always use display screenshot space. Coordinate tools require a fresh
+screenshot's generation. Geometry changes fail instead of remapping silently.
 
-- Unit and contract tests:
-  - Broker: `apps/server/src/mcp/*.test.ts`.
-  - Claude: `ClaudeAdapter.test.ts`, "ClaudeAdapter agent browser" block.
-  - Screenshots: `toolResultImages.test.ts`.
-  - Lease: `computerUseLease.test.ts`.
-  - Desktop: `automationControl.test.ts`, `computerAutomation.test.ts`.
-  - Web: `PreviewBrowserHost.logic.test.ts`, `agentBrowserActivityStore.test.ts`,
-    `AgentBrowserLiveCard.logic.test.ts`.
-- Live Claude (opt-in, uses the account's quota): `bun run test:claude:live` includes
-  `integration/claudePreviewMcp.live.test.ts`. That test lists and calls the in-process
-  preview tools and checks that a real image block comes back.
-- Manual desktop pass:
-  - Open a loopback app, ask an agent to click and type, and use **Take over** mid-action.
-  - Add an external host and confirm that a non-allowlisted redirect is blocked.
-  - Confirm screenshots render as thumbnails in the timeline.
+Zoom crops an approved region from a sharper capture before image-size scaling; its
+rectangle uses the original display screenshot coordinates. Zoom images are for viewing
+only and do not replace the display geometry used for clicks.
+
+Prefer `computer_inspect` and `computer_element_action` for accessible elements. Native
+AX/UIA actions re-resolve opaque snapshot references against the live app/window and
+refuse stale or secure elements. Unsupported actions return an explicit error and do not
+fall back to coordinate input. Coordinate actions drive the foreground pointer and
+keyboard, hit-test each emitted event, and recheck focus and grants between typing
+chunks. Open/activate operations resolve apps through native installed-app catalogs;
+there is no shell, arbitrary executable path or raw native message tool.
+
+Capture images are at most 8 MiB encoded; inspect is bounded to 400 nodes, depth 30 and
+256 KiB; other results are 64 KiB and complete tool responses 16 MiB. Screenshot results
+reach the model intact. Persisted images use the existing attachment pipeline, with a
+200-image and 64 MiB per-thread budget; excess images count as `mcpImagesOmitted`. Computer
+screenshots in plan mode are not persisted.
+
+### Stop, pause and failure handling
+
+The helper starts suspended and takes a per-user OS device lock. Another F5 build holding
+that lock reports `other-instance`. Main grants one execution lease across profiles and
+renews a monotonic one-second execution permit every 250 ms. Main stalls or channel loss
+therefore suspend input locally. Helpers release held buttons/keys on cancel or suspend.
+Their input monitor and heartbeat must remain healthy; an unhealthy monitor blocks input.
+Windows verifies mouse and keyboard hook acknowledgments independently. Hook callbacks
+set atomic stop flags; a separate worker releases held input.
+
+The fixed kill chords are **⌃⌘Esc** on macOS and **Ctrl+Alt+Shift+F12** on Windows. Physical
+keyboard/button input or sufficient mouse movement also self-suspends the helper before
+notifying main. Main drains queued actions, latches pause, invalidates the lease, clears
+visuals, and notifies the backend. A native suspend without acknowledgment within 50 ms
+kills the helper; any replacement starts suspended and receives the current grants
+again. Idle unavailable status never performs a timed suspend round trip. Heartbeat
+health is separate from generation-specific permit-expiry notifications, so an old
+suspended heartbeat cannot pause a new lease. Banner/live-card Stop suspends locally
+before interrupting the provider turn. Resume is explicit and invalidates screenshot
+geometry. Already-delivered OS actions cannot be undone.
+
+Lease release is exact-holder and generation-aware. Turns release execution while keeping
+grants; session disposal clears grants. Idle leases release after 60 seconds without a
+mutation. Other profiles receive only an anonymous lease banner. Activity, app names, action
+thumbnails and lease-holder metadata stay in the controlling profile.
+Renderer loss affects UI only; main and helper retain the control/stop path. Backend IPC
+disconnection cancels work and releases that backend's lease. Losing host/helper during a
+mutation reports `OutcomeUnknown`: take a screenshot before retrying. Mutations are never
+retried automatically after ambiguity. Duplicate request IDs join the admitted result;
+different payload hashes are rejected and evicted IDs remain tombstones for their
+execution generation.
+
+Screen Recording/Accessibility permission failures and periodic macOS Screen Recording
+re-prompts report `missing-permissions`. F5 opens the appropriate Settings pane only on
+explicit user action; capture errors never silently invoke a permission prompt. Main and
+helper permission identities must agree before release certification.
+
+### Visual feedback and persistence
+
+Main shows click-through, protected overlay windows on every display, with provider
+colors, a labelled cursor, action labels and click ripples. Pause, release and display
+changes clear/rebuild overlays. Chat shows transient activity, available action thumbnails,
+granted apps with Revoke, and Pause/Resume/Stop. Thumbnails travel on `computer.activity`
+and are not persisted. Native control of real browsers is separate from structured DOM
+control, which remains in the F5 preview.
+
+Adapter logging and central ingestion sanitize verified computer-tool provenance before
+persistence. Typed text, semantic values, inspect names/values and raw error strings are
+removed, including nested fields. Codex built-in `cua_repl` JavaScript and text output are
+entirely omitted. This does not modify model-facing results or erase provider-managed
+conversation history. Look-alike project server names do not acquire trusted provenance.
+
+## Chrome integrations and native-host transactions
+
+Claude in Chrome and Codex's bundled Chrome plugin remain **uncertified**. Claude is
+launched with `--no-chrome`, user overrides are stripped, and built-in Chrome calls remain
+denied. No native-host registration is changed by this build.
+
+`chromeNativeHost.ts` provides shared manifest/registry parsing, lookup-order decisions,
+serialized consent transactions and hash-guarded restore for certification work.
+`chromeNativeHostStorage.ts` persists them atomically under server-owned
+`claude-chrome/transactions/` and `codex-chrome/transactions/` directories, with bounded
+reads and UUID/provider identity checks. These files are not settings. Its
+provider descriptor registry is empty: native-host names, browser roots and target paths
+must come from recorded CLI/plugin runs, never assumptions. The release flow must inspect
+user/system locations and registry views, name old/new targets in consent, revalidate
+before launch, record post-launch hashes, and restore only unchanged registrations after
+stopping the profile's Chrome sessions. Concurrent Chrome ownership and the provider veto
+path are separate release gates. Chrome session launch, host consent routing, the Chrome
+lease and OS registry restoration are not connected in this build; those depend on the
+recorded provider descriptors and launch behavior. The transaction primitives alone do
+not enable Chrome.
+
+## Certification and validation
+
+No signed-build certification is claimed. Native platform flags, provider built-in
+records and Chrome descriptors remain closed until the tests below pass. Hosted CI and
+unit tests do not establish TCC attribution, consent integrity, capture isolation or real
+stop latency. Record build hash, OS/arch, helper signature/team, permission identity,
+provider/installed version, app/action matrix, measurements and proving artifacts.
+
+| Original release requirement                             | Required signed-machine proof                                                                                                                      |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Per-app consent cannot be widened by the agent        | Trusted user consent, blocked/F5 rejection, web-only read-only card, incarnation mismatch, grant/revoke/forget and restart checks                  |
+| 2. Stop input in under 100 ms                            | Key-logging test app under sustained input; repeat with renderer hung and backend stopped; chords must not trigger system actions                  |
+| 3. Input never reaches F5/system dialogs                 | Mid-type focus/dialog changes, protected password fields, cross-F5 drag, terminal without typing, elevated Windows owner and semantic action tests |
+| 4. Ungranted/F5 content never appears in captures        | Moving windows, notifications, Dock/Start/tray, packaged Windows apps, secure fields and overlays on both monitors/fullscreen Spaces               |
+| 5. Permission failures are surfaced without silent retry | Revoke Accessibility/Screen Recording, SCK decline, periodic re-prompt and helper/main attribution mismatch                                        |
+| Signed packaging                                         | Universal macOS helper signature/notarization and Windows signature verification; installed helper path confined to resources                      |
+
+Run each provider through TextEdit/Notepad, Preview/Calculator, an Electron semantic
+workflow and a multi-app workflow. Include mixed-DPI monitors, rotation/negative origins,
+physical-input pause/resume with fresh geometry, multiple profiles, dev+packaged contention,
+monitor loss, permit expiry and control with all macOS F5 windows closed. Benchmark Windows
+include-only composition on 50 windows (target <150 ms release build).
+
+Built-ins additionally require recorded enablement, user consent, F5 pre-call veto, stop
+behavior, targetability of F5/blocked apps, screenshot scaling (Claude), and Codex plugin
+reads/writes under its configured `CODEX_HOME`. No provider credential/state from another
+F5 profile may be accessed. Publish the weaker guarantees in the table above alongside
+actual measurements. Chrome certification must record all registration changes,
+concurrency behavior, successful calls, live policy/pause denial and byte-for-byte restore.
+
+Repository gates: `bun fmt`, `bun lint`, `bun typecheck`, `bun run test:full` and
+`bun run test:desktop-smoke`. Never use `bun test`. Native checks are `swift test`,
+`cargo test`, generated-tier drift and helper hello/permissions protocol checks. Live
+provider tests are opt-in and consume account quota; they do not replace signed-machine
+certification. Existing preview broker regression tests remain unchanged.
+
+`integration/computerMcp.test.ts` exercises the authenticated HTTP catalog against a
+controlled IPC host: catalog discovery, app consent, a model-readable image block, action
+authorization, session-action approval, pause rejection and credential cleanup. The opt-in
+`claudeComputerMcp.live.test.ts` and `codexComputerMcp.live.test.ts` add real provider tool
+discovery and image/action transport. Their host simulates an app and does **not** inject
+OS input; signed-machine actions and the isolation/latency checks still need the manual
+matrix above. Codex records additional approval methods and rejects unexpected requests.
+
+## Review follow-up and remaining release work
+
+Native policy tests now exercise both tier tables, blocked chords, interrupted input,
+held-input release, device-lock contention, window recipient exclusions and independent
+hook failure. They do not replace real OS recipient/capture tests, the complete planned
+native authorization matrix, Windows execution or signed-machine certification.
+The built-in launch/consent/veto bridges and Chrome launch/consent/lease/restore consumers
+are still pending; no native, built-in or Chrome release gate was enabled by these fixes.
+
+Transport admission joins concurrent retries by MCP request identity and retains completed
+IDs as tombstones. A late retry gets `ReplayRejected` rather than repeating input.
+Post-action captures can return `screenshotError` alongside `actionCompleted: true`; a
+failed capture does not turn a delivered action into an input failure. Positive vertical
+scroll deltas mean down, and positive horizontal deltas mean right. Ambiguous app queries
+return candidate identities instead of adding every match to a default-selected card.
+
+The Codex process-liveness guards are required to keep retired process events from
+changing a replacement session and its computer authority. The Claude rejected-resume
+fix is broader than computer use: the existing “reports the first turn after a rejected
+resume point as not sent” regression requires `deliveryRetryable: false`, so a rejected
+resume cannot trigger an automatic resend. It remains included as an explicitly identified
+prerequisite bug fix and is covered by that adapter test, including sessions with computer
+use disabled.

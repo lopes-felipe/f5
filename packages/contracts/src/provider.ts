@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ComputerBackendSelection } from "./computerAutomation";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
@@ -56,6 +57,9 @@ export const ProviderSession = Schema.Struct({
   lastError: Schema.optional(TrimmedNonEmptyStringSchema),
   /** Set by ProviderService for the session generation it started or resumed. */
   capabilities: Schema.optional(ProviderSessionCapabilities),
+  computerBackendSelection: Schema.optional(ComputerBackendSelection),
+  computerToolsInstalled: Schema.optional(Schema.Boolean),
+  computerConfigurationFingerprint: Schema.optional(Schema.String),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 

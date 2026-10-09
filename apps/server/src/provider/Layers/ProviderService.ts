@@ -1,3 +1,5 @@
+import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { readClaudeRecoveryMetadata } from "../claudeResumeState.ts";
 import { Cause } from "effect";
@@ -230,6 +232,13 @@ function toRuntimePayloadFromSession(
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
+    ...(session.computerConfigurationFingerprint !== undefined
+      ? {
+          computerConfigurationFingerprint: session.computerConfigurationFingerprint,
+          computerBackendSelection: session.computerBackendSelection ?? null,
+          computerToolsInstalled: session.computerToolsInstalled ?? false,
+        }
+      : {}),
     ...(extra?.sessionGeneration !== undefined
       ? {
           ...sessionGenerationPayload(extra.sessionGeneration),
@@ -333,6 +342,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
     const previewAutomationBroker = yield* Effect.serviceOption(PreviewAutomationBroker);
+    const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
     // Terminal receipts are persisted in order within each thread. Bound the
     // queue so a prolonged SQLite outage applies backpressure to provider
     // streams instead of allowing process memory to grow without limit.
@@ -366,7 +376,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Effect.succeed(event).pipe(
         Effect.tap((canonicalEvent) =>
-          canonicalEventLogger ? canonicalEventLogger.write(canonicalEvent, null) : Effect.void,
+          canonicalEventLogger
+            ? canonicalEventLogger.write(
+                automationEventSanitizer.sanitize(canonicalEvent.threadId, canonicalEvent),
+                null,
+              )
+            : Effect.void,
         ),
         Effect.flatMap((canonicalEvent) => PubSub.publish(runtimeEventPubSub, canonicalEvent)),
         Effect.asVoid,
@@ -1700,9 +1715,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             "provider.thread_id": input.threadId,
           });
-          if (routed.isActive) {
-            yield* routed.adapter.stopSession(routed.threadId);
-          }
+          const computerGeneration = Option.isSome(computerAutomationBroker)
+            ? computerAutomationBroker.value.generation(input.threadId)
+            : undefined;
+          const releaseControls = Effect.gen(function* () {
+            if (Option.isSome(previewAutomationBroker))
+              yield* previewAutomationBroker.value.releaseThread(input.threadId);
+            if (Option.isSome(computerAutomationBroker) && computerGeneration)
+              computerAutomationBroker.value.releaseSession(input.threadId, computerGeneration);
+          });
+          if (routed.isActive)
+            yield* routed.adapter
+              .stopSession(routed.threadId)
+              .pipe(Effect.ensuring(releaseControls));
+          else yield* releaseControls;
           // Unpin any hidden agent-controlled preview this session was using.
           if (Option.isSome(previewAutomationBroker)) {
             yield* previewAutomationBroker.value.releaseThread(input.threadId);

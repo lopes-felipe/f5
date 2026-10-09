@@ -1,3 +1,5 @@
+import { AutomationQueue } from "./automationQueue";
+import { AgentControlPause, AgentControlPauseService } from "./agentControlPause";
 import { type AgentBrowserPolicy, resolveAgentBrowserPolicy } from "./browserAccess";
 import { randomUUID } from "node:crypto";
 
@@ -22,7 +24,7 @@ import {
   type PreviewHostCapability,
   type ThreadId,
 } from "@t3tools/contracts";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Option, Schema, ServiceMap } from "effect";
 
 export interface PreviewAutomationInvokeInput {
   readonly threadId: ThreadId;
@@ -130,14 +132,6 @@ interface OwnerRequest {
 interface OwnerWaiter {
   readonly resolve: () => void;
   readonly reject: (error: PreviewAutomationBrokerError) => void;
-}
-
-interface ThreadQueue {
-  running: boolean;
-  readonly waiting: Array<{
-    readonly start: () => void;
-    readonly reject: (error: PreviewAutomationBrokerError) => void;
-  }>;
 }
 
 const PREVIEW_OWNER_LEASE_MS = 30_000;
@@ -256,6 +250,7 @@ const UNRESTRICTED_POLICY: AgentBrowserPolicy = {
 };
 
 export interface PreviewAutomationBrokerOptions {
+  readonly pause?: AgentControlPause;
   /** Live policy lookup used when a caller does not pass one, and after owner waits. */
   readonly resolvePolicy?: (threadId: ThreadId) => Effect.Effect<AgentBrowserPolicy>;
 }
@@ -270,8 +265,20 @@ export function makePreviewAutomationBroker(
   const sessionOwners = new Map<string, { clientId: string; connectionId: string }>();
   const hosts = new Map<string, RegisteredHost>();
   const ownerRequests = new Map<ThreadId, OwnerRequest>();
-  const threadQueues = new Map<ThreadId, ThreadQueue>();
-  const pausedThreads = new Set<ThreadId>();
+  const mutationQueue = new AutomationQueue<PreviewAutomationBrokerError>({
+    capacity: MAX_QUEUED_MUTATIONS_PER_THREAD,
+    busy: () =>
+      new PreviewAutomationBusyError({
+        message: `More than ${MAX_QUEUED_MUTATIONS_PER_THREAD} browser actions are queued for this thread. Wait for them to finish.`,
+      }),
+    cancelled: () =>
+      new PreviewAutomationTimeoutError({ message: "Preview request was cancelled." }),
+    expired: () =>
+      new PreviewAutomationTimeoutError({
+        message: "Preview request timed out waiting for earlier browser actions; it was not run.",
+      }),
+  });
+  const pausedThreads = options.pause ?? new AgentControlPause();
   let shutDown = false;
 
   const removePending = (requestId: string): PendingRequest | undefined => {
@@ -442,90 +449,10 @@ export function makePreviewAutomationBroker(
     );
   };
 
-  /**
-   * Waits for the thread's mutation slot. A request still queued at its deadline expires
-   * without ever dispatching; `waited` tells the caller to revalidate live authorization.
-   */
-  const acquireThreadSlot = (
-    threadId: ThreadId,
-    signal: AbortSignal,
-    deadlineMs: number,
-  ): Promise<{ readonly release: () => void; readonly waited: boolean }> =>
-    new Promise((resolve, reject) => {
-      let queue = threadQueues.get(threadId);
-      if (!queue) {
-        queue = { running: false, waiting: [] };
-        threadQueues.set(threadId, queue);
-      }
-      const activeQueue = queue;
-      let released = false;
-      const release = () => {
-        if (released) return;
-        released = true;
-        const next = activeQueue.waiting.shift();
-        if (next) {
-          next.start();
-          return;
-        }
-        activeQueue.running = false;
-        if (threadQueues.get(threadId) === activeQueue) threadQueues.delete(threadId);
-      };
-      if (!activeQueue.running) {
-        activeQueue.running = true;
-        resolve({ release, waited: false });
-        return;
-      }
-      if (activeQueue.waiting.length >= MAX_QUEUED_MUTATIONS_PER_THREAD) {
-        reject(
-          new PreviewAutomationBusyError({
-            message: `More than ${MAX_QUEUED_MUTATIONS_PER_THREAD} browser actions are queued for this thread. Wait for them to finish.`,
-          }),
-        );
-        return;
-      }
-      const settle = () => {
-        signal.removeEventListener("abort", onAbort);
-        clearTimeout(deadline);
-      };
-      const entry = {
-        start: () => {
-          settle();
-          resolve({ release, waited: true });
-        },
-        reject: (error: PreviewAutomationBrokerError) => {
-          settle();
-          reject(error);
-        },
-      };
-      const leaveQueue = (error: PreviewAutomationBrokerError) => {
-        const index = activeQueue.waiting.indexOf(entry);
-        if (index < 0) return;
-        activeQueue.waiting.splice(index, 1);
-        entry.reject(error);
-      };
-      const onAbort = () =>
-        leaveQueue(
-          new PreviewAutomationTimeoutError({ message: "Preview request was cancelled." }),
-        );
-      const deadline = setTimeout(
-        () =>
-          leaveQueue(
-            new PreviewAutomationTimeoutError({
-              message:
-                "Preview request timed out waiting for earlier browser actions; it was not run.",
-            }),
-          ),
-        Math.max(0, deadlineMs),
-      );
-      signal.addEventListener("abort", onAbort, { once: true });
-      activeQueue.waiting.push(entry);
-    });
-
-  const failQueuedMutations = (threadId: ThreadId, error: PreviewAutomationBrokerError): void => {
-    const queue = threadQueues.get(threadId);
-    if (!queue) return;
-    for (const entry of queue.waiting.splice(0)) entry.reject(error);
-  };
+  const acquireThreadSlot = (threadId: ThreadId, signal: AbortSignal, deadlineMs: number) =>
+    mutationQueue.acquire(threadId, signal, deadlineMs);
+  const failQueuedMutations = (threadId: ThreadId, error: PreviewAutomationBrokerError) =>
+    mutationQueue.flush(threadId, error);
 
   const resolveThreadPolicy = (threadId: ThreadId): Effect.Effect<AgentBrowserPolicy> =>
     options.resolvePolicy ? options.resolvePolicy(threadId) : Effect.succeed(UNRESTRICTED_POLICY);
@@ -648,6 +575,11 @@ export function makePreviewAutomationBroker(
   const interruptedError = () =>
     new PreviewAutomationControlInterruptedError({ message: PREVIEW_CONTROL_INTERRUPTED_MESSAGE });
 
+  const offPause = pausedThreads.subscribe((id, paused) => {
+    const threadId = id as ThreadId;
+    if (paused) failQueuedMutations(threadId, interruptedError());
+    pushToAllHosts({ type: "pauseChanged", threadId, paused });
+  });
   return {
     resolvePolicy: resolveThreadPolicy,
 
@@ -824,11 +756,8 @@ export function makePreviewAutomationBroker(
 
     setPaused: (threadId, paused) =>
       Effect.sync(() => {
-        const wasPaused = pausedThreads.has(threadId);
-        if (paused) pausedThreads.add(threadId);
-        else pausedThreads.delete(threadId);
+        pausedThreads.set(threadId, paused);
         if (paused) failQueuedMutations(threadId, interruptedError());
-        if (wasPaused !== paused) pushToAllHosts({ type: "pauseChanged", threadId, paused });
       }),
 
     isPaused: (threadId) => Effect.sync(() => pausedThreads.has(threadId)),
@@ -854,9 +783,10 @@ export function makePreviewAutomationBroker(
     shutdown: Effect.sync(() => {
       shutDown = true;
       clearInterval(sweepTimer);
+      offPause();
       const error = new PreviewAutomationUnavailableError({ message: "F5 is shutting down." });
       for (const threadId of ownerRequests.keys()) settleOwnerRequest(threadId, { error });
-      for (const threadId of threadQueues.keys()) failQueuedMutations(threadId, error);
+      mutationQueue.flushAll(error);
     }),
   };
 }
@@ -865,7 +795,9 @@ export const PreviewAutomationBrokerLive = Layer.effect(
   PreviewAutomationBroker,
   Effect.gen(function* () {
     const services = yield* Effect.services<never>();
+    const pause = yield* Effect.serviceOption(AgentControlPauseService);
     const broker = makePreviewAutomationBroker({
+      ...(Option.isSome(pause) ? { pause: pause.value } : {}),
       resolvePolicy: (thread) => resolveAgentBrowserPolicy(thread).pipe(Effect.provide(services)),
     });
     yield* Effect.addFinalizer(() => broker.shutdown);

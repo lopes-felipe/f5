@@ -1,3 +1,5 @@
+import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
+import { ComputerAccessTimeline } from "./ComputerAccessCard";
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
@@ -6966,6 +6968,8 @@ export default function ChatView({
             />
           </div>
         ) : null}
+        <ComputerAccessTimeline threadId={activeThread.id} />
+        <AgentComputerLiveCard threadId={activeThread.id} />
         <AgentBrowserLiveCard threadId={activeThread.id} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

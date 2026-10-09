@@ -1,4 +1,10 @@
 import {
+  ComputerAccessRequested,
+  ComputerGrant,
+  ComputerActivity,
+  ComputerBackendKind,
+} from "./computerAutomation";
+import {
   ForgeAccountInput,
   ForgeAccountRouting,
   ForgeOperationInput,
@@ -348,6 +354,10 @@ export const WS_METHODS = {
   previewAutomationReportOwner: "preview.automation.reportOwner",
   previewAutomationClearOwner: "preview.automation.clearOwner",
   previewAutomationSetPaused: "preview.automation.setPaused",
+  computerAccessRevoke: "computer.access.revoke",
+  computerAccessList: "computer.access.list",
+  computerAccessListRemembered: "computer.access.listRemembered",
+  computerAccessForgetRemembered: "computer.access.forgetRemembered",
 
   // Server meta
   serverProbe: "server.probe",
@@ -444,6 +454,10 @@ export const WS_CHANNELS = {
   previewAutomationOwnerReleased: "preview.automation.ownerReleased",
   previewAutomationPauseChanged: "preview.automation.pauseChanged",
   agentComputerUseChanged: "agent.computerUseChanged",
+  computerAccessRequested: "computer.access.requested",
+  computerAccessSettled: "computer.access.settled",
+  computerAccessGrantsChanged: "computer.access.grantsChanged",
+  computerActivity: "computer.activity",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
@@ -667,6 +681,16 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.previewAutomationReportOwner, PreviewAutomationOwner),
   tagRequestBody(WS_METHODS.previewAutomationClearOwner, PreviewAutomationClearOwnerInput),
   tagRequestBody(WS_METHODS.previewAutomationSetPaused, PreviewAutomationSetPausedInput),
+  tagRequestBody(
+    WS_METHODS.computerAccessRevoke,
+    Schema.Struct({ threadId: ThreadId, appId: Schema.String }),
+  ),
+  tagRequestBody(WS_METHODS.computerAccessList, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(WS_METHODS.computerAccessListRemembered, Schema.Struct({ projectId: ProjectId })),
+  tagRequestBody(
+    WS_METHODS.computerAccessForgetRemembered,
+    Schema.Struct({ projectId: ProjectId, appId: Schema.String }),
+  ),
 
   // Server meta
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
@@ -875,6 +899,10 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.previewAutomationOwnerReleased]: typeof PreviewAutomationOwnerReleased.Type;
   readonly [WS_CHANNELS.previewAutomationPauseChanged]: typeof PreviewAutomationPauseChanged.Type;
   readonly [WS_CHANNELS.agentComputerUseChanged]: typeof AgentComputerUseChanged.Type;
+  readonly [WS_CHANNELS.computerAccessRequested]: typeof ComputerAccessPush.Type;
+  readonly [WS_CHANNELS.computerAccessSettled]: typeof ComputerAccessSettled.Type;
+  readonly [WS_CHANNELS.computerAccessGrantsChanged]: typeof ComputerGrantsChanged.Type;
+  readonly [WS_CHANNELS.computerActivity]: typeof ComputerActivity.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
@@ -955,10 +983,42 @@ export const WsPushPreviewAutomationPauseChanged = makeWsPushSchema(
 /** Which thread, if any, currently controls this computer's screen, mouse, and keyboard. */
 export const AgentComputerUseChanged = Schema.Struct({
   threadId: Schema.NullOr(ThreadId),
+  otherProfile: Schema.optional(Schema.Boolean),
+  backend: Schema.optional(ComputerBackendKind),
 });
 export const WsPushAgentComputerUseChanged = makeWsPushSchema(
   WS_CHANNELS.agentComputerUseChanged,
   AgentComputerUseChanged,
+);
+export const ComputerAccessPush = Schema.Struct({
+  ...ComputerAccessRequested.fields,
+  backendIncarnation: Schema.String,
+});
+export const ComputerAccessSettled = Schema.Struct({
+  requestId: Schema.String,
+  threadId: Schema.String,
+  allowed: Schema.Boolean,
+});
+export const ComputerGrantsChanged = Schema.Struct({
+  threadId: Schema.String,
+  grants: Schema.Array(ComputerGrant),
+  grantVersion: Schema.Int,
+});
+export const WsPushComputerAccessRequested = makeWsPushSchema(
+  WS_CHANNELS.computerAccessRequested,
+  ComputerAccessPush,
+);
+export const WsPushComputerAccessSettled = makeWsPushSchema(
+  WS_CHANNELS.computerAccessSettled,
+  ComputerAccessSettled,
+);
+export const WsPushComputerGrantsChanged = makeWsPushSchema(
+  WS_CHANNELS.computerAccessGrantsChanged,
+  ComputerGrantsChanged,
+);
+export const WsPushComputerActivity = makeWsPushSchema(
+  WS_CHANNELS.computerActivity,
+  ComputerActivity,
 );
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
@@ -1015,6 +1075,10 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.previewAutomationOwnerReleased,
   WS_CHANNELS.previewAutomationPauseChanged,
   WS_CHANNELS.agentComputerUseChanged,
+  WS_CHANNELS.computerAccessRequested,
+  WS_CHANNELS.computerAccessSettled,
+  WS_CHANNELS.computerAccessGrantsChanged,
+  WS_CHANNELS.computerActivity,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
@@ -1045,6 +1109,10 @@ export const WsPush = Schema.Union([
   WsPushPreviewAutomationOwnerReleased,
   WsPushPreviewAutomationPauseChanged,
   WsPushAgentComputerUseChanged,
+  WsPushComputerAccessRequested,
+  WsPushComputerAccessSettled,
+  WsPushComputerGrantsChanged,
+  WsPushComputerActivity,
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,

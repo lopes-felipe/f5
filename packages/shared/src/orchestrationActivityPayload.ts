@@ -1040,11 +1040,15 @@ function readRuntimeAgentBrowser(
   if (!record) return undefined;
   const preview = asRecord(record.preview);
   const serverName = asTrimmedString(preview?.serverName);
+  const computer = asRecord(record.computer);
+  const computerServerName = asTrimmedString(computer?.serverName);
   const chrome = readAgentCapabilityState(record.chrome);
   const computerUse = readAgentCapabilityState(record.computerUse);
   const rawBackend = asTrimmedString(asRecord(record.computerUse)?.backend);
-  const backend: "claude" | "native" | undefined =
-    rawBackend === "claude" || rawBackend === "native" ? rawBackend : undefined;
+  const backend: "claude-builtin" | "codex-builtin" | "native" | undefined =
+    rawBackend === "claude-builtin" || rawBackend === "codex-builtin" || rawBackend === "native"
+      ? rawBackend
+      : undefined;
   const result: NonNullable<CompactRuntimeConfiguredActivityPayload["agentBrowser"]> = {
     ...(preview && serverName
       ? {
@@ -1052,6 +1056,15 @@ function readRuntimeAgentBrowser(
             serverName,
             installed: preview.installed === true,
             ...(typeof preview.verified === "boolean" ? { verified: preview.verified } : {}),
+          },
+        }
+      : {}),
+    ...(computer && computerServerName
+      ? {
+          computer: {
+            serverName: computerServerName,
+            installed: computer.installed === true,
+            ...(typeof computer.verified === "boolean" ? { verified: computer.verified } : {}),
           },
         }
       : {}),

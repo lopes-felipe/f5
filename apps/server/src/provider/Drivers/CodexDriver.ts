@@ -1,3 +1,4 @@
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { UsageConsumeResetCreditResult } from "@t3tools/contracts";
@@ -169,6 +170,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
       const previewMcpHttpServer = yield* PreviewMcpHttpServer;
+      const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
       const serverConfig = yield* ServerConfig;
       yield* Effect.tryPromise({
         try: () => validateManagedHome(serverConfig, config.homePath),
@@ -258,6 +260,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const adapter = yield* makeCodexAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewMcpHttpServer,
+        ...(computerAutomationBroker._tag === "Some"
+          ? { computerAutomationBroker: computerAutomationBroker.value }
+          : {}),
         defaultProviderOptions,
         processEnvironment,
       });

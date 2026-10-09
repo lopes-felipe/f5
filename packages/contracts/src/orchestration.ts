@@ -809,13 +809,20 @@ export const RuntimeAgentBrowserCapabilities = Schema.Struct({
       verified: Schema.optional(Schema.Boolean),
     }),
   ),
+  computer: Schema.optional(
+    Schema.Struct({
+      serverName: TrimmedNonEmptyString,
+      installed: Schema.Boolean,
+      verified: Schema.optional(Schema.Boolean),
+    }),
+  ),
   chrome: Schema.optional(
     Schema.Struct({ state: AgentCapabilityState, detail: Schema.optional(Schema.String) }),
   ),
   computerUse: Schema.optional(
     Schema.Struct({
       state: AgentCapabilityState,
-      backend: Schema.optional(Schema.Literals(["claude", "native"])),
+      backend: Schema.optional(Schema.Literals(["claude-builtin", "codex-builtin", "native"])),
       detail: Schema.optional(Schema.String),
     }),
   ),

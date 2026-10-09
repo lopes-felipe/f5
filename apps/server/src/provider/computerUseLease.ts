@@ -12,6 +12,12 @@ export class ComputerUseLease {
   current(): string | null {
     return this.holder;
   }
+  /** Compatibility mirror; desktop main is the device authority for v2. */
+  setFromHost(threadId: string | null): void {
+    if (this.holder === threadId) return;
+    this.holder = threadId;
+    this.notify();
+  }
 
   /** Grants or keeps the lease for `threadId`; false when another thread holds it. */
   acquire(threadId: string): boolean {

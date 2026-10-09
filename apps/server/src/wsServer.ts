@@ -1,3 +1,4 @@
+import { ComputerAutomationBroker } from "./computer/ComputerAutomationBroker";
 import {
   getClaudeTranscriptMaintenance,
   runClaudeTranscriptMaintenance,
@@ -871,6 +872,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const previewAutomationBroker = yield* PreviewAutomationBroker;
+  const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
   const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
@@ -1047,18 +1049,89 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
   // Every window shows a global banner while an agent controls the computer.
-  yield* Effect.acquireRelease(
-    Effect.sync(() =>
-      computerUseLease.subscribe((holder) => {
-        void Effect.runPromise(
-          pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
-            threadId: holder === null ? null : ThreadId.makeUnsafe(holder),
-          }),
-        );
-      }),
-    ),
-    (unsubscribe) => Effect.sync(unsubscribe),
-  );
+  if (Option.isNone(computerAutomationBroker))
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        computerUseLease.subscribe((holder) => {
+          void Effect.runPromise(
+            pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
+              threadId: holder === null ? null : ThreadId.makeUnsafe(holder),
+            }),
+          );
+        }),
+      ),
+      (unsubscribe) => Effect.sync(unsubscribe),
+    );
+  if (Option.isSome(computerAutomationBroker)) {
+    const computer = computerAutomationBroker.value;
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        computer.subscribe((event) => {
+          if (event.channel === "computer.host") {
+            if (event.data.type === "leaseChanged") {
+              const holder = event.data.holder;
+              const sameProfile = holder?.profileId === computer.host.profileId;
+              computerUseLease.setFromHost(holder && sameProfile ? holder.threadId : null);
+              void Effect.runPromise(
+                pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
+                  threadId: holder && sameProfile ? ThreadId.makeUnsafe(holder.threadId) : null,
+                  otherProfile: event.data.otherProfile ?? (!!holder && !sameProfile),
+                  ...(holder ? { backend: holder.backend } : {}),
+                }),
+              );
+            } else if (event.data.type === "pauseChanged")
+              void Effect.runPromise(
+                previewAutomationBroker.setPaused(
+                  ThreadId.makeUnsafe(event.data.threadId),
+                  event.data.paused,
+                ),
+              );
+            else if (event.data.type === "killSwitch") {
+              const killed = event.data;
+              void Effect.runPromise(
+                Deferred.await(orchestrationRuntime).pipe(
+                  Effect.flatMap(({ orchestrationEngine }) =>
+                    computer.matchesTurn(killed.threadId, killed.sessionGeneration, killed.turnId)
+                      ? orchestrationEngine.dispatch({
+                          type: "thread.turn.interrupt",
+                          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                          threadId: ThreadId.makeUnsafe(killed.threadId),
+                          createdAt: new Date().toISOString(),
+                        })
+                      : Effect.void,
+                  ),
+                ),
+              ).catch(() => undefined);
+            }
+          } else {
+            switch (event.channel) {
+              case "computer.access.requested":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessRequested, event.data),
+                );
+                break;
+              case "computer.access.settled":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessSettled, event.data),
+                );
+                break;
+              case "computer.access.grantsChanged":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerAccessGrantsChanged, event.data),
+                );
+                break;
+              case "computer.activity":
+                void Effect.runPromise(
+                  pushBus.publishAll(WS_CHANNELS.computerActivity, event.data),
+                );
+                break;
+            }
+          }
+        }),
+      ),
+      (off) => Effect.sync(off),
+    );
+  }
   const accountService = new ProviderAccountService(
     serverConfig,
     serverSettings,
@@ -2228,6 +2301,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
     Effect.all({
+      computerPolicy: Option.isSome(computerAutomationBroker)
+        ? Effect.promise(() => computerAutomationBroker.value.refreshPolicies())
+        : Effect.void,
       keybindingsConfig: keybindingsManager.loadConfigState,
       providers: providerAdvisoryProjection.getProviders,
     }).pipe(
@@ -4470,6 +4546,53 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.previewAutomationSetPaused: {
         const body = stripRequestTag(request.body);
         yield* previewAutomationBroker.setPaused(body.threadId, body.paused);
+        if (Option.isSome(computerAutomationBroker))
+          computerAutomationBroker.value.setPaused(body.threadId, body.paused);
+        return undefined;
+      }
+
+      case WS_METHODS.computerAccessRevoke:
+      case WS_METHODS.computerAccessList:
+      case WS_METHODS.computerAccessListRemembered:
+      case WS_METHODS.computerAccessForgetRemembered: {
+        if (Option.isNone(computerAutomationBroker))
+          return request.body._tag === WS_METHODS.computerAccessList ||
+            request.body._tag === WS_METHODS.computerAccessListRemembered
+            ? []
+            : undefined;
+        const access = computerAutomationBroker.value.access;
+        const body = stripRequestTag(request.body);
+        if (
+          request.body._tag === WS_METHODS.computerAccessRevoke &&
+          "threadId" in body &&
+          typeof body.threadId === "string" &&
+          "appId" in body &&
+          typeof body.appId === "string"
+        ) {
+          access.revoke(body.threadId, body.appId);
+          return undefined;
+        }
+        if (
+          request.body._tag === WS_METHODS.computerAccessList &&
+          "threadId" in body &&
+          typeof body.threadId === "string"
+        )
+          return access.grants(body.threadId);
+        if (
+          request.body._tag === WS_METHODS.computerAccessListRemembered &&
+          "projectId" in body &&
+          typeof body.projectId === "string"
+        )
+          return access.listRemembered(body.projectId);
+        if (
+          "projectId" in body &&
+          typeof body.projectId === "string" &&
+          "appId" in body &&
+          typeof body.appId === "string"
+        )
+          yield* Effect.promise(() =>
+            access.forgetRemembered(body.projectId as string, body.appId as string),
+          );
         return undefined;
       }
 
@@ -5756,6 +5879,36 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 Effect.andThen(registerPreviewAutomationHost(ws)),
                 Effect.andThen(
                   Effect.suspend(() => {
+                    if (Option.isSome(computerAutomationBroker)) {
+                      const computer = computerAutomationBroker.value;
+                      const snapshot = computer.snapshot();
+                      const holder = snapshot.holder;
+                      const sameProfile = holder?.profileId === computer.host.profileId;
+                      return Effect.all([
+                        pushBus.publishClient(ws, WS_CHANNELS.agentComputerUseChanged, {
+                          threadId:
+                            holder && sameProfile ? ThreadId.makeUnsafe(holder.threadId) : null,
+                          otherProfile: snapshot.otherProfile || (!!holder && !sameProfile),
+                          ...(holder ? { backend: holder.backend } : {}),
+                        }),
+                        ...snapshot.pausedThreads.map((threadId) =>
+                          pushBus.publishClient(ws, WS_CHANNELS.previewAutomationPauseChanged, {
+                            threadId: ThreadId.makeUnsafe(threadId),
+                            paused: true,
+                          }),
+                        ),
+                        ...snapshot.pending.map((request) =>
+                          pushBus.publishClient(ws, WS_CHANNELS.computerAccessRequested, request),
+                        ),
+                        ...snapshot.grants.map((grants) =>
+                          pushBus.publishClient(
+                            ws,
+                            WS_CHANNELS.computerAccessGrantsChanged,
+                            grants,
+                          ),
+                        ),
+                      ]).pipe(Effect.asVoid);
+                    }
                     const holder = computerUseLease.current();
                     return holder === null
                       ? Effect.void

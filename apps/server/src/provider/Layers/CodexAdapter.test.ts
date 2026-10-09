@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
+  type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderTurnStartResult,
   type ProviderUserInputAnswers,
@@ -2681,4 +2682,41 @@ afterAll(() => {
     lifecycleManager.stopAll();
   }
   assert.ok(lifecycleManager.stopAllImpl.mock.calls.length >= 1);
+});
+
+it("reports computer fallback and unavailability without installing both tool catalogs", () => {
+  const event: ProviderRuntimeEvent = {
+    type: "session.configured",
+    eventId: EventId.makeUnsafe("computer-config"),
+    provider: "codex",
+    threadId: ThreadId.makeUnsafe("computer"),
+    createdAt: "2026-10-09T00:00:00.000Z",
+    payload: { config: {} },
+  };
+  const connected = withAgentBrowserPreview([event], undefined, "__f5_computer", {
+    fingerprint: "native",
+    status: { available: true },
+    selection: { kind: "native", fallbackFrom: { kind: "codex-builtin", reason: "not certified" } },
+  })[0];
+  assert.equal(connected?.type, "session.configured");
+  if (connected?.type === "session.configured")
+    assert.deepEqual(readRuntimeConfiguredPayload(connected.payload)?.agentBrowser?.computerUse, {
+      state: "connected",
+      backend: "native",
+      detail: "not certified",
+    });
+  const unavailable = withAgentBrowserPreview([event], undefined, undefined, {
+    fingerprint: "unavailable",
+    status: { available: false, reason: "helper-missing" },
+  })[0];
+  assert.equal(unavailable?.type, "session.configured");
+  if (unavailable?.type === "session.configured") {
+    const config = readRuntimeConfiguredPayload(unavailable.payload)?.agentBrowser;
+    assert.deepEqual(config?.computerUse, {
+      state: "unavailable",
+      backend: "native",
+      detail: "helper-missing",
+    });
+    assert.equal(config?.computer, undefined);
+  }
 });

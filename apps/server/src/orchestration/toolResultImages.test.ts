@@ -15,6 +15,7 @@ import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import { scrubInlineImagesReplacer } from "../provider/Layers/EventNdjsonLogger.ts";
 import {
   MAX_THREAD_TOOL_RESULT_IMAGES,
+  MAX_THREAD_TOOL_RESULT_IMAGE_BYTES,
   MAX_TOOL_RESULT_IMAGES,
   extractToolResultImages,
   ingestToolResultImage,
@@ -249,6 +250,40 @@ describe("ingestToolResultImage", () => {
       }),
     );
     expect(result.value).toBeNull();
+    expect(stagedEntries(result.attachmentsDir)).toEqual([]);
+  });
+  it("counts unique attachment bytes and atomically enforces the shared budget", async () => {
+    const result = await run((attachmentsDir) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const now = new Date().toISOString();
+        const id = "thread-1-00000000-0000-4000-8000-000000000001";
+        yield* sql`INSERT INTO attachments (attachment_id, thread_id, type, name, mime_type, size_bytes,
+        content_hash, staging_path, final_path, lifecycle, created_at, updated_at)
+        VALUES (${id}, 'thread-1', 'image', 'existing', 'image/png', ${MAX_THREAD_TOOL_RESULT_IMAGE_BYTES - image!.bytes.length}, 'hash', NULL, '/tmp/existing', 'ready', ${now}, ${now})`;
+        for (const owner of ["started", "completed"])
+          yield* sql`INSERT INTO attachment_owners
+        (attachment_id, owner_kind, owner_id, created_at) VALUES (${id}, 'activity', ${owner}, ${now})`;
+        const refs = yield* Effect.all(
+          ["a", "b"].map((key) =>
+            ingestToolResultImage({
+              attachmentsDir,
+              threadId: "thread-1",
+              itemKey: key,
+              activityId: key,
+              image: image!,
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
+        const rows = yield* sql<{
+          bytes: number;
+        }>`SELECT SUM(size_bytes) AS bytes FROM attachments`;
+        return { refs, bytes: rows[0]?.bytes };
+      }),
+    );
+    expect(result.value.refs.filter(Boolean)).toHaveLength(1);
+    expect(result.value.bytes).toBe(MAX_THREAD_TOOL_RESULT_IMAGE_BYTES);
     expect(stagedEntries(result.attachmentsDir)).toEqual([]);
   });
 

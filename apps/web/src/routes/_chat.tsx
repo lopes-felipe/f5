@@ -1,3 +1,4 @@
+import { ComputerAccessInbox } from "../components/ComputerAccessCard";
 import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
 import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
 import { useDesktopLinkRouting } from "../hooks/useDesktopLinkRouting";
@@ -137,6 +138,7 @@ function ChatRouteLayout() {
         <PreviewBrowserHost>
           <Outlet />
         </PreviewBrowserHost>
+        <ComputerAccessInbox />
         <ComputerUseBanner />
         <WorkflowCreateDialogHost />
       </CommandPalette>

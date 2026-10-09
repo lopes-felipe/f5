@@ -87,6 +87,9 @@ import {
   readPersistedUnconvergedMcpConfigVersion,
 } from "../../provider/runtimePayload.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
+import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
+import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import {
   formatThreadTitleRegenerationContext,
   resolveBestEffortGeneratedTitleResult,
@@ -392,6 +395,8 @@ const make = Effect.gen(function* () {
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
   const serverSettings = yield* ServerSettingsService;
+  const computerBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
+  const computerSelections = new Map<string, string>();
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const settingsForThread = (thread: { projectId: ProjectId; worktreePath: string | null }) =>
     Effect.gen(function* () {
@@ -802,6 +807,20 @@ const make = Effect.gen(function* () {
         });
 
       const activeSession = yield* resolveActiveSession(threadId);
+      const computerPolicy = yield* resolveAgentBrowserPolicy(threadId);
+      const computerDecision = yield* resolveComputerBackendSelection({
+        provider: preferredProvider === "claudeAgent" ? "claude" : "codex",
+        enabled: computerPolicy.computerUse,
+        nativeStatus: Option.isSome(computerBroker)
+          ? computerBroker.value.host.status()
+          : { available: false, reason: "no-host" },
+      });
+      const computerSelection = computerDecision.fingerprint;
+      const previousComputerSelection =
+        activeSession?.computerConfigurationFingerprint ?? computerSelections.get(threadId);
+      const shouldRestartForComputerUseChange =
+        previousComputerSelection !== undefined && previousComputerSelection !== computerSelection;
+      computerSelections.set(threadId, computerSelection);
       const existingSessionThreadId =
         thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
       if (existingSessionThreadId) {
@@ -896,6 +915,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForModelOptionsChange &&
           !shouldRestartForProviderOptionsChange &&
           !shouldRestartForProjectMcpChange &&
+          !shouldRestartForComputerUseChange &&
           !shouldRestartForCwdChange &&
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
@@ -928,6 +948,7 @@ const make = Effect.gen(function* () {
           ...(shouldRestartForModelOptionsChange ? ["model-options-changed"] : []),
           ...(shouldRestartForProviderOptionsChange ? ["provider-options-changed"] : []),
           ...(shouldRestartForProjectMcpChange ? ["project-mcp-changed"] : []),
+          ...(shouldRestartForComputerUseChange ? ["computer-use-changed"] : []),
           ...(shouldRestartForCwdChange ? ["cwd-changed"] : []),
           ...(shouldRestartForWorkflowExecutionProfileChange
             ? ["workflow-execution-profile-changed"]
@@ -955,6 +976,7 @@ const make = Effect.gen(function* () {
           shouldRestartForModelOptionsChange,
           shouldRestartForProviderOptionsChange,
           shouldRestartForProjectMcpChange,
+          shouldRestartForComputerUseChange,
           shouldRestartForCwdChange,
           shouldRestartForWorkflowExecutionProfileChange,
           activeWorkflowExecutionProfile: activeWorkflowExecutionProfile ?? null,

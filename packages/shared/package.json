@@ -271,6 +271,22 @@
     "./claudeSdkManifest": {
       "types": "./src/claudeSdkManifest.ts",
       "import": "./src/claudeSdkManifest.ts"
+    },
+    "./computerApps": {
+      "types": "./src/computerApps.ts",
+      "import": "./src/computerApps.ts"
+    },
+    "./computerGeometry": {
+      "types": "./src/computerGeometry.ts",
+      "import": "./src/computerGeometry.ts"
+    },
+    "./automationActivitySanitizer": {
+      "types": "./src/automationActivitySanitizer.ts",
+      "import": "./src/automationActivitySanitizer.ts"
+    },
+    "./computerControl": {
+      "types": "./src/computerControl.ts",
+      "import": "./src/computerControl.ts"
     }
   },
   "scripts": {

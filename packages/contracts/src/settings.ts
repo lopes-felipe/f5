@@ -367,7 +367,10 @@ export const ServerSettings = Schema.Struct({
   previewExternalHosts: PreviewExternalHosts.pipe(Schema.withDecodingDefault(() => [])),
   /** Launch Claude sessions with Claude in Chrome. Off by default. */
   enableClaudeInChrome: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
-  /** Allow agents to control the computer after per-turn approval. Off by default. */
+  computerUseBackend: Schema.Literals(["auto", "f5"]).pipe(
+    Schema.withDecodingDefault(() => "auto" as const),
+  ),
+  /** Allow agents to control approved apps. Off by default. */
   enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 
@@ -502,6 +505,7 @@ export const ServerSettingsPatch = Schema.Struct({
   previewExternalHosts: Schema.optionalKey(PreviewExternalHosts),
   enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
   enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
+  computerUseBackend: Schema.optionalKey(Schema.Literals(["auto", "f5"])),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({

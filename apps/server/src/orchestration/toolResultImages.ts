@@ -12,6 +12,7 @@ export const MAX_TOOL_RESULT_IMAGES = 1;
 export const MAX_TOOL_RESULT_IMAGE_BYTES = 8 * 1024 * 1024;
 /** Activity-owned screenshots retained per thread; later ones are counted as omitted. */
 export const MAX_THREAD_TOOL_RESULT_IMAGES = 200;
+export const MAX_THREAD_TOOL_RESULT_IMAGE_BYTES = 64 * 1024 * 1024;
 const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
   "image/png",
   "image/jpeg",
@@ -190,14 +191,18 @@ export const ingestToolResultImage = Effect.fnUntraced(function* (input: {
     return ref;
   }
 
-  const stored = yield* sql<{ readonly count: number }>`
-    SELECT COUNT(DISTINCT attachment.attachment_id) AS count
+  const stored = yield* sql<{ readonly count: number; readonly bytes: number }>`
+    SELECT COUNT(*) AS count, COALESCE(SUM(attachment.size_bytes), 0) AS bytes
     FROM attachments AS attachment
-    JOIN attachment_owners AS owner
-      ON owner.attachment_id = attachment.attachment_id AND owner.owner_kind = 'activity'
     WHERE attachment.thread_id = ${input.threadId}
+      AND EXISTS (SELECT 1 FROM attachment_owners AS owner
+        WHERE owner.attachment_id = attachment.attachment_id AND owner.owner_kind = 'activity')
   `;
-  if ((stored[0]?.count ?? 0) >= MAX_THREAD_TOOL_RESULT_IMAGES) return null;
+  if (
+    (stored[0]?.count ?? 0) >= MAX_THREAD_TOOL_RESULT_IMAGES ||
+    (stored[0]?.bytes ?? 0) + input.image.bytes.length > MAX_THREAD_TOOL_RESULT_IMAGE_BYTES
+  )
+    return null;
 
   const stagingPath = path.join(
     input.attachmentsDir,
@@ -214,6 +219,18 @@ export const ingestToolResultImage = Effect.fnUntraced(function* (input: {
   const registered = yield* sql
     .withTransaction(
       Effect.gen(function* () {
+        // Recheck inside the write transaction: concurrent tool completions share this budget.
+        const budget = yield* sql<{ readonly count: number; readonly bytes: number }>`
+          SELECT COUNT(*) AS count, COALESCE(SUM(attachment.size_bytes), 0) AS bytes
+          FROM attachments AS attachment WHERE attachment.thread_id = ${input.threadId}
+          AND EXISTS (SELECT 1 FROM attachment_owners AS owner
+            WHERE owner.attachment_id = attachment.attachment_id AND owner.owner_kind = 'activity')
+        `;
+        if (
+          (budget[0]?.count ?? 0) >= MAX_THREAD_TOOL_RESULT_IMAGES ||
+          (budget[0]?.bytes ?? 0) + input.image.bytes.length > MAX_THREAD_TOOL_RESULT_IMAGE_BYTES
+        )
+          return false;
         yield* sql`
           INSERT INTO attachments (
             attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash,
@@ -228,13 +245,14 @@ export const ingestToolResultImage = Effect.fnUntraced(function* (input: {
           INSERT INTO attachment_owners (attachment_id, owner_kind, owner_id, created_at)
           VALUES (${attachment.id}, 'activity', ${input.activityId}, ${createdAt})
         `;
+        return true;
       }),
     )
-    .pipe(
-      Effect.as(true),
-      Effect.catchCause(() => discardStaging.pipe(Effect.as(false))),
-    );
-  if (!registered) return null;
+    .pipe(Effect.catchCause(() => discardStaging.pipe(Effect.as(false))));
+  if (!registered) {
+    yield* discardStaging;
+    return null;
+  }
   // A failure past this point leaves a staged row; a replay or startup recovery promotes it.
   yield* fileSystem.makeDirectory(path.dirname(finalPath), { recursive: true });
   yield* fileSystem.rename(stagingPath, finalPath);

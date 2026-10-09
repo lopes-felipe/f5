@@ -1,3 +1,4 @@
+import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import {
   validateManagedHome,
@@ -157,6 +158,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       );
       const previewAutomationBroker = yield* PreviewAutomationBroker;
+      const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
       // Latest probed models, so launches use the capabilities the CLI reported
       // (the same ones the composer shows) instead of only F5's static table.
       const probedModels = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
@@ -173,6 +175,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewAutomationBroker,
+        ...(computerAutomationBroker._tag === "Some"
+          ? { computerAutomationBroker: computerAutomationBroker.value }
+          : {}),
         oneOffProviderOptions: {
           autoCompactWindow: effectiveConfig.autoCompactWindow,
           resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,

@@ -486,6 +486,12 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     productName,
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     asarUnpack: DESKTOP_ASAR_UNPACK,
+    ...(platform !== "linux"
+      ? {
+          extraResources: [{ from: "apps/desktop/native-bin", to: "native" }],
+          ...(signed ? { afterSign: "verify-computer-helper.cjs" } : {}),
+        }
+      : {}),
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -500,6 +506,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
+      binaries: ["Contents/Resources/native/f5-computer-helper"],
     };
   }
 
@@ -645,6 +652,38 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
+  if (options.platform !== "linux") {
+    yield* runCommand(
+      ChildProcess.make(
+        process.execPath,
+        [
+          path.join(repoRoot, "scripts/build-computer-helper.ts"),
+          "--platform",
+          options.platform,
+          "--arch",
+          options.arch,
+          "--required",
+        ],
+        { cwd: repoRoot, ...commandOutputOptions(options.verbose) },
+      ),
+    );
+    const nativeDir = path.join(
+      repoRoot,
+      "apps/desktop/dist-native",
+      `${options.platform}-${options.arch}`,
+    );
+    const binary = path.join(
+      nativeDir,
+      options.platform === "win" ? "f5-computer-helper.exe" : "f5-computer-helper",
+    );
+    if (!(yield* fs.exists(binary)))
+      return yield* new BuildScriptError({ message: `Missing computer helper: ${binary}` });
+    yield* fs.copy(nativeDir, path.join(stageAppDir, "apps/desktop/native-bin"));
+    yield* fs.copyFile(
+      path.join(repoRoot, "scripts/verify-computer-helper.cjs"),
+      path.join(stageAppDir, "verify-computer-helper.cjs"),
+    );
+  }
 
   yield* assertPlatformBuildResources(options.platform, stageResourcesDir, options.verbose);
 
