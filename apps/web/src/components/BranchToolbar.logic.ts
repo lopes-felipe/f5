@@ -112,8 +112,7 @@ export function resolveBranchSelectionTarget(input: {
     };
   }
 
-  const nextWorktreePath =
-    activeWorktreePath !== null && branch.isDefault ? null : activeWorktreePath;
+  const nextWorktreePath = activeWorktreePath;
 
   return {
     checkoutCwd: nextWorktreePath ?? activeProjectCwd,

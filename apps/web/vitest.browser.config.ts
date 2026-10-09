@@ -26,6 +26,7 @@ export default mergeConfig(
         "src/hooks/inputSafety.browser.tsx",
         "src/components/ProfileSwitcher.browser.tsx",
         "src/components/ChatView.browser.tsx",
+        "src/components/BranchToolbarBranchSelector.browser.tsx",
         "src/components/chat/WorktreeSetupCard.browser.tsx",
         "src/components/ComposerPromptEditor.browser.tsx",
         "src/components/ProjectCloneController.browser.tsx",

@@ -293,6 +293,32 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 
+  it("preserves structured checkout conflicts for the recovery dialog", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+    const promise = transport.request(WS_METHODS.gitCheckout, { cwd: "/repo", branch: "main" });
+    const envelope = JSON.parse(socket.sent[0] ?? "{}") as { id: string };
+    const checkoutConflict = { cwd: "/repo", branch: "main", files: ["index.css"] };
+    const rejection = expect(promise).rejects.toMatchObject({
+      name: "WsRequestError",
+      code: "GitCheckoutConflict",
+      checkoutConflict,
+    });
+    socket.serverMessage(
+      JSON.stringify({
+        id: envelope.id,
+        error: {
+          message: "Local changes block branch switch.",
+          code: "GitCheckoutConflict",
+          checkoutConflict,
+        },
+      }),
+    );
+    await rejection;
+    transport.dispose();
+  });
+
   it("removes timed-out queued requests so they cannot execute after reconnect", async () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();

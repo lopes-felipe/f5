@@ -1,3 +1,6 @@
+import { mkdtempSync, existsSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   ProjectId,
@@ -166,6 +169,66 @@ async function runRunner(input: {
 }
 
 describe("ProjectSetupScriptRunnerLive", () => {
+  it("waits for a synchronous setup script before reporting preparation complete", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "f5-recovery-setup-"));
+    try {
+      const model = makeReadModel(true);
+      const script = model.projects[0]!.scripts[0]!;
+      const updated = {
+        ...model,
+        projects: [
+          {
+            ...model.projects[0]!,
+            scripts: [
+              {
+                ...script,
+                async: false,
+                command: `"${process.execPath}" -e "setTimeout(() => require('node:fs').writeFileSync('ready', process.env.T3CODE_WORKTREE_PATH), 40)"`,
+              },
+            ],
+          },
+        ],
+      };
+      const { result, terminal } = await runRunner({
+        readModel: updated,
+        projectCwd: "/repo/project",
+        worktreePath: cwd,
+      });
+      expect(result).toEqual({ status: "completed", scriptId: "setup", scriptName: "Setup", cwd });
+      expect(existsSync(join(cwd, "ready"))).toBe(true);
+      expect(terminal.open).not.toHaveBeenCalled();
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reports failed synchronous setup so recovery can retry without attaching", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "f5-recovery-failed-"));
+    try {
+      const model = makeReadModel(true);
+      const updated = {
+        ...model,
+        projects: [
+          {
+            ...model.projects[0]!,
+            scripts: [
+              {
+                ...model.projects[0]!.scripts[0]!,
+                async: false,
+                command: `"${process.execPath}" -e "console.error('setup failed'); process.exit(7)"`,
+              },
+            ],
+          },
+        ],
+      };
+      await expect(
+        runRunner({ readModel: updated, projectCwd: "/repo/project", worktreePath: cwd }),
+      ).rejects.toThrow("failed (7)");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("returns no-script when the project has no setup script", async () => {
     const { result, terminal } = await runRunner({
       readModel: makeReadModel(false),

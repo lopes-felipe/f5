@@ -109,9 +109,11 @@ import {
 import {
   GitActionProgressEvent,
   GitCheckoutInput,
+  GitCheckoutConflict,
   GitCreateBranchInput,
   GitPreparePullRequestThreadInput,
   GitCreateWorktreeInput,
+  GitPrepareWorktreeInput,
   GitInitInput,
   GitListBranchesInput,
   GitPullInput,
@@ -327,6 +329,7 @@ export const WS_METHODS = {
   gitRunStackedAction: "git.runStackedAction",
   gitListBranches: "git.listBranches",
   gitCreateWorktree: "git.createWorktree",
+  gitPrepareWorktree: "git.prepareWorktree",
   gitRemoveWorktree: "git.removeWorktree",
   gitCreateBranch: "git.createBranch",
   gitCheckout: "git.checkout",
@@ -651,6 +654,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitRunStackedAction, GitRunStackedActionInput),
   tagRequestBody(WS_METHODS.gitListBranches, GitListBranchesInput),
   tagRequestBody(WS_METHODS.gitCreateWorktree, GitCreateWorktreeInput),
+  tagRequestBody(WS_METHODS.gitPrepareWorktree, GitPrepareWorktreeInput),
   tagRequestBody(WS_METHODS.gitRemoveWorktree, GitRemoveWorktreeInput),
   tagRequestBody(WS_METHODS.gitCreateBranch, GitCreateBranchInput),
   tagRequestBody(WS_METHODS.gitCheckout, GitCheckoutInput),
@@ -851,6 +855,7 @@ export const WebSocketResponse = Schema.Struct({
     Schema.Struct({
       message: Schema.String,
       code: Schema.optional(Schema.String),
+      checkoutConflict: Schema.optional(GitCheckoutConflict),
     }),
   ),
 });

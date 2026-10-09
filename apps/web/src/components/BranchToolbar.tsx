@@ -54,6 +54,29 @@ export default function BranchToolbar({
     draftThreadEnvMode: draftThread?.envMode,
   });
 
+  const workspaceVersion = JSON.stringify(serverThread?.session ?? null);
+  const canApplyWorkspace = () => {
+    const latestServer = useStore.getState().threads.find((thread) => thread.id === threadId);
+    const latestDraft = useComposerDraftStore.getState().getDraftThread(threadId);
+    const latest = latestServer ?? latestDraft;
+    const latestProject = useStore
+      .getState()
+      .projects.find((project) => project.id === latest?.projectId);
+    return Boolean(
+      latest &&
+      Boolean(latestServer) === hasServerThread &&
+      latest.branch === activeThreadBranch &&
+      latest.worktreePath === activeWorktreePath &&
+      latestProject?.cwd === activeProject?.cwd &&
+      JSON.stringify(latestServer?.session ?? null) === workspaceVersion &&
+      resolveEffectiveEnvMode({
+        activeWorktreePath: latest.worktreePath,
+        hasServerThread: Boolean(latestServer),
+        draftThreadEnvMode: latestDraft?.envMode,
+      }) === effectiveEnvMode,
+    );
+  };
+
   const setThreadBranch = useCallback(
     (branch: string | null, worktreePath: string | null) => {
       if (!activeThreadId) return;
@@ -164,6 +187,10 @@ export default function BranchToolbar({
       )}
 
       <BranchToolbarBranchSelector
+        key={threadId}
+        threadId={threadId}
+        workspaceVersion={workspaceVersion}
+        canApplyWorkspace={canApplyWorkspace}
         activeProjectCwd={activeProject.cwd}
         activeThreadBranch={activeThreadBranch}
         activeWorktreePath={activeWorktreePath}

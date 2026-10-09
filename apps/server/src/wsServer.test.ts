@@ -855,7 +855,8 @@ describe("WebSocket Server", () => {
       harnessValidation?: HarnessValidationShape;
       open?: OpenShape;
       gitManager?: GitManagerShape;
-      gitCore?: Pick<GitCoreShape, "listBranches" | "initRepo" | "pullCurrentBranch">;
+      gitCore?: Pick<GitCoreShape, "listBranches" | "initRepo" | "pullCurrentBranch"> &
+        Partial<Pick<GitCoreShape, "checkoutBranch">>;
       terminalManager?: TerminalManagerShape;
       observabilityEnabled?: boolean;
       createServerFactory?: typeof createServer;
@@ -2700,6 +2701,68 @@ describe("WebSocket Server", () => {
     expectAvailableEditors(
       (configResponse.result as { availableEditors: unknown }).availableEditors,
     );
+  });
+
+  it("returns checkout conflicts as structured recovery data without a stack trace", async () => {
+    const checkoutConflict = { cwd: "/repo/worktree", branch: "main", files: ["index.css"] };
+    server = await createTestServer({
+      gitCore: {
+        listBranches: () => Effect.die("unused"),
+        initRepo: () => Effect.die("unused"),
+        pullCurrentBranch: () => Effect.die("unused"),
+        checkoutBranch: () =>
+          Effect.fail(
+            new GitCommandError({
+              cwd: checkoutConflict.cwd,
+              operation: "GitCore.checkoutBranch.checkout",
+              command: "git checkout main --",
+              detail: "error: Your local changes would be overwritten by checkout.",
+              checkoutConflict,
+            }),
+          ),
+      },
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const response = await sendRequest(ws, WS_METHODS.gitCheckout, {
+      cwd: checkoutConflict.cwd,
+      branch: "main",
+    });
+    expect(response.error).toEqual({
+      code: "GitCheckoutConflict",
+      message: "Local changes in /repo/worktree would be overwritten by switching to 'main'.",
+      checkoutConflict,
+    });
+  });
+
+  it("keeps checkout conflict details in ordinary failures from other Git routes", async () => {
+    const checkoutConflict = { cwd: "/repo", branch: "main", files: ["index.css"] };
+    server = await createTestServer({
+      gitCore: {
+        listBranches: () => Effect.die("unused"),
+        initRepo: () => Effect.die("unused"),
+        pullCurrentBranch: () =>
+          Effect.fail(
+            new GitCommandError({
+              cwd: "/repo",
+              operation: "checkout during pull",
+              command: "git checkout main --",
+              detail: "Local changes in index.css would be overwritten",
+              checkoutConflict,
+            }),
+          ),
+      },
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const response = await sendRequest(ws, WS_METHODS.gitPull, { cwd: "/repo" });
+    expect(response.error?.code).toBeUndefined();
+    expect(response.error?.checkoutConflict).toBeUndefined();
+    expect(response.error?.message).toContain("index.css");
   });
 
   it("returns error for unknown methods", async () => {

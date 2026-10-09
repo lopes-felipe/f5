@@ -7,6 +7,7 @@ import { Effect, Layer } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
+import { startOwnedSetupScript } from "../ownedSetupScript.ts";
 import {
   type ProjectSetupScriptRunnerShape,
   ProjectSetupScriptRunner,
@@ -48,6 +49,40 @@ const makeProjectSetupScriptRunner = Effect.gen(function* () {
         project: { cwd: project.workspaceRoot },
         worktreePath: input.worktreePath,
       });
+
+      if (script.async === false) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const tail: string[] = [];
+            const owned = yield* Effect.acquireRelease(
+              startOwnedSetupScript({
+                command: script.command,
+                cwd,
+                env,
+                onLine: (line) => {
+                  tail.push(line);
+                  if (tail.length > 20) tail.shift();
+                },
+              }),
+              (script) => script.kill,
+            );
+            const code = yield* owned.exit;
+            if (code !== 0) {
+              return yield* Effect.fail(
+                new Error(
+                  `Setup script '${script.name}' failed (${code ?? "no exit code"}).${tail.length ? `\n${tail.join("\n")}` : ""}`,
+                ),
+              );
+            }
+            return {
+              status: "completed",
+              scriptId: script.id,
+              scriptName: script.name,
+              cwd,
+            } as const;
+          }),
+        );
+      }
 
       yield* terminalManager.open({
         threadId: input.threadId,

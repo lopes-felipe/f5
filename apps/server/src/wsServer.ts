@@ -29,6 +29,7 @@ import {
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   type TurnSubmissionResult,
+  type GitCheckoutConflict,
 } from "@t3tools/contracts";
 import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
 import { GithubCliImport } from "./git/GithubCliImport";
@@ -225,6 +226,7 @@ import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
+import { makeWorktreePreparation } from "./project/worktreePreparation.ts";
 import { WorktreeSetup, type WorktreeSetupShape } from "./project/Services/WorktreeSetup.ts";
 import { withWorktreeLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
@@ -755,11 +757,26 @@ function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
   return Cause.pretty(cause);
 }
 
-function formatRouteFailure(cause: Cause.Cause<unknown>): {
+function formatRouteFailure(
+  cause: Cause.Cause<unknown>,
+  method: string,
+): {
   readonly message: string;
   readonly code?: string;
+  readonly checkoutConflict?: GitCheckoutConflict;
 } {
   const squashed = Cause.squash(cause);
+  if (
+    method === WS_METHODS.gitCheckout &&
+    Schema.is(GitCommandError)(squashed) &&
+    squashed.checkoutConflict
+  ) {
+    return {
+      code: "GitCheckoutConflict",
+      message: `Local changes in ${squashed.checkoutConflict.cwd} would be overwritten by switching to '${squashed.checkoutConflict.branch}'.`,
+      checkoutConflict: squashed.checkoutConflict,
+    };
+  }
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
   }
@@ -2791,6 +2808,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     };
   };
 
+  const prepareWorktree = yield* makeWorktreePreparation({
+    scope: subscriptionsScope,
+    createWorktree: (input) =>
+      Effect.gen(function* () {
+        const commit = yield* git.resolveCommit(input.cwd, input.branch);
+        if (!commit)
+          return yield* Effect.fail(new Error(`Cannot resolve worktree base '${input.branch}'.`));
+        return yield* createConfiguredWorktree({
+          ...input,
+          baseRefName: commit,
+          path: resolveDefaultWorktreePath({
+            worktreesDir: serverConfig.worktreesDir,
+            cwd: input.cwd,
+            branch: input.newBranch,
+          }),
+        });
+      }),
+    runSetup: (input) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ projectSetupScriptRunner }) =>
+          projectSetupScriptRunner.runForThread(input),
+        ),
+      ),
+  });
+
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
       case WS_METHODS.githubLoginStart:
@@ -4116,6 +4158,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       }
 
+      case WS_METHODS.gitPrepareWorktree: {
+        return yield* prepareWorktree(stripRequestTag(request.body));
+      }
+
       case WS_METHODS.gitRemoveWorktree: {
         const body = stripRequestTag(request.body);
         return yield* git.removeWorktree(body);
@@ -4128,7 +4174,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitCheckout: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.scoped(git.checkoutBranch(body));
+        return yield* Effect.scoped(git.checkoutBranch(body)).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Branch checkout failed", {
+              cwd: body.cwd,
+              branch: body.branch,
+              detail: error.detail,
+            }),
+          ),
+        );
       }
 
       case WS_METHODS.gitInit: {
@@ -5811,7 +5865,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse({
         id: request.success.id,
-        error: formatRouteFailure(result.cause),
+        error: formatRouteFailure(result.cause, method),
       });
     }
 

@@ -1,4 +1,4 @@
-import type { ChangeRequest, GitBranch } from "@t3tools/contracts";
+import type { ChangeRequest, GitBranch, GitCheckoutConflict, ThreadId } from "@t3tools/contracts";
 import { resolveChangeRequestWebUrl } from "@t3tools/shared/sourceControl";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -22,6 +22,9 @@ import {
   invalidateGitQueries,
 } from "../lib/gitReactQuery";
 import { readNativeApi } from "../nativeApi";
+import { WsRequestError } from "../wsTransport";
+import { GitBranchWorkspaceDialog } from "./GitBranchWorkspaceDialog";
+import { GitCheckoutConflictDialog } from "./GitCheckoutConflictDialog";
 import { parsePullRequestReference } from "../pullRequestReference";
 import {
   dedupeRemoteBranchesWithLocalMatches,
@@ -50,6 +53,9 @@ import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 interface BranchToolbarBranchSelectorProps {
+  threadId: ThreadId;
+  workspaceVersion: string;
+  canApplyWorkspace: () => boolean;
   activeProjectCwd: string;
   activeThreadBranch: string | null;
   activeWorktreePath: string | null;
@@ -92,6 +98,9 @@ const CHANGE_REQUEST_STATE_PRESENTATION: Record<
 };
 
 export function BranchToolbarBranchSelector({
+  threadId,
+  workspaceVersion,
+  canApplyWorkspace,
   activeProjectCwd,
   activeThreadBranch,
   activeWorktreePath,
@@ -105,6 +114,26 @@ export function BranchToolbarBranchSelector({
   const { settings } = useAppSettings();
   const queryClient = useQueryClient();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
+  const [checkoutConflict, setCheckoutConflict] = useState<{
+    conflict: GitCheckoutConflict;
+    context: string;
+  } | null>(null);
+  const [workspaceChoice, setWorkspaceChoice] = useState<{
+    branch: GitBranch;
+    context: string;
+  } | null>(null);
+  const context = JSON.stringify([
+    threadId,
+    activeProjectCwd,
+    activeThreadBranch,
+    activeWorktreePath,
+    effectiveEnvMode,
+    workspaceVersion,
+  ]);
+  useEffect(() => {
+    setCheckoutConflict(null);
+    setWorkspaceChoice(null);
+  }, [context]);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
@@ -206,7 +235,23 @@ export function BranchToolbarBranchSelector({
     });
   };
 
-  const selectBranch = (branch: GitBranch) => {
+  const handleCheckoutError = (error: unknown) => {
+    if (
+      error instanceof WsRequestError &&
+      error.code === "GitCheckoutConflict" &&
+      error.checkoutConflict
+    ) {
+      setCheckoutConflict({ conflict: error.checkoutConflict, context });
+      return;
+    }
+    toastManager.add({
+      type: "error",
+      title: "Failed to checkout branch.",
+      description: toBranchActionErrorMessage(error),
+    });
+  };
+
+  const selectBranch = (branch: GitBranch, workspaceConfirmed = false) => {
     const api = readNativeApi();
     if (!api || !branchCwd || isBranchActionPending) return;
 
@@ -223,6 +268,12 @@ export function BranchToolbarBranchSelector({
       activeWorktreePath,
       branch,
     });
+
+    if (!workspaceConfirmed && (branch.isDefault || selectionTarget.checkoutCwd !== branchCwd)) {
+      setIsBranchMenuOpen(false);
+      setWorkspaceChoice({ branch, context });
+      return;
+    }
 
     // If the branch already lives in a worktree, point the thread there.
     if (selectionTarget.reuseExistingWorktree) {
@@ -245,17 +296,13 @@ export function BranchToolbarBranchSelector({
         await api.git.checkout({ cwd: selectionTarget.checkoutCwd, branch: branch.name });
         await invalidateGitQueries(queryClient, { cwd: selectionTarget.checkoutCwd });
       } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Failed to checkout branch.",
-          description: toBranchActionErrorMessage(error),
-        });
+        handleCheckoutError(error);
         return;
       }
 
       let nextBranchName = selectedBranchName;
       if (branch.isRemote) {
-        const status = await api.git.status({ cwd: branchCwd }).catch(() => null);
+        const status = await api.git.status({ cwd: selectionTarget.checkoutCwd }).catch(() => null);
         if (status?.branch) {
           nextBranchName = status.branch;
         }
@@ -282,11 +329,7 @@ export function BranchToolbarBranchSelector({
         try {
           await api.git.checkout({ cwd: branchCwd, branch: name });
         } catch (error) {
-          toastManager.add({
-            type: "error",
-            title: "Failed to checkout branch.",
-            description: toBranchActionErrorMessage(error),
-          });
+          handleCheckoutError(error);
           return;
         }
       } catch (error) {
@@ -492,7 +535,11 @@ export function BranchToolbarBranchSelector({
         <ComboboxTrigger
           render={<Button data-composer-control="branch" variant="ghost" size="xs" />}
           className="h-6 font-mono text-2xs font-normal text-muted-foreground hover:text-foreground sm:h-6"
-          disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
+          disabled={
+            (branchesQuery.isLoading && branches.length === 0) ||
+            isBranchActionPending ||
+            checkoutConflict !== null
+          }
         >
           <MiddleTruncate className="max-w-60" text={triggerLabel} />
           <ChevronDownIcon />
@@ -532,6 +579,49 @@ export function BranchToolbarBranchSelector({
           )}
         </ComboboxPopup>
       </Combobox>
+      {workspaceChoice && workspaceChoice.context === context ? (
+        <GitBranchWorkspaceDialog
+          branch={workspaceChoice.branch.name}
+          cwd={
+            resolveBranchSelectionTarget({
+              activeProjectCwd,
+              activeWorktreePath,
+              branch: workspaceChoice.branch,
+            }).checkoutCwd
+          }
+          onClose={() => setWorkspaceChoice(null)}
+          onUseWorkspace={() => {
+            const branch = workspaceChoice.branch;
+            setWorkspaceChoice(null);
+            if (canApplyWorkspace()) selectBranch(branch, true);
+          }}
+          onSeparateWorktree={() => {
+            setCheckoutConflict({
+              conflict: {
+                cwd: branchCwd ?? activeProjectCwd,
+                branch: workspaceChoice.branch.name,
+                files: [],
+              },
+              context,
+            });
+            setWorkspaceChoice(null);
+          }}
+        />
+      ) : null}
+      {checkoutConflict && checkoutConflict.context === context ? (
+        <GitCheckoutConflictDialog
+          key={context}
+          conflict={checkoutConflict.conflict}
+          threadId={threadId}
+          projectCwd={activeProjectCwd}
+          canApply={canApplyWorkspace}
+          onClose={() => setCheckoutConflict(null)}
+          onPrepared={(branch, worktreePath) => {
+            onSetThreadBranch(branch, worktreePath);
+            onComposerFocusRequest?.();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

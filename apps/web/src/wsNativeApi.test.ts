@@ -124,6 +124,21 @@ afterEach(() => {
 });
 
 describe("wsNativeApi", () => {
+  it("allows worktree preparation to outlive the ordinary RPC timeout", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const input = {
+      cwd: "/repo",
+      projectCwd: "/repo",
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      branch: "origin/feature",
+      newBranch: "t3code/12345678",
+    };
+    await createWsNativeApi().git.prepareWorktree(input);
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.gitPrepareWorktree, input, {
+      timeoutMs: null,
+    });
+  });
+
   it("loads and subscribes to durable agents snapshots", async () => {
     const snapshot = { entries: [], generatedAt: "2026-01-01T00:00:00.000Z" } as const;
     requestMock.mockResolvedValue(snapshot);
