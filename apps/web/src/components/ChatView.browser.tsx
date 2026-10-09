@@ -1413,6 +1413,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       updatedAt: NOW_ISO,
     };
   }
+  if (tag === WS_METHODS.storageGetDiskSpace) {
+    return {
+      level: "ok",
+      checkedAt: NOW_ISO,
+      lowThresholdBytes: 0,
+      criticalThresholdBytes: 0,
+      volumes: [],
+      reclaimable: [],
+    };
+  }
   return {};
 }
 
@@ -1524,6 +1534,20 @@ async function nextFrame(): Promise<void> {
 async function waitForLayout(): Promise<void> {
   await nextFrame();
   await nextFrame();
+  await nextFrame();
+}
+
+function composerTransitions(form: HTMLElement): CSSTransition[] {
+  return form
+    .getAnimations({ subtree: true })
+    .filter((animation): animation is CSSTransition => animation instanceof CSSTransition);
+}
+
+async function waitForComposerTransitions(form: HTMLElement): Promise<void> {
+  await nextFrame();
+  await Promise.all(
+    composerTransitions(form).map((transition) => transition.finished.catch(() => undefined)),
+  );
   await nextFrame();
 }
 
@@ -2224,17 +2248,55 @@ describe("ChatView timeline (full app)", () => {
         await waitForLayout();
         wheel();
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
-        await waitForLayout();
+        await waitForComposerTransitions(form);
         expect(
           timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
         ).toBeLessThanOrEqual(2);
+        // Created after the dock's observer, so each animated frame is sampled
+        // after the dock re-pins the timeline, as painted.
+        const distances: number[] = [];
+        const sampler = new ResizeObserver(() =>
+          distances.push(timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight),
+        );
+        sampler.observe(form);
         editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
-        await waitForLayout();
-        expect(
-          timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight,
-        ).toBeLessThanOrEqual(2);
+        await waitForComposerTransitions(form);
+        sampler.disconnect();
+        expect(distances.length).toBeGreaterThan(2);
+        expect(Math.max(...distances)).toBeLessThanOrEqual(2);
       } finally {
+        await mounted.cleanup();
+      }
+    });
+
+    it("animates the same editor to one line and back", async () => {
+      const { mounted, editor, form, wheel } = await composerScrollFixture();
+      const transitioned: string[] = [];
+      const onTransitionRun = (event: TransitionEvent) => {
+        if (event.target === editor) transitioned.push(event.propertyName);
+      };
+      editor.addEventListener("transitionrun", onTransitionRun);
+      try {
+        const expandedHeight = editor.getBoundingClientRect().height;
+        const lineHeight = parseFloat(getComputedStyle(document.documentElement).fontSize) * 1.625;
+        expect(expandedHeight).toBeGreaterThan(lineHeight * 2);
+        wheel();
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("true"));
+        await waitForComposerTransitions(form);
+        expect(transitioned).toContain("height");
+        expect(Math.abs(editor.getBoundingClientRect().height - lineHeight)).toBeLessThanOrEqual(1);
+        expect(await waitForComposerEditor()).toBe(editor);
+        transitioned.length = 0;
+        editor.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+        await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
+        await waitForComposerTransitions(form);
+        expect(transitioned).toContain("height");
+        expect(
+          Math.abs(editor.getBoundingClientRect().height - expandedHeight),
+        ).toBeLessThanOrEqual(1);
+      } finally {
+        editor.removeEventListener("transitionrun", onTransitionRun);
         await mounted.cleanup();
       }
     });
@@ -2367,9 +2429,15 @@ describe("ChatView timeline (full app)", () => {
         expect(document.getElementById(trayId)?.hasAttribute("data-composer-attachment-tray")).toBe(
           true,
         );
+        const tray = document.getElementById(trayId)!;
+        await waitForComposerTransitions(form);
+        expect(getComputedStyle(tray).visibility).toBe("hidden");
+        expect(tray.getBoundingClientRect().height).toBe(0);
         await button.click();
         await vi.waitFor(() => expect(form.dataset.composerCollapsed).toBe("false"));
-        expect(getComputedStyle(document.getElementById(trayId)!).display).not.toBe("none");
+        await waitForComposerTransitions(form);
+        expect(getComputedStyle(tray).visibility).toBe("visible");
+        expect(tray.getBoundingClientRect().height).toBeGreaterThan(0);
       } finally {
         await mounted.cleanup();
       }

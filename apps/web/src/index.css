@@ -832,23 +832,56 @@ label:has(> select#reasoning-effort) select {
   background: var(--card);
   box-shadow: 0 -4px 16px rgb(0 0 0 / 0.08);
 }
-/* No height animation or content-dependent control measurement: controls keep
-   their DOM identity and width while the editor contracts to one line. */
+/* Collapse restyles the same DOM: controls keep their identity and width, and
+   no control is measured. The editor contracts to one line through a CSS height
+   transition (snapping under reduced motion or without interpolate-size). The
+   collapsed editor sets no max-height: one would snap and cancel the transition. */
+[data-composer-redesign] [data-chat-composer-form] {
+  interpolate-size: allow-keywords;
+}
+[data-composer-redesign] [data-composer-attachment-tray] {
+  display: flow-root;
+}
+[data-composer-redesign] [data-composer-placeholder] {
+  overflow: hidden;
+}
 [data-composer-redesign] [data-composer-collapsed="true"] [data-testid="composer-editor"] {
+  height: 1.625rem;
   min-height: 1.625rem;
-  max-height: 1.625rem;
   overflow: hidden;
 }
 [data-composer-redesign] [data-composer-collapsed="true"] .composer-editor-surface {
-  max-height: 1.625rem;
   overflow: hidden;
 }
+/* Hidden rather than display: none, so it can animate; visibility still removes
+   it from tab order and the accessibility tree. */
 [data-composer-redesign] [data-composer-collapsed="true"] [data-composer-attachment-tray] {
-  display: none;
+  height: 0;
+  opacity: 0;
+  visibility: hidden;
+  overflow: hidden;
 }
 [data-composer-redesign] [data-composer-collapsed="true"] [data-composer-editor-area] {
   padding-top: 0.625rem;
   padding-bottom: 0.375rem;
+}
+@media (prefers-reduced-motion: no-preference) {
+  [data-composer-redesign] [data-chat-composer-form] [data-testid="composer-editor"] {
+    transition-property: height, min-height;
+    transition-duration: var(--duration-base);
+    transition-timing-function: var(--ease-out);
+  }
+  [data-composer-redesign] [data-chat-composer-form] [data-composer-editor-area] {
+    transition-property: padding-top, padding-bottom;
+    transition-duration: var(--duration-base);
+    transition-timing-function: var(--ease-out);
+  }
+  [data-composer-redesign] [data-chat-composer-form] [data-composer-attachment-tray] {
+    transition-property: height, opacity, visibility;
+    transition-duration: var(--duration-base);
+    transition-timing-function: var(--ease-out);
+    transition-behavior: allow-discrete;
+  }
 }
 
 /* Reserve history space relative to the chat column remaining above the terminal.

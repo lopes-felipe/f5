@@ -483,7 +483,7 @@ export function ChatComposer({
             {collapsed && attachmentCount > 0 ? (
               <button
                 type="button"
-                className="mb-1 flex items-center gap-1 text-xs text-muted-foreground"
+                className="mb-1 flex animate-fade-in items-center gap-1 text-xs text-muted-foreground"
                 onClick={expand}
                 aria-expanded={false}
                 aria-controls={attachmentTrayId}
