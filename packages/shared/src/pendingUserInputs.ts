@@ -50,6 +50,9 @@ export function projectPendingUserInputs(
       // to have arrived: it stays visible as indeterminate until dismissed.
       if (input.elicitation && (input.receipt === "submitted" || input.receipt === "indeterminate"))
         return sessionEnded ? [{ ...input, receipt: "indeterminate" as const }] : [input];
+      // A form request opened outside a turn has no turn end to settle it; the
+      // provider keeps waiting for it until the session stops.
+      if (input.elicitation && input.turnId === null) return sessionEnded ? [] : [input];
       return input.responseMode === "message" || (!sessionEnded && !isBlockingUserInput(input))
         ? [input]
         : [];

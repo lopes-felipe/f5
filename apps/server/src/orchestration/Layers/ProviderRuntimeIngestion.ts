@@ -3617,7 +3617,29 @@ const make = Effect.gen(function* () {
           requestId: event.requestId,
           declineCount,
         });
-        if (event.requestId !== undefined) {
+        const elicitation = event.payload.elicitation;
+        if (event.requestId !== undefined && elicitation) {
+          // A form request is cancelled, never answered: there is nobody to
+          // supply its values. Claude already cancelled it in the adapter, so
+          // a refusal here is expected.
+          yield* providerService
+            .respondToElicitation({
+              threadId: thread.id,
+              requestId: ApprovalRequestId.makeUnsafe(String(event.requestId)),
+              generation: elicitation.generation ?? 0,
+              action: "cancel",
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logDebug("unattended workflow elicitation was not cancelled", {
+                  threadId: thread.id,
+                  turnId: profiledTurnId,
+                  requestId: event.requestId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+        } else if (event.requestId !== undefined) {
           // Codex and OpenCode have no adapter-side short-circuit and depend on
           // this to unblock. Claude and Cursor already declined synchronously
           // and registered no pending entry, so for them this call fails with

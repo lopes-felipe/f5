@@ -574,7 +574,9 @@ the server downgrades any persistent decision it still receives to a one-time ac
 
 `onElicitation` form and URL requests open a form in the composer. Supported fields
 are bounded strings (no `pattern`), numbers, integers, booleans, enums and multiselects
-with unique values, up to 32 fields and 64 KiB. A schema with anything else is
+with unique, non-empty values, up to 32 fields and 64 KiB. A multiselect that allows an
+empty list offers **None**, so an empty answer stays distinct from leaving the field
+out. A schema with anything else is
 cancelled with a visible warning. Suggested values are shown in the form and never
 sent unless the user submits them. URL requests show the host and the full URL, and
 open only on an explicit click.
@@ -594,8 +596,10 @@ Answers are private:
   indeterminate.
 
 `system/elicitation_complete` and turn completion settle requests. Form requests send
-no `elicitation_complete`, so they settle when the turn ends. Unattended read-only
-workflows cancel elicitations instead of asking.
+no `elicitation_complete`, so they settle when the turn ends. A request opened outside
+a turn stays pending until it is answered or the session stops. Requests opened while
+the session is still starting can be answered before the start finishes. Unattended
+read-only workflows cancel elicitations instead of asking.
 
 Live check, Claude Code 2.1.292, 2026-10-09: an MCP tool's form request reached
 `onElicitation` with its schema. F5's descriptor builder accepted it unchanged, and the
@@ -635,18 +639,23 @@ Live check, Claude Code 2.1.292 on a claude.ai account, 2026-10-09:
 named in the payload, so leaving them out never removes them. A desired server whose
 name a settings or plugin server already uses is skipped, with a notice. After the call,
 F5 always re-reads `mcpServerStatus()`, even after errors. A server that is still
-failing is reconnected on the next attempt, up to three attempts with backoff. The
-session's config version advances only when every F5 server is applied and none has
-failed. If the runtime cannot change servers in place, an idle session restarts through
-the existing restart path with its resume cursor kept. A busy session keeps its stale
-version and restarts at its next turn. Remaining failures appear as a thread warning
-and in the settings panel.
+failing is reconnected on the next attempt, up to three attempts with backoff. Sessions
+are reconciled four at a time. The session's config version advances once the change
+reached the session and no restart is required: a server that still fails after the
+retries appears as a thread warning and in the settings panel, but does not restart
+the session, because a restart would not fix it. If the runtime cannot change servers
+in place, an idle session restarts through the existing restart path with its resume
+cursor kept. The idle check and the restart are serialized with turn starts, so a
+session whose turn started during reconciliation is never stopped. A busy session
+keeps its stale version and restarts at its next turn.
 
 Servers passed when the session launched can be replaced by name but are never
 removed by `setMcpServers` (verified live on Claude Code 2.1.292). Removing one F5
 server therefore reports **restart required**, and keeps reporting it until the
 session restarts. Servers added or replaced by a later reconcile can be removed in
-place.
+place. A removal counts as done only when the CLI lists it in `removed` or the status
+re-read no longer shows it; if the re-read fails, F5 keeps ownership of the server and
+reports restart required.
 
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply

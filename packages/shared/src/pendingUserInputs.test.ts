@@ -3,6 +3,7 @@ import {
   type OrchestrationEvent,
   type PendingUserInput,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 import {
@@ -85,6 +86,13 @@ describe("elicitation receipts", () => {
     ).toEqual([]);
     // Unanswered requests are dropped (cancelled) with the session.
     expect(projectPendingUserInputs([elicitation], sessionSet("stopped"))).toEqual([]);
+  });
+
+  it("keeps a form request opened outside a turn until the session ends", () => {
+    // No turn end settles it, and the provider is still waiting for the answer.
+    expect(projectPendingUserInputs([elicitation], sessionSet("ready"))).toEqual([elicitation]);
+    const inTurn = { ...elicitation, turnId: TurnId.makeUnsafe("turn-1") };
+    expect(projectPendingUserInputs([inTurn], sessionSet("ready"))).toEqual([]);
   });
 });
 

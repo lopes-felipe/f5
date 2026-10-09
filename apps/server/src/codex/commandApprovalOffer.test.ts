@@ -49,6 +49,18 @@ describe("Codex command approval offers", () => {
     });
   });
 
+  it("always offers a refusal when the list has none the client recognizes", () => {
+    const offer = readCodexCommandApprovalOffer({
+      availableDecisions: [{ someFutureDecision: {} }],
+    });
+    expect(codexCommandApprovalOptions(offer)?.map((option) => option.decision)).toEqual([
+      "cancel",
+      "decline",
+    ]);
+    expect(codexCommandApprovalDecision(offer, "decline")).toBe("decline");
+    expect(() => codexCommandApprovalDecision(offer, "accept")).toThrow("does not offer");
+  });
+
   it("drops conflicting or malformed amendment offers", () => {
     const offer = readCodexCommandApprovalOffer({
       availableDecisions: [

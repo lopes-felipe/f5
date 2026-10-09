@@ -30,7 +30,7 @@ import {
   type TurnId,
   type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schema, Semaphore, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -362,6 +362,27 @@ export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliver
 }
 
 const make = Effect.gen(function* () {
+  // Serializes turn delivery with MCP-apply restarts per thread, so Apply
+  // never stops a session between its idle check and a new turn. Separate
+  // from `withProviderThreadAccess`, which startSession takes itself.
+  const threadTurnGates = new Map<ThreadId, { gate: Semaphore.Semaphore; users: number }>();
+  const withThreadTurnGate = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const entry = threadTurnGates.get(threadId) ?? {
+          gate: Semaphore.makeUnsafe(1),
+          users: 0,
+        };
+        entry.users++;
+        threadTurnGates.set(threadId, entry);
+        return entry;
+      }),
+      (entry) => entry.gate.withPermit(effect),
+      (entry) =>
+        Effect.sync(() => {
+          if (--entry.users === 0) threadTurnGates.delete(threadId);
+        }),
+    );
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -1950,7 +1971,7 @@ const make = Effect.gen(function* () {
           {
             readonly projectId: ProjectId;
             readonly providerOptions?: ProviderStartOptions;
-            count: number;
+            readonly threadIds: ThreadId[];
           }
         >();
         const claudeThreadsByProject = new Map<ProjectId, ThreadId[]>();
@@ -2019,12 +2040,12 @@ const make = Effect.gen(function* () {
             const groupKey = `${binding.projectId}\u0000${getProviderEnvironmentKey("codex", providerOptions)}`;
             const existingGroup = codexGroups.get(groupKey);
             if (existingGroup) {
-              existingGroup.count += 1;
+              existingGroup.threadIds.push(binding.threadId);
             } else {
               codexGroups.set(groupKey, {
                 projectId: binding.projectId,
                 ...(providerOptions !== undefined ? { providerOptions } : {}),
-                count: 1,
+                threadIds: [binding.threadId],
               });
             }
             continue;
@@ -2048,6 +2069,8 @@ const make = Effect.gen(function* () {
             ...(group.providerOptions !== undefined
               ? { providerOptions: group.providerOptions }
               : {}),
+            // Only the out-of-date sessions, so counts match what was skipped.
+            threadIds: group.threadIds,
           });
           // Codex pins MCP servers at launch; a changed set restarts at the next turn.
           for (const session of outcome.sessions) {
@@ -2058,13 +2081,25 @@ const make = Effect.gen(function* () {
             if (session.result.restartRequired) deferred += 1;
             recordFailure(session.threadId, "codex", session.result);
           }
-          skipped += Math.max(0, group.count - outcome.sessions.length);
+          skipped += Math.max(0, group.threadIds.length - outcome.sessions.length);
         }
 
         // Claude reconciles F5-owned servers in place. Only a session that
         // cannot do so restarts, and only while idle; a busy one keeps its
-        // stale config version so the next turn start restarts it.
-        const liveSessions = yield* providerService.listSessions();
+        // stale config version so the next turn start restarts it. The idle
+        // check and the restart share the turn gate, so a turn delivered while
+        // the reload was retrying is seen here and never stopped.
+        const restartIfStillIdle = (binding: ProviderRuntimeBinding) =>
+          withThreadTurnGate(
+            binding.threadId,
+            Effect.gen(function* () {
+              const live = (yield* providerService.listSessions()).find(
+                (entry) => entry.threadId === binding.threadId,
+              );
+              if (!live || live.activeTurnId || live.status === "running") return false;
+              return yield* restartClaudeSessionForMcpApply(binding, createdAt);
+            }),
+          );
         for (const [projectId, threadIds] of claudeThreadsByProject) {
           const outcome = yield* providerService.reloadMcpConfigForProject({
             provider: "claudeAgent",
@@ -2079,10 +2114,8 @@ const make = Effect.gen(function* () {
               continue;
             }
             const binding = claudeBindings.get(session.threadId);
-            const live = liveSessions.find((entry) => entry.threadId === session.threadId);
-            const idle = live !== undefined && !live.activeTurnId && live.status !== "running";
-            if (session.result.restartRequired && binding && idle) {
-              const restarted = yield* restartClaudeSessionForMcpApply(binding, createdAt);
+            if (session.result.restartRequired && binding) {
+              const restarted = yield* restartIfStillIdle(binding);
               if (restarted) {
                 claudeRestarted += 1;
                 continue;
@@ -2285,7 +2318,7 @@ const make = Effect.gen(function* () {
   });
 
   const deliverTurnStart: ProviderCommandReactorShape["deliverTurnStart"] = (event) =>
-    processTurnStartRequested(event).pipe(
+    withThreadTurnGate(event.payload.threadId, processTurnStartRequested(event)).pipe(
       Effect.tap(() =>
         increment(orchestrationEventsProcessedTotal, {
           eventType: event.type,

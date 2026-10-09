@@ -20,4 +20,10 @@ describe("ACP native log redaction", () => {
     const message = { params: { content: [{ type: "text", text: "hello" }] } };
     expect(redactElicitationAnswers(message)).toEqual(message);
   });
+
+  it("redacts anything nested too deep to inspect", () => {
+    let message: unknown = { action: "accept", content: { token: "sentinel-deep" } };
+    for (let depth = 0; depth < 12; depth += 1) message = { wrapped: message };
+    expect(JSON.stringify(redactElicitationAnswers(message))).not.toContain("sentinel-deep");
+  });
 });

@@ -362,7 +362,9 @@ F5 reads `availableDecisions` and `proposedExecpolicyAmendment` from
 **Always allow `<prefix>`** with a warning that it applies to future commands that start
 the same way. The choice is sent as `acceptWithExecpolicyAmendment` with the stored
 prefix, and only when that request offered it. A decision the request did not offer is
-refused. Network amendments are not supported.
+refused. If the list holds no refusal F5 recognizes, **Decline** and **Cancel turn** are
+offered anyway, so a request can always be refused. Network amendments are not
+supported.
 
 ### Non-blocking questions
 
@@ -375,8 +377,10 @@ resume. It is dropped when the session ends.
 Form and URL requests from `mcpServer/elicitation/request` open a form in the composer.
 Answers go through the private `elicitation.submit` RPC described in
 [claude.md](./claude.md#mcp-elicitation), never through the event-sourced answer
-command. `serverRequest/resolved` and `turn/completed` settle the request. Stopping the
-session marks an answered but unconfirmed request as indeterminate.
+command. `serverRequest/resolved` and `turn/completed` settle the request. A request
+opened outside a turn stays pending until it is answered or the session stops. Stopping
+the session marks an answered but unconfirmed request as indeterminate. Unattended
+read-only workflow stages cancel form requests, for Codex and ACP providers alike.
 
 Codex also uses `mcpServer/elicitation/request` to ask before an MCP tool call. Those
 requests have an empty schema and `_meta.codex_approval_kind` (for example
@@ -401,12 +405,17 @@ Every app-server is launched with F5's MCP servers pinned by `-c mcp_servers=...
 `config/mcpServer/reload` cannot change that set. When the stored config differs from
 the set the session launched with, the reload reports **restart required**. The
 session's config version stays stale, so the session restarts at its next turn with the
-resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads, reads
-`mcpServerStatus/list`, and advances the session's config version only when every F5
-server is listed and none has failed. 0.160.1 lists servers without `startupStatus`,
-so a server that reports tools counts as connected. Failures are retried up to three times with
-backoff (0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
-**Apply to live sessions**.
+resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads and reads
+`mcpServerStatus/list`. 0.160.1 lists servers without `startupStatus`, so a server that
+reports tools counts as connected. Failures are retried up to three times with backoff
+(0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
+**Apply to live sessions**. The config version advances once the reload reached the
+session, even if a server still fails, since restarting would not fix it. **Apply** only
+reloads sessions whose version is out of date, four at a time.
+
+After an MCP login, F5 reloads the project's sessions with its own retries (no per-session
+backoff) and warns only after the last attempt. A session that needs a restart is not a
+failed reload: it restarts at its next turn, and the login reports success.
 
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply

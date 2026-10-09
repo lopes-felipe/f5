@@ -73,6 +73,13 @@ export function readCodexCommandApprovalOffer(params: unknown): CodexCommandAppr
     execpolicyAmendment = amendment;
     decisions.add("acceptAlways");
   }
+  // The user must always be able to refuse: a list without a refusal we
+  // recognize (for example only unknown decisions) falls back to both, which
+  // every Codex version accepts.
+  if (!decisions.has("decline") && !decisions.has("cancel")) {
+    decisions.add("decline");
+    decisions.add("cancel");
+  }
   return { decisions, ...(execpolicyAmendment ? { execpolicyAmendment } : {}) };
 }
 

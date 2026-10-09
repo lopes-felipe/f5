@@ -115,6 +115,9 @@ function readOptions(
   }
   if (!options) return ok(undefined);
   if (!options.length) return fail(`"${label}" has no choices.`);
+  // An empty answer means "not filled in" everywhere, so an empty choice could
+  // never be submitted.
+  if (options.some((option) => option.value === "")) return fail(`"${label}" has an empty choice.`);
   if (options.length > ELICITATION_MAX_OPTIONS) return fail(`"${label}" has too many choices.`);
   if (new Set(options.map((option) => option.value)).size !== options.length)
     return fail(`"${label}" repeats a choice.`);

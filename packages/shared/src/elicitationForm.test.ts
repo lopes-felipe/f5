@@ -59,6 +59,14 @@ describe("elicitation form engine", () => {
       "bounds",
     ],
     [{ type: "object", additionalProperties: false, properties: {} }, "additionalProperties"],
+    [{ type: "object", properties: { a: { type: "string", enum: ["", "x"] } } }, "empty choice"],
+    [
+      {
+        type: "object",
+        properties: { a: { type: "string", oneOf: [{ const: "", title: "None" }] } },
+      },
+      "empty choice",
+    ],
     [
       {
         type: "object",

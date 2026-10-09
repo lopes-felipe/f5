@@ -24,6 +24,17 @@ describe("elicitationContentFromDraft", () => {
     expect(elicitationContentFromDraft(fields, { name: "", age: "" })).toEqual({});
   });
 
+  it("submits an explicit empty choice for a required list that allows none", () => {
+    const required: ElicitationField[] = [{ ...fields[3]!, required: true, minItems: 0 }];
+    // "None" sets [], which is sent; an untouched field stays omitted.
+    expect(
+      validateElicitationContent(required, elicitationContentFromDraft(required, { tags: [] })),
+    ).toEqual({ ok: true, value: { tags: [] } });
+    expect(validateElicitationContent(required, elicitationContentFromDraft(required, {})).ok).toBe(
+      false,
+    );
+  });
+
   it("keeps unparseable numbers so validation names the field", () => {
     const content = elicitationContentFromDraft(fields, { name: "Ada", age: "thirty" });
     const result = validateElicitationContent(fields, content);

@@ -17,16 +17,23 @@ export function reloadCodexMcpConfigAfterLogin(input: {
   readonly retryDelaysMs?: ReadonlyArray<number>;
 }) {
   const retryDelaysMs = input.retryDelaysMs ?? CODEX_MCP_LOGIN_RELOAD_RETRY_DELAYS_MS;
-  const reloadOnce = () =>
+  // This loop owns the retries: one reload per attempt, and per-session
+  // warnings only on the last attempt so a login posts them once.
+  const reloadOnce = (attemptIndex: number) =>
     input.providerService
       .reloadMcpConfigForProject({
         provider: "codex",
         projectId: input.projectId,
         ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+        retry: false,
+        warn: attemptIndex >= retryDelaysMs.length,
       })
       .pipe(
         Effect.flatMap((outcome) => {
-          const unconverged = outcome.sessions.filter((session) => !session.result.converged);
+          // A restart-required session is final; it restarts at its next turn.
+          const unconverged = outcome.sessions.filter(
+            (session) => !session.result.converged && !session.result.restartRequired,
+          );
           return unconverged.length === 0
             ? Effect.void
             : Effect.fail(
@@ -39,7 +46,7 @@ export function reloadCodexMcpConfigAfterLogin(input: {
       );
 
   const reloadWithRetry = (attemptIndex: number): Effect.Effect<void, ProviderServiceError> =>
-    reloadOnce().pipe(
+    reloadOnce(attemptIndex).pipe(
       Effect.catch((cause) => {
         const delayMs = retryDelaysMs[attemptIndex];
         if (delayMs === undefined) {

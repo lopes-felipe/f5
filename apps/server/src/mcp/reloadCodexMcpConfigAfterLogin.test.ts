@@ -96,5 +96,40 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
 
     await expect(result).resolves.toBe(CODEX_MCP_LOGIN_RELOAD_FAILURE_MESSAGE);
     expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(2);
+    // The service's own backoff is off, and only the last attempt warns.
+    expect(reloadMcpConfigForProject.mock.calls.map(([call]) => [call.retry, call.warn])).toEqual([
+      [false, false],
+      [false, true],
+    ]);
+  });
+
+  it("does not retry or report failure for a session that needs a restart", async () => {
+    const reloadMcpConfigForProject = vi.fn<ProviderServiceShape["reloadMcpConfigForProject"]>(() =>
+      Effect.succeed({
+        sessions: [
+          {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            result: {
+              converged: false,
+              restartRequired: true,
+              servers: [],
+              errors: [{ message: "Codex fixes its MCP servers when the session starts." }],
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = Effect.runPromise(
+      reloadCodexMcpConfigAfterLogin({
+        providerService: { reloadMcpConfigForProject },
+        projectId,
+        serverName: "Observability",
+        retryDelaysMs: [1, 1],
+      }),
+    );
+
+    await expect(result).resolves.toBeUndefined();
+    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(1);
   });
 });

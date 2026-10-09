@@ -338,6 +338,24 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly event: ProviderRuntimeEvent;
     }>(PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY);
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    // The generation a session is being started as, published before the
+    // adapter starts so requests it opens during startup carry the generation
+    // that will own them, and can be answered without the start lock.
+    const startingSessions = new Map<
+      ThreadId,
+      { readonly generation: number; readonly adapter: ProviderAdapterShape<ProviderAdapterError> }
+    >();
+    const whileStarting = <A, E, R>(
+      threadId: ThreadId,
+      generation: number,
+      adapter: ProviderAdapterShape<ProviderAdapterError>,
+      effect: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => startingSessions.set(threadId, { generation, adapter })),
+        () => effect,
+        () => Effect.sync(() => startingSessions.delete(threadId)),
+      );
 
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Effect.succeed(event).pipe(
@@ -532,18 +550,22 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         yield* persistResumeCursorFromRuntimeEvent(event);
         if (event.type === "user-input.requested" && event.payload.elicitation) {
           // The owning generation is what a later private answer must match.
-          const binding = Option.getOrUndefined(
-            yield* directory
-              .getBinding(event.threadId)
-              .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
-          );
+          const starting = startingSessions.get(event.threadId);
+          const binding = starting
+            ? undefined
+            : Option.getOrUndefined(
+                yield* directory
+                  .getBinding(event.threadId)
+                  .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+              );
           event = {
             ...event,
             payload: {
               ...event.payload,
               elicitation: {
                 ...event.payload.elicitation,
-                generation: readPersistedSessionGeneration(binding?.runtimePayload),
+                generation:
+                  starting?.generation ?? readPersistedSessionGeneration(binding?.runtimePayload),
               },
             },
           };
@@ -812,19 +834,25 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
         if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
-        const resumed = yield* adapter.startSession({
-          threadId: input.binding.threadId,
-          ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
-          provider: input.binding.provider,
-          providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
-          ...recoveredInstructionContext,
-          ...(persistedModel ? { model: persistedModel } : {}),
-          ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
-          ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
-          ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          runtimeMode: recoveredRuntimeMode,
-        });
+        const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
+        const resumed = yield* whileStarting(
+          input.binding.threadId,
+          resumedGeneration,
+          adapter,
+          adapter.startSession({
+            threadId: input.binding.threadId,
+            ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            ...(persistedCwd ? { cwd: persistedCwd } : {}),
+            ...recoveredInstructionContext,
+            ...(persistedModel ? { model: persistedModel } : {}),
+            ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
+            ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
+            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+            runtimeMode: recoveredRuntimeMode,
+          }),
+        );
         if (resumed.provider !== adapter.provider) {
           return yield* toValidationError(
             input.operation,
@@ -832,7 +860,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
 
-        const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
         yield* upsertSessionBinding(
           { ...resumed, providerInstanceId: bindingInstanceId },
           input.binding.threadId,
@@ -1145,7 +1172,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             currentInstanceId: requestedInstanceId,
           });
           if (adapterInput.cwd) yield* ensureWorkspaceDirectory(adapterInput.cwd);
-          const session = yield* adapter.startSession(adapterInput);
+          // Generations only grow per thread, across instance switches too, so a
+          // browser can never mistake a new session for the one it looked at.
+          const sessionGeneration =
+            readPersistedSessionGeneration(previousBinding?.runtimePayload) + 1;
+          const session = yield* whileStarting(
+            threadId,
+            sessionGeneration,
+            adapter,
+            adapter.startSession(adapterInput),
+          );
 
           if (session.provider !== adapter.provider) {
             return yield* toValidationError(
@@ -1153,10 +1189,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
             );
           }
-          // Generations only grow per thread, across instance switches too, so a
-          // browser can never mistake a new session for the one it looked at.
-          const sessionGeneration =
-            readPersistedSessionGeneration(previousBinding?.runtimePayload) + 1;
           yield* upsertSessionBinding(
             { ...session, providerInstanceId: requestedInstanceId },
             threadId,
@@ -1619,6 +1651,22 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
       });
 
+    const respondToStartingElicitation = (
+      input: Parameters<ProviderServiceShape["respondToElicitation"]>[0],
+      adapter: ProviderAdapterShape<ProviderAdapterError>,
+    ) =>
+      adapter.respondToElicitation
+        ? adapter.respondToElicitation(input.threadId, input.requestId, {
+            action: input.action,
+            ...(input.content !== undefined ? { content: input.content } : {}),
+          })
+        : Effect.gen(function* () {
+            return yield* toValidationError(
+              "ProviderService.respondToElicitation",
+              "The provider session that asked for this input is no longer running.",
+            );
+          });
+
     const stopSession: ProviderServiceShape["stopSession"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -1966,12 +2014,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const reloadMcpConfigForProject: ProviderServiceShape["reloadMcpConfigForProject"] = (input) =>
       Effect.gen(function* () {
-        const adapter = yield* registry.getByProvider(input.provider);
-        const reloadMcpConfig = adapter.reloadMcpConfig;
-        if (!reloadMcpConfig) {
-          return { sessions: [] };
-        }
-
         const bindings = yield* directory.listBindingsByProject(input.projectId);
         const matchingBindings = bindings.filter((binding) => {
           if (binding.provider !== input.provider) {
@@ -2013,64 +2055,103 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           );
 
-        const reloadOnce = (threadId: ThreadId) =>
+        // `reached` is false when the reload request itself failed, so the
+        // session may not hold the new config at all.
+        const reloadOnce = (
+          reloadMcpConfig: NonNullable<
+            ProviderAdapterShape<ProviderAdapterError>["reloadMcpConfig"]
+          >,
+          threadId: ThreadId,
+        ) =>
           reloadMcpConfig({ threadId, mcpServers: currentProjectMcp.servers }).pipe(
+            Effect.map((result) => ({ result, reached: true })),
             Effect.catch((error) =>
-              Effect.succeed<McpReloadResult>({
-                converged: false,
-                restartRequired: false,
-                servers: [],
-                errors: [{ message: error.message.trim() || "The MCP reload request failed." }],
+              Effect.succeed({
+                result: {
+                  converged: false,
+                  restartRequired: false,
+                  servers: [],
+                  errors: [{ message: error.message.trim() || "The MCP reload request failed." }],
+                } satisfies McpReloadResult,
+                reached: false,
               }),
             ),
           );
         // Bounded backoff: a restart-required result is final, as is convergence.
+        const retryDelays = input.retry === false ? [] : MCP_RELOAD_RETRY_DELAYS_MS;
         const reloadWithRetry = (
+          reloadMcpConfig: NonNullable<
+            ProviderAdapterShape<ProviderAdapterError>["reloadMcpConfig"]
+          >,
           threadId: ThreadId,
           attempt: number,
-        ): Effect.Effect<McpReloadResult> =>
-          reloadOnce(threadId).pipe(
-            Effect.flatMap((result) => {
-              const delayMs = MCP_RELOAD_RETRY_DELAYS_MS[attempt];
-              if (result.converged || result.restartRequired || delayMs === undefined) {
-                return Effect.succeed(result);
+        ): Effect.Effect<{ readonly result: McpReloadResult; readonly reached: boolean }> =>
+          reloadOnce(reloadMcpConfig, threadId).pipe(
+            Effect.flatMap((outcome) => {
+              const delayMs = retryDelays[attempt];
+              if (
+                outcome.result.converged ||
+                outcome.result.restartRequired ||
+                delayMs === undefined
+              ) {
+                return Effect.succeed(outcome);
               }
               return Effect.sleep(Duration.millis(delayMs)).pipe(
-                Effect.andThen(reloadWithRetry(threadId, attempt + 1)),
+                Effect.andThen(reloadWithRetry(reloadMcpConfig, threadId, attempt + 1)),
               );
             }),
           );
 
-        const sessions = yield* Effect.forEach(matchingBindings, (binding) =>
-          Effect.gen(function* () {
-            if (!(yield* adapter.hasSession(binding.threadId))) {
-              return [];
-            }
-            const result = yield* reloadWithRetry(binding.threadId, 0);
-            if (result.converged) {
-              yield* directory.upsert({
-                threadId: binding.threadId,
-                projectId: input.projectId,
-                provider: binding.provider,
-                mcpEffectiveConfigVersion: currentProjectMcp.effectiveVersion,
-              });
-            }
-            if (result.errors.length > 0) {
-              yield* publishRuntimeEvent({
-                type: "runtime.warning",
-                eventId: EventId.makeUnsafe(randomUUID()),
-                provider: binding.provider,
-                threadId: binding.threadId,
-                createdAt: new Date().toISOString(),
-                payload: {
-                  category: "provider",
-                  message: describeMcpReloadFailure(result),
-                  actionable: !result.restartRequired,
-                },
-              });
-            }
-            return [{ threadId: binding.threadId, result }];
-          }),
+        const sessions = yield* Effect.forEach(
+          matchingBindings,
+          (binding) =>
+            Effect.gen(function* () {
+              // Custom instances have their own adapter; resolve it per binding.
+              const adapter = yield* registry
+                .getByInstance(resolveBindingInstanceId(binding))
+                .pipe(Effect.option);
+              const reloadMcpConfig = Option.getOrUndefined(adapter)?.reloadMcpConfig;
+              if (
+                Option.isNone(adapter) ||
+                !reloadMcpConfig ||
+                !(yield* adapter.value.hasSession(binding.threadId))
+              ) {
+                return [];
+              }
+              const { result, reached } = yield* reloadWithRetry(
+                reloadMcpConfig,
+                binding.threadId,
+                0,
+              );
+              // A broken server stays broken after a restart, so only a
+              // restart-required (or undelivered) reload keeps the version
+              // stale; the next turn start restarts that session.
+              if (reached && !result.restartRequired) {
+                yield* directory.upsert({
+                  threadId: binding.threadId,
+                  projectId: input.projectId,
+                  provider: binding.provider,
+                  mcpEffectiveConfigVersion: currentProjectMcp.effectiveVersion,
+                });
+              }
+              if (result.errors.length > 0 && input.warn !== false) {
+                yield* publishRuntimeEvent({
+                  type: "runtime.warning",
+                  eventId: EventId.makeUnsafe(randomUUID()),
+                  provider: binding.provider,
+                  threadId: binding.threadId,
+                  createdAt: new Date().toISOString(),
+                  payload: {
+                    category: "provider",
+                    message: describeMcpReloadFailure(result),
+                    actionable: !result.restartRequired,
+                  },
+                });
+              }
+              return [{ threadId: binding.threadId, result }];
+            }),
+          // Bound the wall time of Apply when several sessions retry.
+          { concurrency: 4 },
         );
         return { sessions: sessions.flat() };
       });
@@ -2157,7 +2238,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       respondToUserInput: (input) =>
         withProviderThreadAccess(input.threadId, respondToUserInput(input)),
       respondToElicitation: (input) =>
-        withProviderThreadAccess(input.threadId, respondToElicitation(input)),
+        Effect.suspend(() => {
+          // The start holds the thread lock until the adapter returns, so a
+          // request opened during startup is answered without it.
+          const starting = startingSessions.get(input.threadId);
+          return starting && starting.generation === input.generation
+            ? respondToStartingElicitation(input, starting.adapter)
+            : withProviderThreadAccess(input.threadId, respondToElicitation(input));
+        }),
       stopSession,
       listSessions,
       getCapabilities,

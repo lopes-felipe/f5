@@ -263,7 +263,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       });
     const abortElicitations = (threadId: ThreadId) =>
       Effect.gen(function* () {
-        for (const { requestId, receipt } of elicitationsByThread.get(threadId)?.abortAll() ?? [])
+        const registry = elicitationsByThread.get(threadId);
+        elicitationsByThread.delete(threadId);
+        for (const { requestId, receipt } of registry?.abortAll() ?? [])
           yield* emitElicitationReceipt(threadId, requestId, receipt);
       });
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());

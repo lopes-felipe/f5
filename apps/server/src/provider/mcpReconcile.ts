@@ -124,6 +124,7 @@ interface ClaudeMcpControl<TConfig> {
   >;
   readonly setMcpServers?: (servers: Record<string, TConfig>) => Promise<{
     readonly added: ReadonlyArray<string>;
+    readonly removed?: ReadonlyArray<string>;
     readonly errors: Readonly<Record<string, string>>;
   }>;
   readonly reconnectMcpServer?: (serverName: string) => Promise<void>;
@@ -193,14 +194,17 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   const after = await query.mcpServerStatus().catch(() => undefined);
   // Claude keeps servers passed at launch when a payload omits them (verified
   // live on CLI 2.1.292); only a restart drops them. They stay owned so every
-  // later reconcile keeps reporting the pending restart.
-  const lingering = after
-    ? [...input.owned].filter(
-        (name) => !(name in payload) && after.some((server) => server.name === name),
-      )
-    : [];
+  // later reconcile keeps reporting the pending restart. Without a status
+  // read, only the CLI's `removed` list proves a removal.
+  const removed = new Set(setResult.removed ?? []);
+  const lingering = [...input.owned].filter(
+    (name) =>
+      !(name in payload) &&
+      !removed.has(name) &&
+      (after === undefined || after.some((server) => server.name === name)),
+  );
   for (const name of lingering) owned.add(name);
-  const result = summarizeMcpReload({
+  const summarized = summarizeMcpReload({
     desired: Object.keys(payload),
     observed: after?.map((server) => ({
       name: server.name,
@@ -213,6 +217,18 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     })),
     notices,
   });
+  // A failed status read leaves the change unverified, so it is retried.
+  const result: McpReloadResult =
+    after === undefined
+      ? {
+          ...summarized,
+          converged: false,
+          errors: [
+            ...summarized.errors,
+            { message: "Claude did not report MCP status after the change." },
+          ],
+        }
+      : summarized;
   if (lingering.length === 0) return { result, owned, applied: payload };
   return {
     result: {

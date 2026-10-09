@@ -39,7 +39,9 @@ const REDACTED = "[redacted elicitation answer]";
  * response's `action`) must never reach native logs; everything else is kept.
  */
 export function redactElicitationAnswers(value: unknown, depth = 0): unknown {
-  if (depth > 8 || value === null || typeof value !== "object") return value;
+  if (value === null || typeof value !== "object") return value;
+  // Too deep to inspect means it cannot be shown to be answer-free.
+  if (depth > 8) return REDACTED;
   if (Array.isArray(value)) return value.map((entry) => redactElicitationAnswers(entry, depth + 1));
   const record = value as Record<string, unknown>;
   const redacted: Record<string, unknown> = {};

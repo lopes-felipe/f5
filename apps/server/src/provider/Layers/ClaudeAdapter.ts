@@ -6031,7 +6031,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     toolName,
                     input: toolInput,
                     ...(callbackOptions.toolUseID ? { toolUseId: callbackOptions.toolUseID } : {}),
-                    ...presentation,
                   },
                 },
                 providerRefs: nativeProviderRefs(context, {

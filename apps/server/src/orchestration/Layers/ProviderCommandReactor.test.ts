@@ -2287,6 +2287,37 @@ describe("ProviderCommandReactor", () => {
       expect(harness.startSession).toHaveBeenCalledTimes(1);
     });
 
+    it("does not stop a session whose turn started while the reload was in flight", async () => {
+      const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+      const threadId = await startClaudeTurn(harness);
+      const restartRequired = harness.mcpReload.result;
+      harness.reloadMcpConfigForProject.mockImplementation((input) =>
+        Effect.sync(() => {
+          // The user starts a turn while reconciliation is still retrying.
+          const live = harness.runtimeSessions[0]!;
+          harness.runtimeSessions[0] = {
+            ...live,
+            status: "running",
+            activeTurnId: asTurnId("turn-started-mid-reload"),
+          };
+          return {
+            sessions:
+              input.provider === "claudeAgent" ? [{ threadId, result: restartRequired }] : [],
+          };
+        }),
+      );
+
+      const result = await Effect.runPromise(
+        harness.reactor.applyMcpConfigToLiveSessions({
+          scope: "project",
+          projectId: asProjectId("project-1"),
+        }),
+      );
+
+      expect(result).toMatchObject({ claudeRestarted: 0, deferred: 1 });
+      expect(harness.stopSession).not.toHaveBeenCalled();
+    });
+
     it("never interrupts a busy session that needs a restart; it waits for the next turn", async () => {
       const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
       const threadId = await startClaudeTurn(harness);

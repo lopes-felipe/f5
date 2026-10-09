@@ -144,6 +144,58 @@ describe("reconcileClaudeMcpServers", () => {
     expect(second.result.restartRequired).toBe(true);
   });
 
+  it("keeps ownership and requires a restart when the status read fails after a removal", async () => {
+    const fake = fakeQuery(
+      [
+        { name: "keep", status: "connected", source: "dynamic" },
+        { name: "drop", status: "connected", source: "dynamic" },
+      ],
+      (name) => ({ name, status: "connected", source: "dynamic" }),
+      ["drop"],
+    );
+    let reads = 0;
+    const query = {
+      ...fake.query,
+      mcpServerStatus: async () => {
+        reads += 1;
+        if (reads > 1) throw new Error("status unavailable");
+        return fake.query.mcpServerStatus();
+      },
+    };
+
+    const outcome = await reconcileClaudeMcpServers({
+      query,
+      desired: { keep: {} },
+      owned: new Set(["keep", "drop"]),
+    });
+    expect(outcome.result).toMatchObject({ converged: false, restartRequired: true });
+    expect([...outcome.owned].toSorted()).toEqual(["drop", "keep"]);
+  });
+
+  it("trusts the CLI's removed list when the status read fails", async () => {
+    const fake = fakeQuery([{ name: "old", status: "connected", source: "dynamic" }], (name) => ({
+      name,
+      status: "connected",
+      source: "dynamic",
+    }));
+    let reads = 0;
+    const outcome = await reconcileClaudeMcpServers({
+      query: {
+        ...fake.query,
+        mcpServerStatus: async () => {
+          reads += 1;
+          if (reads > 1) throw new Error("status unavailable");
+          return fake.query.mcpServerStatus();
+        },
+      },
+      desired: {},
+      owned: new Set(["old"]),
+    });
+    expect([...outcome.owned]).toEqual([]);
+    // Unverified, so retried rather than converged, but no restart is needed.
+    expect(outcome.result).toMatchObject({ converged: false, restartRequired: false });
+  });
+
   it("requires a restart when the runtime cannot change servers in place", async () => {
     const unsupported = await reconcileClaudeMcpServers({
       query: { mcpServerStatus: async () => [] },

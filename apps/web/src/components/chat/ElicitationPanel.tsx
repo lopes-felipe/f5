@@ -125,6 +125,15 @@ function FieldInput(props: {
               }
             />
           ))}
+          {(field.minItems ?? 0) === 0 ? (
+            // An empty list is a real answer, distinct from leaving the field out.
+            <ChoiceButton
+              selected={Array.isArray(value) && value.length === 0}
+              disabled={disabled}
+              label="None"
+              onClick={() => onChange(Array.isArray(value) && value.length === 0 ? undefined : [])}
+            />
+          ) : null}
         </div>
       );
     }

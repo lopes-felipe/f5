@@ -1482,8 +1482,8 @@ function mapToRuntimeEvents(
             `codex-async:${canonicalThreadId}:${String(asyncItem.id)}`,
           ),
           payload: {
+            // Message transport keeps the composer free; automatic resume still waits.
             responseMode: "message",
-            blocking: false,
             questions: asyncItem.questions.map((value, index) => {
               const question = asObject(value);
               return {

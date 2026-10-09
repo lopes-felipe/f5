@@ -172,9 +172,11 @@ export interface ProviderServiceShape {
 
   /**
    * Reconcile live sessions of one provider in a project with the stored MCP
-   * config. Each session is retried with bounded backoff; its
-   * `mcpEffectiveConfigVersion` advances only when it converged. Per-session
-   * failures are reported in the result (and as runtime warnings), not raised.
+   * config. Each session is retried with bounded backoff. Its
+   * `mcpEffectiveConfigVersion` advances once the reload reached it, unless
+   * the result requires a restart; a stale version restarts the session at
+   * its next turn. Per-session failures are reported in the result (and as
+   * runtime warnings), not raised.
    */
   readonly reloadMcpConfigForProject: (input: {
     readonly provider: ProviderKind;
@@ -182,6 +184,10 @@ export interface ProviderServiceShape {
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     /** Limit the reload to these threads. */
     readonly threadIds?: ReadonlyArray<ThreadId>;
+    /** Skip the per-session backoff (callers with their own retry loop). */
+    readonly retry?: boolean;
+    /** Post per-session runtime warnings (default true). */
+    readonly warn?: boolean;
   }) => Effect.Effect<ProviderMcpReloadOutcome, ProviderServiceError>;
 
   /**

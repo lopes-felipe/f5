@@ -661,6 +661,74 @@ it.effect("advances the session generation and refuses steering from a stale bro
     ),
   );
 });
+it.effect("answers form requests a new session opens while it is still starting", () => {
+  const codex = makeFakeCodexAdapter();
+  const answers: Array<{ requestId: string; action: string; content?: unknown }> = [];
+  const respondToElicitation = vi.fn(
+    (
+      _threadId: ThreadId,
+      requestId: ApprovalRequestId,
+      response: { readonly action: "accept" | "decline" | "cancel"; readonly content?: unknown },
+    ) =>
+      Effect.sync(() => {
+        answers.push({ requestId, ...response });
+        return "submitted" as const;
+      }),
+  );
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const threadId = asThreadId("startup-elicitation");
+    const opened = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    // The second call falls through to the fake's normal start.
+    const startSession = codex.startSession;
+    codex.startSession.mockImplementationOnce((input) =>
+      Deferred.succeed(opened, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+        Effect.andThen(startSession(input)),
+      ),
+    );
+    const start = yield* service
+      .startSession(threadId, {
+        provider: "codex",
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      })
+      .pipe(Effect.forkChild);
+    yield* Deferred.await(opened);
+
+    for (const [requestId, action] of [
+      ["startup-submit", "accept"],
+      ["startup-decline", "decline"],
+      ["startup-cancel", "cancel"],
+    ] as const) {
+      const result = yield* service.respondToElicitation({
+        threadId,
+        requestId: asRequestId(requestId),
+        generation: 1,
+        action,
+        ...(action === "accept" ? { content: { token: "abc" } } : {}),
+      });
+      assert.equal(result, "submitted");
+    }
+    assert.deepEqual(answers, [
+      { requestId: "startup-submit", action: "accept", content: { token: "abc" } },
+      { requestId: "startup-decline", action: "decline" },
+      { requestId: "startup-cancel", action: "cancel" },
+    ]);
+
+    yield* Deferred.succeed(release, undefined);
+    const session = yield* Fiber.join(start);
+    assert.equal(session.capabilities?.generation, 1);
+  }).pipe(
+    Effect.provide(
+      makeProviderServiceLayerForAdapters(
+        new Map([["codex", { ...codex.adapter, respondToElicitation }]]),
+      ),
+    ),
+  );
+});
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
   const codex = makeFakeCodexAdapter();
   const compactConversation = vi.fn(() => Effect.succeed({ summary: "unexpected" }));
@@ -1173,6 +1241,64 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(codex.sendTurn.mock.calls.length, 0);
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "reloads MCP through each binding's own instance and advances on a reached reload",
+    () => {
+      const defaultClaude = makeFakeCodexAdapter("claudeAgent");
+      const customClaude = makeFakeCodexAdapter("claudeAgent");
+      const customInstance = ProviderInstanceId.makeUnsafe("claude-work");
+      const layer = makeProviderServiceLayerForAdapters(
+        new Map([["claudeAgent", defaultClaude.adapter]]),
+        {
+          getByInstance: (instanceId) =>
+            instanceId === customInstance
+              ? Effect.succeed(customClaude.adapter)
+              : Effect.succeed(defaultClaude.adapter),
+        },
+      );
+
+      return Effect.gen(function* () {
+        const provider = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const projectId = ProjectId.makeUnsafe("project-custom-instance");
+        const threadId = asThreadId("thread-custom-instance");
+        yield* directory.upsert({
+          provider: "claudeAgent",
+          providerInstanceId: customInstance,
+          projectId,
+          threadId,
+          status: "running",
+          runtimeMode: "full-access",
+          mcpEffectiveConfigVersion: "older-version",
+        });
+        defaultClaude.hasSession.mockImplementation(() => Effect.succeed(false));
+        customClaude.hasSession.mockImplementation(() => Effect.succeed(true));
+        // A broken server: retrying cannot fix it, and neither can a restart.
+        customClaude.reloadMcpConfig.mockImplementation(() =>
+          Effect.succeed({
+            converged: false,
+            restartRequired: false,
+            servers: [{ name: "docs", status: "failed", owned: true, error: "spawn ENOENT" }],
+            errors: [{ server: "docs", message: "spawn ENOENT" }],
+          }),
+        );
+
+        const outcome = yield* provider.reloadMcpConfigForProject({
+          provider: "claudeAgent",
+          projectId,
+          retry: false,
+        });
+
+        assert.equal(defaultClaude.reloadMcpConfig.mock.calls.length, 0);
+        assert.equal(customClaude.reloadMcpConfig.mock.calls.length, 1);
+        assert.equal(outcome.sessions[0]?.result.converged, false);
+        // The failure is reported, but the version advances so no restart is scheduled.
+        const binding = yield* directory.getBinding(threadId);
+        assert.equal(Option.getOrUndefined(binding)?.mcpEffectiveConfigVersion, "mcp-version-test");
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("rejects unsupported runtime modes before starting a provider", () => {
     const cursor = makeFakeCodexAdapter("cursor");
