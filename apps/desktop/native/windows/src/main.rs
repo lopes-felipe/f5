@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+mod composition;
 #[cfg(windows)]
 mod desktop;
 #[cfg(any(windows, test))]

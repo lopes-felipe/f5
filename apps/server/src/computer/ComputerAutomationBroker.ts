@@ -11,6 +11,7 @@ import {
   type ComputerAccessRequested,
   type ComputerActivity,
   type DesktopComputerHostMessage,
+  type ChromeLeaseHolder,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
@@ -85,6 +86,11 @@ export class ComputerAutomationBrokerRuntime {
   private readonly listeners = new Set<(event: ComputerBrokerEvent) => void>();
   private readonly endedTurns = new Set<string>();
   private mainHolder: ComputerLeaseHolder | null = null;
+  private chromeHolder: ChromeLeaseHolder | null = null;
+  private readonly setupConsents = new Map<
+    string,
+    { threadId: string; generation: string; settle: (allowed: boolean) => void }
+  >();
   private otherProfile = false;
   private readonly offHost: () => void;
   private readonly offPause: () => void;
@@ -156,19 +162,31 @@ export class ComputerAutomationBrokerRuntime {
         this.mainHolder = message.holder;
         this.otherProfile = message.otherProfile ?? false;
       }
+      if (message.type === "chromeLeaseChanged") {
+        this.chromeHolder = message.holder;
+        this.otherProfile = message.otherProfile ?? false;
+      }
       if (
         message.type === "status" &&
         !message.status.available &&
         message.status.reason === "no-host"
       ) {
         this.mainHolder = null;
+        this.chromeHolder = null;
         this.otherProfile = false;
         for (const [threadId, binding] of this.bindings)
           this.releaseSession(threadId, binding.generation);
         this.publish({ channel: "computer.host", data: { type: "leaseChanged", holder: null } });
       }
-      if (message.type === "accessAnswer")
-        void this.access.answerFromHost(message.answer).catch(() => undefined);
+      if (message.type === "accessAnswer") {
+        const setup = this.setupConsents.get(message.answer.requestId);
+        if (setup && message.answer.backendIncarnation === this.host.backendIncarnation)
+          setup.settle(
+            this.generation(setup.threadId) === setup.generation &&
+              message.answer.allowChromeSetup === true,
+          );
+        else void this.access.answerFromHost(message.answer).catch(() => undefined);
+      }
       if (message.type === "pauseChanged") {
         this.pause.set(message.threadId, message.paused);
         const binding = this.bindings.get(message.threadId);
@@ -204,6 +222,7 @@ export class ComputerAutomationBrokerRuntime {
   snapshot() {
     return {
       holder: this.mainHolder,
+      chromeHolder: this.chromeHolder,
       otherProfile: this.otherProfile,
       pausedThreads: this.pause.list(),
       pending: this.access
@@ -215,6 +234,43 @@ export class ComputerAutomationBrokerRuntime {
         grantVersion: this.access.version(threadId),
       })),
     };
+  }
+  requestChromeSetup(
+    threadId: string,
+    generation: string,
+    setup: NonNullable<ComputerAccessRequested["chromeSetup"]>,
+  ): Promise<boolean> {
+    if (this.generation(threadId) !== generation || !this.host.hasHost())
+      return Promise.resolve(false);
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => settle(false), 300_000);
+      const settle = (allowed: boolean) => {
+        if (!this.setupConsents.delete(requestId)) return;
+        clearTimeout(timer);
+        this.host.send({ type: "cancel", requestId });
+        this.publish({
+          channel: "computer.access.settled",
+          data: { threadId, requestId, allowed },
+        });
+        resolve(allowed);
+      };
+      this.setupConsents.set(requestId, { threadId, generation, settle });
+      const request: ComputerAccessRequested = {
+        threadId,
+        requestId,
+        kind: "chrome-setup",
+        apps: [],
+        chromeSetup: setup,
+        reason:
+          "Allow this provider to replace the browser's native messaging host? F5 can restore the original setup while its registration is unchanged.",
+      };
+      this.publish({
+        channel: "computer.access.requested",
+        data: { ...request, backendIncarnation: this.host.backendIncarnation },
+      });
+      this.host.send({ type: "accessRequested", request });
+    });
   }
   async context(threadId: string, sessionGeneration: string): Promise<ComputerInvocationContext> {
     const binding = this.bindings.get(threadId);
@@ -433,10 +489,15 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     turnId: string | undefined,
     cause: "paused" | "turn-ended",
+    cancelSetup = true,
   ): void {
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation || (turnId && binding.turnId !== turnId))
       return;
+    if (cancelSetup)
+      for (const pending of this.setupConsents.values())
+        if (pending.threadId === threadId && pending.generation === generation)
+          pending.settle(false);
     this.queue.flush(threadId, new ComputerControlError({ _tag: "Interrupted", cause }));
     for (const [requestId, pending] of this.inFlight)
       if (
@@ -466,6 +527,9 @@ export class ComputerAutomationBrokerRuntime {
     const binding = this.bindings.get(threadId);
     if (!binding || binding.generation !== generation) return;
     this.cancelTurn(threadId, generation, undefined, "turn-ended");
+    // Chrome owns a provider-session lease, not this native-tool binding.
+    // Its adapter releases only after the CLI closes; disposing native tools
+    // earlier must not expose an active native host to another profile.
     automationEventSanitizer.clear(threadId);
     const grantVersion = this.access.version(threadId) + 1;
     this.host.send({
@@ -491,15 +555,24 @@ export class ComputerAutomationBrokerRuntime {
   }
   async refreshPolicies(): Promise<void> {
     for (const [threadId, binding] of this.bindings) {
+      let computerEnabled = false;
+      let chromeEnabled = false;
       try {
         const context = await this.options.resolve(threadId, binding.generation, binding.provider);
-        if (context.policy.computerUse) continue;
+        computerEnabled = context.policy.computerUse;
+        chromeEnabled = binding.provider === "claude" && context.policy.claudeInChrome;
       } catch {
         /* An unreadable policy removes execution permission. */
       }
       if (this.bindings.get(threadId) !== binding) continue;
-      this.cancelTurn(threadId, binding.generation, undefined, "turn-ended");
-      this.access.policyChanged(threadId);
+      if (!chromeEnabled)
+        for (const pending of this.setupConsents.values())
+          if (pending.threadId === threadId && pending.generation === binding.generation)
+            pending.settle(false);
+      if (!computerEnabled) {
+        this.cancelTurn(threadId, binding.generation, undefined, "turn-ended", false);
+        this.access.policyChanged(threadId);
+      }
     }
   }
   subscribe(listener: (event: ComputerBrokerEvent) => void): () => void {

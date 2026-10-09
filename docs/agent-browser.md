@@ -98,8 +98,18 @@ availability changes restart the provider session at the next turn. Session bind
 the selection, installed-tool state and configuration fingerprint; replaced Codex
 processes cannot deliver lifecycle or tool events into their replacement session.
 
-The built-in certification registry is empty. Claude's SDK app-access elicitation path
-and Codex's desktop plugin veto/profile isolation have no recorded certification here.
+The built-in certification registry is empty. The read-only availability probe identifies
+installed ChatGPT plugin version/manifest hashes without enabling or importing a global
+provider home. The currently installed app ships a disabled `cua_repl` placeholder that
+needs ChatGPT's dynamic launch configuration. Codex's supported hooks include
+[PreToolUse denial](https://learn.chatgpt.com/docs/hooks), but its computer runtime's veto
+coverage and profile isolation still require a recorded integration run.
+
+Claude's [computer-use documentation](https://code.claude.com/docs/en/computer-use)
+requires the interactive CLI and excludes non-interactive `-p` mode used by the Agent
+SDK. General SDK elicitation support does not establish supported computer-use launch
+or app-access consent. These are upstream integration constraints, not permission to
+start an external computer-use server or weaken F5's gates.
 F5 does not guess plugin configuration, copy ChatGPT resources, start
 `claude --computer-use-mcp` as an external server, or install two computer catalogs into
 one session. With those gates closed the selected available backend is native, with the
@@ -252,20 +262,40 @@ Claude in Chrome and Codex's bundled Chrome plugin remain **uncertified**. Claud
 launched with `--no-chrome`, user overrides are stripped, and built-in Chrome calls remain
 denied. No native-host registration is changed by this build.
 
-`chromeNativeHost.ts` provides shared manifest/registry parsing, lookup-order decisions,
-serialized consent transactions and hash-guarded restore for certification work.
-`chromeNativeHostStorage.ts` persists them atomically under server-owned
+`chromeSessionRuntime.ts` connects the shared inspection/transaction primitives to
+Claude's SDK launch, the mandatory pre-tool hook, trusted desktop setup consent and
+main's Chrome lease. Both the descriptor registry and main's platform/provider gates
+must certify an installed executable before `--chrome` can be selected. The descriptor
+pins its executable hash, browser roots, native-host names, expected profile target,
+server provenance verifier and evidence. User launch flags cannot bypass this decision.
+
+Setup consent names the previous and proposed host paths and travels only over the
+private host channel. After consent F5 rechecks registration hashes before launch and
+records post-launch changes, including safely recognized changes from a partial launch.
+Every call rechecks the main-owned lease, pause, live policy and registration drift;
+approval waits recheck them again. A failed or unverifiable server is denied for the
+session and changes its next-turn restart fingerprint. The lease survives until the
+CLI exits. The first release conservatively excludes **all** native input while a
+Chrome session holds the lease, rather than allowing concurrent input in other apps.
+Chrome admission also requires a healthy native helper/device lock and a registered
+emergency shortcut. Other profiles receive only anonymous lease ownership.
+
+`chromeNativeHostStorage.ts` persists transactions atomically under server-owned
 `claude-chrome/transactions/` and `codex-chrome/transactions/` directories, with bounded
-reads and UUID/provider identity checks. These files are not settings. Its
-provider descriptor registry is empty: native-host names, browser roots and target paths
-must come from recorded CLI/plugin runs, never assumptions. The release flow must inspect
-user/system locations and registry views, name old/new targets in consent, revalidate
-before launch, record post-launch hashes, and restore only unchanged registrations after
-stopping the profile's Chrome sessions. Concurrent Chrome ownership and the provider veto
-path are separate release gates. Chrome session launch, host consent routing, the Chrome
-lease and OS registry restoration are not connected in this build; those depend on the
-recorded provider descriptors and launch behavior. The transaction primitives alone do
-not enable Chrome.
+reads and UUID/provider/profile identity checks. These files are not settings. Settings
+shows setup history for initialized certified runtimes. Restore stops the profile's
+Chrome sessions, reserves the machine lease, and restores only registrations whose
+post-launch hashes still match; externally changed entries are reported as skipped.
+File restoration is atomic. Windows restoration checks the certified registry key/view,
+restores the original manifest bytes and original default value, or deletes only an
+originally absent registration. OS-specific restoration and discovery still require the
+recorded machine tests. Runtime initialization after restart requires a matching
+certified installed version before its restoration history becomes available.
+
+The shared coordinator supports both provider descriptors, but Codex's plugin launch
+and pre-execution veto bridge remain unavailable until a supported isolated runtime is
+identified and certified. No descriptor is fabricated for either provider. These code
+paths do not enable an integration while the gates remain closed.
 
 ## Certification and validation
 
@@ -317,8 +347,13 @@ Native policy tests now exercise both tier tables, blocked chords, interrupted i
 held-input release, device-lock contention, window recipient exclusions and independent
 hook failure. They do not replace real OS recipient/capture tests, the complete planned
 native authorization matrix, Windows execution or signed-machine certification.
-The built-in launch/consent/veto bridges and Chrome launch/consent/lease/restore consumers
-are still pending; no native, built-in or Chrome release gate was enabled by these fixes.
+Native tests now call the same focus, owner, secure-element, chord and menu-region
+policies as the helpers. Windows composition tests exercise the actual pixel cropping
+and alpha composition used by capture, including invisible borders and negative origins.
+Claude Chrome launch/consent/lease/veto/restore consumers are connected behind empty
+certification records. Provider built-in launch bridges and Codex Chrome plugin wiring
+remain unavailable for the integration constraints above. No native, built-in or Chrome
+release gate was enabled by this work.
 
 Transport admission joins concurrent retries by MCP request identity and retains completed
 IDs as tombstones. A late retry gets `ReplayRejected` rather than repeating input.
@@ -334,3 +369,15 @@ resume point as not sent” regression requires `deliveryRetryable: false`, so a
 resume cannot trigger an automatic resend. It remains included as an explicitly identified
 prerequisite bug fix and is covered by that adapter test, including sessions with computer
 use disabled.
+
+To collect a preflight without granting access or injecting input, run:
+
+```sh
+bun scripts/record-computer-certification.ts --app /Applications/F5.app --output /tmp/f5-certification.json --build-commit <installed-build-commit>
+```
+
+For a development binary use `--helper <path>` instead of `--app`. The recorder hashes
+and verifies signatures, starts the helper suspended and observes permissions only.
+It refuses to overwrite a report and leaves every machine-test item pending with
+`certified: false`. It records repository and installed-build commits separately; a
+preflight never proves TCC identity, real capture isolation or input-stop latency.

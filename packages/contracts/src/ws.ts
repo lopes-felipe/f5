@@ -358,6 +358,9 @@ export const WS_METHODS = {
   computerAccessList: "computer.access.list",
   computerAccessListRemembered: "computer.access.listRemembered",
   computerAccessForgetRemembered: "computer.access.forgetRemembered",
+  claudeChromeRestoreNativeHost: "claudeChrome.restoreNativeHost",
+  codexChromeRestoreNativeHost: "codexChrome.restoreNativeHost",
+  chromeNativeHostListTransactions: "chrome.listNativeHostTransactions",
 
   // Server meta
   serverProbe: "server.probe",
@@ -686,6 +689,18 @@ const WebSocketRequestBody = Schema.Union([
     Schema.Struct({ threadId: ThreadId, appId: Schema.String }),
   ),
   tagRequestBody(WS_METHODS.computerAccessList, Schema.Struct({ threadId: ThreadId })),
+  tagRequestBody(
+    WS_METHODS.claudeChromeRestoreNativeHost,
+    Schema.Struct({ transactionId: Schema.String }),
+  ),
+  tagRequestBody(
+    WS_METHODS.codexChromeRestoreNativeHost,
+    Schema.Struct({ transactionId: Schema.String }),
+  ),
+  tagRequestBody(
+    WS_METHODS.chromeNativeHostListTransactions,
+    Schema.Struct({ provider: Schema.Literals(["claude", "codex"]) }),
+  ),
   tagRequestBody(WS_METHODS.computerAccessListRemembered, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(
     WS_METHODS.computerAccessForgetRemembered,

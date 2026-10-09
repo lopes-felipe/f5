@@ -461,6 +461,17 @@ export function createWsNativeApi(): NativeApi {
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.terminalEvent, (message) => callback(message.data)),
     },
+    chrome: {
+      listTransactions: (provider) =>
+        transport.request(WS_METHODS.chromeNativeHostListTransactions, { provider }),
+      restoreNativeHost: (provider, transactionId) =>
+        transport.request(
+          provider === "claude"
+            ? WS_METHODS.claudeChromeRestoreNativeHost
+            : WS_METHODS.codexChromeRestoreNativeHost,
+          { transactionId },
+        ),
+    },
     computer: {
       access: {
         revoke: (input) => transport.request(WS_METHODS.computerAccessRevoke, input),

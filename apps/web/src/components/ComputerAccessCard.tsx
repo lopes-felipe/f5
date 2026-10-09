@@ -49,6 +49,18 @@ export function ComputerAccessCard({
   return (
     <div className="space-y-3 p-4 text-sm" data-testid="computer-access-card">
       <p>{request.reason}</p>
+      {request.chromeSetup ? (
+        <div className="space-y-2 break-all rounded-md border p-3">
+          <p>Current targets:</p>
+          {request.chromeSetup.previousTargets.map((target) => (
+            <p key={target}>{target}</p>
+          ))}
+          <p>
+            New target for {request.chromeSetup.provider}: {request.chromeSetup.targetPath}
+          </p>
+          <p>This integration can act on sites you are signed in to.</p>
+        </div>
+      ) : null}
       {request.apps.map((app) => {
         const decision = decisions.find((entry) => entry.appId === app.appId)!;
         return (
@@ -102,7 +114,7 @@ export function ComputerAccessCard({
       ) : (
         <div className="flex gap-2">
           <Button disabled={sending} onClick={(event) => void answer(true, event.isTrusted)}>
-            {request.kind === "session-actions" ? "Allow" : "Allow selected"}
+            {request.kind === "apps" ? "Allow selected" : "Allow"}
           </Button>
           <Button
             variant="outline"
@@ -143,9 +155,13 @@ export function ComputerAccessInbox() {
     <Dialog open>
       <DialogPopup showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>Computer access</DialogTitle>
+          <DialogTitle>
+            {request.kind === "chrome-setup" ? "Browser integration setup" : "Computer access"}
+          </DialogTitle>
           <DialogDescription>
-            Choose which apps the agent can use for this session.
+            {request.kind === "chrome-setup"
+              ? "Review the browser registration change before allowing it."
+              : "Choose which apps the agent can use for this session."}
           </DialogDescription>
         </DialogHeader>
         <ComputerAccessCard key={request.requestId} request={request} handleEscape />

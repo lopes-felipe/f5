@@ -3,12 +3,13 @@ import type { ChildProcess } from "node:child_process";
 import { describe, expect, it, vi } from "vitest";
 import { ComputerHostChannel } from "./ComputerHostChannel";
 import type { ComputerController } from "./ComputerController";
-function setup() {
+function setup(certified = false) {
   const controller = { disconnect: vi.fn(), lease: { current: () => null }, invoke: vi.fn() };
   const channel = new ComputerHostChannel(
     controller as unknown as ComputerController,
     () => ({ available: true }),
     vi.fn(),
+    { certified: () => certified },
   );
   const process = Object.assign(new EventEmitter(), {
     connected: true,
@@ -78,6 +79,77 @@ describe("private computer host channel", () => {
     );
     expect(JSON.stringify(other.send.mock.calls)).not.toContain("secret-thread");
     expect(JSON.stringify(other.send.mock.calls)).not.toContain("PRIVATE");
+  });
+  it("requires certification and preserves main's pause veto independently of the server", async () => {
+    const holder = {
+      profileId: "profile",
+      threadId: "thread",
+      sessionGeneration: "s",
+      provider: "claude",
+    };
+    const closed = setup();
+    closed.hello();
+    closed.process.emit("message", { type: "chromeLeaseAcquire", requestId: "closed", holder });
+    await vi.waitFor(() =>
+      expect(closed.process.send).toHaveBeenCalledWith(
+        {
+          type: "response",
+          requestId: "closed",
+          error: { _tag: "Unavailable", reason: "not-certified" },
+        },
+        expect.any(Function),
+      ),
+    );
+    expect(closed.channel.chrome.current()).toBeNull();
+    const h = setup(true);
+    h.hello();
+    h.process.emit("message", { type: "chromeLeaseAcquire", requestId: "acquire", holder });
+    await vi.waitFor(() => expect(h.channel.chrome.current()).toEqual(holder));
+    h.channel.pauseChrome("profile", "thread", true);
+    h.process.emit("message", { type: "chromeLeaseValidate", requestId: "validate", holder });
+    await vi.waitFor(() =>
+      expect(h.process.send).toHaveBeenCalledWith(
+        {
+          type: "response",
+          requestId: "validate",
+          error: { _tag: "Interrupted", cause: "paused" },
+        },
+        expect.any(Function),
+      ),
+    );
+    h.process.emit("disconnect");
+    expect(h.channel.chrome.current()).toBeNull();
+  });
+  it("redacts Chrome session ownership for another profile", () => {
+    const h = setup(true);
+    h.hello();
+    const other = Object.assign(new EventEmitter(), {
+      connected: true,
+      send: vi.fn(),
+      disconnect: vi.fn(),
+    });
+    h.channel.register("other", "other-incarnation", other as unknown as ChildProcess);
+    other.emit("message", {
+      type: "hello",
+      profileId: "other",
+      backendIncarnation: "other-incarnation",
+      protocolVersion: 1,
+    });
+    other.send.mockClear();
+    h.channel.chrome.acquire(
+      {
+        profileId: "profile",
+        threadId: "private-thread",
+        sessionGeneration: "private-generation",
+        provider: "claude",
+      },
+      null,
+    );
+    expect(other.send).toHaveBeenLastCalledWith(
+      { type: "chromeLeaseChanged", holder: null, otherProfile: true },
+      expect.any(Function),
+    );
+    expect(JSON.stringify(other.send.mock.calls)).not.toContain("private");
   });
   it("rejects mismatched hello before allowing registration", () => {
     const h = setup();

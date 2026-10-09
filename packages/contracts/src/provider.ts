@@ -60,6 +60,7 @@ export const ProviderSession = Schema.Struct({
   computerBackendSelection: Schema.optional(ComputerBackendSelection),
   computerToolsInstalled: Schema.optional(Schema.Boolean),
   computerConfigurationFingerprint: Schema.optional(Schema.String),
+  chromeConfigurationFingerprint: Schema.optionalKey(Schema.String),
 });
 export type ProviderSession = typeof ProviderSession.Type;
 

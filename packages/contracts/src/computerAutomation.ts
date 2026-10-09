@@ -277,7 +277,16 @@ export const ComputerAccessRequested = Schema.Struct({
   requestId: Id,
   threadId: Id,
   reason: Schema.String.check(Schema.isMaxLength(500)),
-  kind: Schema.Literals(["apps", "session-actions"]),
+  kind: Schema.Literals(["apps", "session-actions", "chrome-setup"]),
+  chromeSetup: Schema.optionalKey(
+    Schema.Struct({
+      provider: Schema.Literals(["claude", "codex"]),
+      previousTargets: Schema.Array(Schema.String.check(Schema.isMaxLength(4096))).check(
+        Schema.isMaxLength(32),
+      ),
+      targetPath: Schema.String.check(Schema.isMaxLength(4096)),
+    }),
+  ),
   apps: Schema.Array(
     Schema.Struct({
       appId: Id,
@@ -300,6 +309,7 @@ export const ComputerAccessAnswer = Schema.Struct({
     }),
   ).check(Schema.isMaxLength(10)),
   allowSessionActions: Schema.optional(Schema.Boolean),
+  allowChromeSetup: Schema.optionalKey(Schema.Boolean),
 });
 export type ComputerAccessAnswer = typeof ComputerAccessAnswer.Type;
 export const ComputerLeaseHolder = Schema.Struct({
@@ -308,6 +318,21 @@ export const ComputerLeaseHolder = Schema.Struct({
   threadTitle: Schema.String,
 });
 export type ComputerLeaseHolder = typeof ComputerLeaseHolder.Type;
+export const ChromeLeaseHolder = Schema.Struct({
+  profileId: Id,
+  threadId: Id,
+  sessionGeneration: Id,
+  provider: Schema.Literals(["claude", "codex"]),
+});
+export type ChromeLeaseHolder = typeof ChromeLeaseHolder.Type;
+export const ChromeNativeHostTransactionSummary = Schema.Struct({
+  id: Id,
+  provider: Schema.Literals(["claude", "codex"]),
+  targetPath: Schema.String,
+  createdAt: Schema.String,
+  state: Schema.Literals(["approved", "launched", "restored"]),
+});
+export type ChromeNativeHostTransactionSummary = typeof ChromeNativeHostTransactionSummary.Type;
 export const ComputerActivity = Schema.Struct({
   threadId: Id,
   backend: ComputerBackendKind,
@@ -318,6 +343,17 @@ export const ComputerActivity = Schema.Struct({
 });
 export type ComputerActivity = typeof ComputerActivity.Type;
 export const DesktopComputerHostMessage = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literals(["chromeLeaseAcquire", "chromeLeaseRelease", "chromeLeaseValidate"]),
+    requestId: Id,
+    holder: ChromeLeaseHolder,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("chromeLeaseChanged"),
+    holder: Schema.NullOr(ChromeLeaseHolder),
+    otherProfile: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({ type: Schema.Literal("chromeInterrupted"), threadId: Id, sessionGeneration: Id }),
   Schema.Struct({
     type: Schema.Literal("hello"),
     profileId: Id,

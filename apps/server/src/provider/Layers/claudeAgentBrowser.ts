@@ -47,7 +47,7 @@ export interface ClaudeAgentBrowserState {
   /** `verified` is undefined until the first `mcpServerStatus()` read checks provenance. */
   preview?: { readonly serverName: string; readonly installed: boolean; verified?: boolean };
   computer?: { readonly serverName: string; readonly installed: boolean; verified?: boolean };
-  chrome?: { state: AgentCapabilityState; detail?: string };
+  chrome?: { state: AgentCapabilityState; detail?: string; verified?: boolean };
   computerUse?: {
     state: AgentCapabilityState;
     backend?: "claude-builtin" | "codex-builtin" | "native";

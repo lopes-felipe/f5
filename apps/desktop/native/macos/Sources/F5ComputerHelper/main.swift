@@ -291,23 +291,17 @@ func checkGrants(_ request: [String: Any]) throws {
 func grant(_ app: NSRunningApplication, request: [String: Any], host: [String: Any], needed: String)
   throws -> String
 {
-  let f5Pids = host["f5Pids"] as? [Int] ?? []
-  if f5Pids.contains(Int(app.processIdentifier))
-    || app.processIdentifier == ProcessInfo.processInfo.processIdentifier
+  if let kind = computerTargetBlock(
+    appId: app.bundleIdentifier, pid: Int(app.processIdentifier),
+    f5Pids: host["f5Pids"] as? [Int] ?? [],
+    helperPid: Int(ProcessInfo.processInfo.processIdentifier))
   {
-    throw Failure("TargetBlocked", "kind", "f5")
+    throw Failure("TargetBlocked", "kind", kind)
   }
   guard let id = app.bundleIdentifier else {
     throw Failure("TargetBlocked", "kind", "owner-unknown")
   }
   let appTier = tier(id)
-  if appTier == "blocked" { throw Failure("TargetBlocked", "kind", "protection-unknown") }
-  if [
-    "com.apple.dock", "com.apple.controlcenter", "com.apple.notificationcenterui",
-    "com.apple.spotlight",
-  ].contains(id.lowercased()) {
-    throw Failure("TargetBlocked", "kind", "system-ui")
-  }
   let grants = authorization(request)["grants"] as? [[String: Any]] ?? []
   guard let access = grants.first(where: { string($0, "appId") == id }),
     string(access, "tier") == appTier
@@ -340,14 +334,13 @@ func focused(_ request: [String: Any], _ host: [String: Any], needed: String) th
     let window = axElement(attribute(root, kAXFocusedWindowAttribute))
   else { throw Failure("TargetBlocked", "kind", "focus-unknown") }
   var pid: pid_t = 0
-  guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else {
-    throw Failure("TargetBlocked", "kind", "owner-unknown")
-  }
-  if IsSecureEventInputEnabled()
-    || (attribute(element, kAXRoleAttribute) as? String) == "AXSecureTextField"
-    || (attribute(element, kAXSubroleAttribute) as? String) == "AXSecureTextField"
+  let knownPid = AXUIElementGetPid(element, &pid) == .success
+  if let kind = computerFocusBlock(
+    frontPid: Int(app.processIdentifier), focusedPid: knownPid ? Int(pid) : nil,
+    secureInput: IsSecureEventInputEnabled(), role: attribute(element, kAXRoleAttribute) as? String,
+    subrole: attribute(element, kAXSubroleAttribute) as? String)
   {
-    throw Failure("TargetBlocked", "kind", "secure-field")
+    throw Failure("TargetBlocked", "kind", kind)
   }
   return (app, element, window)
 }
@@ -365,7 +358,7 @@ func authorizePoint(_ point: CGPoint, request: [String: Any], host: [String: Any
     {
       let items = attribute(bar, kAXChildrenAttribute) as? [AXUIElement] ?? []
       let right = items.compactMap(axRect).map(\.maxX).max() ?? bounds.minX
-      guard point.x >= bounds.minX && point.x < right else {
+      guard computerMenuPointAllowed(x: point.x, left: bounds.minX, lastItemRight: right) else {
         throw Failure("TargetBlocked", "kind", "system-ui")
       }
       _ = try grant(app, request: request, host: host, needed: "click")
@@ -934,8 +927,10 @@ func mutate(_ request: [String: Any], _ host: [String: Any]) async throws -> [St
       try checkPermit(request)
       let current = try focused(request, host, needed: "type")
       guard
-        current.0.processIdentifier == initial.0.processIdentifier && CFEqual(current.2, initial.2)
-          && (op != "type" || CFEqual(current.1, initial.1))
+        computerFocusUnchanged(
+          initialPid: Int(initial.0.processIdentifier),
+          currentPid: Int(current.0.processIdentifier), sameWindow: CFEqual(current.2, initial.2),
+          sameElement: CFEqual(current.1, initial.1), typing: op == "type")
       else { throw Failure("TargetBlocked", "kind", "focus-unknown") }
     }
     if op == "type" {

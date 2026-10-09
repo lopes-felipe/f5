@@ -28,5 +28,6 @@ export function computerAccessAnswer(
       };
     }),
     ...(request.kind === "session-actions" ? { allowSessionActions: allow } : {}),
+    ...(request.kind === "chrome-setup" ? { allowChromeSetup: allow } : {}),
   };
 }

@@ -1,4 +1,5 @@
 import { ComputerSettings } from "./ComputerSettings";
+import { ChromeSetupSettings } from "./ChromeSetupSettings";
 import { useEffect, useState } from "react";
 import type {
   DesktopBrowserProfile,
@@ -155,6 +156,7 @@ export function BrowserSettings() {
           }
         />
         <ComputerSettings />
+        <ChromeSetupSettings />
       </SettingsCard>
 
       {preview?.profiles ? (

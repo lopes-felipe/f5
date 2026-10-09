@@ -20,7 +20,7 @@ import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { installDesktopAttention } from "./desktopAttention";
-import { computerCertificationStatus } from "./computer/certification";
+import { computerCertificationStatus, CHROME_CONTROL_CERTIFIED } from "./computer/certification";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
 import { ComputerLeaseAuthority } from "./computer/ComputerLeaseAuthority";
 import { ComputerController } from "./computer/ComputerController";
@@ -330,23 +330,47 @@ function initializeComputerSystem(): void {
         });
     },
   });
-  const channel = new ComputerHostChannel(controller, status, (profileId, request) => {
-    if (!Notification.isSupported()) return;
-    const notice = new Notification({
-      title: "Computer access requested",
-      body:
-        request.kind === "session-actions"
-          ? "An agent wants permission to control approved apps."
-          : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
-    });
-    notice.on("click", () => {
-      void openProfile(profileId);
-    });
-    notice.show();
-  });
-  computerSystem = { helper, controller, channel, overlay };
   const killChord =
     process.platform === "darwin" ? "Control+Command+Escape" : "Control+Alt+Shift+F12";
+  const channel = new ComputerHostChannel(
+    controller,
+    status,
+    (profileId, request) => {
+      if (!Notification.isSupported()) return;
+      const notice = new Notification({
+        title: "Computer access requested",
+        body:
+          request.kind === "chrome-setup"
+            ? "An agent wants to change a browser's native messaging setup."
+            : request.kind === "session-actions"
+              ? "An agent wants permission to control approved apps."
+              : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
+      });
+      notice.on("click", () => {
+        void openProfile(profileId);
+      });
+      notice.show();
+    },
+    {
+      certified: (provider) =>
+        CHROME_CONTROL_CERTIFIED[provider][process.platform === "win32" ? "win32" : "darwin"],
+      changed: (holder) => {
+        globalShortcut.unregister(killChord);
+        if (holder) {
+          const registered = globalShortcut.register(killChord, () => {
+            channel.pauseChrome(holder.profileId, holder.threadId, true);
+            channel.send(holder.profileId, {
+              type: "chromeInterrupted",
+              threadId: holder.threadId,
+              sessionGeneration: holder.sessionGeneration,
+            });
+          });
+          if (!registered) throw new Error("The computer-control kill shortcut is unavailable.");
+        }
+      },
+    },
+  );
+  computerSystem = { helper, controller, channel, overlay };
   lease.subscribe((holder) => {
     channel.publishLease(holder);
     globalShortcut.unregister(killChord);
@@ -392,7 +416,8 @@ function initializeComputerSystem(): void {
     },
     answer: (profile, answer) => channel.answerAccess(profile, answer),
     pause: (profileId, threadId, paused) => {
-      controller.setPaused(profileId, threadId, paused);
+      if (!channel.pauseChrome(profileId, threadId, paused))
+        controller.setPaused(profileId, threadId, paused);
       channel.send(profileId, { type: "pauseChanged", threadId, paused });
     },
   });

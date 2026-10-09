@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { ChromeNativeHostLocation } from "./chromeNativeHostInspection";
 
 export type ChromeProvider = "claude" | "codex";
 export interface ChromeNativeHostDescriptor {
@@ -7,6 +8,16 @@ export interface ChromeNativeHostDescriptor {
   readonly browsers: ReadonlyArray<string>;
   readonly certified: boolean;
   readonly expectedTarget: (providerHome: string) => string;
+  readonly verifyServer?: (status: unknown) => boolean;
+  readonly runtime?: {
+    readonly platform: "darwin" | "win32";
+    readonly executableSha256: string;
+    readonly evidence: string;
+    readonly locations: (
+      providerHome: string,
+      userHome: string,
+    ) => ReadonlyArray<ChromeNativeHostLocation>;
+  };
 }
 /** Names and targets must come from recorded CLI/plugin certification, never guesses. */
 export const CHROME_NATIVE_HOST_CERTIFICATIONS: ReadonlyArray<ChromeNativeHostDescriptor> = [];
@@ -178,23 +189,30 @@ export class ChromeNativeHostTransactions {
   recordLaunch(transaction: ChromeNativeHostTransaction): Promise<ChromeNativeHostTransaction> {
     return this.serialize(async () => {
       const current = await this.storage.inspect();
-      if (
-        current.some(
-          (entry) =>
-            entry.state !== "absent" &&
-            (entry.state !== "ok" || entry.targetPath !== transaction.targetPath),
-        )
-      )
-        throw new Error("Chrome registration does not match the approved target.");
+      const invalid = current.some(
+        (entry) =>
+          entry.state !== "absent" &&
+          (entry.state !== "ok" ||
+            (!entry.shadowed && entry.targetPath !== transaction.targetPath)),
+      );
       const next: ChromeNativeHostTransaction = {
         ...transaction,
         state: "launched",
         registrations: transaction.registrations.map((entry) => {
           const after = current.find((registration) => registration.location === entry.location);
-          return { ...entry, ...(after?.sha256 ? { postLaunchHash: after.sha256 } : {}) };
+          return {
+            ...entry,
+            ...(after?.state === "ok" &&
+            after.targetPath === transaction.targetPath &&
+            after.sha256 &&
+            after.sha256 !== entry.originalHash
+              ? { postLaunchHash: after.sha256 }
+              : {}),
+          };
         }),
       };
       await this.storage.saveTransaction(next);
+      if (invalid) throw new Error("Chrome registration does not match the approved target.");
       return next;
     });
   }

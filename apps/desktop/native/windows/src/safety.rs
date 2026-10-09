@@ -69,9 +69,6 @@ pub fn system_process(executable: &str) -> bool {
         "shellexperiencehost.exe" | "startmenuexperiencehost.exe"
     )
 }
-pub fn inside_frame(x: i32, y: i32, left: i32, top: i32, right: i32, bottom: i32) -> bool {
-    x >= left && y >= top && x < right && y < bottom
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,13 +138,6 @@ mod tests {
         ));
         assert!(!system_process("C:\\Apps\\Calculator.exe"));
     }
-    #[test]
-    fn invisible_borders_are_cropped_without_shifting_content() {
-        // PrintWindow pixel (7,7) from full-window origin (93,93) belongs at (100,100).
-        assert!(inside_frame(93 + 7, 93 + 7, 100, 100, 300, 300));
-        assert!(!inside_frame(93, 93, 100, 100, 300, 300));
-        assert!(!inside_frame(300, 100, 100, 100, 300, 300));
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -186,5 +176,111 @@ mod release_tests {
         assert!(released.contains(&ReleasedInput::Button(0xff00)));
         assert!(released.contains(&ReleasedInput::Unicode(0xd83d)));
         assert!(drain_held_inputs(&mut held, &mut unicode).is_empty());
+    }
+}
+
+pub fn parse_chord(raw: &str) -> Result<Vec<u16>, &'static str> {
+    let parts: Vec<_> = raw.split('+').map(|part| part.to_lowercase()).collect();
+    let mut codes = Vec::new();
+    for part in &parts {
+        let code = match &part[..] {
+            "ctrl" | "control" => 0x11,
+            "alt" => 0x12,
+            "shift" => 0x10,
+            "win" | "meta" => 0x5b,
+            "enter" | "return" => 0xd,
+            "tab" => 0x9,
+            "escape" | "esc" => 0x1b,
+            "space" => 0x20,
+            "backspace" => 0x8,
+            "delete" => 0x2e,
+            "arrowleft" => 0x25,
+            "arrowright" => 0x27,
+            "arrowup" => 0x26,
+            "arrowdown" => 0x28,
+            "home" => 0x24,
+            "end" => 0x23,
+            "pageup" => 0x21,
+            "pagedown" => 0x22,
+            _ => {
+                if part.len() == 1 && part.as_bytes()[0].is_ascii_alphanumeric() {
+                    part.as_bytes()[0].to_ascii_uppercase() as u16
+                } else if part.starts_with('f') {
+                    let number = part[1..].parse::<u16>().map_err(|_| "UnsupportedAction")?;
+                    if !(1..=12).contains(&number) {
+                        return Err("UnsupportedAction");
+                    }
+                    0x70 + number - 1
+                } else {
+                    return Err("UnsupportedAction");
+                }
+            }
+        };
+        codes.push(code)
+    }
+    if codes.contains(&0x5b) && (codes.contains(&(b'L' as u16)) || codes.contains(&(b'R' as u16)))
+        || codes.contains(&0x11) && codes.contains(&0x12) && codes.contains(&0x2e)
+        || codes.contains(&0x11)
+            && codes.contains(&0x12)
+            && codes.contains(&0x10)
+            && codes.contains(&0x7b)
+    {
+        return Err("system-ui");
+    }
+    Ok(codes)
+}
+
+pub fn focused_element_block(
+    owner_pid: u32,
+    element_pid: Option<u32>,
+    password: Option<bool>,
+) -> Option<&'static str> {
+    match password {
+        None => return Some("focus-unknown"),
+        Some(true) => return Some("secure-field"),
+        Some(false) => (),
+    }
+    match element_pid {
+        None => Some("owner-unknown"),
+        Some(pid) if pid != owner_pid => Some("focus-unknown"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::*;
+    #[test]
+    fn protected_and_kill_chords_cannot_be_injected() {
+        for chord in ["Ctrl+Alt+Delete", "win+l", "Meta+R", "Ctrl+Alt+Shift+F12"] {
+            assert_eq!(parse_chord(chord), Err("system-ui"));
+        }
+        assert_eq!(parse_chord("CTRL+a"), Ok(vec![0x11, 0x41]));
+        assert_eq!(
+            parse_chord("Ctrl+Shift+ArrowLeft"),
+            Ok(vec![0x11, 0x10, 0x25])
+        );
+        assert_eq!(parse_chord("Alt+F13"), Err("UnsupportedAction"));
+        assert_eq!(parse_chord("Ctrl+unsupported"), Err("UnsupportedAction"));
+    }
+    #[test]
+    fn unknown_and_secure_focus_fail_closed_before_typing_or_set_value() {
+        assert_eq!(focused_element_block(20, Some(20), Some(false)), None);
+        assert_eq!(
+            focused_element_block(20, Some(20), None),
+            Some("focus-unknown")
+        );
+        assert_eq!(
+            focused_element_block(20, None, Some(false)),
+            Some("owner-unknown")
+        );
+        assert_eq!(
+            focused_element_block(20, Some(21), Some(false)),
+            Some("focus-unknown")
+        );
+        assert_eq!(
+            focused_element_block(20, Some(20), Some(true)),
+            Some("secure-field")
+        );
     }
 }

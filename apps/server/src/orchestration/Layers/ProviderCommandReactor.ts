@@ -90,6 +90,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
 import { resolveComputerBackendSelection } from "../../computer/computerBackendPolicy";
+import { chromeSessionFingerprint } from "../../provider/chromeSessionRuntimeFactory";
 import {
   formatThreadTitleRegenerationContext,
   resolveBestEffortGeneratedTitleResult,
@@ -821,6 +822,11 @@ const make = Effect.gen(function* () {
       const shouldRestartForComputerUseChange =
         previousComputerSelection !== undefined && previousComputerSelection !== computerSelection;
       computerSelections.set(threadId, computerSelection);
+      const shouldRestartForChromeLaunchChange =
+        activeSession?.provider === "claudeAgent" &&
+        activeSession.chromeConfigurationFingerprint !== undefined &&
+        activeSession.chromeConfigurationFingerprint !==
+          chromeSessionFingerprint(threadId, computerPolicy.claudeInChrome);
       const existingSessionThreadId =
         thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
       if (existingSessionThreadId) {
@@ -916,6 +922,7 @@ const make = Effect.gen(function* () {
           !shouldRestartForProviderOptionsChange &&
           !shouldRestartForProjectMcpChange &&
           !shouldRestartForComputerUseChange &&
+          !shouldRestartForChromeLaunchChange &&
           !shouldRestartForCwdChange &&
           !shouldRestartForWorkflowExecutionProfileChange
         ) {
@@ -949,6 +956,7 @@ const make = Effect.gen(function* () {
           ...(shouldRestartForProviderOptionsChange ? ["provider-options-changed"] : []),
           ...(shouldRestartForProjectMcpChange ? ["project-mcp-changed"] : []),
           ...(shouldRestartForComputerUseChange ? ["computer-use-changed"] : []),
+          ...(shouldRestartForChromeLaunchChange ? ["chrome-launch-changed"] : []),
           ...(shouldRestartForCwdChange ? ["cwd-changed"] : []),
           ...(shouldRestartForWorkflowExecutionProfileChange
             ? ["workflow-execution-profile-changed"]

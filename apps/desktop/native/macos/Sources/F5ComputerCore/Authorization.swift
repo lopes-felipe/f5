@@ -32,3 +32,34 @@ public func computerAppIsBrowser(_ id: String) -> Bool {
     patternMatches(id, $0)
   })
 }
+
+/// OS-facing adapters gather identity/focus facts; this policy is shared with tests.
+public func computerTargetBlock(appId: String?, pid: Int, f5Pids: [Int], helperPid: Int) -> String?
+{
+  if f5Pids.contains(pid) || pid == helperPid { return "f5" }
+  guard let appId, !appId.isEmpty else { return "owner-unknown" }
+  if [
+    "com.apple.dock", "com.apple.controlcenter", "com.apple.notificationcenterui",
+    "com.apple.spotlight",
+  ].contains(appId.lowercased()) {
+    return "system-ui"
+  }
+  return computerAppTier(appId) == "blocked" ? "protection-unknown" : nil
+}
+public func computerFocusBlock(
+  frontPid: Int, focusedPid: Int?, secureInput: Bool, role: String?, subrole: String?
+) -> String? {
+  guard let focusedPid, focusedPid == frontPid else { return "owner-unknown" }
+  guard let role else { return "focus-unknown" }
+  return secureInput || role == "AXSecureTextField" || subrole == "AXSecureTextField"
+    ? "secure-field" : nil
+}
+public func computerFocusUnchanged(
+  initialPid: Int, currentPid: Int, sameWindow: Bool, sameElement: Bool, typing: Bool
+) -> Bool {
+  initialPid == currentPid && sameWindow && (!typing || sameElement)
+}
+public func computerMenuPointAllowed(x: Double, left: Double, lastItemRight: Double) -> Bool {
+  left.isFinite && lastItemRight.isFinite && x.isFinite && lastItemRight > left && x >= left
+    && x < lastItemRight
+}

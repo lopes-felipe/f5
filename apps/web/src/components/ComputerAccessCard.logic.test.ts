@@ -42,4 +42,23 @@ describe("computer consent decisions", () => {
       computerAccessAnswer({ ...request, kind: "session-actions", apps: [] }, [], false),
     ).toMatchObject({ allowSessionActions: false, backendIncarnation: "backend" });
   });
+  it("Chrome setup consent cannot approve computer actions or app grants", () => {
+    const chrome = {
+      ...request,
+      kind: "chrome-setup" as const,
+      apps: [],
+      chromeSetup: {
+        provider: "claude" as const,
+        previousTargets: ["/original"],
+        targetPath: "/f5",
+      },
+    };
+    expect(computerAccessAnswer(chrome, [], true)).toEqual({
+      requestId: "request",
+      backendIncarnation: "backend",
+      decisions: [],
+      allowChromeSetup: true,
+    });
+    expect(computerAccessAnswer(chrome, [], false).allowChromeSetup).toBe(false);
+  });
 });

@@ -1,5 +1,10 @@
 import { ComputerAutomationBroker } from "./computer/ComputerAutomationBroker";
 import {
+  restoreChromeSessionSetup,
+  listChromeSessionSetups,
+  isChromeRuntimeSession,
+} from "./provider/chromeSessionRuntimeFactory";
+import {
   getClaudeTranscriptMaintenance,
   runClaudeTranscriptMaintenance,
   claudeMaintenanceErrorMessage,
@@ -1068,7 +1073,32 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.sync(() =>
         computer.subscribe((event) => {
           if (event.channel === "computer.host") {
-            if (event.data.type === "leaseChanged") {
+            if (event.data.type === "chromeLeaseChanged") {
+              const holder = event.data.holder;
+              computerUseLease.setFromHost(holder?.threadId ?? null);
+              void Effect.runPromise(
+                pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
+                  threadId: holder ? ThreadId.makeUnsafe(holder.threadId) : null,
+                  otherProfile: event.data.otherProfile ?? false,
+                }),
+              );
+            } else if (event.data.type === "chromeInterrupted") {
+              const interrupted = event.data;
+              void Effect.runPromise(
+                Deferred.await(orchestrationRuntime).pipe(
+                  Effect.flatMap(({ orchestrationEngine }) =>
+                    computer.generation(interrupted.threadId) === interrupted.sessionGeneration
+                      ? orchestrationEngine.dispatch({
+                          type: "thread.turn.interrupt",
+                          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+                          threadId: ThreadId.makeUnsafe(interrupted.threadId),
+                          createdAt: new Date().toISOString(),
+                        })
+                      : Effect.void,
+                  ),
+                ),
+              ).catch(() => undefined);
+            } else if (event.data.type === "leaseChanged") {
               const holder = event.data.holder;
               const sameProfile = holder?.profileId === computer.host.profileId;
               computerUseLease.setFromHost(holder && sameProfile ? holder.threadId : null);
@@ -4595,6 +4625,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
         return undefined;
       }
+      case WS_METHODS.claudeChromeRestoreNativeHost:
+      case WS_METHODS.codexChromeRestoreNativeHost: {
+        const body = stripRequestTag(request.body);
+        const provider =
+          request.body._tag === WS_METHODS.claudeChromeRestoreNativeHost ? "claude" : "codex";
+        const service = yield* ProviderService;
+        const sessions = yield* service.listSessions();
+        return yield* Effect.tryPromise({
+          try: () =>
+            restoreChromeSessionSetup(
+              serverConfig.stateDir,
+              provider,
+              body.transactionId,
+              async () => {
+                for (const session of sessions)
+                  if (
+                    isChromeRuntimeSession(session.threadId) &&
+                    ((provider === "claude" && session.provider === "claudeAgent") ||
+                      (provider === "codex" && session.provider === "codex"))
+                  )
+                    await Effect.runPromise(service.stopSession({ threadId: session.threadId }));
+              },
+            ),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: cause instanceof Error ? cause.message : "Chrome restoration failed.",
+            }),
+        });
+      }
+      case WS_METHODS.chromeNativeHostListTransactions: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: () => listChromeSessionSetups(serverConfig.stateDir, body.provider),
+          catch: () => new RouteRequestError({ message: "Chrome transactions could not be read." }),
+        });
+      }
 
       case WS_METHODS.serverProbe:
         return {};
@@ -5887,7 +5953,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                       return Effect.all([
                         pushBus.publishClient(ws, WS_CHANNELS.agentComputerUseChanged, {
                           threadId:
-                            holder && sameProfile ? ThreadId.makeUnsafe(holder.threadId) : null,
+                            holder && sameProfile
+                              ? ThreadId.makeUnsafe(holder.threadId)
+                              : snapshot.chromeHolder
+                                ? ThreadId.makeUnsafe(snapshot.chromeHolder.threadId)
+                                : null,
                           otherProfile: snapshot.otherProfile || (!!holder && !sameProfile),
                           ...(holder ? { backend: holder.backend } : {}),
                         }),

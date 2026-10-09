@@ -4,7 +4,11 @@ import type {
   ComputerGrantsChanged,
   AgentComputerUseChanged,
 } from "./ws";
-import type { ComputerGrant, ComputerActivity } from "./computerAutomation";
+import type {
+  ComputerGrant,
+  ComputerActivity,
+  ChromeNativeHostTransactionSummary,
+} from "./computerAutomation";
 import type { ThreadId } from "./baseSchemas";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type { PullRequestKey } from "./prHub";
@@ -611,6 +615,15 @@ export interface DesktopPreviewBridge {
 }
 
 export interface NativeApi {
+  chrome?: {
+    listTransactions: (
+      provider: "claude" | "codex",
+    ) => Promise<ReadonlyArray<ChromeNativeHostTransactionSummary>>;
+    restoreNativeHost: (
+      provider: "claude" | "codex",
+      transactionId: string,
+    ) => Promise<{ restored: ReadonlyArray<string>; skipped: ReadonlyArray<string> }>;
+  };
   computer?: {
     access: {
       revoke: (input: { threadId: ThreadId; appId: string }) => Promise<void>;

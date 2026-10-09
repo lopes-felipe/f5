@@ -3,6 +3,10 @@ import { release } from "node:os";
 
 /** Only signed, installed certification runs may open these gates. */
 export const COMPUTER_CONTROL_CERTIFIED = { darwin: false, win32: false } as const;
+export const CHROME_CONTROL_CERTIFIED = {
+  claude: { darwin: false, win32: false },
+  codex: { darwin: false, win32: false },
+} as const;
 export function computerCertificationStatus(
   platform: string,
   packaged: boolean,

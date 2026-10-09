@@ -91,4 +91,66 @@ final class AuthorizationTests: XCTestCase {
     XCTAssertEqual(permit.takeExpiredGeneration(), 4)
     XCTAssertNil(permit.takeExpiredGeneration())
   }
+  func testUnknownOwnersAndSystemSurfacesFailClosedEvenWhenGranted() {
+    XCTAssertEqual(
+      computerTargetBlock(appId: nil, pid: 20, f5Pids: [], helperPid: 1), "owner-unknown")
+    XCTAssertEqual(
+      computerTargetBlock(appId: "com.example.Notes", pid: 20, f5Pids: [20], helperPid: 1), "f5")
+    XCTAssertEqual(
+      computerTargetBlock(appId: "com.example.Notes", pid: 1, f5Pids: [], helperPid: 1), "f5")
+    for id in [
+      "com.apple.dock", "com.apple.controlcenter", "com.apple.notificationcenterui",
+      "com.apple.spotlight",
+    ] {
+      XCTAssertEqual(computerTargetBlock(appId: id, pid: 20, f5Pids: [], helperPid: 1), "system-ui")
+    }
+    XCTAssertNil(computerTargetBlock(appId: "com.example.Notes", pid: 20, f5Pids: [], helperPid: 1))
+  }
+  func testKeyboardRefusesUnknownFocusAndSecureFields() {
+    XCTAssertEqual(
+      computerFocusBlock(
+        frontPid: 20, focusedPid: nil, secureInput: false, role: "AXTextField", subrole: nil),
+      "owner-unknown")
+    XCTAssertEqual(
+      computerFocusBlock(
+        frontPid: 20, focusedPid: 21, secureInput: false, role: "AXTextField", subrole: nil),
+      "owner-unknown")
+    XCTAssertEqual(
+      computerFocusBlock(frontPid: 20, focusedPid: 20, secureInput: false, role: nil, subrole: nil),
+      "focus-unknown")
+    for (secure, role, subrole) in [
+      (true, "AXTextField", ""), (false, "AXSecureTextField", ""),
+      (false, "AXTextField", "AXSecureTextField"),
+    ] {
+      XCTAssertEqual(
+        computerFocusBlock(
+          frontPid: 20, focusedPid: 20, secureInput: secure, role: role, subrole: subrole),
+        "secure-field")
+    }
+    XCTAssertNil(
+      computerFocusBlock(
+        frontPid: 20, focusedPid: 20, secureInput: false, role: "AXTextField", subrole: nil))
+  }
+  func testModalOrElementChangeStopsTypingEvenInTheSameGrantedApp() {
+    XCTAssertFalse(
+      computerFocusUnchanged(
+        initialPid: 20, currentPid: 20, sameWindow: false, sameElement: true, typing: true))
+    XCTAssertFalse(
+      computerFocusUnchanged(
+        initialPid: 20, currentPid: 20, sameWindow: true, sameElement: false, typing: true))
+    XCTAssertFalse(
+      computerFocusUnchanged(
+        initialPid: 20, currentPid: 21, sameWindow: true, sameElement: true, typing: true))
+    XCTAssertTrue(
+      computerFocusUnchanged(
+        initialPid: 20, currentPid: 20, sameWindow: true, sameElement: false, typing: false))
+  }
+  func testMenuAuthorizationExcludesStatusItemsAndUnknownGeometry() {
+    XCTAssertTrue(computerMenuPointAllowed(x: -100, left: -200, lastItemRight: 0))
+    XCTAssertFalse(computerMenuPointAllowed(x: 0, left: -200, lastItemRight: 0))
+    XCTAssertFalse(computerMenuPointAllowed(x: -201, left: -200, lastItemRight: 0))
+    XCTAssertFalse(computerMenuPointAllowed(x: 100, left: 100, lastItemRight: 100))
+    XCTAssertFalse(computerMenuPointAllowed(x: .nan, left: 0, lastItemRight: 100))
+  }
+
 }

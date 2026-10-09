@@ -2,6 +2,7 @@ import { Effect, Option } from "effect";
 import type { ComputerAutomationBackendStatus } from "@t3tools/contracts";
 import { ServerSettingsService } from "../serverSettings";
 import { selectComputerBackend } from "./computerBackendSelection";
+import { probeComputerBuiltin } from "./computerBuiltinAvailability";
 
 /** Built-in enablement remains unavailable until a supported, certified mechanism is recorded. */
 export function resolveComputerBackendSelection(input: {
@@ -21,13 +22,12 @@ export function resolveComputerBackendSelection(input: {
       ...input,
       preference,
       platform: process.platform,
-      builtin: {
-        available: false,
-        reason:
-          input.provider === "claude"
-            ? "SDK app-access elicitation has not been certified"
-            : "Desktop plugin veto and profile isolation have not been certified",
-      },
+      builtin:
+        input.enabled && preference === "auto"
+          ? yield* Effect.promise(() =>
+              probeComputerBuiltin({ provider: input.provider, platform: process.platform }),
+            )
+          : { available: false, reason: "Built-in computer control was not requested" },
     });
     const nativeCatalog =
       input.enabled &&

@@ -113,6 +113,84 @@ describe("computer broker safety boundaries", () => {
       h.broker.close();
     }
   });
+  it("keeps Chrome consent separate from computer grants and rechecks its own policy", async () => {
+    const h = await harness();
+    try {
+      h.set({
+        policy: {
+          previewAutomation: true,
+          externalHosts: [],
+          computerUse: false,
+          claudeInChrome: true,
+        },
+      });
+      const consent = h.broker.requestChromeSetup("t", "s", {
+        provider: "claude",
+        previousTargets: ["old"],
+        targetPath: "new",
+      });
+      const request = h.ipc.messages.findLast((m) => m.type === "accessRequested");
+      if (request?.type !== "accessRequested") throw new Error("missing setup request");
+      await h.broker.refreshPolicies();
+      h.ipc.emit("message", {
+        type: "accessAnswer",
+        answer: {
+          requestId: request.request.requestId,
+          backendIncarnation: "old",
+          decisions: [],
+          allowChromeSetup: true,
+        },
+      });
+      expect(
+        h.ipc.messages.some(
+          (m) => m.type === "cancel" && m.requestId === request.request.requestId,
+        ),
+      ).toBe(false);
+      h.ipc.emit("message", {
+        type: "accessAnswer",
+        answer: {
+          requestId: request.request.requestId,
+          backendIncarnation: "backend",
+          decisions: [],
+          allowChromeSetup: true,
+          allowSessionActions: true,
+        },
+      });
+      expect(await consent).toBe(true);
+      expect(h.broker.access.actionsApproved("t")).toBe(false);
+      const next = h.broker.requestChromeSetup("t", "s", {
+        provider: "claude",
+        previousTargets: [],
+        targetPath: "new",
+      });
+      h.set({
+        policy: {
+          previewAutomation: true,
+          externalHosts: [],
+          computerUse: false,
+          claudeInChrome: false,
+        },
+      });
+      await h.broker.refreshPolicies();
+      expect(await next).toBe(false);
+    } finally {
+      h.broker.close();
+    }
+  });
+  it("disposing native tools leaves the Chrome lease to the provider exit finalizer", async () => {
+    const h = await harness();
+    try {
+      h.ipc.emit("message", {
+        type: "chromeLeaseChanged",
+        holder: { profileId: "p", threadId: "t", sessionGeneration: "s", provider: "claude" },
+      });
+      h.broker.releaseSession("t", "s");
+      expect(h.ipc.messages.some((message) => message.type === "chromeLeaseRelease")).toBe(false);
+      expect(h.broker.snapshot().chromeHolder?.threadId).toBe("t");
+    } finally {
+      h.broker.close();
+    }
+  });
   it("restores anonymous contention and paused controls in a reconnect snapshot", async () => {
     const h = await harness();
     try {

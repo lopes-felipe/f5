@@ -656,20 +656,16 @@ unsafe fn focused(
     let element = uia
         .GetFocusedElement()
         .map_err(|_| blocked("focus-unknown"))?;
-    if element
+    let password = element
         .CurrentIsPassword()
-        .map_err(|_| blocked("focus-unknown"))?
-        .as_bool()
-    {
-        return Err(blocked("secure-field"));
-    }
-    let process_id = element
-        .CurrentProcessId()
-        .map_err(|_| blocked("owner-unknown"))? as u32;
+        .ok()
+        .map(|value| value.as_bool());
+    let process_id = element.CurrentProcessId().ok().map(|value| value as u32);
     let (_, owner_id) = owner(hwnd)?;
-    if process_id != owner_id {
-        return Err(blocked("focus-unknown"));
+    if let Some(kind) = crate::safety::focused_element_block(owner_id, process_id, password) {
+        return Err(blocked(kind));
     }
+    let process_id = process_id.ok_or(blocked("owner-unknown"))?;
     Ok((element, process_id, hwnd))
 }
 unsafe fn runtime_id(element: &IUIAutomationElement) -> Result<String, Value> {
@@ -926,6 +922,13 @@ unsafe fn element_action(request: &Value, host: &Value) -> Result<(), Value> {
     {
         return Err(blocked("secure-field"));
     }
+    if element
+        .CurrentProcessId()
+        .map_err(|_| fail("StaleElement"))? as u32
+        != snapshot.pid
+    {
+        return Err(fail("StaleElement"));
+    }
     check(request)?;
     let result = match action {
         "press" => element
@@ -1000,60 +1003,15 @@ unsafe fn mouse(
     Ok(())
 }
 fn chord(raw: &str) -> Result<Vec<u16>, Value> {
-    let parts: Vec<_> = raw.split('+').map(|part| part.to_lowercase()).collect();
-    let mut codes = Vec::new();
-    for part in &parts {
-        let code = match &part[..] {
-            "ctrl" | "control" => VK_CONTROL.0,
-            "alt" => VK_MENU.0,
-            "shift" => VK_SHIFT.0,
-            "win" | "meta" => VK_LWIN.0,
-            "enter" | "return" => VK_RETURN.0,
-            "tab" => VK_TAB.0,
-            "escape" | "esc" => VK_ESCAPE.0,
-            "space" => VK_SPACE.0,
-            "backspace" => VK_BACK.0,
-            "delete" => VK_DELETE.0,
-            "arrowleft" => VK_LEFT.0,
-            "arrowright" => VK_RIGHT.0,
-            "arrowup" => VK_UP.0,
-            "arrowdown" => VK_DOWN.0,
-            "home" => VK_HOME.0,
-            "end" => VK_END.0,
-            "pageup" => VK_PRIOR.0,
-            "pagedown" => VK_NEXT.0,
-            _ => {
-                if part.len() == 1 && part.as_bytes()[0].is_ascii_alphanumeric() {
-                    part.as_bytes()[0].to_ascii_uppercase() as u16
-                } else if part.starts_with('f') {
-                    let number = part[1..]
-                        .parse::<u16>()
-                        .map_err(|_| fail("UnsupportedAction"))?;
-                    if !(1..=12).contains(&number) {
-                        return Err(fail("UnsupportedAction"));
-                    }
-                    VK_F1.0 + number - 1
-                } else {
-                    return Err(fail("UnsupportedAction"));
-                }
-            }
-        };
-        codes.push(code)
-    }
-    if codes.contains(&VK_LWIN.0)
-        && (codes.contains(&(b'L' as u16)) || codes.contains(&(b'R' as u16)))
-        || codes.contains(&VK_CONTROL.0)
-            && codes.contains(&VK_MENU.0)
-            && codes.contains(&VK_DELETE.0)
-        || codes.contains(&VK_CONTROL.0)
-            && codes.contains(&VK_MENU.0)
-            && codes.contains(&VK_SHIFT.0)
-            && codes.contains(&VK_F12.0)
-    {
-        return Err(blocked("system-ui"));
-    }
-    Ok(codes)
+    crate::safety::parse_chord(raw).map_err(|reason| {
+        if reason == "system-ui" {
+            blocked(reason)
+        } else {
+            fail(reason)
+        }
+    })
 }
+
 unsafe fn capture(request: &Value, host: &Value) -> Result<Value, Value> {
     check_grants(request)?;
     let target = select_display(request)?;
@@ -1133,38 +1091,20 @@ unsafe fn capture(request: &Value, host: &Value) -> Result<Value, Value> {
         if success && !bits.is_null() {
             let pixels =
                 std::slice::from_raw_parts(bits as *const u8, width as usize * height as usize * 4);
-            let zero_alpha = pixels.chunks_exact(4).all(|pixel| pixel[3] == 0);
-            for y in 0..height {
-                for x in 0..width {
-                    let global_x = capture_rect.left + x as i32;
-                    let global_y = capture_rect.top + y as i32;
-                    if !crate::safety::inside_frame(
-                        global_x,
-                        global_y,
-                        rect.left,
-                        rect.top,
-                        rect.right,
-                        rect.bottom,
-                    ) {
-                        continue;
-                    }
-                    let native_x = global_x - target.bounds.left;
-                    let native_y = global_y - target.bounds.top;
-                    if native_x < 0 || native_y < 0 || native_x >= w as i32 || native_y >= h as i32
-                    {
-                        continue;
-                    }
-                    let offset = (y as usize * width as usize + x as usize) * 4;
-                    let alpha = if zero_alpha { 255 } else { pixels[offset + 3] } as u32;
-                    let dest = canvas.get_pixel_mut(native_x as u32, native_y as u32);
-                    for (index, src) in [pixels[offset + 2], pixels[offset + 1], pixels[offset]]
-                        .iter()
-                        .enumerate()
-                    {
-                        dest[index] = ((*src as u32 * alpha + dest[index] as u32 * (255 - alpha))
-                            / 255) as u8;
-                    }
-                }
+            let bounds = |rect: RECT| crate::composition::CaptureRect {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+            };
+            if !crate::composition::composite_window(
+                &mut canvas,
+                bounds(target.bounds),
+                bounds(capture_rect),
+                bounds(rect),
+                pixels,
+            ) {
+                hidden = true;
             }
         }
         SelectObject(dc, old);

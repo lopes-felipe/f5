@@ -5,6 +5,7 @@ import {
   parseChromeRegistryQuery,
   parseNativeHostManifest,
   type ChromeNativeHostDescriptor,
+  type ChromeNativeHostTransaction,
 } from "./chromeNativeHost";
 const manifest = (path: string) =>
   JSON.stringify({
@@ -83,6 +84,38 @@ describe("Chrome native-host transactions", () => {
     expect(restore).toHaveBeenCalledWith("user", original);
     expect(result.skipped).toEqual(["edge"]);
     expect(saved).toHaveLength(3);
+  });
+  it("keeps restoration evidence for a partially failed launch and leaves shadowed registrations alone", async () => {
+    let current = [
+      parseNativeHostManifest("chrome", "user", manifest("old")),
+      { ...parseNativeHostManifest("chrome", "system", manifest("shadowed")), shadowed: true },
+      parseNativeHostManifest("edge", "edge", manifest("old-edge")),
+    ];
+    let saved: ChromeNativeHostTransaction | undefined;
+    const restore = vi.fn(async () => {});
+    const transactions = new ChromeNativeHostTransactions({
+      inspect: async () => current,
+      saveTransaction: async (value) => {
+        saved = value;
+      },
+      restoreRegistration: restore,
+    });
+    const approved = await transactions.approve({
+      provider: "claude",
+      profileId: "p",
+      targetPath: "new",
+      observed: current,
+    });
+    current[0] = parseNativeHostManifest("chrome", "user", manifest("new"));
+    // Edge still points to the old host: launch failed part-way through setup.
+    await expect(transactions.recordLaunch(approved)).rejects.toThrow("approved target");
+    expect(saved?.state).toBe("launched");
+    expect(saved?.registrations[0]?.postLaunchHash).toBe(current[0]!.sha256);
+    expect(saved?.registrations[1]?.postLaunchHash).toBeUndefined();
+    expect(saved?.registrations[2]?.postLaunchHash).toBeUndefined();
+    await transactions.restore(saved!, async () => {});
+    expect(restore).toHaveBeenCalledOnce();
+    expect(restore).toHaveBeenCalledWith("user", manifest("old"));
   });
   it("parses default registry values including paths with spaces", () => {
     expect(
