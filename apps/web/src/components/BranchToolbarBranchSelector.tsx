@@ -1,4 +1,4 @@
-import type { ChangeRequest, GitBranch } from "@t3tools/contracts";
+import type { ChangeRequest, GitBranch, GitCheckoutConflict } from "@t3tools/contracts";
 import { resolveChangeRequestWebUrl } from "@t3tools/shared/sourceControl";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -22,6 +22,8 @@ import {
   invalidateGitQueries,
 } from "../lib/gitReactQuery";
 import { readNativeApi } from "../nativeApi";
+import { WsRequestError } from "../wsTransport";
+import { GitCheckoutConflictDialog } from "./GitCheckoutConflictDialog";
 import { parsePullRequestReference } from "../pullRequestReference";
 import {
   dedupeRemoteBranchesWithLocalMatches,
@@ -105,6 +107,7 @@ export function BranchToolbarBranchSelector({
   const { settings } = useAppSettings();
   const queryClient = useQueryClient();
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
+  const [checkoutConflict, setCheckoutConflict] = useState<GitCheckoutConflict | null>(null);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
   const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
@@ -206,6 +209,22 @@ export function BranchToolbarBranchSelector({
     });
   };
 
+  const handleCheckoutError = (error: unknown) => {
+    if (
+      error instanceof WsRequestError &&
+      error.code === "GitCheckoutConflict" &&
+      error.checkoutConflict
+    ) {
+      setCheckoutConflict(error.checkoutConflict);
+      return;
+    }
+    toastManager.add({
+      type: "error",
+      title: "Failed to checkout branch.",
+      description: toBranchActionErrorMessage(error),
+    });
+  };
+
   const selectBranch = (branch: GitBranch) => {
     const api = readNativeApi();
     if (!api || !branchCwd || isBranchActionPending) return;
@@ -245,17 +264,13 @@ export function BranchToolbarBranchSelector({
         await api.git.checkout({ cwd: selectionTarget.checkoutCwd, branch: branch.name });
         await invalidateGitQueries(queryClient, { cwd: selectionTarget.checkoutCwd });
       } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Failed to checkout branch.",
-          description: toBranchActionErrorMessage(error),
-        });
+        handleCheckoutError(error);
         return;
       }
 
       let nextBranchName = selectedBranchName;
       if (branch.isRemote) {
-        const status = await api.git.status({ cwd: branchCwd }).catch(() => null);
+        const status = await api.git.status({ cwd: selectionTarget.checkoutCwd }).catch(() => null);
         if (status?.branch) {
           nextBranchName = status.branch;
         }
@@ -282,11 +297,7 @@ export function BranchToolbarBranchSelector({
         try {
           await api.git.checkout({ cwd: branchCwd, branch: name });
         } catch (error) {
-          toastManager.add({
-            type: "error",
-            title: "Failed to checkout branch.",
-            description: toBranchActionErrorMessage(error),
-          });
+          handleCheckoutError(error);
           return;
         }
       } catch (error) {
@@ -492,7 +503,11 @@ export function BranchToolbarBranchSelector({
         <ComboboxTrigger
           render={<Button data-composer-control="branch" variant="ghost" size="xs" />}
           className="h-6 font-mono text-2xs font-normal text-muted-foreground hover:text-foreground sm:h-6"
-          disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
+          disabled={
+            (branchesQuery.isLoading && branches.length === 0) ||
+            isBranchActionPending ||
+            checkoutConflict !== null
+          }
         >
           <MiddleTruncate className="max-w-60" text={triggerLabel} />
           <ChevronDownIcon />
@@ -532,6 +547,16 @@ export function BranchToolbarBranchSelector({
           )}
         </ComboboxPopup>
       </Combobox>
+      {checkoutConflict ? (
+        <GitCheckoutConflictDialog
+          conflict={checkoutConflict}
+          onClose={() => setCheckoutConflict(null)}
+          onPrepared={(branch, worktreePath) => {
+            onSetThreadBranch(branch, worktreePath);
+            onComposerFocusRequest?.();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

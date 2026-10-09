@@ -17,6 +17,7 @@ import {
   type WsPushMessage,
   WS_METHODS,
   WebSocketResponse,
+  type GitCheckoutConflict,
   type WsResponse as WsResponseMessage,
   WsResponse as WsResponseSchema,
 } from "@t3tools/contracts";
@@ -56,11 +57,13 @@ interface RequestOptions {
 
 export class WsRequestError extends Error {
   readonly code: string | undefined;
+  readonly checkoutConflict: GitCheckoutConflict | undefined;
 
-  constructor(message: string, code?: string) {
+  constructor(message: string, code?: string, checkoutConflict?: GitCheckoutConflict) {
     super(message);
     this.name = "WsRequestError";
     this.code = code;
+    this.checkoutConflict = checkoutConflict;
   }
 }
 
@@ -609,7 +612,13 @@ export class WsTransport {
     acknowledgeSlowRpcRequest(message.id);
 
     if (message.error) {
-      pending.reject(new WsRequestError(message.error.message, message.error.code));
+      pending.reject(
+        new WsRequestError(
+          message.error.message,
+          message.error.code,
+          message.error.checkoutConflict,
+        ),
+      );
       return;
     }
 

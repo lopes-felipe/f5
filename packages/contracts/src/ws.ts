@@ -101,6 +101,7 @@ import {
 import {
   GitActionProgressEvent,
   GitCheckoutInput,
+  GitCheckoutConflict,
   GitCreateBranchInput,
   GitPreparePullRequestThreadInput,
   GitCreateWorktreeInput,
@@ -838,6 +839,7 @@ export const WebSocketResponse = Schema.Struct({
     Schema.Struct({
       message: Schema.String,
       code: Schema.optional(Schema.String),
+      checkoutConflict: Schema.optional(GitCheckoutConflict),
     }),
   ),
 });

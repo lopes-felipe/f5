@@ -26,6 +26,7 @@ import {
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
   type TurnSubmissionResult,
+  type GitCheckoutConflict,
 } from "@t3tools/contracts";
 import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
 import { GithubCliImport } from "./git/GithubCliImport";
@@ -755,8 +756,16 @@ function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
 function formatRouteFailure(cause: Cause.Cause<unknown>): {
   readonly message: string;
   readonly code?: string;
+  readonly checkoutConflict?: GitCheckoutConflict;
 } {
   const squashed = Cause.squash(cause);
+  if (Schema.is(GitCommandError)(squashed) && squashed.checkoutConflict) {
+    return {
+      code: "GitCheckoutConflict",
+      message: `Local changes in ${squashed.checkoutConflict.cwd} would be overwritten by switching to '${squashed.checkoutConflict.branch}'.`,
+      checkoutConflict: squashed.checkoutConflict,
+    };
+  }
   if (Schema.is(AttachmentIngressError)(squashed)) {
     return { message: squashed.message };
   }
@@ -3973,7 +3982,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitCheckout: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.scoped(git.checkoutBranch(body));
+        return yield* Effect.scoped(git.checkoutBranch(body)).pipe(
+          Effect.tapError((error) =>
+            Effect.logWarning("Branch checkout failed", {
+              cwd: body.cwd,
+              branch: body.branch,
+              detail: error.detail,
+            }),
+          ),
+        );
       }
 
       case WS_METHODS.gitInit: {

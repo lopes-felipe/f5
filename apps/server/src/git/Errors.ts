@@ -1,4 +1,4 @@
-import { SourceControlRateLimit } from "@t3tools/contracts";
+import { GitCheckoutConflict, SourceControlRateLimit } from "@t3tools/contracts";
 import { Schema } from "effect";
 import type { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 
@@ -10,6 +10,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   command: Schema.String,
   cwd: Schema.String,
   detail: Schema.String,
+  checkoutConflict: Schema.optional(GitCheckoutConflict),
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {

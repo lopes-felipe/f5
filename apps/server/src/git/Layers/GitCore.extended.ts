@@ -1802,6 +1802,97 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── Full flow: checkout conflict ──
 
   describe("full flow: checkout conflict", () => {
+    it.effect(
+      "returns the conflicting files and preserves staged, unstaged and untracked work",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const fileSystem = yield* FileSystem.FileSystem;
+          const core = yield* GitCore;
+          yield* initRepoWithCommit(tmp);
+          const initialBranch = yield* git(tmp, ["branch", "--show-current"]);
+          yield* git(tmp, ["checkout", "-b", "target"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "target readme\n");
+          yield* writeTextFile(path.join(tmp, "new file.txt"), "tracked on target\n");
+          yield* git(tmp, ["add", "README.md", "new file.txt"]);
+          yield* git(tmp, ["commit", "-m", "target files"]);
+          yield* git(tmp, ["checkout", initialBranch]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "staged readme\n");
+          yield* git(tmp, ["add", "README.md"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "unstaged readme\n");
+          yield* writeTextFile(path.join(tmp, "new file.txt"), "untracked work\n");
+          const before = yield* git(tmp, ["status", "--porcelain=v1"]);
+          const result = yield* Effect.result(core.checkoutBranch({ cwd: tmp, branch: "target" }));
+          expect(result._tag).toBe("Failure");
+          if (result._tag !== "Failure") return;
+          expect(result.failure.checkoutConflict).toEqual({
+            cwd: tmp,
+            branch: "target",
+            files: ["README.md", "new file.txt"],
+          });
+          expect(yield* git(tmp, ["branch", "--show-current"])).toBe(initialBranch);
+          expect(yield* git(tmp, ["status", "--porcelain=v1"])).toBe(before);
+          expect(yield* git(tmp, ["show", ":README.md"])).toBe("staged readme");
+          expect(yield* fileSystem.readFileString(path.join(tmp, "README.md"))).toBe(
+            "unstaged readme\n",
+          );
+          expect(yield* fileSystem.readFileString(path.join(tmp, "new file.txt"))).toBe(
+            "untracked work\n",
+          );
+          const recoveryPath = path.join(yield* makeTmpDir(), "recovery");
+          yield* core.createWorktree({
+            cwd: tmp,
+            branch: "target",
+            newBranch: "recovery",
+            path: recoveryPath,
+          });
+          expect(yield* git(recoveryPath, ["branch", "--show-current"])).toBe("recovery");
+          expect(yield* fileSystem.readFileString(path.join(recoveryPath, "README.md"))).toBe(
+            "target readme\n",
+          );
+          expect(yield* git(tmp, ["status", "--porcelain=v1"])).toBe(before);
+          expect(yield* git(tmp, ["show", ":README.md"])).toBe("staged readme");
+          expect(yield* fileSystem.readFileString(path.join(tmp, "README.md"))).toBe(
+            "unstaged readme\n",
+          );
+          expect(yield* fileSystem.readFileString(path.join(tmp, "new file.txt"))).toBe(
+            "untracked work\n",
+          );
+        }),
+    );
+
+    it.effect(
+      "switches a worktree to the default branch without changing a dirty main checkout",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          const wt = path.join(yield* makeTmpDir(), "worktree");
+          const core = yield* GitCore;
+          yield* initRepoWithCommit(tmp);
+          const defaultBranch = yield* git(tmp, ["branch", "--show-current"]);
+          yield* git(tmp, ["checkout", "-b", "composer"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "composer commit\n");
+          yield* git(tmp, ["add", "README.md"]);
+          yield* git(tmp, ["commit", "-m", "composer base"]);
+          yield* core.createWorktree({
+            cwd: tmp,
+            branch: defaultBranch,
+            newBranch: "thread",
+            path: wt,
+          });
+          yield* writeTextFile(path.join(tmp, "README.md"), "staged composer\n");
+          yield* git(tmp, ["add", "README.md"]);
+          yield* writeTextFile(path.join(tmp, "README.md"), "unstaged composer\n");
+          const beforeIndex = yield* git(tmp, ["diff", "--cached"]);
+          const beforeWorkingTree = yield* git(tmp, ["diff"]);
+          yield* core.checkoutBranch({ cwd: wt, branch: defaultBranch });
+          expect(yield* git(wt, ["branch", "--show-current"])).toBe(defaultBranch);
+          expect(yield* git(tmp, ["branch", "--show-current"])).toBe("composer");
+          expect(yield* git(tmp, ["diff", "--cached"])).toBe(beforeIndex);
+          expect(yield* git(tmp, ["diff"])).toBe(beforeWorkingTree);
+        }),
+    );
+
     it.effect("uncommitted changes prevent checkout to a diverged branch", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

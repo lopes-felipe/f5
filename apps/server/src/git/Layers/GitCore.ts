@@ -17,6 +17,7 @@ import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref, Schema } f
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
+import { checkoutConflictFiles } from "../checkoutConflict.ts";
 import { GitService } from "../Services/GitService.ts";
 import { GitCore, type GitCoreShape, type GitWorktreeProgress } from "../Services/GitCore.ts";
 import { makeProgressLineSplitter, parseCheckoutProgressLine } from "../progressLines.ts";
@@ -2273,7 +2274,19 @@ const makeGitCore = Effect.gen(function* () {
       yield* executeGit("GitCore.checkoutBranch.checkout", input.cwd, [...checkoutArgs, "--"], {
         timeoutMs: 10_000,
         fallbackErrorMessage: "git checkout failed",
-      });
+        // Keep diagnostics stable for classification, regardless of the host's locale.
+        env: { LC_ALL: "C" },
+      }).pipe(
+        Effect.mapError((error) => {
+          const files = checkoutConflictFiles(error.detail);
+          return files === null
+            ? error
+            : new GitCommandError({
+                ...error,
+                checkoutConflict: { cwd: input.cwd, branch: input.branch, files },
+              });
+        }),
+      );
 
       // Refresh upstream refs in the background so checkout remains responsive.
       yield* Effect.forkScoped(
