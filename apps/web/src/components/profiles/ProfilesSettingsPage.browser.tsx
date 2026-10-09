@@ -192,7 +192,7 @@ it.each(["authenticated", "unauthenticated"] as const)(
   "keeps account actions enabled with a compatibility notice (%s)",
   async (status) => {
     const message =
-      "Codex 0.147.0 is older than the audited 0.160.1; managed profiles may lack newer protocol features.";
+      "Codex 0.147.0 is older than the audited 0.162.0; managed profiles may lack newer protocol features.";
     list.mockResolvedValue({
       profiles: [
         {

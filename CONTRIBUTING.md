@@ -75,8 +75,8 @@ Codex app-server bump:
 - Run `bun run --cwd apps/server test:claude:live` with authenticated Claude credentials.
   Report missing credentials as unverified, never as a passing live check.
 - Run the Codex rewind matrix: 0.144.3 smoke, 0.147 rollback, 0.156 legacy-history fork,
-  and 0.160.1 new-history revert, each followed by a model turn. Preserve executable
-  overrides and use isolated provider homes. `apps/server/scripts/certify-codex-rewind.ts` runs
+  and the current audited baseline new-history revert, each followed by a model turn.
+  Preserve executable overrides and use isolated provider homes. `apps/server/scripts/certify-codex-rewind.ts` runs
   the model-backed manager check; `F5_CODEX_RESUME_BINARY` selects the legacy-history
   upgrade leg. Run the native startup smoke too.
 - Run `bun fmt`, `bun lint`, `bun typecheck`, and `bun run test:full`.
@@ -84,7 +84,7 @@ Codex app-server bump:
   revisions, spike outcomes and any unverified checks. Apply the wire-version policy
   when decoded browser shapes change.
 
-Audit research covers Claude SDK 0.2.113–0.3.292 and Codex 0.89.0–0.160.1. Earlier
+Audit research covers Claude SDK 0.2.113–0.3.295 and Codex 0.89.0–0.162.0. Earlier
 versions are checked only for a specifically retained behavior, and recorded explicitly.
 Release 0 keeps the browser queue contract and wire protocol unchanged; submission
 provenance is stamped and stored solely on the server.

@@ -50,11 +50,9 @@ describe("Claude SDK host contract transport", () => {
           ["--effort", "xhigh"],
           ["--disallowedTools", "Agent,Task"],
         ] as const) {
-          expect(args, flag).toContain(flag);
-          expect(args[args.indexOf(flag) + 1], flag).toBe(value);
+          expect(args, flag).toContain(`${flag}=${value}`);
         }
-        expect(args).toContain("--thinking");
-        expect(args[args.indexOf("--thinking") + 1]).toBe("disabled");
+        expect(args).toContain("--thinking=disabled");
       } finally {
         runtime.close();
       }

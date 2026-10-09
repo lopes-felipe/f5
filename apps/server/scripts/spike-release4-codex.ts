@@ -1,4 +1,5 @@
 /** Live, isolated Release 4 protocol spike. Emits method names and outcomes only. */
+import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -46,10 +47,6 @@ const record = (v: unknown): Record<string, unknown> =>
 const outcomes: Record<string, unknown> = {};
 async function request(method: string, params: Record<string, unknown>) {
   try {
-    await fs.mkdir(home);
-    await fs.mkdir(cwd);
-    await fs.copyFile(path.join(source, "auth.json"), path.join(home, "auth.json"));
-    await fs.chmod(path.join(home, "auth.json"), 0o600);
     const result = await native.sendRequest(native.requireSession(id), method, params);
     outcomes[method] = "accepted";
     return record(result);
@@ -59,6 +56,10 @@ async function request(method: string, params: Record<string, unknown>) {
   }
 }
 try {
+  await fs.mkdir(home);
+  await fs.mkdir(cwd);
+  await fs.copyFile(path.join(source, "auth.json"), path.join(home, "auth.json"));
+  await fs.chmod(path.join(home, "auth.json"), 0o600);
   const git = promisify(execFile);
   await git("git", ["init", cwd]);
   await fs.writeFile(path.join(cwd, "sample.js"), "export const value = 1;\n");
@@ -185,6 +186,20 @@ try {
   outcomes.compactionItems = after.turns
     .flatMap((t) => t.items.map((i) => record(i).type))
     .filter(Boolean);
+  for (const method of [
+    "model/list",
+    "thread/fork",
+    "thread/attachment/add",
+    "thread/attachment/list",
+    "thread/goal/set",
+    "thread/goal/get",
+    "thread/goal/clear",
+    "thread/compact/start",
+  ])
+    assert.equal(outcomes[method], "accepted", `${method} failed`);
+  assert.equal(outcomes.activeGoalSettlement, "turn/completed");
+  assert.equal(outcomes.compactionSettlement, "turn/completed");
+  assert.equal(outcomes.reviewSettlement, "completed");
   console.log(
     JSON.stringify(
       {

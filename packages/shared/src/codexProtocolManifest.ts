@@ -3,10 +3,10 @@
  * audited. Keep this list exhaustive: a new method or item must receive an
  * explicit disposition before it can be treated as understood.
  */
-export const CODEX_PROTOCOL_BASELINE_VERSION = "0.160.1" as const;
+export const CODEX_PROTOCOL_BASELINE_VERSION = "0.162.0" as const;
 
 /**
- * Oldest release whose full surface F5 audited before 0.160.1. Older CLIs are
+ * Oldest release whose full surface F5 audited before 0.162.0. Older CLIs are
  * still permitted (the runtime minimum lives in codexCliVersion.ts) but their
  * behavior is unverified. Runtime handlers for methods removed after this
  * release stay in place for those CLIs.
@@ -44,6 +44,7 @@ export const CODEX_NOTIFICATION_METHODS = [
   "thread/environment/connected",
   "thread/environment/disconnected",
   "thread/settings/updated",
+  "thread/prediction/updated",
   "thread/tokenUsage/updated",
   "turn/started",
   "hook/started",
@@ -138,6 +139,8 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "thread/environment/connected": "state-only",
   "thread/environment/disconnected": "state-only",
   "thread/settings/updated": "state-only",
+  // Native predictions are observed only; F5 does not enable a second prompt producer.
+  "thread/prediction/updated": "state-only",
   "thread/tokenUsage/updated": "canonical",
   "turn/started": "canonical",
   "hook/started": "diagnostics-only",

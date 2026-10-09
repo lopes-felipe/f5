@@ -31,7 +31,7 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
-F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
+F5 pins Claude Agent SDK 0.3.295, which bundles Claude Code v2.1.295. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
@@ -757,6 +757,20 @@ through Claude's edit tools are covered; Bash and manual changes are not restore
 Shared workspaces are refused. A refused preview or rewind leaves conversation
 history unchanged. Skipped links produce a visible warning; a real rewind is never
 retried automatically.
+
+### SDK 0.3.295 bump
+
+Release 4 updates the bundled SDK from 0.3.292 to **0.3.295** and Claude Code from
+2.1.292 to **2.1.295**. The SDK message audit still classifies all 38 discriminators.
+The declaration diff adds optional background-task `subagent_type`, rate-limit
+`overageEnabled`, startup-policy failure reasons and hook `onFailure` settings;
+launch Options and Query contracts remain compatible.
+
+SDK-owned named option values now use `--flag=value`. The real-query transport probe
+checks this encoding, host initialize instructions, permission mode, effort, thinking
+and mandatory tool exclusions; custom `extraArgs` still follow the SDK's own handling.
+The bump also fixes MCP catalog reconciliation and streamed citation retention and
+bounds oversized MCP output metadata. Existing F5 structured-result limits remain.
 
 ### Live verification status
 

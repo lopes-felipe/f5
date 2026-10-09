@@ -147,7 +147,7 @@ should use the shared-home plus shadow-home setup instead.
 
 ### Isolated profiles
 
-[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.160.1 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.162.0 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
 
 ## Disk space from Codex marketplace upgrades
 
@@ -510,3 +510,28 @@ It confirmed:
 The fixed-version protocol and request-builder audits pass on 0.160.1. These native
 feature spikes do not replace the older-version rewind matrix or platform-specific
 release lifecycle tests.
+
+### Release 4 version bump: codex-cli 0.162.0
+
+The current protocol baseline is **0.162.0**, source commit
+`c1382380de69521303b416720a52f42d51af6248`. The historical 0.160.1 fixture remains
+available. The refreshed inventory has 86 notifications, 11 server requests and 19
+item discriminators; all 66 decoded response fields and all seven real request
+builders pass the generated experimental schema audits. The added
+`thread/prediction/updated` notification is state-only: F5 does not enable native
+predictions as a second prompt producer.
+
+The authenticated 0.162.0 Release 4 spike passed forks, attachment metadata,
+goal continuation/budget pause, native compaction and inline review. New-history
+rewind used `thread/revert`, preserved the expected history, and completed a follow-up
+model turn. The compatibility matrix was also rerun on 0.144.3 and 0.147.0
+(rollback) and a 0.147.0 thread resumed on 0.156.0 (validated fork); retained turn
+IDs and follow-up model turns passed on all three. The live-spike script initializes
+its isolated home once and fails if
+any required request or completion does not succeed.
+
+Codex remains an external executable. Updating F5 or this baseline does not replace
+an operator's installation or custom executable path. For an npm installation,
+`npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
+`codex --version`, or select the upgraded executable in Settings > Providers & Models.
+Existing 0.160.1 native capability gates remain compatible.

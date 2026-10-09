@@ -18,7 +18,8 @@ const executableSource = `
 const { createInterface } = require("node:readline");
 const { appendFileSync } = require("node:fs");
 const { join } = require("node:path");
-let model = process.argv[process.argv.indexOf("--model") + 1];
+let model = process.argv.find(arg => arg.startsWith("--model="))?.slice("--model=".length)
+  ?? process.argv[process.argv.indexOf("--model") + 1];
 const emit = value => process.stdout.write(JSON.stringify(value) + "\\n");
 createInterface({ input: process.stdin }).on("line", line => {
   const m = JSON.parse(line);

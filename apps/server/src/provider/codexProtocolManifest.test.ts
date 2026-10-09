@@ -16,12 +16,12 @@ import {
   codexThreadItemDisposition,
 } from "@t3tools/shared/codexProtocolManifest";
 
-describe("Codex 0.160.1 protocol manifest", () => {
+describe("Codex 0.162.0 protocol manifest", () => {
   it("classifies every notification, request, and thread item exactly once", () => {
-    expect(CODEX_NOTIFICATION_METHODS).toHaveLength(85);
+    expect(CODEX_NOTIFICATION_METHODS).toHaveLength(86);
     expect(CODEX_SERVER_REQUEST_METHODS).toHaveLength(11);
     expect(CODEX_THREAD_ITEM_TYPES).toHaveLength(19);
-    expect(Object.keys(CODEX_NOTIFICATION_DISPOSITIONS)).toHaveLength(85);
+    expect(Object.keys(CODEX_NOTIFICATION_DISPOSITIONS)).toHaveLength(86);
     expect(Object.keys(CODEX_SERVER_REQUEST_DISPOSITIONS)).toHaveLength(11);
     expect(Object.keys(CODEX_THREAD_ITEM_DISPOSITIONS)).toHaveLength(19);
 
@@ -43,6 +43,7 @@ describe("Codex 0.160.1 protocol manifest", () => {
     expect(codexNotificationDisposition("item/fileChange/outputDelta")).toBe("diagnostics-only");
     expect(codexNotificationDisposition("thread/compacted")).toBe("canonical");
     expect(codexNotificationDisposition("thread/queue/changed")).toBe("state-only");
+    expect(codexNotificationDisposition("thread/prediction/updated")).toBe("state-only");
     expect(codexNotificationDisposition("modelProvider/authRecoveryStarted")).toBe(
       "diagnostics-only",
     );
