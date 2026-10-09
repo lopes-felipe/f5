@@ -1157,6 +1157,10 @@ function requirePreviewWebContents(tabId: unknown): Electron.WebContents {
   return guest;
 }
 
+/**
+ * Reports the renderer's tab id, never the window-scoped one: the broker sends result
+ * tab ids back as later targets, and a scoped id would be scoped again and miss.
+ */
 function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
@@ -1164,7 +1168,7 @@ function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
     return {
       available: false,
       visible: false,
-      tabId: entry ? tabId : null,
+      tabId: entry ? clientPreviewTabId(tabId) : null,
       url: null,
       title: null,
       loading: false,
@@ -1175,7 +1179,7 @@ function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
   return {
     available: true,
     visible: true,
-    tabId,
+    tabId: clientPreviewTabId(tabId),
     url: guest.getURL() || null,
     title: guest.getTitle() || null,
     loading: guest.isLoading(),
@@ -1675,9 +1679,6 @@ async function previewAutomationWaitFor(
   tabId: string,
   input: PreviewAutomationWaitForInput,
 ): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
-  requireAllowedPreviewPage(tabId, guest);
-  const deadline = Date.now() + (input.timeoutMs ?? 15_000);
   const checkScript = `(() => {
     ${automationSelectorResolverScript(input)}
     const selectorMatched = ${input.selector || input.locator ? "targetFromSelectorOrLocator() !== null" : "true"};
@@ -1685,13 +1686,18 @@ async function previewAutomationWaitFor(
     const urlMatched = ${input.urlIncludes ? `location.href.includes(${JSON.stringify(input.urlIncludes)})` : "true"};
     return selectorMatched && textMatched && urlMatched;
   })()`;
-  while (Date.now() < deadline) {
-    if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
-      return;
+  // Runs as an action so Take over stops the poll loop at its next checkpoint.
+  await runPreviewAutomationAction(tabId, "waitFor", async (guest, checkpoint) => {
+    const deadline = Date.now() + (input.timeoutMs ?? 15_000);
+    while (Date.now() < deadline) {
+      checkpoint.check();
+      if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
+        return;
+      }
+      await waitPreviewAutomationPoll();
     }
-    await waitPreviewAutomationPoll();
-  }
-  throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
+    throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
+  });
 }
 
 function writeDesktopStreamChunk(

@@ -2266,8 +2266,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const watchAgentBrowserStatus = (context: ClaudeSessionContext): Effect.Effect<void> =>
       Effect.gen(function* () {
         const state = context.agentBrowser;
-        const readStatus = context.query.mcpServerStatus;
-        if (!state || !readStatus) return;
+        // Keep the receiver: the SDK's Query methods are class methods that need `this`.
+        const query = context.query;
+        if (!state || !query.mcpServerStatus) return;
+        const readStatus = () => query.mcpServerStatus!();
         const isCurrent = () =>
           !context.stopped && sessions.get(context.session.threadId) === context;
         if (context.query.initializationResult) {

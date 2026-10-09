@@ -176,10 +176,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   public mcpServerStatusValue: Array<McpServerStatus> = [];
   public mcpServerStatusCalls = 0;
-  readonly mcpServerStatus = async (): Promise<ReadonlyArray<McpServerStatus>> => {
+  // A prototype method that needs `this`, like the SDK's Query: callers must keep the receiver.
+  async mcpServerStatus(): Promise<ReadonlyArray<McpServerStatus>> {
     this.mcpServerStatusCalls += 1;
     return this.mcpServerStatusValue;
-  };
+  }
 
   public readonly toggleMcpServerCalls: Array<{ name: string; enabled: boolean }> = [];
   public toggleMcpServerFailure: unknown;
@@ -724,6 +725,38 @@ describe("ClaudeAdapter agent browser", () => {
       );
     },
   );
+
+  it.effect("reports the preview as verified once the SDK confirms its provenance", () => {
+    const { harness } = makeBrowserHarness();
+    harness.query.mcpServerStatusValue = [{ ...PREVIEW_SDK_STATUS }];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) =>
+                event.type === "session.configured" &&
+                JSON.stringify(event.payload.config.agentBrowser).includes('"verified":true'),
+            ),
+          ),
+        ),
+      );
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("never extends F5 exemptions to look-alike or unverified servers", () => {
     const { harness } = makeBrowserHarness();

@@ -112,12 +112,15 @@ function PersistentPreviewInstance({
     <div
       aria-hidden={!projected}
       inert={!projected}
-      className="fixed z-50 flex min-h-0 flex-col overflow-hidden bg-background"
+      className="fixed flex min-h-0 flex-col overflow-hidden bg-background"
+      // A hidden instance stays inside the viewport, transparent and behind the app:
+      // Chromium produces no frames for an off-screen guest, so agent screenshots would hang.
       style={{
-        left: projected ? bounds.left : -100_000,
+        left: projected ? bounds.left : 0,
         top: projected ? bounds.top : 0,
         width: bounds.width,
         height: bounds.height,
+        zIndex: projected ? 50 : -1,
         opacity: projected ? 1 : 0,
         pointerEvents: projected ? "auto" : "none",
       }}

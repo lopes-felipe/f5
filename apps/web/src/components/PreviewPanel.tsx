@@ -531,7 +531,9 @@ function PreviewBrowserWebview(props: {
       )}
       style={
         props.visible && props.dimensions === null
-          ? { width: "100%", height: "100%" }
+          ? // The parent only has a min-height, so `height: 100%` would resolve to auto and
+            // collapse the webview to its 150px intrinsic height; stretching fills it instead.
+            { width: "100%", alignSelf: "stretch" }
           : { width: dimensions.width, height: dimensions.height }
       }
     >
@@ -617,6 +619,11 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
   const sessionsRef = useRef<PreviewSessionSnapshot[]>([]);
   sessionsRef.current = sessions;
+  // Settles with the tab the panel's initial load made active. Agent requests that arrive
+  // before it renders wait on it so `open` reuses that tab instead of creating a second one.
+  const initialSessionLoadRef = useRef<Promise<PreviewSessionSnapshot | null>>(
+    Promise.resolve(null),
+  );
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const { settings: previewSettings } = useAppSettings();
   const [zoomTabs, setZoomTabs] = useState<Record<string, number>>({});
@@ -937,13 +944,13 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       return;
     }
     let cancelled = false;
-    void (async () => {
+    initialSessionLoadRef.current = (async (): Promise<PreviewSessionSnapshot | null> => {
       try {
         const [config, list] = await Promise.all([
           desktopPreview.getPreviewConfig(),
           api.preview.list({ threadId }),
         ]);
-        if (cancelled) return;
+        if (cancelled) return null;
         setWebviewConfig(config);
         setRecentLocations(list.recentLocations ?? []);
         const requested: Record<string, PreviewViewportDimensions | null> = {};
@@ -962,19 +969,21 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         if (list.sessions.length > 0) {
           setSessions([...list.sessions]);
           setActiveTabId((current) => current ?? list.sessions.at(-1)?.tabId ?? null);
-          return;
+          return list.sessions.at(-1) ?? null;
         }
         const snapshot = await api.preview.open({
           threadId,
           colorScheme: previewSettings.previewDefaults.colorScheme,
         });
-        if (cancelled) return;
+        if (cancelled) return null;
         setSessions([snapshot]);
         setActiveTabId(snapshot.tabId);
+        return snapshot;
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : String(cause));
         }
+        return null;
       }
     })();
     return () => {
@@ -1305,6 +1314,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           "Preview automation is only available in the Electron desktop app.",
         );
       }
+      // This callback may predate the initial load's render; fall back to the tab it settled on.
+      const currentSession = activeSession ?? (await initialSessionLoadRef.current);
 
       const statusForTab = (tabId: string | null | undefined) =>
         tabId
@@ -1333,7 +1344,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         );
       };
       const requireTabId = (): string => {
-        const tabId = request.tabId ?? activeSession?.tabId;
+        const tabId = request.tabId ?? currentSession?.tabId;
         if (!tabId) {
           throw makePreviewAutomationError(
             "PreviewAutomationTabNotFoundError",
@@ -1345,11 +1356,11 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
 
       switch (request.operation) {
         case "status":
-          return statusForTab(request.tabId ?? activeSession?.tabId);
+          return statusForTab(request.tabId ?? currentSession?.tabId);
 
         case "open": {
           const input = request.input as PreviewAutomationOpenInput;
-          let session = activeSession;
+          let session = currentSession;
           let createdSession = false;
           if (!session || input.reuseExistingTab === false) {
             const openedSession = await api.preview.open({
@@ -1378,6 +1389,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
               "The preview does not have an active tab.",
             );
           }
+          // A reused tab may come straight from the initial load, before its webview mounts.
+          if (!createdSession) await waitForAttachedTab(session.tabId);
 
           if (input.url) {
             const snapshot = await api.preview.navigate({
