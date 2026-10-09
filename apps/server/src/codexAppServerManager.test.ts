@@ -3244,6 +3244,47 @@ describe("Codex server requests", () => {
     expect(JSON.stringify(events)).not.toContain(SENTINEL);
   });
 
+  it("settles a cancelled MCP form as cancelled, not as a provided answer", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    vi.spyOn(
+      manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+      "writeMessage",
+    ).mockResolvedValue();
+    vi.spyOn(
+      manager as unknown as { requireSession: (...args: unknown[]) => unknown },
+      "requireSession",
+    ).mockReturnValue(context);
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+    };
+    internals.handleServerRequest(context, {
+      id: 87,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        serverName: "profile",
+        mode: "form",
+        message: "Token?",
+        requestedSchema: { type: "object", properties: { token: { type: "string" } } },
+      },
+    });
+    const opened = events.find((event) => event.method === CODEX_ELICITATION_OPENED_METHOD);
+    const requestId = opened?.requestId as ApprovalRequestId;
+    // As an unattended workflow stage does.
+    await manager.respondToElicitation(asThreadId("thread_1"), requestId, { action: "cancel" });
+    internals.handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 87 },
+    });
+    const settled = events.find((event) => event.method === CODEX_ELICITATION_SETTLED_METHOD);
+    expect(settled).toMatchObject({ requestId, payload: { receipt: "cancelled" } });
+  });
+
   it.each([
     ["item/tool/call", "dynamic tool"],
     ["account/chatgptAuthTokens/refresh", "auth-token refresh"],

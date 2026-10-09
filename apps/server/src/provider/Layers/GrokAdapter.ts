@@ -625,6 +625,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       turnId,
                       deliver: async (response) => release(acpElicitationResponse(response)),
                       abort: () => release(cancelled),
+                      // Releasing the deferred is the ACP callback's response.
+                      completesOnDelivery: true,
                     });
                     yield* offerRuntimeEvent({
                       type: "user-input.requested",
@@ -1312,7 +1314,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             method: "session/elicitation",
             detail: `Unknown pending elicitation request: ${requestId}`,
           });
-        return yield* Effect.tryPromise({
+        const submitted = yield* Effect.tryPromise({
           try: () => registry.submit(requestId, response),
           catch: (cause) =>
             new ProviderAdapterRequestError({
@@ -1321,6 +1323,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               detail: cause instanceof Error ? cause.message : "The answer could not be delivered.",
             }),
         });
+        // The callback's response is the completion; a startup form has no turn end.
+        const receipt = registry.settleIfDelivered(requestId);
+        if (receipt) yield* emitElicitationReceipt(threadId, requestId, receipt);
+        return submitted;
       });
 
     const respondToUserInput: GrokAdapterShape["respondToUserInput"] = (

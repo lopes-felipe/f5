@@ -75,6 +75,41 @@ describe("ElicitationRegistry", () => {
     expect(abort).toHaveBeenCalledOnce();
   });
 
+  it("settles a delivered decline or cancel as cancelled, not resolved", async () => {
+    for (const action of ["decline", "cancel"] as const) {
+      const registry = new ElicitationRegistry();
+      registry.open({ requestId, descriptor, deliver: async () => {} });
+      await registry.submit(requestId, { action });
+      // A JSON-RPC transport settles later, on the provider's completion.
+      expect(registry.settleIfDelivered(requestId)).toBeUndefined();
+      expect(registry.settle(requestId, "completed")).toBe("cancelled");
+    }
+  });
+
+  it("settles in-process deliveries at once, except an accepted link", async () => {
+    const registry = new ElicitationRegistry();
+    registry.open({ requestId, descriptor, deliver: async () => {}, completesOnDelivery: true });
+    await registry.submit(requestId, { action: "accept", content: { name: "x" } });
+    expect(registry.settleIfDelivered(requestId)).toBe("resolved");
+    expect(registry.abortAll()).toEqual([]);
+
+    const link = ApprovalRequestId.makeUnsafe("req-link");
+    const declined = ApprovalRequestId.makeUnsafe("req-link-declined");
+    for (const id of [link, declined])
+      registry.open({
+        requestId: id,
+        descriptor: { mode: "url", message: "Sign in", url: "https://x.test" },
+        deliver: async () => {},
+        completesOnDelivery: true,
+      });
+    await registry.submit(link, { action: "accept" });
+    await registry.submit(declined, { action: "decline" });
+    // An accepted link completes only when the provider reports the flow done.
+    expect(registry.settleIfDelivered(link)).toBeUndefined();
+    expect(registry.settleIfDelivered(declined)).toBe("cancelled");
+    expect(registry.has(link)).toBe(true);
+  });
+
   it("refuses values for link requests and finds them by native id", async () => {
     const registry = new ElicitationRegistry();
     registry.open({

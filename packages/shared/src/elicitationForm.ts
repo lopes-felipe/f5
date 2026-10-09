@@ -326,8 +326,13 @@ export function buildElicitationDescriptor(
     } catch {
       return fail("The request link is not a valid URL.");
     }
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:")
-      return fail("The request link must use http or https.");
+    // Plain http would expose whatever the flow carries to the network, so it
+    // is accepted only for this machine (local OAuth callbacks).
+    if (
+      parsed.protocol !== "https:" &&
+      !(parsed.protocol === "http:" && isLoopbackHost(parsed.hostname))
+    )
+      return fail("The request link must use https (http only for localhost).");
     if (parsed.username || parsed.password) return fail("The request link embeds credentials.");
     return ok({ ...common, mode: "url", url: parsed.href });
   }
@@ -336,6 +341,15 @@ export function buildElicitationDescriptor(
   const fields = normalizeElicitationSchema(input.requestedSchema ?? { type: "object" });
   if (!fields.ok) return fields;
   return ok({ ...common, mode: "form", fields: fields.value });
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.endsWith(".localhost") ||
+    hostname === "[::1]" ||
+    /^127(?:\.\d{1,3}){3}$/.test(hostname)
+  );
 }
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

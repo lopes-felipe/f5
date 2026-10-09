@@ -84,6 +84,7 @@ import {
   readPersistedInstructionContext,
   readPersistedProviderOptions,
   readPersistedStartConfig,
+  readPersistedUnconvergedMcpConfigVersion,
 } from "../../provider/runtimePayload.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
@@ -2020,7 +2021,13 @@ const make = Effect.gen(function* () {
           }
 
           const effectiveConfig = yield* readEffectiveConfigForProject(binding.projectId);
-          if (binding.mcpEffectiveConfigVersion === effectiveConfig.effectiveVersion) {
+          // A session whose last reload of this version did not converge is
+          // retried: the user may have fixed the server since.
+          if (
+            binding.mcpEffectiveConfigVersion === effectiveConfig.effectiveVersion &&
+            readPersistedUnconvergedMcpConfigVersion(binding.runtimePayload) !==
+              effectiveConfig.effectiveVersion
+          ) {
             skipped += 1;
             continue;
           }

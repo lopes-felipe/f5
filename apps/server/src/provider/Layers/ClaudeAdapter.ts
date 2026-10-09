@@ -5718,6 +5718,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       : { action: response.action },
                   ),
                 abort: () => release(cancelled),
+                // Resolving the deferred returns the answer from onElicitation.
+                completesOnDelivery: true,
               });
               const onAbort = () => {
                 Effect.runFork(settleElicitation(context, requestId, "aborted"));
@@ -7027,7 +7029,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             method: "onElicitation",
             detail: `Unknown pending elicitation request: ${requestId}`,
           });
-        return yield* Effect.tryPromise({
+        const submitted = yield* Effect.tryPromise({
           try: () => context.elicitations.submit(requestId, response),
           catch: (cause) =>
             new ProviderAdapterRequestError({
@@ -7036,6 +7038,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               detail: toMessage(cause, "The answer could not be delivered."),
             }),
         });
+        // Forms get no elicitation_complete, and one opened outside a turn has
+        // no turn end either: the hand-off is the completion.
+        const receipt = context.elicitations.settleIfDelivered(requestId);
+        if (receipt) yield* emitElicitationReceipt(context, requestId, receipt);
+        return submitted;
       });
 
     const reloadMcpConfig: NonNullable<ClaudeAdapterShape["reloadMcpConfig"]> = ({

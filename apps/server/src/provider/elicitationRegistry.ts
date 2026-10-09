@@ -29,7 +29,11 @@ interface Entry {
   readonly deliver: (response: ElicitationResponse) => Promise<void>;
   /** Releases a provider callback still waiting on an unanswered request. */
   readonly abort: (() => void) | undefined;
+  /** In-process transports: handing the answer over is the native completion. */
+  readonly completesOnDelivery: boolean;
   state: "pending" | "submitting" | "submitted";
+  /** What was delivered; no values. */
+  action?: ElicitationAction;
 }
 
 /**
@@ -48,12 +52,18 @@ export class ElicitationRegistry {
     readonly turnId?: TurnId | undefined;
     readonly deliver: (response: ElicitationResponse) => Promise<void>;
     readonly abort?: () => void;
+    /**
+     * Set when `deliver` hands the answer straight to the waiting provider
+     * callback, so no separate completion will ever arrive for a form.
+     */
+    readonly completesOnDelivery?: boolean;
   }): void {
     this.entries.set(input.requestId, {
       descriptor: input.descriptor,
       turnId: input.turnId,
       deliver: input.deliver,
       abort: input.abort,
+      completesOnDelivery: input.completesOnDelivery ?? false,
       state: "pending",
     });
   }
@@ -101,6 +111,7 @@ export class ElicitationRegistry {
       native = { action: response.action };
     }
     entry.state = "submitting";
+    entry.action = native.action;
     try {
       await entry.deliver(native);
     } catch (error) {
@@ -109,10 +120,23 @@ export class ElicitationRegistry {
         throw error;
       }
       entry.state = "pending";
+      delete entry.action;
       throw error;
     }
     entry.state = "submitted";
     return "submitted";
+  }
+
+  /**
+   * Settles a delivered answer whose delivery is its completion: any answer on
+   * an in-process transport, except an accepted link, which completes only
+   * when the provider reports the flow done.
+   */
+  settleIfDelivered(requestId: ApprovalRequestId): ElicitationTerminalReceipt | undefined {
+    const entry = this.entries.get(requestId);
+    if (!entry?.completesOnDelivery || entry.state !== "submitted") return undefined;
+    if (entry.descriptor.mode === "url" && entry.action === "accept") return undefined;
+    return this.settle(requestId, "completed");
   }
 
   /** Removes and returns the request's terminal receipt, if it is still open. */
@@ -124,7 +148,9 @@ export class ElicitationRegistry {
     if (!entry) return undefined;
     this.entries.delete(requestId);
     if (entry.state === "pending") entry.abort?.();
-    if (outcome === "completed") return entry.state === "pending" ? "cancelled" : "resolved";
+    if (outcome === "completed")
+      // A delivered decline or cancel is a cancellation, not a provided answer.
+      return entry.state === "pending" || entry.action !== "accept" ? "cancelled" : "resolved";
     return entry.state === "pending" ? "cancelled" : "indeterminate";
   }
 

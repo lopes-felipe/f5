@@ -101,6 +101,11 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
       [false, false],
       [false, true],
     ]);
+    // The retry is limited to the session that still failed.
+    expect(reloadMcpConfigForProject.mock.calls.map(([call]) => call.threadIds)).toEqual([
+      undefined,
+      ["thread-1"],
+    ]);
   });
 
   it("does not retry or report failure for a session that needs a restart", async () => {

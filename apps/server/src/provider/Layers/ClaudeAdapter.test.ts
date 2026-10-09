@@ -1203,6 +1203,82 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("settles forms opened outside a turn as soon as the answer is handed over", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+      });
+      const onElicitation = harness.getLastCreateQueryInput()?.options.onElicitation;
+      assert.equal(typeof onElicitation, "function");
+      if (!onElicitation) return;
+
+      const ask = (action: "accept" | "decline") =>
+        Effect.gen(function* () {
+          const answer = onElicitation(
+            {
+              serverName: "probe",
+              message: "Token?",
+              mode: "form",
+              requestedSchema: {
+                type: "object",
+                properties: { token: { type: "string" } },
+                required: ["token"],
+              },
+            },
+            { signal: new AbortController().signal, requestId: `native-${action}` },
+          );
+          const requested = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "user-input.requested"),
+            Stream.runCollect,
+          );
+          const request = requested.find((event) => event.type === "user-input.requested");
+          assert.equal(request?.turnId, undefined);
+          const requestId = ApprovalRequestId.makeUnsafe(String(request?.requestId));
+          yield* adapter.respondToElicitation!(THREAD_ID, requestId, {
+            action,
+            ...(action === "accept" ? { content: { token: "sentinel-claude" } } : {}),
+          });
+          const resolved = yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "user-input.resolved"),
+            Stream.runCollect,
+          );
+          const receipt = resolved.find((event) => event.type === "user-input.resolved");
+          return {
+            native: yield* Effect.promise(() => answer),
+            receipt: receipt?.type === "user-input.resolved" ? receipt.payload.receipt : undefined,
+          };
+        });
+
+      const accepted = yield* ask("accept");
+      assert.deepEqual(accepted.native, {
+        action: "accept",
+        content: { token: "sentinel-claude" },
+      });
+      assert.equal(accepted.receipt, "resolved");
+      const declined = yield* ask("decline");
+      assert.deepEqual(declined.native, { action: "decline" });
+      assert.equal(declined.receipt, "cancelled");
+
+      // Nothing is left open to turn indeterminate when the session stops.
+      yield* adapter.stopSession(THREAD_ID);
+      const afterStop = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "session.exited"),
+        Stream.runCollect,
+      );
+      assert.equal(
+        afterStop.some((event) => event.type === "user-input.resolved"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("keeps runtime policy authoritative over legacy provider permission options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

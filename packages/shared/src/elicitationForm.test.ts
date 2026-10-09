@@ -126,7 +126,22 @@ describe("elicitation form engine", () => {
     expect(result).toEqual({ ok: false, reason: "The answer is too large." });
   });
 
-  it("only accepts http(s) URL requests without embedded credentials", () => {
+  it("accepts plain http links only for this machine", () => {
+    for (const url of [
+      "http://localhost:8080/callback",
+      "http://127.0.0.1:1455/cb",
+      "http://[::1]:9000/",
+      "http://auth.localhost/cb",
+    ])
+      expect(buildElicitationDescriptor({ mode: "url", message: "", url }).ok).toBe(true);
+    for (const url of ["http://example.com/auth?token=x", "http://10.0.0.5/cb"])
+      expect(buildElicitationDescriptor({ mode: "url", message: "", url })).toEqual({
+        ok: false,
+        reason: "The request link must use https (http only for localhost).",
+      });
+  });
+
+  it("only accepts https URL requests without embedded credentials", () => {
     expect(
       buildElicitationDescriptor({
         mode: "url",

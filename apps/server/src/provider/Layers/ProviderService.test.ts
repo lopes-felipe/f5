@@ -53,6 +53,7 @@ import {
   type KindAdapterMap,
 } from "../testUtils/providerAdapterRegistryMock.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
+import { readPersistedUnconvergedMcpConfigVersion } from "../runtimePayload.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectMcpConfigService } from "../../mcp/ProjectMcpConfigService.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../../persistence/Layers/ProviderSessionRuntime.ts";
@@ -729,6 +730,98 @@ it.effect("answers form requests a new session opens while it is still starting"
     ),
   );
 });
+it.effect("stamps and answers a startup form processed before the new binding is written", () => {
+  const codex = makeFakeCodexAdapter();
+  const respondToElicitation = vi.fn(() => Effect.succeed("submitted" as const));
+  const gate = {
+    closed: false,
+    reached: Deferred.makeUnsafe<void>(),
+    open: Deferred.makeUnsafe<void>(),
+  };
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  // Holds the binding write of a new session generation while the gate is closed.
+  const gatedDirectoryLayer = Layer.effect(
+    ProviderSessionDirectory,
+    Effect.gen(function* () {
+      const directory = yield* ProviderSessionDirectory;
+      return {
+        ...directory,
+        upsert: (binding: Parameters<typeof directory.upsert>[0]) =>
+          Effect.gen(function* () {
+            const payload = binding.runtimePayload as Record<string, unknown> | undefined;
+            if (gate.closed && payload && "mcpUnconvergedConfigVersion" in payload) {
+              yield* Deferred.succeed(gate.reached, undefined);
+              yield* Deferred.await(gate.open);
+            }
+            return yield* directory.upsert(binding);
+          }),
+      };
+    }),
+  ).pipe(Layer.provide(ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer))));
+  const registry = makeAdapterRegistryMock({
+    codex: { ...codex.adapter, respondToElicitation },
+  } as unknown as KindAdapterMap);
+  const layer = Layer.mergeAll(
+    makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(gatedDirectoryLayer),
+      Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+      Layer.provideMerge(AnalyticsService.layerTest),
+    ),
+    NodeServices.layer,
+  );
+
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const threadId = asThreadId("startup-elicitation-gap");
+    const start = {
+      provider: "codex" as const,
+      threadId,
+      cwd: process.cwd(),
+      runtimeMode: "full-access" as const,
+    };
+    yield* service.startSession(threadId, start);
+
+    gate.closed = true;
+    const restart = yield* service.startSession(threadId, start).pipe(Effect.forkChild);
+    yield* Deferred.await(gate.reached);
+    // The adapter returned; its form request is processed before generation 2 is stored.
+    const requested = yield* Stream.runHead(
+      Stream.filter(service.streamEvents, (event) => event.type === "user-input.requested"),
+    ).pipe(Effect.forkChild);
+    yield* sleep(20);
+    codex.emit({
+      type: "user-input.requested",
+      eventId: asEventId("startup-gap-form"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId,
+      requestId: asRequestId("startup-gap-form"),
+      payload: { questions: [], elicitation: { mode: "form", message: "Token?", fields: [] } },
+    } as unknown as LegacyProviderRuntimeEvent);
+    const event = Option.getOrUndefined(yield* Fiber.join(requested));
+    assert.equal(
+      event?.type === "user-input.requested" ? event.payload.elicitation?.generation : undefined,
+      2,
+    );
+    for (const action of ["accept", "cancel"] as const)
+      yield* service.respondToElicitation({
+        threadId,
+        requestId: asRequestId("startup-gap-form"),
+        generation: 2,
+        action,
+        ...(action === "accept" ? { content: {} } : {}),
+      });
+    assert.equal(respondToElicitation.mock.calls.length, 2);
+
+    yield* Deferred.succeed(gate.open, undefined);
+    const session = yield* Fiber.join(restart);
+    assert.equal(session.capabilities?.generation, 2);
+  }).pipe(Effect.provide(layer));
+});
 it.effect(
   "refuses form answers it cannot route to the session that asked, without recovering",
   () => {
@@ -1339,8 +1432,28 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(customClaude.reloadMcpConfig.mock.calls.length, 1);
         assert.equal(outcome.sessions[0]?.result.converged, false);
         // The failure is reported, but the version advances so no restart is scheduled.
-        const binding = yield* directory.getBinding(threadId);
-        assert.equal(Option.getOrUndefined(binding)?.mcpEffectiveConfigVersion, "mcp-version-test");
+        const binding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        assert.equal(binding?.mcpEffectiveConfigVersion, "mcp-version-test");
+        // ...and is marked unconverged, so an explicit Apply still retries it.
+        assert.equal(
+          readPersistedUnconvergedMcpConfigVersion(binding?.runtimePayload),
+          "mcp-version-test",
+        );
+
+        // Once the server is fixed, a converged retry clears the mark.
+        customClaude.reloadMcpConfig.mockImplementation(() =>
+          Effect.succeed({ converged: true, restartRequired: false, servers: [], errors: [] }),
+        );
+        yield* provider.reloadMcpConfigForProject({
+          provider: "claudeAgent",
+          projectId,
+          retry: false,
+        });
+        const retried = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        // The version write kept the binding on its own instance.
+        assert.equal(retried?.providerInstanceId, customInstance);
+        assert.equal(customClaude.reloadMcpConfig.mock.calls.length, 2);
+        assert.equal(readPersistedUnconvergedMcpConfigVersion(retried?.runtimePayload), undefined);
       }).pipe(Effect.provide(layer));
     },
   );
@@ -2392,9 +2505,14 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       ).pipe(Effect.forkChild);
       yield* sleep(20);
 
-      const outcome = yield* provider.reloadMcpConfigForProject({ provider: "codex", projectId });
+      // `warn: false` (the post-login loop) only defers retryable warnings.
+      const outcome = yield* provider.reloadMcpConfigForProject({
+        provider: "codex",
+        projectId,
+        warn: false,
+      });
 
-      // A restart-required result is final: no retries.
+      // A restart-required result is final: no retries, and it warns at once.
       assert.equal(fanout.codex.reloadMcpConfig.mock.calls.length, 1);
       assert.equal(outcome.sessions[0]?.result.restartRequired, true);
       const binding = yield* directory.getBinding(threadId);

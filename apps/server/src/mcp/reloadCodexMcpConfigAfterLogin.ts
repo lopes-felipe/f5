@@ -1,4 +1,4 @@
-import { type ProjectId, type ProviderStartOptions } from "@t3tools/contracts";
+import { type ProjectId, type ProviderStartOptions, type ThreadId } from "@t3tools/contracts";
 import { Duration, Effect } from "effect";
 
 import { ProviderValidationError, type ProviderServiceError } from "../provider/Errors.ts";
@@ -17,49 +17,55 @@ export function reloadCodexMcpConfigAfterLogin(input: {
   readonly retryDelaysMs?: ReadonlyArray<number>;
 }) {
   const retryDelaysMs = input.retryDelaysMs ?? CODEX_MCP_LOGIN_RELOAD_RETRY_DELAYS_MS;
-  // This loop owns the retries: one reload per attempt, and per-session
-  // warnings only on the last attempt so a login posts them once.
-  const reloadOnce = (attemptIndex: number) =>
+  // This loop owns the retries, so the service's per-session backoff is off.
+  // Retryable failures warn only on the last attempt; restart-required
+  // results are final and warn at once. Each retry reloads only the sessions
+  // that still failed, so nothing warns twice.
+  const reloadOnce = (attemptIndex: number, threadIds: ReadonlyArray<ThreadId> | undefined) =>
     input.providerService
       .reloadMcpConfigForProject({
         provider: "codex",
         projectId: input.projectId,
         ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+        ...(threadIds ? { threadIds } : {}),
         retry: false,
         warn: attemptIndex >= retryDelaysMs.length,
       })
       .pipe(
-        Effect.flatMap((outcome) => {
-          // A restart-required session is final; it restarts at its next turn.
-          const unconverged = outcome.sessions.filter(
-            (session) => !session.result.converged && !session.result.restartRequired,
-          );
-          return unconverged.length === 0
-            ? Effect.void
-            : Effect.fail(
-                new ProviderValidationError({
-                  operation: "reloadMcpConfigForProject",
-                  issue: `${unconverged.length} live Codex session(s) did not converge on the MCP config.`,
-                }),
-              );
-        }),
+        Effect.map((outcome) =>
+          outcome.sessions
+            .filter((session) => !session.result.converged && !session.result.restartRequired)
+            .map((session) => session.threadId),
+        ),
       );
 
-  const reloadWithRetry = (attemptIndex: number): Effect.Effect<void, ProviderServiceError> =>
-    reloadOnce(attemptIndex).pipe(
-      Effect.catch((cause) => {
+  const reloadWithRetry = (
+    attemptIndex: number,
+    threadIds: ReadonlyArray<ThreadId> | undefined,
+  ): Effect.Effect<void, ProviderServiceError> =>
+    reloadOnce(attemptIndex, threadIds).pipe(
+      Effect.map((unconverged) => ({ unconverged, error: undefined })),
+      // A failed request retries the same sessions.
+      Effect.catch((error) => Effect.succeed({ unconverged: threadIds, error })),
+      Effect.flatMap(({ unconverged, error }) => {
+        if (!error && unconverged?.length === 0) return Effect.void;
         const delayMs = retryDelaysMs[attemptIndex];
         if (delayMs === undefined) {
-          return Effect.fail(cause);
+          return Effect.fail(
+            error ??
+              new ProviderValidationError({
+                operation: "reloadMcpConfigForProject",
+                issue: `${unconverged?.length ?? 0} live Codex session(s) did not converge on the MCP config.`,
+              }),
+          );
         }
-
         return Effect.sleep(Duration.millis(delayMs)).pipe(
-          Effect.andThen(reloadWithRetry(attemptIndex + 1)),
+          Effect.andThen(reloadWithRetry(attemptIndex + 1, unconverged)),
         );
       }),
     );
 
-  return reloadWithRetry(0).pipe(
+  return reloadWithRetry(0, undefined).pipe(
     Effect.as<string | undefined>(undefined),
     Effect.catch((cause) =>
       Effect.logWarning("Codex MCP login succeeded but reloading live sessions failed.", {

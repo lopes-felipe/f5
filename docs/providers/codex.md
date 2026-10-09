@@ -377,10 +377,13 @@ resume. It is dropped when the session ends.
 Form and URL requests from `mcpServer/elicitation/request` open a form in the composer.
 Answers go through the private `elicitation.submit` RPC described in
 [claude.md](./claude.md#mcp-elicitation), never through the event-sourced answer
-command. `serverRequest/resolved` and `turn/completed` settle the request. A request
-opened outside a turn stays pending until it is answered or the session stops. Stopping
-the session marks an answered but unconfirmed request as indeterminate. Unattended
-read-only workflow stages cancel form requests, for Codex and ACP providers alike.
+command. `serverRequest/resolved` and `turn/completed` settle the request: **resolved**
+for an accepted answer, **cancelled** for a decline or cancel. A request opened outside a
+turn stays pending until it is answered or the session stops. Stopping the session marks
+an answered but unconfirmed request as indeterminate. Unattended read-only workflow
+stages cancel form requests, for Codex and ACP providers alike. ACP providers (Grok,
+Antigravity) answer in-process, so their forms settle as soon as the answer is delivered,
+as Claude's do.
 
 Codex also uses `mcpServer/elicitation/request` to ask before an MCP tool call. Those
 requests have an empty schema and `_meta.codex_approval_kind` (for example
@@ -410,12 +413,15 @@ resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads an
 reports tools counts as connected. Failures are retried up to three times with backoff
 (0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
 **Apply to live sessions**. The config version advances once the reload reached the
-session, even if a server still fails, since restarting would not fix it. **Apply** only
-reloads sessions whose version is out of date, four at a time.
+session, even if a server still fails, since restarting would not fix it; the session is
+marked unconverged instead. **Apply** reloads sessions whose version is out of date or
+whose last reload did not converge, four at a time, so clicking it again after fixing a
+server retries it.
 
 After an MCP login, F5 reloads the project's sessions with its own retries (no per-session
-backoff) and warns only after the last attempt. A session that needs a restart is not a
-failed reload: it restarts at its next turn, and the login reports success.
+backoff). Each retry reloads only the sessions that still failed, and their warning is
+posted after the last attempt. A session that needs a restart is not a failed reload: its
+warning is posted at once, it restarts at its next turn, and the login reports success.
 
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply

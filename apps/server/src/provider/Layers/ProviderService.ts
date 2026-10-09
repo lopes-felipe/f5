@@ -230,7 +230,11 @@ function toRuntimePayloadFromSession(
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
     ...(extra?.sessionGeneration !== undefined
-      ? sessionGenerationPayload(extra.sessionGeneration)
+      ? {
+          ...sessionGenerationPayload(extra.sessionGeneration),
+          // A new session launches its MCP servers afresh.
+          mcpUnconvergedConfigVersion: null,
+        }
       : {}),
     ...(extra?.startConfig !== undefined ? { startConfig: extra.startConfig } : {}),
     ...(extra?.instructionContext !== undefined
@@ -835,46 +839,49 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
         const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
+        // Covers the binding write, as in startSession.
         const resumed = yield* whileStarting(
           input.binding.threadId,
           resumedGeneration,
           adapter,
-          adapter.startSession({
-            threadId: input.binding.threadId,
-            ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
-            provider: input.binding.provider,
-            providerInstanceId: bindingInstanceId,
-            ...(persistedCwd ? { cwd: persistedCwd } : {}),
-            ...recoveredInstructionContext,
-            ...(persistedModel ? { model: persistedModel } : {}),
-            ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
-            ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
-            ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-            runtimeMode: recoveredRuntimeMode,
+          Effect.gen(function* () {
+            const resumed = yield* adapter.startSession({
+              threadId: input.binding.threadId,
+              ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
+              provider: input.binding.provider,
+              providerInstanceId: bindingInstanceId,
+              ...(persistedCwd ? { cwd: persistedCwd } : {}),
+              ...recoveredInstructionContext,
+              ...(persistedModel ? { model: persistedModel } : {}),
+              ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
+              ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
+              ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
+              runtimeMode: recoveredRuntimeMode,
+            });
+            if (resumed.provider !== adapter.provider) {
+              return yield* toValidationError(
+                input.operation,
+                `Adapter/provider mismatch while recovering thread '${input.binding.threadId}'. Expected '${adapter.provider}', received '${resumed.provider}'.`,
+              );
+            }
+            yield* upsertSessionBinding(
+              { ...resumed, providerInstanceId: bindingInstanceId },
+              input.binding.threadId,
+              {
+                ...(input.binding.projectId !== undefined
+                  ? { projectId: input.binding.projectId }
+                  : {}),
+                mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+                launchFingerprint,
+                startConfig: persistedStartConfigToRecord(persistedStartConfig),
+                ...(recoveredInstructionContext
+                  ? { instructionContext: recoveredInstructionContext }
+                  : {}),
+                sessionGeneration: resumedGeneration,
+              },
+            );
+            return resumed;
           }),
-        );
-        if (resumed.provider !== adapter.provider) {
-          return yield* toValidationError(
-            input.operation,
-            `Adapter/provider mismatch while recovering thread '${input.binding.threadId}'. Expected '${adapter.provider}', received '${resumed.provider}'.`,
-          );
-        }
-
-        yield* upsertSessionBinding(
-          { ...resumed, providerInstanceId: bindingInstanceId },
-          input.binding.threadId,
-          {
-            ...(input.binding.projectId !== undefined
-              ? { projectId: input.binding.projectId }
-              : {}),
-            mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
-            launchFingerprint,
-            startConfig: persistedStartConfigToRecord(persistedStartConfig),
-            ...(recoveredInstructionContext
-              ? { instructionContext: recoveredInstructionContext }
-              : {}),
-            sessionGeneration: resumedGeneration,
-          },
         );
         const resumedWithCapabilities = {
           ...resumed,
@@ -1176,31 +1183,35 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           // browser can never mistake a new session for the one it looked at.
           const sessionGeneration =
             readPersistedSessionGeneration(previousBinding?.runtimePayload) + 1;
+          // Covers the binding write: until then, events from this start
+          // still find the old generation in the directory.
           const session = yield* whileStarting(
             threadId,
             sessionGeneration,
             adapter,
-            adapter.startSession(adapterInput),
-          );
-
-          if (session.provider !== adapter.provider) {
-            return yield* toValidationError(
-              "ProviderService.startSession",
-              `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
-            );
-          }
-          yield* upsertSessionBinding(
-            { ...session, providerInstanceId: requestedInstanceId },
-            threadId,
-            {
-              ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-              mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
-              launchFingerprint,
-              startConfig: persistedStartConfig,
-              instructionContext: toInstructionContextFromSessionStartInput(input),
-              clearMissingResumeCursor: !sameProvenance,
-              sessionGeneration,
-            },
+            Effect.gen(function* () {
+              const session = yield* adapter.startSession(adapterInput);
+              if (session.provider !== adapter.provider) {
+                return yield* toValidationError(
+                  "ProviderService.startSession",
+                  `Adapter/provider mismatch: requested '${adapter.provider}', received '${session.provider}'.`,
+                );
+              }
+              yield* upsertSessionBinding(
+                { ...session, providerInstanceId: requestedInstanceId },
+                threadId,
+                {
+                  ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+                  mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+                  launchFingerprint,
+                  startConfig: persistedStartConfig,
+                  instructionContext: toInstructionContextFromSessionStartInput(input),
+                  clearMissingResumeCursor: !sameProvenance,
+                  sessionGeneration,
+                },
+              );
+              return session;
+            }),
           );
           const sessionWithInstance = {
             ...session,
@@ -2125,16 +2136,26 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               );
               // A broken server stays broken after a restart, so only a
               // restart-required (or undelivered) reload keeps the version
-              // stale; the next turn start restarts that session.
+              // stale; the next turn start restarts that session. A reload
+              // that did not converge is marked so Apply still retries it.
               if (reached && !result.restartRequired) {
                 yield* directory.upsert({
                   threadId: binding.threadId,
                   projectId: input.projectId,
                   provider: binding.provider,
+                  // The directory resets an omitted instance to the default one.
+                  providerInstanceId: resolveBindingInstanceId(binding),
                   mcpEffectiveConfigVersion: currentProjectMcp.effectiveVersion,
+                  runtimePayload: {
+                    mcpUnconvergedConfigVersion: result.converged
+                      ? null
+                      : currentProjectMcp.effectiveVersion,
+                  },
                 });
               }
-              if (result.errors.length > 0 && input.warn !== false) {
+              // A restart-required result is final, so a caller's own retries
+              // cannot change it: always say so.
+              if (result.errors.length > 0 && (input.warn !== false || result.restartRequired)) {
                 yield* publishRuntimeEvent({
                   type: "runtime.warning",
                   eventId: EventId.makeUnsafe(randomUUID()),

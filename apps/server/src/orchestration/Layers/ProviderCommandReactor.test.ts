@@ -2287,6 +2287,47 @@ describe("ProviderCommandReactor", () => {
       expect(harness.startSession).toHaveBeenCalledTimes(1);
     });
 
+    it("retries a session on the current version whose last reload did not converge", async () => {
+      const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+      const threadId = await startClaudeTurn(harness);
+      const binding = harness.getBinding(threadId)!;
+      // Up to date, with nothing pending: skipped.
+      harness.upsertBinding({ ...binding, mcpEffectiveConfigVersion: "mcp-version-test" });
+      harness.mcpReload.result = {
+        converged: true,
+        restartRequired: false,
+        servers: [],
+        errors: [],
+      };
+      const upToDate = await Effect.runPromise(
+        harness.reactor.applyMcpConfigToLiveSessions({
+          scope: "project",
+          projectId: asProjectId("project-1"),
+        }),
+      );
+      expect(upToDate).toMatchObject({ claudeReconciled: 0 });
+      expect(harness.reloadMcpConfigForProject).not.toHaveBeenCalled();
+
+      // The last reload of this version left a server failing: Apply retries it.
+      harness.upsertBinding({
+        ...harness.getBinding(threadId)!,
+        runtimePayload: {
+          ...(harness.getBinding(threadId)!.runtimePayload as Record<string, unknown>),
+          mcpUnconvergedConfigVersion: "mcp-version-test",
+        },
+      });
+      const retried = await Effect.runPromise(
+        harness.reactor.applyMcpConfigToLiveSessions({
+          scope: "project",
+          projectId: asProjectId("project-1"),
+        }),
+      );
+      expect(harness.reloadMcpConfigForProject).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "claudeAgent", threadIds: [threadId] }),
+      );
+      expect(retried).toMatchObject({ claudeReconciled: 1, claudeRestarted: 0 });
+    });
+
     it("does not stop a session whose turn started while the reload was in flight", async () => {
       const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
       const threadId = await startClaudeTurn(harness);

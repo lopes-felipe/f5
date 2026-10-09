@@ -186,7 +186,10 @@ export interface ProviderServiceShape {
     readonly threadIds?: ReadonlyArray<ThreadId>;
     /** Skip the per-session backoff (callers with their own retry loop). */
     readonly retry?: boolean;
-    /** Post per-session runtime warnings (default true). */
+    /**
+     * Post per-session runtime warnings for failures a later attempt might fix
+     * (default true). Restart-required results are final and always warn.
+     */
     readonly warn?: boolean;
   }) => Effect.Effect<ProviderMcpReloadOutcome, ProviderServiceError>;
 

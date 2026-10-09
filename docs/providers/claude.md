@@ -579,7 +579,8 @@ empty list offers **None**, so an empty answer stays distinct from leaving the f
 out. A schema with anything else is
 cancelled with a visible warning. Suggested values are shown in the form and never
 sent unless the user submits them. URL requests show the host and the full URL, and
-open only on an explicit click.
+open only on an explicit click. Links must use `https`; plain `http` is accepted only
+for loopback hosts (`localhost`, `127.0.0.0/8`, `[::1]`), such as local OAuth callbacks.
 
 Answers are private:
 
@@ -595,11 +596,14 @@ Answers are private:
 - When F5 restarts, pending requests are cancelled and submitted ones become
   indeterminate.
 
-`system/elicitation_complete` and turn completion settle requests. Form requests send
-no `elicitation_complete`, so they settle when the turn ends. A request opened outside
-a turn stays pending until it is answered or the session stops. Requests opened while
-the session is still starting can be answered before the start finishes. Unattended
-read-only workflows cancel elicitations instead of asking.
+The answer is handed to the waiting `onElicitation` callback in-process, so that hand-off
+is the completion: a form answer settles as **resolved**, and a decline or cancel as
+**cancelled**, as soon as it is delivered, in or outside a turn. An accepted URL request
+settles on `system/elicitation_complete`, or when its turn ends. An unanswered request
+opened outside a turn stays pending until it is answered or the session stops. Requests
+opened while the session is still starting carry the new session's generation and can be
+answered before the start finishes. Unattended read-only workflows cancel elicitations
+instead of asking.
 
 Live check, Claude Code 2.1.292, 2026-10-09: an MCP tool's form request reached
 `onElicitation` with its schema. F5's descriptor builder accepted it unchanged, and the
@@ -643,7 +647,9 @@ failing is reconnected on the next attempt, up to three attempts with backoff. S
 are reconciled four at a time. The session's config version advances once the change
 reached the session and no restart is required: a server that still fails after the
 retries appears as a thread warning and in the settings panel, but does not restart
-the session, because a restart would not fix it. If the runtime cannot change servers
+the session, because a restart would not fix it. Such a session is marked unconverged,
+so clicking **Apply** again (for example after fixing the server) retries it even though
+its version is current. If the runtime cannot change servers
 in place, an idle session restarts through the existing restart path with its resume
 cursor kept. The idle check and the restart are serialized with turn starts, so a
 session whose turn started during reconciliation is never stopped. A busy session
