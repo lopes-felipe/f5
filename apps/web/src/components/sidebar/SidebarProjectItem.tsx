@@ -160,15 +160,15 @@ function ListToggleRow(props: { label: string; onSelect: () => void }) {
 /**
  * Static group heading ("Workflows" / "Threads") that separates workflow
  * entries from standalone threads inside a project. Matches the type scale of
- * {@link SectionToggleRow}; the optional top border divides the two groups.
+ * {@link SectionToggleRow}; the optional top margin separates the two groups.
  */
-function GroupLabelRow(props: { label: string; divided?: boolean }) {
+function GroupLabelRow(props: { label: string; spaced?: boolean }) {
   return (
     <SidebarMenuSubItem className="w-full">
       <div
         className={cn(
           "flex min-h-6 items-center px-2 text-2xs font-medium text-faint-foreground select-none",
-          props.divided && "mt-1.5 border-t border-border/60 pt-1",
+          props.spaced && "mt-3",
         )}
       >
         {props.label}
@@ -476,7 +476,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
                       />
                     );
                   })}
-                  {showGroupLabels ? <GroupLabelRow label="Threads" divided /> : null}
+                  {showGroupLabels ? <GroupLabelRow label="Threads" spaced /> : null}
                   {visibleActiveThreads.map((thread) => {
                     const isDraftThread = isDraftThreadId(
                       thread.id,

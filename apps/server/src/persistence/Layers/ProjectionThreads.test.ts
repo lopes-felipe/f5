@@ -16,6 +16,28 @@ layer("ProjectionThreadRepository", (it) => {
       const repository = yield* ProjectionThreadRepository;
       const threadId = ThreadId.makeUnsafe("thread-archived");
       const projectId = ProjectId.makeUnsafe("project-1");
+      const tasksTracking = {
+        version: 1 as const,
+        source: "claude-task-tools" as const,
+        nativeSessionId: "native-1",
+        generation: 2,
+        syncState: "sync-required" as const,
+        syncDetail: "TaskUpdate referenced an unknown task.",
+        pendingCalls: [
+          {
+            nativeCallId: "call-2",
+            toolName: "TaskUpdate" as const,
+            generation: 2,
+            turnId: TurnId.makeUnsafe("turn-1"),
+          },
+        ],
+        invalidatedCallIds: ["call-0"],
+        handledCallIds: ["call-1"],
+        provenance: [
+          { taskId: "task-1", nativeCallId: "call-1", turnId: TurnId.makeUnsafe("turn-1") },
+        ],
+        suppressedTaskIds: ["task-9"],
+      };
 
       yield* repository.upsert({
         threadId,
@@ -33,10 +55,13 @@ layer("ProjectionThreadRepository", (it) => {
             content: "Run tests",
             activeForm: "Running tests",
             status: "in_progress",
+            owner: "main",
+            blockedBy: ["task-0"],
           },
         ],
         tasksTurnId: TurnId.makeUnsafe("turn-1"),
         tasksUpdatedAt: "2026-03-10T08:45:00.000Z",
+        tasksTracking,
         compaction: null,
         estimatedContextTokens: 72_000,
         modelContextWindowTokens: 400_000,
@@ -90,9 +115,13 @@ layer("ProjectionThreadRepository", (it) => {
           content: "Run tests",
           activeForm: "Running tests",
           status: "in_progress",
+          owner: "main",
+          blockedBy: ["task-0"],
         },
       ]);
+      assert.deepEqual(row.value.tasksTracking, tasksTracking);
       assert.equal(rows.length, 1);
+      assert.deepEqual(rows[0]?.tasksTracking, tasksTracking);
       assert.equal(rows[0]?.archivedAt, "2026-03-10T09:00:00.000Z");
       assert.equal(rows[0]?.pinnedAt, "2026-03-10T08:50:00.000Z");
       assert.equal(rows[0]?.pinOrderKey, 2);

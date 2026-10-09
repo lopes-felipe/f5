@@ -1,12 +1,16 @@
 # Phase 10: composer state drawers and scroll collapse
 
 The composer uses the authenticated `composer-redesign` bootstrap capability.
-Without it, the client retains the expanded composer and the task panel in the
-timeline. The server advertises the capability in `wsServer/protocol.ts` only
-when launched with `F5_COMPOSER_REDESIGN=1`. It is **off by default** because the
-plan prohibits advertising features before their release gates pass. This opt-in
-allows evaluation of the implemented UI while the existing program-wide
-performance failures remain unresolved.
+Without it, the client keeps the expanded composer. The server advertises the
+capability in `wsServer/protocol.ts` **by default**; launching it with
+`F5_COMPOSER_REDESIGN=0` omits the capability and restores the legacy layout.
+
+The redesign was first shipped opt-in because the plan prohibits advertising
+features before their release gates pass. It was enabled by default on 2026-10-08
+after a product decision: the two gates still open (below) fail identically on the
+build without the redesign, and the redesign improved the heap-growth ratio, so they
+are program-wide failures rather than regressions from this phase. They remain open
+and are tracked as such.
 No wire union or persisted server state changes, so protocol version 12 remains
 compatible. Existing queue items, questions, attachments and rewind drafts remain
 readable regardless of the capability.
@@ -125,8 +129,9 @@ Both absolute heap-growth checks pass; the ratio fails. Server and combined heap
 limits, transport byte/queue limits, native terminal history limits and all latency
 limits pass. No new failed bound or gated latency regression was observed. These
 two failures were also documented in the Phase 7 validation report. No threshold
-has been relaxed, and **full phase sign-off remains open**; the default capability
-is therefore kept off. The full report is not represented as a green release gate.
+has been relaxed, and **full phase sign-off remains open**. The capability was
+originally kept off for that reason; it is now on by default (see the top of this
+report). The full report is not represented as a green release gate.
 
 Raw artifacts (ignored, machine-specific):
 
@@ -139,10 +144,10 @@ Reproduce the comparison with:
 bun run perf:compare .performance/phase10-before-valid.json .performance/phase10-after-valid.json
 ```
 
-To evaluate the implemented composer in a development session:
+To compare against the legacy composer in a development session:
 
 ```sh
-F5_COMPOSER_REDESIGN=1 bun run dev
+F5_COMPOSER_REDESIGN=0 bun run dev
 ```
 
 Restart the server when changing this flag, then reload the client so it receives

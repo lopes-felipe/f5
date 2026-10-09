@@ -36,6 +36,7 @@ import {
   isLatestTurnFinishedAndConsumable,
   latestAssistantFeedback,
   nextWorkflowSlug,
+  reviewFeedbackForPinnedTurn,
   workflowArtifactFit,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
@@ -730,12 +731,21 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       const reviewerInputs = [pendingWorkflow.reviewerA, pendingWorkflow.reviewerB].map(
         (reviewer) => {
           const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
-          // Reviewer threads are ephemeral, single-review threads, so the
-          // pinned assistant message stays within the read model's retention
-          // window. latestAssistantFeedback also falls back to the latest
-          // assistant message if the pinned id is ever outside the window.
+          // A reviewer that submitted its report as a plan (for example via
+          // ExitPlanMode) often ends with only a short summary message, so a
+          // longer plan captured for the pinned turn wins over that message.
+          // The latestAssistantFeedback fallback only applies to stages with
+          // no pinned message id and no assistant message on the pinned turn
+          // (legacy or recovered stages). It keeps the previous behavior of
+          // using the thread's latest assistant message from any turn.
           const text = thread
-            ? (latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)?.text ?? null)
+            ? ((
+                reviewFeedbackForPinnedTurn(
+                  thread,
+                  reviewer.pinnedTurnId,
+                  reviewer.pinnedAssistantMessageId,
+                ) ?? latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)
+              )?.text ?? null)
             : null;
           return {
             label: reviewer.label,

@@ -250,6 +250,7 @@ import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import {
   StorageCleanupWorker,
@@ -856,6 +857,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const providerInstanceRegistry = yield* ProviderInstanceRegistry;
   const providerUpdateAdvisor = yield* ProviderUpdateAdvisor;
   const providerAdvisoryProjection = yield* ProviderAdvisoryProjection;
   const harnessValidation = yield* HarnessValidation;
@@ -868,6 +870,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
   const prHubExtensions = yield* Effect.serviceOption(PrHubExtensions);
+  const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
   const prHub = yield* PrHubService;
   const prHubAdvisory = yield* PrHubAdvisoryService;
   const git = yield* GitCore;
@@ -2263,6 +2266,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Stream.runForEach(codexMcpEventBus.streamStatusUpdates, (event) =>
     pushBus.publishAll(WS_CHANNELS.mcpStatusUpdated, event),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  if (diskSpaceMonitor._tag === "Some")
+    yield* Stream.runForEach(diskSpaceMonitor.value.changes, (status) =>
+      pushBus.publishAll(WS_CHANNELS.storageDiskSpaceUpdated, status),
+    ).pipe(Effect.forkIn(subscriptionsScope));
 
   const runtimeServices = yield* Effect.services<
     ServerRuntimeServices | ServerConfig | FileSystem.FileSystem | Path.Path | SqlClient.SqlClient
@@ -2435,6 +2442,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
       yield* Scope.provide(storageCleanupWorker.start, subscriptionsScope);
       yield* Scope.provide(defaultBranchAutoPull.start, subscriptionsScope);
+      if (diskSpaceMonitor._tag === "Some")
+        yield* Scope.provide(
+          diskSpaceMonitor.value.start({
+            estimateReclaimable: storageMaintenance.summarizeReclaimable,
+          }),
+          subscriptionsScope,
+        );
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
@@ -4509,6 +4523,46 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { providers };
       }
 
+      case WS_METHODS.serverGetProviderInventory: {
+        const body = stripRequestTag(request.body);
+        const instance = yield* providerInstanceRegistry.getInstance(body.instanceId);
+        if (!instance) {
+          return yield* new RouteRequestError({ message: "Provider instance not found." });
+        }
+        let projectRoot: string | undefined;
+        if (body.projectId) {
+          const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+          const model = yield* orchestrationEngine.getReadModel();
+          const project = model.projects.find(
+            (p) => p.id === body.projectId && p.deletedAt === null,
+          );
+          if (!project) return yield* new RouteRequestError({ message: "Project not found." });
+          projectRoot = project.workspaceRoot;
+        }
+        const entries = instance.inventory
+          ? yield* instance
+              .inventory({ projectRoot })
+              .pipe(
+                Effect.mapError(
+                  (error) => new RouteRequestError({ message: error.detail ?? error.message }),
+                ),
+              )
+          : {
+              hooks: [],
+              plugins: [],
+              connectors: [],
+              agents: [],
+              warnings: ["This provider does not report an inventory."],
+            };
+        return {
+          instanceId: instance.instanceId,
+          driver: instance.driverKind,
+          generatedAt: new Date().toISOString(),
+          ...(body.projectId ? { projectId: body.projectId } : {}),
+          ...entries,
+        };
+      }
+
       case WS_METHODS.serverValidateHarnesses: {
         const body = stripRequestTag(request.body);
         const results = yield* harnessValidation
@@ -4609,6 +4663,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               operationId: body.operationId,
             }),
           ),
+          // Freed space releases held turns and clears the banner right away,
+          // including when the cleanup failed or was cancelled partway.
+          Effect.ensuring(
+            diskSpaceMonitor._tag === "Some"
+              ? diskSpaceMonitor.value.noteStorageChanged
+              : Effect.void,
+          ),
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -4617,6 +4678,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         );
         return result;
+      }
+
+      case WS_METHODS.storageGetDiskSpace: {
+        if (diskSpaceMonitor._tag === "None") {
+          return yield* new RouteRequestError({
+            message: "Free disk space monitoring is unavailable.",
+          });
+        }
+        const body = stripRequestTag(request.body);
+        return yield* diskSpaceMonitor.value.getStatus({ force: body.force ?? false });
       }
 
       case WS_METHODS.storageCancelCleanup: {
@@ -5004,6 +5075,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             message:
               "Steering requires an active turn with the same Build/Plan and permission modes.",
           });
+        // Re-check the routed session generation and executable support; a
+        // restart later changes the active turn id, which dispatch rejects.
+        yield* providerService
+          .assertSessionAction({
+            threadId: item.threadId,
+            action: "steer",
+            ...(body.expectedSessionGeneration !== undefined
+              ? { expectedGeneration: body.expectedSessionGeneration }
+              : {}),
+          })
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new RouteRequestError({
+                  message:
+                    error._tag === "ProviderSessionActionUnavailableError"
+                      ? error.reason.message
+                      : error.message,
+                }),
+            ),
+          );
         yield* nextTurnQueueStore
           .setSteer(item.itemId, body.expectedRevision, thread.session.activeTurnId)
           .pipe(Effect.mapError(mapNextTurnQueueRouteError));

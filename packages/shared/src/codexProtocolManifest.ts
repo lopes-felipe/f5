@@ -3,7 +3,15 @@
  * audited. Keep this list exhaustive: a new method or item must receive an
  * explicit disposition before it can be treated as understood.
  */
-export const CODEX_PROTOCOL_BASELINE_VERSION = "0.144.3" as const;
+export const CODEX_PROTOCOL_BASELINE_VERSION = "0.160.1" as const;
+
+/**
+ * Oldest release whose full surface F5 audited before 0.160.1. Older CLIs are
+ * still permitted (the runtime minimum lives in codexCliVersion.ts) but their
+ * behavior is unverified. Runtime handlers for methods removed after this
+ * release stay in place for those CLIs.
+ */
+export const CODEX_PROTOCOL_PREVIOUS_BASELINE_VERSION = "0.144.3" as const;
 
 export const CODEX_PROTOCOL_DISPOSITIONS = [
   "canonical",
@@ -24,10 +32,17 @@ export const CODEX_NOTIFICATION_METHODS = [
   "thread/deleted",
   "thread/unarchived",
   "thread/closed",
+  "thread/reverted",
   "skills/changed",
   "thread/name/updated",
+  "thread/attachment/updated",
   "thread/goal/updated",
   "thread/goal/cleared",
+  "thread/queue/changed",
+  "project/changed",
+  "thread/project/updated",
+  "thread/environment/connected",
+  "thread/environment/disconnected",
   "thread/settings/updated",
   "thread/tokenUsage/updated",
   "turn/started",
@@ -39,8 +54,10 @@ export const CODEX_NOTIFICATION_METHODS = [
   "item/started",
   "item/autoApprovalReview/started",
   "item/autoApprovalReview/completed",
+  "autoApprovalReview/strictReviewRequired",
   "item/completed",
   "rawResponseItem/completed",
+  "rawResponse/completed",
   "item/agentMessage/delta",
   "item/plan/delta",
   "command/exec/outputDelta",
@@ -54,7 +71,9 @@ export const CODEX_NOTIFICATION_METHODS = [
   "item/mcpToolCall/progress",
   "mcpServer/oauthLogin/completed",
   "mcpServer/startupStatus/updated",
+  "mcpServer/event/stream/notification",
   "account/updated",
+  "account/gatewayOAuth/changed",
   "account/rateLimits/updated",
   "app/list/updated",
   "remoteControl/status/changed",
@@ -67,6 +86,8 @@ export const CODEX_NOTIFICATION_METHODS = [
   "thread/compacted",
   "model/rerouted",
   "model/verification",
+  "modelProvider/authRecoveryStarted",
+  "modelProvider/authRecoveryCompleted",
   "turn/moderationMetadata",
   "model/safetyBuffering/updated",
   "warning",
@@ -77,6 +98,9 @@ export const CODEX_NOTIFICATION_METHODS = [
   "fuzzyFileSearch/sessionCompleted",
   "thread/realtime/started",
   "thread/realtime/itemAdded",
+  "thread/realtime/item/started",
+  "thread/realtime/item/transcript/delta",
+  "thread/realtime/item/completed",
   "thread/realtime/transcript/delta",
   "thread/realtime/transcript/done",
   "thread/realtime/outputAudio/delta",
@@ -98,10 +122,21 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "thread/deleted": "state-only",
   "thread/unarchived": "state-only",
   "thread/closed": "canonical",
+  // F5 validates retained history through its own paged read-back after
+  // thread/revert, so the announcement only mirrors state F5 already owns.
+  "thread/reverted": "state-only",
   "skills/changed": "state-only",
   "thread/name/updated": "state-only",
+  "thread/attachment/updated": "state-only",
   "thread/goal/updated": "state-only",
   "thread/goal/cleared": "state-only",
+  // Native queue, projects and environments would create a second owner for
+  // F5's queue, project and workspace model; they are deliberately not mapped.
+  "thread/queue/changed": "state-only",
+  "project/changed": "state-only",
+  "thread/project/updated": "state-only",
+  "thread/environment/connected": "state-only",
+  "thread/environment/disconnected": "state-only",
   "thread/settings/updated": "state-only",
   "thread/tokenUsage/updated": "canonical",
   "turn/started": "canonical",
@@ -113,8 +148,14 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "item/started": "canonical",
   "item/autoApprovalReview/started": "diagnostics-only",
   "item/autoApprovalReview/completed": "diagnostics-only",
+  "autoApprovalReview/strictReviewRequired": "diagnostics-only",
   "item/completed": "canonical",
+  // Raw Responses API items duplicate the typed item/* stream (F5 starts
+  // threads with experimentalRawEvents:false).
   "rawResponseItem/completed": "internal-duplicate",
+  // Internal per-completion usage. thread/tokenUsage/updated already carries
+  // the aggregated usage F5 records, so this is not a second usage source.
+  "rawResponse/completed": "internal-duplicate",
   "item/agentMessage/delta": "canonical",
   "item/plan/delta": "canonical",
   "command/exec/outputDelta": "state-only",
@@ -122,13 +163,17 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "process/exited": "state-only",
   "item/commandExecution/outputDelta": "canonical",
   "item/commandExecution/terminalInteraction": "canonical",
-  "item/fileChange/outputDelta": "canonical",
+  // No longer emitted by current servers; kept (and still mapped by the
+  // adapter) for persisted logs and older CLIs.
+  "item/fileChange/outputDelta": "diagnostics-only",
   "item/fileChange/patchUpdated": "canonical",
   "serverRequest/resolved": "canonical",
   "item/mcpToolCall/progress": "canonical",
   "mcpServer/oauthLogin/completed": "canonical",
   "mcpServer/startupStatus/updated": "canonical",
+  "mcpServer/event/stream/notification": "state-only",
   "account/updated": "state-only",
+  "account/gatewayOAuth/changed": "state-only",
   "account/rateLimits/updated": "state-only",
   "app/list/updated": "state-only",
   "remoteControl/status/changed": "state-only",
@@ -138,9 +183,13 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "item/reasoning/summaryTextDelta": "canonical",
   "item/reasoning/summaryPartAdded": "canonical",
   "item/reasoning/textDelta": "canonical",
+  // Deprecated upstream in favor of the contextCompaction item. It still marks
+  // the thread state as compacted, and older CLIs only send this notification.
   "thread/compacted": "canonical",
   "model/rerouted": "canonical",
   "model/verification": "diagnostics-only",
+  "modelProvider/authRecoveryStarted": "diagnostics-only",
+  "modelProvider/authRecoveryCompleted": "diagnostics-only",
   "turn/moderationMetadata": "state-only",
   "model/safetyBuffering/updated": "state-only",
   warning: "diagnostics-only",
@@ -151,6 +200,9 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "fuzzyFileSearch/sessionCompleted": "state-only",
   "thread/realtime/started": "state-only",
   "thread/realtime/itemAdded": "state-only",
+  "thread/realtime/item/started": "state-only",
+  "thread/realtime/item/transcript/delta": "state-only",
+  "thread/realtime/item/completed": "state-only",
   "thread/realtime/transcript/delta": "state-only",
   "thread/realtime/transcript/done": "state-only",
   "thread/realtime/outputAudio/delta": "state-only",
@@ -213,17 +265,129 @@ export const CODEX_CLIENT_REQUEST_METHODS = [
   ["account/read"],
   ["account/usage/read"],
   ["account/rateLimits/read"],
+  ["account/rateLimitResetCredit/consume"],
   ["config/read"],
   ["config/batchWrite"],
   ["config/mcpServer/reload"],
   ["mcpServer/oauth/login"],
   ["mcpServerStatus/list"],
+  // Read-only instance inventory (Release 2).
+  ["hooks/list"],
+  ["plugin/list"],
+  ["app/list"],
 ] as const satisfies ReadonlyArray<readonly [string, ...string[]]>;
+
+/**
+ * Response fields F5 decodes, certified against the baseline's generated JSON
+ * schemas (`codex app-server generate-json-schema --experimental`). Keys are
+ * request methods; fields are dot paths where `[]` steps into array items.
+ * Only fields F5 actually reads belong here: the audit fails when one is
+ * missing, so an upstream rename is caught before decoding silently degrades.
+ * Methods the audited CLI does not offer (a fallback such as thread/revert on
+ * 0.147) are skipped and reported by the client-request check instead.
+ */
+export const CODEX_DECODED_RESPONSE_FIELDS = {
+  "thread/start": { schema: "v2/ThreadStartResponse.json", fields: ["thread.id"] },
+  "thread/resume": { schema: "v2/ThreadResumeResponse.json", fields: ["thread.id"] },
+  "thread/fork": { schema: "v2/ThreadForkResponse.json", fields: ["thread.id"] },
+  "thread/revert": { schema: "v2/ThreadRevertResponse.json", fields: ["thread.id"] },
+  "thread/read": {
+    schema: "v2/ThreadReadResponse.json",
+    fields: ["thread.id", "thread.turns[].id", "thread.turns[].items"],
+  },
+  "thread/turns/list": {
+    schema: "v2/ThreadTurnsListResponse.json",
+    fields: ["data[].id", "data[].items", "data[].itemsView", "nextCursor"],
+  },
+  "turn/start": { schema: "v2/TurnStartResponse.json", fields: ["turn.id"] },
+  "turn/steer": { schema: "v2/TurnSteerResponse.json", fields: ["turnId"] },
+  "model/list": {
+    schema: "v2/ModelListResponse.json",
+    fields: [
+      "data[].id",
+      "data[].model",
+      "data[].displayName",
+      "data[].hidden",
+      "data[].supportedReasoningEfforts[].reasoningEffort",
+      "data[].defaultReasoningEffort",
+      "data[].serviceTiers[].id",
+      "data[].serviceTiers[].name",
+      "data[].serviceTiers[].description",
+      "data[].defaultServiceTier",
+      "data[].upgrade",
+      "nextCursor",
+    ],
+  },
+  "account/read": {
+    schema: "v2/GetAccountResponse.json",
+    fields: ["account.type", "account.planType"],
+  },
+  "skills/list": {
+    schema: "v2/SkillsListResponse.json",
+    fields: [
+      "data[].skills[].name",
+      "data[].skills[].enabled",
+      "data[].skills[].description",
+      "data[].skills[].shortDescription",
+      "data[].skills[].interface.shortDescription",
+      "data[].skills[].path",
+      "data[].skills[].scope",
+    ],
+  },
+  "account/rateLimits/read": {
+    schema: "v2/GetAccountRateLimitsResponse.json",
+    fields: ["rateLimits"],
+  },
+  "account/usage/read": { schema: "v2/GetAccountTokenUsageResponse.json", fields: ["summary"] },
+  "config/read": { schema: "v2/ConfigReadResponse.json", fields: ["config", "origins", "layers"] },
+  "config/batchWrite": {
+    schema: "v2/ConfigWriteResponse.json",
+    fields: ["version", "status", "filePath", "overriddenMetadata"],
+  },
+  "mcpServerStatus/list": {
+    schema: "v2/ListMcpServerStatusResponse.json",
+    fields: ["data[].name", "nextCursor"],
+  },
+  "hooks/list": {
+    schema: "v2/HooksListResponse.json",
+    fields: [
+      "data[].hooks[].key",
+      "data[].hooks[].eventName",
+      "data[].hooks[].matcher",
+      "data[].hooks[].handlerType",
+      "data[].hooks[].command",
+      "data[].hooks[].source",
+      "data[].hooks[].sourcePath",
+      "data[].hooks[].enabled",
+      "data[].hooks[].isManaged",
+      "data[].hooks[].pluginId",
+    ],
+  },
+  "plugin/list": {
+    schema: "v2/PluginListResponse.json",
+    fields: [
+      "marketplaces[].name",
+      "marketplaces[].path",
+      "marketplaces[].plugins[].id",
+      "marketplaces[].plugins[].name",
+      "marketplaces[].plugins[].installed",
+      "marketplaces[].plugins[].enabled",
+    ],
+  },
+  "app/list": {
+    schema: "v2/AppsListResponse.json",
+    fields: ["data[].id", "data[].name", "data[].isEnabled", "data[].isAccessible", "nextCursor"],
+  },
+} as const satisfies Record<
+  string,
+  { readonly schema: string; readonly fields: ReadonlyArray<string> }
+>;
 
 export const CODEX_THREAD_ITEM_TYPES = [
   "userMessage",
   "hookPrompt",
   "agentMessage",
+  "functionCallOutput",
   "plan",
   "reasoning",
   "commandExecution",
@@ -247,6 +411,9 @@ export const CODEX_THREAD_ITEM_DISPOSITIONS = {
   userMessage: "canonical",
   hookPrompt: "internal-duplicate",
   agentMessage: "canonical",
+  // Raw function outputs duplicate the typed tool items (commandExecution,
+  // mcpToolCall, dynamicToolCall) that F5 already renders.
+  functionCallOutput: "internal-duplicate",
   plan: "canonical",
   reasoning: "canonical",
   commandExecution: "canonical",
@@ -268,15 +435,7 @@ function hasOwn<T extends object>(record: T, key: PropertyKey): key is keyof T {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-// Runtime compatibility beyond the still-pinned 0.144.3 surface. Re-baselining
-// the complete protocol is Release 1; the existing adapter already handles this.
-export const CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS = {
-  "thread/reverted": "canonical",
-} as const;
-
 export function codexNotificationDisposition(method: string): CodexProtocolDisposition | undefined {
-  if (hasOwn(CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS, method))
-    return CODEX_ADDITIONAL_NOTIFICATION_DISPOSITIONS[method];
   return hasOwn(CODEX_NOTIFICATION_DISPOSITIONS, method)
     ? CODEX_NOTIFICATION_DISPOSITIONS[method]
     : undefined;

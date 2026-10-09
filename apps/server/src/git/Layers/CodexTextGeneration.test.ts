@@ -267,6 +267,25 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     ),
   );
 
+  it.effect("runs Codex with plugins off so no marketplace upgrade starts", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({ subject: "Add important change", body: "" }),
+        argsMustContain: "-c features.plugins=false",
+      },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+        const generated = yield* textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+        });
+        expect(generated.subject).toBe("Add important change");
+      }),
+    ),
+  );
+
   it.effect("passes new Codex reasoning efforts from model selections to the CLI", () =>
     withFakeCodexEnv(
       {

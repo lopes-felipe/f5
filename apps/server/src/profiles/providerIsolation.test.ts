@@ -75,17 +75,28 @@ it("keeps Claude's home outside per-turn options and rejects internal path overr
   expect(spawn).not.toHaveBeenCalled();
 });
 
-it.each(["0.147.0", "0.148.0", "1.0.0", "0.147.0-alpha.1"])(
+it.each(["0.161.0", "1.0.0", "0.161.0-alpha.1"])(
   "allows forward-compatible Codex %s",
   (version) => {
     expect(codexIsolationCompatibility(version)).toEqual({
       supported: true,
-      message: expect.stringContaining(`Codex ${version} differs from this build`),
+      message: expect.stringContaining(
+        `Codex ${version} is newer than this build's audited baseline`,
+      ),
+    });
+  },
+);
+it.each(["0.144.3", "0.147.0", "0.160.0", "0.160.1-alpha.1"])(
+  "allows older-than-baseline Codex %s with a feature advisory",
+  (version) => {
+    expect(codexIsolationCompatibility(version)).toEqual({
+      supported: true,
+      message: `Codex ${version} is older than the audited 0.160.1; managed profiles may lack newer protocol features.`,
     });
   },
 );
 it("accepts the baseline without a notice", () => {
-  expect(codexIsolationCompatibility("0.144.3")).toEqual({ supported: true });
+  expect(codexIsolationCompatibility("0.160.1")).toEqual({ supported: true });
 });
 it.each(["0.144.2", "0.144.3-alpha.1", "unknown", null])(
   "rejects below-floor or unknown versions: %s",

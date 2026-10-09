@@ -1,13 +1,15 @@
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
+import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
+import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
 import { useServerCapability } from "~/protocolState";
-import { ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
+import { describeTaskSync, ThreadTasksPanel } from "./chat/composer/ThreadTasksPanel";
 import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
-import type { ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
@@ -333,8 +335,11 @@ import {
 import { supportsClaudeTraitsControls } from "./chat/ClaudeTraitsPicker";
 
 import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
+import { LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
+import { useDiskSpaceStatus } from "../hooks/useDiskSpaceStatus";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
-import { UsageLimitResumeAction } from "./chat/UsageLimitResumeAction";
+import { UsageLimitNotice } from "./chat/UsageLimitNotice";
+import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
@@ -344,6 +349,7 @@ import {
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
+  resolveComposerNativeSlashCommands,
   applyUserMessageAttachmentPreviewHandoff,
   deriveProviderRuntimeInfoEntries,
   buildExpiredTerminalContextToastCopy,
@@ -521,13 +527,15 @@ function summarizeTaskCounts(tasks: ReadonlyArray<ThreadTaskItem>): string {
     counts[task.status] += 1;
   }
 
-  return [
-    counts.in_progress > 0 ? `${counts.in_progress} active` : null,
-    counts.pending > 0 ? `${counts.pending} pending` : null,
-    counts.completed > 0 ? `${counts.completed} done` : null,
-  ]
-    .filter((entry): entry is string => entry !== null)
-    .join(" · ");
+  return (
+    [
+      counts.in_progress > 0 ? `${counts.in_progress} active` : null,
+      counts.pending > 0 ? `${counts.pending} pending` : null,
+      counts.completed > 0 ? `${counts.completed} done` : null,
+    ]
+      .filter((entry): entry is string => entry !== null)
+      .join(" · ") || "No tasks"
+  );
 }
 
 function deriveFallbackTasksFromPlan(
@@ -648,6 +656,7 @@ export default function ChatView({
   const { settings } = useAppSettings();
   const unifiedSettings = useSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const diskSpaceStatus = useDiskSpaceStatus();
   const timestampFormat = settings.timestampFormat;
   const tasksPanelAutoOpen = settings.tasksPanelAutoOpen;
   const tasksPanelAutoOpenRef = useRef(tasksPanelAutoOpen);
@@ -1397,11 +1406,26 @@ export default function ChatView({
   );
   const selectedModelOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
-      const codexOptions = normalizeCodexModelOptions(selectedModel, draftModelOptions?.codex);
+      // Same reported capabilities the picker offered, so the sent effort matches.
+      const codexOptions = normalizeCodexModelOptions(
+        selectedModel,
+        draftModelOptions?.codex,
+        getProviderModelCapabilities(
+          selectedProviderModels,
+          selectedModel,
+          ProviderDriverKind.make("codex"),
+        ),
+      );
       return codexOptions ? { codex: codexOptions } : undefined;
     }
     return genericModelOptionsForDispatch;
-  }, [draftModelOptions?.codex, genericModelOptionsForDispatch, selectedModel, selectedProvider]);
+  }, [
+    draftModelOptions?.codex,
+    genericModelOptionsForDispatch,
+    selectedModel,
+    selectedProvider,
+    selectedProviderModels,
+  ]);
   const selectedModelSelectionOptionsForDispatch = useMemo(
     () =>
       selectedProvider === "codex"
@@ -1692,6 +1716,21 @@ export default function ChatView({
     }
     return null;
   }, [threadActivities]);
+  const composerNativeSlashCommands = useMemo(
+    () =>
+      resolveComposerNativeSlashCommands({
+        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        sessionInstanceId: activeThread?.session?.providerInstanceId,
+        selectedInstanceId: selectedProviderInstanceId,
+        instanceSlashCommands: selectedProviderSnapshot?.slashCommands,
+      }),
+    [
+      activeThread?.session?.providerInstanceId,
+      latestConfiguredRuntimeActivity?.slashCommands,
+      selectedProviderInstanceId,
+      selectedProviderSnapshot?.slashCommands,
+    ],
+  );
   const latestModelRerouteActivity = useMemo(() => {
     for (let index = threadActivities.length - 1; index >= 0; index -= 1) {
       const activity = threadActivities[index];
@@ -1872,6 +1911,9 @@ export default function ChatView({
     () => summarizeTaskCounts(effectiveThreadTasks),
     [effectiveThreadTasks],
   );
+  // A sync notice can apply before the first task lands in the snapshot.
+  const showThreadTasksPanel =
+    effectiveThreadTasks.length > 0 || describeTaskSync(activeThread?.tasksTracking) !== null;
   useEffect(() => {
     const activeThreadId = activeThread?.id ?? null;
     const threadChanged = previousTaskPanelThreadIdRef.current !== activeThreadId;
@@ -2384,7 +2426,8 @@ export default function ChatView({
 
     const items = buildSlashComposerMenuItems({
       query: composerTrigger.query,
-      runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+      runtimeSlashCommands: composerNativeSlashCommands.commands,
+      runtimeSlashCommandsSource: composerNativeSlashCommands.source,
       provider: selectedProvider,
       projectSkills: activeProject?.skills,
       providerSkills: selectedProviderSnapshot?.skills,
@@ -2394,7 +2437,7 @@ export default function ChatView({
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
     composerTrigger,
-    latestConfiguredRuntimeActivity?.slashCommands,
+    composerNativeSlashCommands,
     selectedProvider,
     workspaceEntries,
   ]);
@@ -4415,6 +4458,9 @@ export default function ChatView({
           targetMessageId: messageId,
           restoreFiles,
           ...(latestMessageId ? { expectedLatestMessageId: latestMessageId } : {}),
+          ...(activeThread.session?.capabilities
+            ? { expectedSessionGeneration: activeThread.session.capabilities.generation }
+            : {}),
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
@@ -4718,7 +4764,7 @@ export default function ChatView({
       rewriteComposerRuntimeSkillInvocationForSend({
         text: promptForSend,
         provider: selectedProvider,
-        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        runtimeSlashCommands: composerNativeSlashCommands.commands,
         projectSkills: activeProject?.skills,
         providerSkills: selectedProviderSnapshot?.skills,
       });
@@ -5210,7 +5256,7 @@ export default function ChatView({
         {
           text: trimmed,
           provider: selectedProvider,
-          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          runtimeSlashCommands: composerNativeSlashCommands.commands,
           projectSkills: activeProject?.skills,
           providerSkills: selectedProviderSnapshot?.skills,
         },
@@ -5361,7 +5407,7 @@ export default function ChatView({
       hasPendingTurnDispatch,
       isConnecting,
       isServerThread,
-      latestConfiguredRuntimeActivity?.slashCommands,
+      composerNativeSlashCommands,
       persistThreadSettingsForNextTurn,
       removeOptimisticMessage,
       restoreComposerRollback,
@@ -6005,7 +6051,8 @@ export default function ChatView({
         !buildSlashComposerMenuItems({
           query: candidate.query,
           provider: selectedProvider,
-          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          runtimeSlashCommands: composerNativeSlashCommands.commands,
+          runtimeSlashCommandsSource: composerNativeSlashCommands.source,
           projectSkills: activeProject?.skills,
           providerSkills: selectedProviderSnapshot?.skills,
         }).some((item) => item.type === "skill"))
@@ -6015,7 +6062,7 @@ export default function ChatView({
   }, [
     readComposerSnapshot,
     selectedProvider,
-    latestConfiguredRuntimeActivity?.slashCommands,
+    composerNativeSlashCommands,
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
   ]);
@@ -6447,9 +6494,13 @@ export default function ChatView({
   ]);
   const activeProviderLabel =
     PROVIDER_OPTIONS.find((option) => option.value === activeProvider)?.label ?? "This provider";
-  const revertSupported = Boolean(
-    activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
-    activeProviderStatus.runtimeCapabilities.rollbackReadback,
+  const revertSupported = isSessionActionSupported(
+    activeThread?.session?.capabilities,
+    "rollback",
+    Boolean(
+      activeProviderStatus?.runtimeCapabilities?.conversationRollback &&
+      activeProviderStatus.runtimeCapabilities.rollbackReadback,
+    ),
   );
   // Every user message gets a revert trigger once the provider is known; when it
   // can't roll back, the trigger stays visible and says why instead of vanishing.
@@ -6574,30 +6625,58 @@ export default function ChatView({
   }
 
   const threadNotices: ThreadNotice[] = [];
-  if (activeThread.error) {
+  let lowDiskSpaceNotice: ThreadNotice | null = null;
+  if (diskSpaceStatus && diskSpaceStatus.level !== "ok") {
+    const notice: ThreadNotice = {
+      id: "low-disk-space",
+      content: (
+        <LowDiskSpaceBanner
+          status={diskSpaceStatus}
+          onOpenStorage={() => {
+            void navigate({ to: "/settings", search: { category: "storage" } });
+          }}
+        />
+      ),
+    };
+    // Held turns explain why nothing sends, so that notice stays in view.
+    if (diskSpaceStatus.level === "critical") threadNotices.push(notice);
+    else lowDiskSpaceNotice = notice;
+  }
+  const dismissActiveThreadError = () => {
+    dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
+    setThreadError(activeThread.id, null);
+  };
+  const activeUsageLimit =
+    activeThread.error && activeThread.session?.lastError === activeThread.error
+      ? (activeThread.session.usageLimit ?? null)
+      : null;
+  const usageLimitNotice = activeUsageLimit
+    ? resolveUsageLimitNotice(activeUsageLimit, nextTurnQueueState.snapshot)
+    : null;
+  // A sent continue leaves nothing to show; skip the slot instead of stacking an empty row.
+  if (activeThread.error && !usageLimitNotice?.hidden) {
     threadNotices.push({
       id: "thread-error",
-      content: (
+      content: activeUsageLimit ? (
+        <UsageLimitNotice
+          threadId={activeThread.id}
+          limit={activeUsageLimit}
+          providerLabel={
+            activeThread.session
+              ? PROVIDER_DISPLAY_NAMES[activeThread.session.provider]
+              : "Provider"
+          }
+          onDismiss={dismissActiveThreadError}
+        />
+      ) : (
         <ThreadErrorBanner
           error={activeThread.error}
-          action={
-            activeThread.session?.usageLimit &&
-            activeThread.session.lastError === activeThread.error ? (
-              <UsageLimitResumeAction
-                threadId={activeThread.id}
-                limit={activeThread.session.usageLimit}
-              />
-            ) : undefined
-          }
           occurredAt={
             activeThread.session?.lastError === activeThread.error
               ? (activeThread.session.lastErrorOccurredAt ?? null)
               : null
           }
-          onDismiss={() => {
-            dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
-            setThreadError(activeThread.id, null);
-          }}
+          onDismiss={dismissActiveThreadError}
         />
       ),
     });
@@ -6647,6 +6726,7 @@ export default function ChatView({
       ),
     });
   }
+  if (lowDiskSpaceNotice) threadNotices.push(lowDiskSpaceNotice);
 
   const composerPendingInteraction: ComposerPendingInteraction = {
     activePendingApproval,
@@ -6945,24 +7025,6 @@ export default function ChatView({
                       {historyStatusContent}
                       <NewerMessageHistoryControl threadId={activeThread.id} />
                       <OlderActivityHistoryControl threadId={activeThread.id} />
-                      {
-                        // Tasks come only from the detail payload, so keep this
-                        // gated on `detailsLoaded` even though the timeline can
-                        // render from live events earlier.
-                        !composerRedesign &&
-                        activeThread.detailsLoaded &&
-                        effectiveThreadTasks.length > 0 ? (
-                          <div className="mx-auto mb-4 w-full max-w-(--chat-content-max-width)">
-                            <ThreadTasksPanel
-                              threadId={activeThread.id}
-                              tasks={effectiveThreadTasks}
-                              open={tasksPanelOpen}
-                              summary={taskPanelSummary}
-                              onToggle={onToggleTasksPanel}
-                            />
-                          </div>
-                        ) : null
-                      }
                     </>
                   }
                 />
@@ -6986,16 +7048,15 @@ export default function ChatView({
                   className={isGitRepo ? "pb-0.5" : "pb-3 sm:pb-4"}
                 >
                   <ComposerTray redesign={composerRedesign}>
-                    {/* The redesign attaches the task list to the composer;
-                        otherwise it stays at the end of the timeline. Tasks
-                        come only from the detail payload. */}
-                    {composerRedesign &&
-                    activeThread.detailsLoaded &&
-                    effectiveThreadTasks.length > 0 ? (
+                    {/* The task list stays attached to the composer so it is
+                        visible in long threads. Tasks come only from the
+                        detail payload, so keep this gated on `detailsLoaded`. */}
+                    {activeThread.detailsLoaded && showThreadTasksPanel ? (
                       <ThreadTasksPanel
                         attached
                         threadId={activeThread.id}
                         tasks={effectiveThreadTasks}
+                        tracking={activeThread.tasksTracking}
                         open={tasksPanelOpen}
                         summary={taskPanelSummary}
                         onToggle={onToggleTasksPanel}
@@ -7038,10 +7099,15 @@ export default function ChatView({
                     {isServerThread ? (
                       <NextTurnQueuePanel
                         variant="tray"
-                        turnSteering={activeProviderStatus?.runtimeCapabilities?.turnSteering}
+                        turnSteering={isSessionActionSupported(
+                          activeThread.session?.capabilities,
+                          "steer",
+                          activeProviderStatus?.runtimeCapabilities?.turnSteering === true,
+                        )}
                         threadId={activeThread.id}
+                        foldedItemId={usageLimitNotice?.foldedItemId ?? null}
                         provider={selectedProvider}
-                        runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
+                        runtimeSlashCommands={composerNativeSlashCommands.commands}
                         projectSkills={activeProject?.skills}
                       />
                     ) : null}

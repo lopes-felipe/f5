@@ -26,6 +26,7 @@ import {
   type PrHubChanged,
   type ServerProviderAdvisoriesUpdatedPayload,
   ServerConfigUpdatedPayload,
+  type DiskSpaceStatus,
   type StorageCleanupProgressPayload,
   type StorageInvalidatedPayload,
   WS_CHANNELS,
@@ -75,6 +76,7 @@ const previewAutomationRequestListeners = new Set<(payload: PreviewAutomationReq
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
+const storageDiskSpaceUpdatedListeners = new Set<(payload: DiskSpaceStatus) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
 const worktreeSetupUpdatedListeners = new Set<(payload: WorktreeSetupUpdatedPayload) => void>();
@@ -353,6 +355,16 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  transport.subscribe(WS_CHANNELS.storageDiskSpaceUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of storageDiskSpaceUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
   transport.subscribe(WS_CHANNELS.nextTurnQueueUpdated, (message) => {
     const payload = message.data;
     for (const listener of nextTurnQueueUpdatedListeners) {
@@ -601,6 +613,8 @@ export function createWsNativeApi(): NativeApi {
         transport.request(WS_METHODS.serverMigrateClientSetting, input),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
       refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
+      getProviderInventory: (input) =>
+        transport.request(WS_METHODS.serverGetProviderInventory, input),
       validateHarnesses: (input) => transport.request(WS_METHODS.serverValidateHarnesses, input),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
       addKeybinding: (input) => transport.request(WS_METHODS.serverAddKeybinding, input),
@@ -658,6 +672,8 @@ export function createWsNativeApi(): NativeApi {
           storageCleanupProgressListeners.delete(callback);
         };
       },
+      getDiskSpace: (input = {}) => transport.request(WS_METHODS.storageGetDiskSpace, input),
+      onDiskSpaceUpdated: (callback) => onStorageDiskSpaceUpdated(callback),
     },
     worktreeSetup: {
       subscribe: (input) => transport.request(WS_METHODS.worktreeSetupSubscribe, input),
@@ -901,6 +917,27 @@ export function onMcpStatusUpdated(
 
   return () => {
     mcpStatusUpdatedListeners.delete(listener);
+  };
+}
+
+/** Replays the latest pushed status on subscribe, like the other latest-state channels. */
+export function onStorageDiskSpaceUpdated(
+  listener: (payload: DiskSpaceStatus) => void,
+): () => void {
+  storageDiskSpaceUpdatedListeners.add(listener);
+
+  const latestPush =
+    instance?.transport.getLatestPush(WS_CHANNELS.storageDiskSpaceUpdated)?.data ?? null;
+  if (latestPush) {
+    try {
+      listener(latestPush);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+
+  return () => {
+    storageDiskSpaceUpdatedListeners.delete(listener);
   };
 }
 

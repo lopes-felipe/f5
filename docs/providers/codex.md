@@ -147,7 +147,31 @@ should use the shared-home plus shadow-home setup instead.
 
 ### Isolated profiles
 
-[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials; versions beyond the audited baseline show an informational notice; legacy Default shadow-home behavior is unchanged.
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.160.1 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
+
+## Disk space from Codex marketplace upgrades
+
+When a Codex home has a Git-sourced plugin marketplace configured, each `codex app-server`
+start clones the whole marketplace into `.tmp/marketplaces/.staging/marketplace-upgrade-*`
+and then swaps it in. If the process stops before the swap, Codex never removes the clone.
+These clones can be hundreds of MB each.
+
+F5 limits this in three ways:
+
+- Session-note, compaction and harness-validation prompts share one warm app-server per
+  Codex launch config instead of starting one per prompt. The warm process stops after
+  5 minutes idle, after 50 prompts, or after any failed prompt. It is not tied to the
+  signed-in account: after `codex login` switches accounts in the same home, background
+  prompts can use the previous login until the warm process stops.
+- These one-off app-servers, and the `codex exec` runs that generate titles, commit messages,
+  PR text and branch names, start with `-c features.plugins=false`, so they never begin a
+  marketplace upgrade. Thread sessions keep plugins on.
+- Every hour, F5 deletes `marketplace-upgrade-*` dirs older than 2 hours in every Codex home
+  it launches, even when automatic storage cleanup is off. It deletes a
+  `marketplace-backup-*` dir only when an installed marketplace from the same source sits
+  next to it; a backup Codex kept after a failed rollback may be the only copy and is left
+  alone. Each deletion is recorded in the automatic cleanup history. **Settings → Storage →
+  Provider homes** offers the same cleanup on demand.
 
 ## Release 0 rewind compatibility
 
@@ -179,9 +203,8 @@ marks rollback deprecated. The [0.158.0 start implementation](https://github.com
 defaults persistent threads to paginated history when the thread store supports history lists
 (source revision `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`).
 
-The full protocol manifest remains audited at **0.144.3** until Release 1; its fixed
-baseline audit still passes. The minimum permitted CLI remains 0.37.0; versions below
-0.144 are unverified. Custom executable paths and CODEX_HOME isolation are preserved;
+Release 1 moved the full protocol manifest to **0.160.1** (see below). The minimum
+permitted CLI remains 0.37.0; versions below 0.144 are permitted but unverified. Custom executable paths and CODEX_HOME isolation are preserved;
 certification installs use temporary directories and never replace the operator CLI.
 
 For a credential-free native startup smoke, set `CODEX_BINARY_PATH` to the chosen
@@ -214,3 +237,118 @@ early events, cached flags and failed post-adoption reads. Provider-directory an
 orchestration recovery tests prove the validated fork cursor survives final-read failure.
 Manual browser UI acceptance and Linux/Windows release-environment runs remain unverified;
 the model-backed matrix above exercises the actual manager, not a fake server.
+
+## Release 1 protocol baseline (0.160.1)
+
+`bun run protocol:audit:baseline` installs Codex 0.160.1 into a temporary directory and
+audits two layers:
+
+1. **Surface.** Every server notification, server request and thread item in the
+   generated experimental TypeScript must have a disposition in
+   `packages/shared/src/codexProtocolManifest.ts`, and every client request group F5
+   sends must have at least one method the CLI offers.
+2. **Fields.** For responses F5 decodes, `CODEX_DECODED_RESPONSE_FIELDS` lists the exact
+   fields it reads; each is resolved through the generated JSON schema
+   (`generate-json-schema --experimental`, following `$ref`, `allOf`, `anyOf`, `oneOf`
+   and array items). Request shapes are certified separately by
+   `bun run protocol:audit:requests:baseline`, which type-checks F5's real builders.
+
+Checksums of the surface files and decoded response schemas are committed in
+`scripts/fixtures/codex-protocol/0.160.1.json` with the CLI version and source revision
+`d27764b82f7118f674371e6d6e76271d9d606edb`. Any regenerated difference fails the audit;
+after re-certifying, refresh it with `CODEX_SOURCE_REVISION=<commit> bun scripts/audit-codex-protocol.ts --install-baseline --write-fixture`.
+
+Dispositions added for 0.160.1:
+
+| Surface                                                                                                                                                                                                                   | Disposition        | Why                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thread/reverted`                                                                                                                                                                                                         | state-only         | F5 validates retained history through its own paged read-back; the adapter has no second handler.                                                                 |
+| `rawResponseItem/completed`                                                                                                                                                                                               | internal-duplicate | Raw items duplicate the typed `item/*` stream (`experimentalRawEvents:false`).                                                                                    |
+| `rawResponse/completed`                                                                                                                                                                                                   | internal-duplicate | Internal per-completion usage; `thread/tokenUsage/updated` already carries the usage F5 records.                                                                  |
+| `functionCallOutput` item                                                                                                                                                                                                 | internal-duplicate | Duplicates the typed tool items F5 renders; dropped silently.                                                                                                     |
+| `item/fileChange/outputDelta`                                                                                                                                                                                             | diagnostics-only   | No longer emitted; the adapter still maps it for persisted logs and older CLIs.                                                                                   |
+| `thread/compacted`                                                                                                                                                                                                        | canonical          | Deprecated in favor of the `contextCompaction` item, but older CLIs only send this.                                                                               |
+| `thread/attachment/updated`, `thread/queue/changed`, `project/changed`, `thread/project/updated`, `thread/environment/*`, `account/gatewayOAuth/changed`, `mcpServer/event/stream/notification`, `thread/realtime/item/*` | state-only         | Native attachments, queues, projects, environments, gateway OAuth, MCP streams and realtime voice are not mapped; queue and projects would create a second owner. |
+| `modelProvider/authRecovery{Started,Completed}`, `autoApprovalReview/strictReviewRequired`                                                                                                                                | diagnostics-only   | Visible in native logs only.                                                                                                                                      |
+
+No surface present in 0.144.3 was removed in 0.160.1, so no manifest entry was dropped.
+Runtime handlers for older CLIs (for example `currentTime/read`, `thread/rollback`) stay.
+
+Field-level findings:
+
+- All 34 decoded response fields exist in 0.160.1 and in 0.144.3. On 0.144.3 and 0.147
+  `thread/revert` is absent, so its response is skipped and the rollback fallback is used.
+- `model/list` exposes no context-window metadata in 0.160.1; F5 falls back to its built-in
+  context windows. `additionalSpeedTiers` is not read.
+- F5 sends no `personality` or multi-agent fields; `collaborationMode` remains current,
+  so no request field needed removal.
+- `capabilities.mcpServerOpenaiFormElicitation:false` is still sent. 0.160.1 marks it the
+  legacy opt-in for `openai/form`; the replacement is `capabilities.extensions`. F5 switches
+  only after the private elicitation path (Release 3) passes end-to-end and the minimum
+  supported CLI passes 0.147.
+
+Older CLIs: the manager, adapter and rewind suites pass against fakes, and the
+credential-free startup smoke (`bun scripts/certify-codex-runtime.ts`) passed on 0.144.3
+and 0.160.1 on 2026-10-07. The authenticated rewind matrix from Release 0 above covers
+0.144.3, 0.147.0, 0.156.0 and 0.160.1. CLIs older than 0.144 are permitted but unverified.
+
+## Release 2: models, catalogs and inventory
+
+### Reported models
+
+Once per instance and CLI version, F5 opens a short-lived control client and pages
+`model/list`. The probe has an 8-second budget, and the process is closed in `finally`.
+Hidden models are dropped. Efforts come from `supportedReasoningEfforts` and
+`defaultReasoningEffort`, tiers from `serviceTiers` and `defaultServiceTier`, and
+`upgrade` becomes an advisory. `additionalSpeedTiers` is never read. Fast mode is offered
+only when a `fast` tier is reported. A model that reports no efforts gets no effort
+control. Reported capabilities override same-slug built-ins. If the probe fails, the last
+good result or the built-ins stay in use, and no slug a persisted thread uses is dropped.
+A failed probe is not retried for the same CLI version for 30 minutes. Concurrent
+callers share a single probe.
+
+Each session also reads its own `model/list`. `turn/start` resolves the requested effort
+against that list, walking down to the nearest offered level, so a CLI-only model
+receives the effort the composer showed. A `fast` service tier is sent only when the
+session's list offers it. The composer applies the same rule to effort and fast mode
+before it dispatches.
+
+### Catalogs
+
+The same probe reads `skills/list` for the instance. `repo` skills are excluded there,
+because the project scan owns repository files. The instance's `user`, `system` and
+`admin` skills form its private catalog, and switching instance in the composer drops
+it.
+
+### Inventory (read-only)
+
+Settings → Providers → an instance → **Hooks, plugins and connectors** opens a control
+client with the instance's own `CODEX_HOME` and reads:
+
+- `hooks/list`: program name only
+- `plugin/list`: installed plugins, local marketplaces only, no remote refetch
+- `app/list`
+- `config/read` with layers, for configured MCP servers
+
+F5 launches every app-server with `-c mcp_servers={}`, so `mcpServerStatus/list` would
+always be empty. MCP servers are read from each config layer's `mcp_servers` table
+instead, with the name and transport only, never commands, URLs or environment. The
+`sessionFlags` layer is skipped because it holds F5's own override. A server is shown as
+disabled when `enabled = false` or when its layer has a `disabledReason`.
+
+Sources come from the hook source or the MCP server's config layer:
+
+| Codex source                                    | Shown as |
+| ----------------------------------------------- | -------- |
+| user, sessionFlags                              | instance |
+| project                                         | project  |
+| system, mdm, enterpriseManaged, cloud*, legacy* | managed  |
+| plugin                                          | plugin   |
+
+If a method is unsupported, it becomes a warning instead of failing the view. F5 never
+installs, removes or edits these.
+
+`hooks/list`, `plugin/list` and `app/list` were added to `CODEX_CLIENT_REQUEST_METHODS`.
+Their decoded fields, plus the new `model/list` and `skills/list` fields, are certified
+against 0.160.1 (66 fields). The fixture was refreshed for the three new response
+schemas.

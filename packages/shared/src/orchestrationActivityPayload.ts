@@ -10,7 +10,9 @@ import {
   ProviderItemId,
   type ProviderRequestKind,
   type RuntimeItemStatus,
+  ToolCompletionEnvelope,
 } from "@t3tools/contracts";
+import { Schema } from "effect";
 import {
   deriveSearchSummaryFromPatternsAndTargets,
   formatLineRangeSummary,
@@ -732,8 +734,9 @@ const MAX_COMPACT_TOOL_IMAGES = 8;
 function readToolImages(
   payload: UnknownRecord,
 ): Pick<CompactToolActivityPayload, "mcpImages" | "mcpImagesOmitted"> {
-  const images = Array.isArray(payload.mcpImages)
-    ? payload.mcpImages.slice(0, MAX_COMPACT_TOOL_IMAGES).flatMap((entry) => {
+  const declared = Array.isArray(payload.mcpImages) ? payload.mcpImages : [];
+  const images = declared.length
+    ? declared.slice(0, MAX_COMPACT_TOOL_IMAGES).flatMap((entry) => {
         const record = asRecord(entry);
         const attachmentId = asTrimmedString(record?.attachmentId);
         const mimeType = asTrimmedString(record?.mimeType);
@@ -747,18 +750,24 @@ function readToolImages(
           : [];
       })
     : [];
-  const omitted = payload.mcpImagesOmitted;
+  const declaredOmitted = payload.mcpImagesOmitted;
+  // References past the compact bound count as omitted so the work log reports the loss.
+  const omitted =
+    (typeof declaredOmitted === "number" && Number.isInteger(declaredOmitted) && declaredOmitted > 0
+      ? declaredOmitted
+      : 0) + Math.max(0, declared.length - MAX_COMPACT_TOOL_IMAGES);
   return {
     ...(images.length > 0 ? { mcpImages: images } : {}),
-    ...(typeof omitted === "number" && Number.isInteger(omitted) && omitted > 0
-      ? { mcpImagesOmitted: omitted }
-      : {}),
+    ...(omitted > 0 ? { mcpImagesOmitted: omitted } : {}),
   };
 }
+
+const isToolCompletionEnvelope = Schema.is(ToolCompletionEnvelope);
 
 function compactToolPayload(payload: CompactToolActivityPayload): Record<string, unknown> {
   return {
     itemType: payload.itemType,
+    ...(payload.completion ? { completion: payload.completion } : {}),
     ...(payload.imagePath ? { imagePath: payload.imagePath } : {}),
     ...(payload.providerItemId ? { providerItemId: payload.providerItemId } : {}),
     ...(payload.status ? { status: payload.status } : {}),
@@ -926,9 +935,15 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
       : undefined;
   const subagentPayload = readSubagentPayload(record);
   const mcpPayload = readMcpToolPayload(record);
+  // Malformed envelopes are dropped rather than persisted half-valid.
+  const completion =
+    record.completion !== undefined && isToolCompletionEnvelope(record.completion)
+      ? record.completion
+      : undefined;
 
   return {
     itemType: record.itemType,
+    ...(completion ? { completion } : {}),
     ...(imagePath ? { imagePath } : {}),
     ...(providerItemId ? { providerItemId } : {}),
     ...(status ? { status } : {}),

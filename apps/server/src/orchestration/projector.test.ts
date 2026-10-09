@@ -161,6 +161,7 @@ describe("orchestration projector", () => {
         messages: [],
         proposedPlans: [],
         tasks: [],
+        tasksTracking: null,
         tasksTurnId: null,
         tasksUpdatedAt: null,
         sessionNotes: null,
@@ -2118,6 +2119,98 @@ describe("orchestration projector", () => {
     );
 
     expect(afterReverted.threads[0]?.tasks).toEqual([]);
+  });
+
+  it("keeps retained-turn native tasks when a revert omits retainedTurnIds", async () => {
+    const at = "2026-02-23T08:00:00.000Z";
+    const tracking = {
+      version: 1,
+      source: "claude-task-tools",
+      nativeSessionId: "native-1",
+      generation: 0,
+      syncState: "synced",
+      pendingCalls: [],
+      invalidatedCallIds: [],
+      handledCallIds: ["c1", "c2"],
+      provenance: [
+        { taskId: "1", nativeCallId: "c1", turnId: "turn-1" },
+        { taskId: "2", nativeCallId: "c2", turnId: "turn-2" },
+      ],
+      suppressedTaskIds: [],
+    };
+    const events = [
+      makeEvent({
+        sequence: 1,
+        type: "thread.created",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: at,
+        commandId: "cmd-create",
+        payload: {
+          threadId: "thread-1",
+          projectId: "project-1",
+          title: "demo",
+          model: "claude-opus-5-5",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: at,
+          updatedAt: at,
+        },
+      }),
+      ...[1, 2].map((turn) =>
+        makeEvent({
+          sequence: 1 + turn,
+          type: "thread.turn-diff-completed",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: at,
+          commandId: `cmd-checkpoint-${turn}`,
+          payload: {
+            threadId: "thread-1",
+            turnId: `turn-${turn}`,
+            checkpointTurnCount: turn,
+            checkpointRef: `refs/t3/checkpoints/thread-1/turn/${turn}`,
+            status: "ready",
+            files: [],
+            assistantMessageId: `message-${turn}`,
+            completedAt: at,
+          },
+        }),
+      ),
+      makeEvent({
+        sequence: 4,
+        type: "thread.tasks.updated",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: at,
+        commandId: "cmd-tasks",
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-2",
+          updatedAt: at,
+          tracking,
+          tasks: [
+            { id: "1", content: "Keep", activeForm: "Keep", status: "in_progress" },
+            { id: "2", content: "Drop", activeForm: "Drop", status: "pending" },
+          ],
+        },
+      }),
+      makeEvent({
+        sequence: 5,
+        type: "thread.reverted",
+        aggregateKind: "thread",
+        aggregateId: "thread-1",
+        occurredAt: at,
+        commandId: "cmd-revert",
+        payload: { threadId: "thread-1", turnCount: 1 },
+      }),
+    ];
+    let model = createEmptyReadModel(at);
+    for (const event of events) model = await Effect.runPromise(projectEvent(model, event));
+
+    expect(model.threads[0]?.tasks.map((task) => task.id)).toEqual(["1"]);
+    expect(model.threads[0]?.tasksTracking?.suppressedTaskIds).toEqual(["2"]);
   });
 
   it("bumps lastInteractionAt for request events that represent direct user actions", async () => {

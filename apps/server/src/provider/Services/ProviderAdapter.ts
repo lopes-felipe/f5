@@ -188,6 +188,14 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<ProviderConversationCompactionResult, TError>;
 
   /**
+   * Native discovery state of one live session (initialization finished,
+   * command catalog loaded). Adapters without discovery omit this.
+   */
+  readonly getSessionDiscovery?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<import("../sessionCapabilities.ts").ProviderSessionDiscovery | undefined>;
+
+  /**
    * Reload MCP configuration for one live provider session when supported.
    */
   readonly reloadMcpConfig?: (threadId: ThreadId) => Effect.Effect<void, TError>;

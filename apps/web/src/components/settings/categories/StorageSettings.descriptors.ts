@@ -5,8 +5,21 @@ export const STORAGE_SETTINGS_DESCRIPTORS = [
     id: "storage.automation",
     category: "storage",
     label: "Automatic cleanup",
-    description: "Remove idle worktrees and old logs automatically, with a preview and history.",
-    keywords: ["worktree", "cleanup", "retention", "logs", "screenshots", "recordings", "audit"],
+    description:
+      "Remove idle worktrees, old logs and old threads automatically, with a preview and history.",
+    keywords: [
+      "worktree",
+      "cleanup",
+      "retention",
+      "logs",
+      "screenshots",
+      "recordings",
+      "audit",
+      "purge",
+      "archived",
+      "deleted",
+      "database",
+    ],
     targetSelector: '[data-settings-search-target="storage.automation"]',
   },
   {
@@ -38,7 +51,7 @@ export const STORAGE_SETTINGS_DESCRIPTORS = [
     category: "storage",
     label: "Storage usage",
     description: "Inspect local data and reclaim selected storage categories.",
-    keywords: ["cleanup", "disk", "database", "logs", "worktrees"],
+    keywords: ["cleanup", "disk", "database", "logs", "worktrees", "codex", "marketplace"],
     targetSelector: '[data-settings-search-target="storage.usage"]',
   },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

@@ -1,3 +1,4 @@
+import * as NodeOS from "node:os";
 import {
   validateManagedHome,
   validateProviderCompatibility,
@@ -17,8 +18,14 @@ import {
  *
  * @module provider/Drivers/ClaudeDriver
  */
-import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import {
+  ClaudeSettings,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
+import { normalizeModelSlug } from "@t3tools/shared/model";
+import { Duration, Effect, FileSystem, Path, Ref, Schema, Stream } from "effect";
 import { makeClaudeInstanceProbes } from "./ClaudeProbeCache.ts";
 import {
   emptyAccountSection,
@@ -30,7 +37,12 @@ import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.
 import { ServerConfig } from "../../config.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
+import { makeClaudeAdapter, resolveClaudeConfigDir } from "../Layers/ClaudeAdapter.ts";
+import { readClaudeInventory, resolveClaudeUserStatePath } from "../claudeInventory.ts";
+import {
+  deleteClaudeSessionTranscript,
+  resolveClaudeTranscriptCleanupDir,
+} from "../claudeSessionCleanup.ts";
 import { checkClaudeProviderStatus, makePendingClaudeProvider } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -145,7 +157,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instanceId,
       );
       const previewAutomationBroker = yield* PreviewAutomationBroker;
+      // Latest probed models, so launches use the capabilities the CLI reported
+      // (the same ones the composer shows) instead of only F5's static table.
+      const probedModels = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
+      // The CLI child's environment; every instance-private path resolves from it.
+      const claudeProcessEnvironment = yield* makeClaudeEnvironment(effectiveConfig, processEnv);
       const adapter = yield* makeClaudeAdapter({
+        reportedModelCapabilities: (model) =>
+          Ref.get(probedModels).pipe(
+            Effect.map((models) => {
+              const slug = normalizeModelSlug(model, "claudeAgent") ?? model;
+              const match = models.find((candidate) => candidate.slug === slug);
+              return match?.capabilities?.source === "reported" ? match.capabilities : undefined;
+            }),
+          ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         previewAutomationBroker,
         oneOffProviderOptions: {
@@ -154,7 +179,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
           binaryPath: effectiveConfig.binaryPath,
           launchArgs,
         },
-        processEnvironment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+        processEnvironment: claudeProcessEnvironment,
       });
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
@@ -196,6 +221,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         processEnv,
       ).pipe(
         Effect.map(stampIdentity),
+        Effect.tap((provider) => Ref.set(probedModels, provider.models)),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),
       );
@@ -219,6 +245,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         ),
       );
 
+      // Transcripts are only deleted from a store F5 owns; the default
+      // instance shares `~/.claude` with the user's own CLI.
+      const transcriptCleanupDir = resolveClaudeTranscriptCleanupDir({
+        configDir: resolveClaudeConfigDir(claudeProcessEnvironment, serverCwd),
+        isolatedProfile: serverConfig.profile !== undefined && !serverConfig.profile.isDefault,
+        homePath: effectiveConfig.homePath,
+        userHomeDir: NodeOS.homedir(),
+        serverConfigDir: resolveClaudeConfigDir(process.env, serverCwd),
+      });
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -234,6 +270,44 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         textGeneration,
         accountUsage,
         invalidateAccountStatus: probes.invalidate,
+        inventory: ({ projectRoot }) => {
+          const configDir = resolveClaudeConfigDir(claudeProcessEnvironment, serverCwd);
+          return Effect.tryPromise({
+            try: () =>
+              readClaudeInventory({
+                configDir,
+                userStatePath: resolveClaudeUserStatePath(claudeProcessEnvironment, configDir),
+                projectRoot,
+                managedSettingsPath: claudeProcessEnvironment.CLAUDE_CODE_MANAGED_SETTINGS_PATH,
+              }),
+            catch: (cause) =>
+              new ProviderDriverError({
+                driver: DRIVER_KIND,
+                instanceId,
+                detail: "Could not read the Claude inventory.",
+                cause,
+              }),
+          });
+        },
+        ...(transcriptCleanupDir
+          ? {
+              deleteNativeSession: (sessionId: string) =>
+                Effect.tryPromise({
+                  try: () =>
+                    deleteClaudeSessionTranscript({
+                      claudeConfigDir: transcriptCleanupDir,
+                      sessionId,
+                    }),
+                  catch: (cause) =>
+                    new ProviderDriverError({
+                      driver: DRIVER_KIND,
+                      instanceId,
+                      detail: "Could not delete the Claude session transcript.",
+                      cause,
+                    }),
+                }),
+            }
+          : {}),
       } satisfies ProviderInstance;
     }),
 };

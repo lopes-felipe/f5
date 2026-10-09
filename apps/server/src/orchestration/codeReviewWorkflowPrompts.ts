@@ -36,7 +36,7 @@ ${input.reviewPrompt}`,
 - Assess blast radius for material issues: distinguish local, reversible problems from broad or hard-to-reverse changes.
 - Review security with OWASP Top 10 awareness, including injection, access control, auth/session handling, unsafe path or file handling, SSRF, XSS, and sensitive-data exposure.
 - Flag extra features, speculative cleanup, or scope expansion that the user did not ask for.`,
-    "Return a single code review report, not a plan and not code changes.",
+    "Return a single code review report, not code changes. Reply with the complete report as your message; do not submit it as a plan.",
   ];
 }
 
@@ -78,7 +78,7 @@ Your job:
 
 ${reviewSections.join("\n\n")}
 
-Do not write code. Do not produce a plan. Return only the consolidated review.`,
+Do not write code. Return only the consolidated review. Reply with the complete report as your message; do not submit it as a plan.`,
   ];
 }
 

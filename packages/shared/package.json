@@ -172,6 +172,10 @@
       "types": "./src/byteSize.ts",
       "import": "./src/byteSize.ts"
     },
+    "./diskSpace": {
+      "types": "./src/diskSpace.ts",
+      "import": "./src/diskSpace.ts"
+    },
     "./downloadFilename": {
       "types": "./src/downloadFilename.ts",
       "import": "./src/downloadFilename.ts"
@@ -235,6 +239,10 @@
     "./filePreview": {
       "types": "./src/filePreview.ts",
       "import": "./src/filePreview.ts"
+    },
+    "./claudeTaskToolProjection": {
+      "types": "./src/claudeTaskToolProjection.ts",
+      "import": "./src/claudeTaskToolProjection.ts"
     },
     "./pendingUserInputs": {
       "types": "./src/pendingUserInputs.ts",

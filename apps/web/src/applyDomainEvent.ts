@@ -1,3 +1,4 @@
+import { revertTaskToolState } from "@t3tools/shared/claudeTaskToolProjection";
 import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
@@ -424,6 +425,31 @@ function upsertTurnDiffSummary(
     : orderedTurnDiffSummaries;
 }
 
+function idListsEqual(
+  left: ReadonlyArray<string> | undefined,
+  right: ReadonlyArray<string> | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+/** Whether a task can be reused as-is; shared with snapshot hydration. */
+export function taskItemsEqual(
+  existing: Thread["tasks"][number],
+  task: Thread["tasks"][number],
+): boolean {
+  return (
+    existing.content === task.content &&
+    existing.activeForm === task.activeForm &&
+    existing.status === task.status &&
+    existing.description === task.description &&
+    existing.owner === task.owner &&
+    idListsEqual(existing.blocks, task.blocks) &&
+    idListsEqual(existing.blockedBy, task.blockedBy)
+  );
+}
+
 function mergeTasks(
   previous: Thread["tasks"],
   nextTasks: Extract<OrchestrationEvent, { type: "thread.tasks.updated" }>["payload"]["tasks"],
@@ -433,12 +459,7 @@ function mergeTasks(
 
   const merged = nextTasks.map((task) => {
     const existing = previousById.get(task.id);
-    if (
-      existing &&
-      existing.content === task.content &&
-      existing.activeForm === task.activeForm &&
-      existing.status === task.status
-    ) {
+    if (existing && taskItemsEqual(existing, task)) {
       return existing;
     }
     reusedAll = false;
@@ -803,6 +824,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         tasks: [],
         tasksTurnId: null,
         tasksUpdatedAt: null,
+        tasksTracking: null,
         sessionNotes: null,
         threadReferences: [...(event.payload.threadReferences ?? [])],
         history: {
@@ -1314,10 +1336,17 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           thread.tasks.length === 0 &&
           thread.tasksTurnId === null &&
           thread.tasksUpdatedAt === null &&
+          !thread.tasksTracking &&
           thread.lastInteractionAt === event.occurredAt
         ) {
           return thread;
         }
+        // Same rule as the server projector, using the same retained-turn
+        // fallback as messages and activities.
+        const revertedTasks = revertTaskToolState(
+          { tasks: thread.tasks, tracking: thread.tasksTracking ?? null },
+          retainedTurnIds,
+        );
         return {
           ...thread,
           pendingUserInputs,
@@ -1325,9 +1354,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           messages,
           commandExecutions,
           proposedPlans,
-          tasks: [],
+          tasks: [...revertedTasks.tasks],
           tasksTurnId: null,
           tasksUpdatedAt: null,
+          tasksTracking: revertedTasks.tracking,
           compaction: null,
           ...(thread.session?.tokenUsageSource !== undefined
             ? {
@@ -1525,8 +1555,13 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         const tasks = detailGate.applyDetailMutations
           ? mergeTasks(thread.tasks, event.payload.tasks)
           : thread.tasks;
+        const tasksTracking =
+          detailGate.applyDetailMutations && event.payload.tracking !== undefined
+            ? event.payload.tracking
+            : thread.tasksTracking;
         if (
           tasks === thread.tasks &&
+          tasksTracking === thread.tasksTracking &&
           (!detailGate.applyDetailMutations || thread.tasksTurnId === event.payload.turnId) &&
           (!detailGate.applyDetailMutations || thread.tasksUpdatedAt === event.payload.updatedAt) &&
           thread.lastInteractionAt === event.payload.updatedAt
@@ -1536,6 +1571,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(tasks !== thread.tasks ? { tasks } : {}),
+          ...(tasksTracking !== thread.tasksTracking ? { tasksTracking } : {}),
           ...(detailGate.applyDetailMutations && thread.tasksTurnId !== event.payload.turnId
             ? { tasksTurnId: event.payload.turnId }
             : {}),

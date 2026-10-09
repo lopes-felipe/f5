@@ -1,4 +1,5 @@
 import type {
+  ClaudeThinkingOption,
   McpProjectServersConfig,
   McpServerDefinition,
   ProviderKind,
@@ -17,6 +18,56 @@ const MAX_MCP_SERVER_NAME_LENGTH = 128;
 
 function normalizeNonNegativeInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeThinkingDisplay(value: unknown): "summarized" | "omitted" | undefined {
+  return value === "summarized" || value === "omitted" ? value : undefined;
+}
+
+/** Validate a typed Claude thinking config; malformed values are dropped. */
+export function normalizeClaudeThinkingOption(value: unknown): ClaudeThinkingOption | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const display = normalizeThinkingDisplay(record.display);
+  switch (record.type) {
+    case "disabled":
+      return { type: "disabled" };
+    case "adaptive":
+      return { type: "adaptive", ...(display ? { display } : {}) };
+    case "enabled": {
+      const budget = record.budgetTokens;
+      if (budget !== undefined && !(typeof budget === "number" && Number.isInteger(budget))) {
+        return undefined;
+      }
+      if (typeof budget === "number" && budget < 1) return undefined;
+      return {
+        type: "enabled",
+        ...(typeof budget === "number" ? { budgetTokens: budget } : {}),
+        ...(display ? { display } : {}),
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Deterministic launch-identity component for typed thinking. Only appended to
+ * the environment key when typed thinking is set, so keys (and fingerprints)
+ * of sessions using only the legacy `maxThinkingTokens` never change.
+ */
+export function claudeThinkingEnvironmentKeyComponent(
+  thinking: ClaudeThinkingOption | undefined,
+): string {
+  if (!thinking) return "";
+  switch (thinking.type) {
+    case "disabled":
+      return "|thinking:disabled";
+    case "adaptive":
+      return `|thinking:adaptive:${thinking.display ?? ""}`;
+    case "enabled":
+      return `|thinking:enabled:${thinking.budgetTokens ?? ""}:${thinking.display ?? ""}`;
+  }
 }
 
 function normalizeMcpServerName(name: string): string | undefined {
@@ -288,6 +339,7 @@ export function normalizeProviderStartOptions(
         providerOptions.claudeAgent.maxThinkingTokens >= 0
           ? providerOptions.claudeAgent.maxThinkingTokens
           : undefined;
+      const thinking = normalizeClaudeThinkingOption(providerOptions?.claudeAgent?.thinking);
       const subagentsEnabled =
         typeof providerOptions?.claudeAgent?.subagentsEnabled === "boolean"
           ? providerOptions.claudeAgent.subagentsEnabled
@@ -299,6 +351,7 @@ export function normalizeProviderStartOptions(
         !binaryPath &&
         !permissionMode &&
         maxThinkingTokens === undefined &&
+        thinking === undefined &&
         subagentsEnabled === undefined &&
         !subagentModel &&
         !launchArgs &&
@@ -312,6 +365,7 @@ export function normalizeProviderStartOptions(
         ...(binaryPath ||
         permissionMode ||
         maxThinkingTokens !== undefined ||
+        thinking !== undefined ||
         subagentsEnabled !== undefined ||
         subagentModel ||
         launchArgs
@@ -320,6 +374,7 @@ export function normalizeProviderStartOptions(
                 ...(binaryPath ? { binaryPath } : {}),
                 ...(permissionMode ? { permissionMode } : {}),
                 ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
+                ...(thinking !== undefined ? { thinking } : {}),
                 ...(subagentsEnabled !== undefined ? { subagentsEnabled } : {}),
                 ...(subagentModel ? { subagentModel } : {}),
                 ...(launchArgs ? { launchArgs } : {}),
@@ -432,7 +487,7 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}`;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;

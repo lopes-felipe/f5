@@ -229,6 +229,8 @@ export type NextTurnQueueRetryInput = typeof NextTurnQueueRetryInput.Type;
 export const NextTurnQueueSteerInput = Schema.Struct({
   itemId: CommandId,
   expectedRevision: NonNegativeInt,
+  /** Session generation the browser saw; a restarted session refuses the steer. */
+  expectedSessionGeneration: Schema.optional(NonNegativeInt),
 });
 export type NextTurnQueueSteerInput = typeof NextTurnQueueSteerInput.Type;
 
@@ -259,6 +261,8 @@ export const NextTurnQueueClearInput = Schema.Struct({
   threadId: ThreadId,
   scope: Schema.Literals(["all", "failed"]),
   expectedRevision: NonNegativeInt,
+  /** Items to leave in place, e.g. a continue the usage-limit card is showing instead. */
+  keepItemIds: Schema.optional(Schema.Array(CommandId)),
 });
 export type NextTurnQueueClearInput = typeof NextTurnQueueClearInput.Type;
 

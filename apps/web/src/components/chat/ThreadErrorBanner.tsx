@@ -1,4 +1,4 @@
-import { memo, type ReactNode } from "react";
+import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { CircleAlertIcon, XIcon } from "lucide-react";
 
@@ -6,10 +6,8 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
   occurredAt,
   onDismiss,
-  action,
 }: {
   error: string | null;
-  action?: ReactNode;
   occurredAt?: string | null;
   onDismiss?: () => void;
 }) {
@@ -24,7 +22,6 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             {new Date(occurredAt).toLocaleString()}
           </time>
         ) : null}
-        {action}
       </AlertDescription>
       {onDismiss && (
         <AlertAction>

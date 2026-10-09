@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PreToolUseHookInput, Options } from "@anthropic-ai/claude-agent-sdk";
 import {
   claudeMandatoryPolicyOptions,
+  evaluateClaudeMandatoryHookPolicy,
   evaluateClaudeMandatoryPolicy,
 } from "./claudeMandatoryPolicy.ts";
 
@@ -30,7 +31,7 @@ describe("mandatory Claude policy before native permissions", () => {
       );
     },
   );
-  it.each(["Bash", "Write", "Edit", "NotebookEdit", "mcp__allow__read", "Agent", "ExitPlanMode"])(
+  it.each(["Write", "Edit", "MultiEdit", "NotebookEdit", "ExitPlanMode", "AskUserQuestion"])(
     "denies %s in read-only workflows despite native allow rules",
     async (name) => {
       const options = claudeMandatoryPolicyOptions({
@@ -42,6 +43,65 @@ describe("mandatory Claude policy before native permissions", () => {
       expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
     },
   );
+  it.each(["Bash", "mcp__allow__read", "Agent", "WebFetch"])(
+    "leaves %s to native plan-mode evaluation in read-only workflows",
+    async (name) => {
+      const calls: string[] = [];
+      const options = claudeMandatoryPolicyOptions(
+        { workflowExecutionProfile: "unattended-readonly" },
+        undefined,
+        async (input) => {
+          calls.push(input.tool_name);
+        },
+      );
+      const result = await options.hooks!.PreToolUse![0]!.hooks[0]!(hookInput(name), undefined, {
+        signal: new AbortController().signal,
+      });
+      expect(result).toEqual({});
+      expect(calls).toEqual([]);
+      // Escalations from native evaluation still reach canUseTool's full policy.
+      expect(
+        evaluateClaudeMandatoryPolicy({ workflowExecutionProfile: "unattended-readonly" }, name),
+      ).toContain("not permitted");
+    },
+  );
+  it("allows plan-file writes but no other file edits in read-only workflows", () => {
+    const policy = {
+      workflowExecutionProfile: "attended-readonly" as const,
+      plansDirectory: "/home/me/.claude/plans",
+    };
+    const decide = (toolName: string, filePath: string) =>
+      evaluateClaudeMandatoryHookPolicy(policy, toolName, {
+        toolInput: { file_path: filePath },
+        cwd: "/repo",
+      });
+    expect(decide("Write", "/home/me/.claude/plans/quiet-fox.md")).toBeUndefined();
+    expect(decide("Edit", "/home/me/.claude/plans/quiet-fox.md")).toBeUndefined();
+    expect(decide("Write", "/repo/src/index.ts")).toContain("not permitted");
+    expect(decide("Write", "src/index.ts")).toContain("not permitted");
+    expect(decide("Write", "/home/me/.claude/plans/../settings.json")).toContain("not permitted");
+    expect(decide("Write", "/home/me/.claude/plans")).toContain("not permitted");
+    expect(
+      evaluateClaudeMandatoryHookPolicy(policy, "NotebookEdit", {
+        toolInput: { file_path: "/home/me/.claude/plans/x.ipynb" },
+      }),
+    ).toContain("not permitted");
+    expect(
+      evaluateClaudeMandatoryHookPolicy(
+        { workflowExecutionProfile: "attended-readonly" },
+        "Write",
+        { toolInput: { file_path: "/home/me/.claude/plans/quiet-fox.md" } },
+      ),
+    ).toContain("not permitted");
+  });
+  it("still denies delegation in read-only workflows when sub-agents are disabled", () => {
+    expect(
+      evaluateClaudeMandatoryHookPolicy(
+        { workflowExecutionProfile: "unattended-readonly", subagentsEnabled: false },
+        "Agent",
+      ),
+    ).toContain("Sub-agents are disabled");
+  });
   it("leaves native evaluation intact for a read and preserves configured hooks", async () => {
     const hooks: Options["hooks"] = {
       PreToolUse: [{ hooks: [async () => ({})] }],

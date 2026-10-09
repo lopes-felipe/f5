@@ -1,6 +1,6 @@
-import type { ThreadId } from "@t3tools/contracts";
+import type { ThreadId, ThreadTaskTracking } from "@t3tools/contracts";
 import type { TaskItem as ThreadTaskItem } from "~/types";
-import { ChevronDownIcon, ChevronRightIcon, ListTodoIcon } from "lucide-react";
+import { AlertTriangleIcon, ChevronDownIcon, ChevronRightIcon, ListTodoIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 
 const TASK_STATUS_META = {
@@ -24,20 +24,39 @@ const TASK_STATUS_META = {
   { label: string; accentClass: string; dotClass: string }
 >;
 
+/** User-facing notice when the native task projection may be stale. */
+export function describeTaskSync(
+  tracking: Pick<ThreadTaskTracking, "syncState" | "syncDetail"> | null | undefined,
+): string | null {
+  if (!tracking || tracking.syncState === "synced") return null;
+  if (tracking.syncState === "overflow") {
+    return `Task list is too large to track${tracking.syncDetail ? ` (${tracking.syncDetail})` : ""}; showing the last valid snapshot.`;
+  }
+  return `Task list may be out of date${tracking.syncDetail ? `: ${tracking.syncDetail}` : "."} It updates the next time the agent lists its tasks.`;
+}
+
 export function ThreadTasksPanel(input: {
   readonly threadId: ThreadId;
   readonly tasks: ReadonlyArray<ThreadTaskItem>;
+  readonly tracking?: Pick<ThreadTaskTracking, "syncState" | "syncDetail"> | null | undefined;
   readonly open: boolean;
   readonly summary: string;
   readonly onToggle: () => void;
   readonly attached?: boolean;
 }) {
   const panelId = `thread-task-panel-${input.threadId}`;
+  const syncNotice = describeTaskSync(input.tracking);
 
   return (
     <section
       data-composer-task-drawer={input.attached || undefined}
-      className="overflow-hidden rounded-2xl border border-border/70 bg-card/70 shadow-sm backdrop-blur-sm"
+      className={cn(
+        "overflow-hidden",
+        // A composer tray row: the tray supplies the frame and dividers.
+        input.attached
+          ? "w-full bg-card"
+          : "rounded-2xl border border-border/70 bg-card/70 shadow-sm backdrop-blur-sm",
+      )}
     >
       <button
         type="button"
@@ -52,6 +71,15 @@ export function ThreadTasksPanel(input: {
             <span className="font-medium text-foreground text-sm">Task list</span>
           </div>
           <p className="truncate pt-0.5 text-muted-foreground text-xs">{input.summary}</p>
+          {syncNotice ? (
+            <p
+              role="status"
+              className="flex items-center gap-1 truncate pt-0.5 text-warning-foreground text-xs"
+            >
+              <AlertTriangleIcon className="size-3 shrink-0" />
+              <span className="truncate">{syncNotice}</span>
+            </p>
+          ) : null}
         </div>
         {input.open ? (
           <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -98,6 +126,18 @@ export function ThreadTasksPanel(input: {
                     {task.content !== task.activeForm ? (
                       <p className="truncate pt-0.5 text-muted-foreground text-xs">
                         {task.content}
+                      </p>
+                    ) : null}
+                    {task.owner || (task.blockedBy && task.blockedBy.length > 0) ? (
+                      <p className="truncate pt-0.5 text-muted-foreground text-2xs">
+                        {[
+                          task.owner ? `Owner: ${task.owner}` : null,
+                          task.blockedBy && task.blockedBy.length > 0
+                            ? `Blocked by ${task.blockedBy.map((id) => `#${id}`).join(", ")}`
+                            : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </p>
                     ) : null}
                   </div>

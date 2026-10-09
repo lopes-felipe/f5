@@ -39,10 +39,29 @@ interface AuditRow {
   readonly createdAt: string;
 }
 
-/** Best effort: an audit write never fails the cleanup or pull it describes. */
-export const recordStorageAutomationAudit = (record: StorageAutomationAuditRecord) =>
+/**
+ * Best effort: an audit write never fails the cleanup or pull it describes.
+ * With `skipIfRepeated`, nothing is written when the newest row for the same
+ * job and target already has the same result and reason, so a target that
+ * fails on every pass cannot push real history out of the capped table.
+ */
+export const recordStorageAutomationAudit = (
+  record: StorageAutomationAuditRecord,
+  options?: { readonly skipIfRepeated?: boolean },
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    if (options?.skipIfRepeated) {
+      const latest = yield* sql<{ readonly result: string; readonly reason: string | null }>`
+        SELECT result, reason FROM storage_automation_audit
+        WHERE job = ${record.job} AND target = ${record.target}
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT 1
+      `;
+      if (latest[0]?.result === record.result && latest[0]?.reason === (record.reason ?? null)) {
+        return;
+      }
+    }
     const createdAt = new Date().toISOString();
     yield* sql`
       INSERT INTO storage_automation_audit (

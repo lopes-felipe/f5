@@ -46,7 +46,8 @@ import {
   markPolishRequested,
   markReaderPassError,
 } from "../documentReaderPass.ts";
-import { WorkflowServiceLive, reviewFeedbackForPinnedTurn } from "./WorkflowService.ts";
+import { reviewFeedbackForPinnedTurn } from "../workflowSharedUtils.ts";
+import { WorkflowServiceLive } from "./WorkflowService.ts";
 
 const NOW = "2026-03-26T12:00:00.000Z";
 

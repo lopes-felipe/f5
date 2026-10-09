@@ -32,12 +32,20 @@ export function codexIsolationCompatibility(version: string | null | undefined):
     };
   return {
     supported: true,
-    ...(compareCodexCliVersions(parsed, CODEX_PROTOCOL_BASELINE_VERSION) !== 0
-      ? {
-          message: `Codex ${parsed} differs from this build's audited baseline ${CODEX_PROTOCOL_BASELINE_VERSION}. Newer versions are allowed; some behavior may be unverified.`,
-        }
-      : {}),
+    ...codexBaselineAdvisory(parsed),
   };
+}
+function codexBaselineAdvisory(parsed: string): { message?: string } {
+  const comparison = compareCodexCliVersions(parsed, CODEX_PROTOCOL_BASELINE_VERSION);
+  if (comparison < 0)
+    return {
+      message: `Codex ${parsed} is older than the audited ${CODEX_PROTOCOL_BASELINE_VERSION}; managed profiles may lack newer protocol features.`,
+    };
+  if (comparison > 0)
+    return {
+      message: `Codex ${parsed} is newer than this build's audited baseline ${CODEX_PROTOCOL_BASELINE_VERSION}. Newer versions are allowed; some behavior may be unverified.`,
+    };
+  return {};
 }
 export async function validateManagedHome(config: ServerConfigShape, home: string): Promise<void> {
   if (config.profile?.isDefault !== false) return;

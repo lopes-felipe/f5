@@ -142,6 +142,15 @@ export const ProviderRuntimeCapabilities = Schema.Struct({
   rollbackReadback: Schema.Boolean,
   asyncQuestions: Schema.Boolean,
   maxImagesPerTurn: Schema.Int,
+  // Release 2 facts. Older snapshots and caches decode them as unsupported.
+  /** The executable reports per-model capabilities that override built-in metadata. */
+  reportedModels: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Live sessions publish their native command catalog (replacement snapshots). */
+  sessionCommandCatalog: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** The instance can list its hooks, plugins, connectors and agent definitions. */
+  instanceInventory: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Deleting an F5 thread also removes the native transcript from the instance store. */
+  nativeSessionCleanup: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 });
 export type ProviderRuntimeCapabilities = typeof ProviderRuntimeCapabilities.Type;
 

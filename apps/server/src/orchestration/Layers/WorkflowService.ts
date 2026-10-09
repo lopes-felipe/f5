@@ -80,8 +80,8 @@ import {
 import {
   getFinishedConsumableLatestTurn,
   latestAssistantFeedback,
-  formatAssistantFeedback,
   nextWorkflowSlug,
+  reviewFeedbackForPinnedTurn,
   slotLabel,
   workflowArtifactFit,
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
@@ -1153,40 +1153,6 @@ function hasProposedPlanForTurn(
   turnId: TurnId,
 ): boolean {
   return thread.proposedPlans.some((plan) => plan.turnId === turnId);
-}
-
-export function reviewFeedbackForPinnedTurn(
-  thread: Omit<Parameters<typeof latestAssistantFeedback>[0], "messages"> & {
-    readonly messages: ReadonlyArray<
-      Parameters<typeof latestAssistantFeedback>[0]["messages"][number] & {
-        readonly turnId?: string | null;
-      }
-    >;
-    readonly proposedPlans?: ReadonlyArray<{
-      readonly turnId: string | null;
-      readonly planMarkdown: string;
-    }>;
-  },
-  turnId: string | null,
-  messageId: string | null,
-) {
-  const pinnedMessageId =
-    messageId ??
-    (turnId
-      ? thread.messages.findLast(
-          (message) => message.turnId === turnId && message.role === "assistant",
-        )?.id
-      : null);
-  const feedback =
-    turnId && !pinnedMessageId ? null : latestAssistantFeedback(thread, pinnedMessageId);
-  const plan = turnId ? thread.proposedPlans?.find((entry) => entry.turnId === turnId) : null;
-  return plan && plan.planMarkdown.length > (feedback?.text.length ?? 0)
-    ? formatAssistantFeedback({
-        text: plan.planMarkdown,
-        reasoningText: thread.messages.find((message) => message.id === pinnedMessageId)
-          ?.reasoningText,
-      })
-    : feedback;
 }
 
 function validateCapturedPlanForTurn(input: {

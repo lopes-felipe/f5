@@ -16,6 +16,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createClaudeModelCapabilities,
   createModelCapabilities,
+  createReportedClaudeModelCapabilities,
   getModelSelectionStringOptionValue,
   getProviderOptionCurrentValue,
   getProviderOptionDescriptors,
@@ -33,8 +34,10 @@ import {
   DEFAULT_TIMEOUT_MS,
   detailFromResult,
   isCommandMissingCause,
+  mergeReportedProviderModels,
   parseGenericCliVersion,
   providerModelsFromSettings,
+  type ReportedProviderModel,
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
@@ -303,7 +306,54 @@ export type ClaudeCapabilitiesProbe = {
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  /** Models the executable reported during initialization, keyed by canonical slug. */
+  readonly models?: ReadonlyArray<ClaudeReportedModel>;
 };
+
+export type ClaudeReportedModel = ReportedProviderModel;
+
+type ClaudeInitializationModel = NonNullable<
+  Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>["models"]
+>[number];
+
+/**
+ * Canonical slugs for the SDK's model rows. Alias rows (`default`, `sonnet`)
+ * resolve through `resolvedModel`; rows that do not name a Claude model id are
+ * skipped so F5 never persists an alias as a model slug.
+ */
+export function parseClaudeInitializationModels(
+  models: ReadonlyArray<ClaudeInitializationModel> | undefined,
+): ReadonlyArray<ClaudeReportedModel> {
+  const bySlug = new Map<string, ClaudeReportedModel>();
+  for (const model of models ?? []) {
+    const raw = nonEmptyProbeString(model.resolvedModel ?? "") ?? nonEmptyProbeString(model.value);
+    const slug = raw
+      ? normalizeModelSlug(raw.replace(/\[(?:1m|200k)\]$/i, ""), "claudeAgent")
+      : null;
+    if (!slug || !slug.startsWith("claude-") || bySlug.has(slug)) continue;
+    bySlug.set(slug, {
+      slug,
+      name: nonEmptyProbeString(model.displayName) ?? slug,
+      capabilities: createReportedClaudeModelCapabilities({
+        value: slug,
+        ...(model.supportsEffort !== undefined ? { supportsEffort: model.supportsEffort } : {}),
+        ...(model.supportedEffortLevels
+          ? { supportedEffortLevels: model.supportedEffortLevels }
+          : {}),
+        ...(model.supportsAdaptiveThinking !== undefined
+          ? { supportsAdaptiveThinking: model.supportsAdaptiveThinking }
+          : {}),
+        ...(model.supportsFastMode !== undefined
+          ? { supportsFastMode: model.supportsFastMode }
+          : {}),
+        ...(model.supportsAutoMode !== undefined
+          ? { supportsAutoMode: model.supportsAutoMode }
+          : {}),
+      }),
+    });
+  }
+  return [...bySlug.values()];
+}
 
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
@@ -469,6 +519,7 @@ export function claudeCapabilitiesFromInitialization(
     subscriptionType: account?.subscriptionType,
     tokenSource: account?.tokenSource,
     slashCommands: parseClaudeInitializationCommands(init.commands),
+    models: parseClaudeInitializationModels(init.models),
   };
 }
 
@@ -653,6 +704,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     : undefined;
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
+  const reportedModels = mergeReportedProviderModels(modelsForParsedVersion, capabilities?.models);
 
   // SDK initialization and model discovery work without credentials. Only the
   // account probe can establish whether this instance is signed in.
@@ -669,7 +721,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
       checkedAt,
-      models: modelsForParsedVersion,
+      models: reportedModels,
       slashCommands: dedupedSlashCommands,
       probe: {
         installed: true,
@@ -689,7 +741,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     presentation: CLAUDE_PRESENTATION,
     enabled: claudeSettings.enabled,
     checkedAt,
-    models: modelsForParsedVersion,
+    models: reportedModels,
     slashCommands: dedupedSlashCommands,
     probe: {
       installed: true,

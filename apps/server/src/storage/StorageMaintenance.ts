@@ -6,6 +6,7 @@ import * as Path from "node:path";
 import {
   type CheckpointRef,
   CommandId,
+  type DiskSpaceReclaimableItem,
   type StorageCleanupCategoryId,
   type StorageCleanupCategoryResult,
   type StorageCleanupCategoryUsage,
@@ -31,6 +32,23 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
 import { withWorktreeLifecycleLock } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import {
+  type CodexMarketplaceLeftover,
+  codexMarketplaceLeftoverBytes,
+  listCodexMarketplaceLeftovers,
+  removeCodexMarketplaceLeftover,
+  resolveCodexLaunchHomes,
+} from "./codexMarketplaceStaging.ts";
+import {
+  AUTO_VACUUM_INCREMENTAL,
+  freeDatabaseBytes,
+  incrementalVacuum,
+  liveDatabaseBytes,
+  readDatabasePages,
+  vacuumFreeSpaceShortfall,
+  vacuumToIncremental,
+} from "./databaseSpace.ts";
 import { enumerateFiles, recursiveSize, sizeIfExists, type EnumeratedFile } from "./diskUsage.ts";
 import { probeLegacyState, type LegacyProbeResult } from "./legacyStateProbe.ts";
 import {
@@ -44,6 +62,12 @@ const USAGE_CACHE_TTL_MS = 30_000;
 const NONCE_TTL_MS = 5 * 60_000;
 const EVENTS_ROTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 const ARCHIVED_THREAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Free pages worth one full VACUUM to switch to incremental auto-vacuum. */
+const AUTO_CONVERT_MIN_FREE_BYTES = 256 * 1024 * 1024;
+const AUTO_CONVERT_MIN_FREE_FRACTION = 0.2;
+/** The full VACUUM blocks the server, so it waits until nobody has used a thread for this long. */
+const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
+export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 const TYPED_CONFIRM_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 const WORKTREE_SCAN_MAX_DEPTH = 4;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
@@ -65,15 +89,88 @@ export interface StorageCleanupContext {
   ) => Effect.Effect<void, never, never>;
 }
 
+/** What the cleanup helpers need from a request: progress and cancellation key on it. */
+type CleanupOperation = Pick<StorageCleanupRequest, "operationId">;
+
+export interface AutomaticThreadPurgeResult {
+  readonly purgedThreadIds: ReadonlyArray<ThreadId>;
+  /** Archived threads soft-deleted for this purge. */
+  readonly archivedThreadIds: ReadonlyArray<ThreadId>;
+  readonly reclaimedBytes: number;
+  readonly warnings: ReadonlyArray<StoragePathWarning>;
+}
+
+export interface DatabaseSpaceResult {
+  /** `converted`: one full VACUUM switched the database to incremental auto-vacuum. */
+  readonly action: "incremental" | "converted" | "none";
+  readonly reclaimedBytes: number;
+  /** Why a needed conversion did not run. */
+  readonly skippedReason?: string;
+}
+
 export interface StorageMaintenanceShape {
   readonly inspect: (
     request?: StorageGetUsageRequest,
   ) => Effect.Effect<StorageUsageReport, StorageMaintenanceError>;
+  /**
+   * Reclaimable categories from the same scan as `inspect`, biggest first.
+   * Issues no confirmation nonce, so a scan open in the Storage settings
+   * stays valid. For the low-disk banner.
+   */
+  readonly summarizeReclaimable: Effect.Effect<
+    ReadonlyArray<DiskSpaceReclaimableItem>,
+    StorageMaintenanceError
+  >;
   readonly cleanup: (
     request: StorageCleanupRequest,
     context?: StorageCleanupContext,
   ) => Effect.Effect<StorageCleanupResult, StorageMaintenanceError>;
   readonly cancel: (operationId: string) => Effect.Effect<void>;
+  /**
+   * Automatic purge for the storage cleanup worker: threads deleted at or
+   * before `deletedBefore`, and threads archived at or before `archivedBefore`
+   * (soft-deleted first, guarded on their archive time). Null skips a kind.
+   * Same per-thread steps and safety checks as the manual purge. Takes the
+   * oldest `maxThreads` threads that are not busy; the rest wait for the
+   * next call. A thread this skipped or failed to purge goes to the back of
+   * the order for {@link PURGE_FAILURE_BACKOFF_MS}, so a few stuck threads
+   * cannot hold every slot.
+   * `reclaimedBytes` counts files only: sizing the rows would read every
+   * deleted thread's events.
+   */
+  readonly purgeThreads: (input: {
+    readonly operationId: string;
+    readonly deletedBefore: string | null;
+    readonly archivedBefore: string | null;
+    readonly maxThreads: number;
+  }) => Effect.Effect<AutomaticThreadPurgeResult, StorageMaintenanceError>;
+  /**
+   * Returns free database pages to the file system: bounded incremental
+   * vacuum steps on an incremental database. A non-incremental database with
+   * enough free pages is switched with one full VACUUM, but only while no
+   * agent is working, no thread was used for a while, and free disk covers it.
+   */
+  readonly reclaimDatabaseSpace: (input: {
+    readonly maxDurationMs: number;
+  }) => Effect.Effect<DatabaseSpaceResult, StorageMaintenanceError>;
+  /**
+   * Per-thread provider logs last written before `modifiedBefore` whose
+   * thread is deleted or gone (or archived, with `includeArchived`), and not
+   * busy. Live threads keep their logs: transcript repair rebuilds from them.
+   */
+  readonly listTerminalThreadLogs: (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<ReadonlyArray<EnumeratedFile>, StorageMaintenanceError>;
+  /**
+   * Deletes the logs {@link StorageMaintenanceShape.listTerminalThreadLogs}
+   * lists, re-listing them under the maintenance lock.
+   */
+  readonly pruneTerminalThreadLogs: (input: {
+    readonly operationId: string;
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) => Effect.Effect<StorageCleanupCategoryResult, StorageMaintenanceError>;
 }
 
 export class StorageMaintenance extends ServiceMap.Service<
@@ -495,6 +592,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const checkpointStore = yield* CheckpointStore;
   const git = yield* GitCore;
   const eventStore = yield* OrchestrationEventStore;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+  const withSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const readPages = withSql(readDatabasePages);
+  const vacuumIncremental = withSql(vacuumToIncremental);
 
   let cachedReport: {
     readonly stateDir: string;
@@ -504,6 +605,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
   let activeNonce: UsageNonceState | null = null;
   const cancelledOperations = new Set<string>();
   let activeOperationId: string | null = null;
+  /** Threads the automatic purge could not remove, and when to try them first again. */
+  const purgeRetryAtMs = new Map<string, number>();
 
   const queryThreadRows = () =>
     sql<ThreadRow>`
@@ -883,11 +986,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return busySegments;
     });
 
-  const computeProviderLogCandidates = (allThreads: ReadonlyArray<ThreadRow>) =>
+  const computeProviderLogCandidates = (
+    allThreads: ReadonlyArray<ThreadRow>,
+    options?: {
+      /** Keep archived threads' logs: they can be unarchived. */
+      readonly archivedAlive?: boolean;
+    },
+  ) =>
     Effect.gen(function* () {
       const aliveSegments = new Set(
         allThreads
-          .filter(isActiveStorageThread)
+          .filter((thread) =>
+            options?.archivedAlive ? thread.deletedAt === null : isActiveStorageThread(thread),
+          )
           .map((thread) => toSafeThreadAttachmentSegment(thread.threadId))
           .filter((segment): segment is string => segment !== null),
       );
@@ -938,6 +1049,43 @@ const makeStorageMaintenance = Effect.gen(function* () {
           message: "Failed to inspect provider event log rotations.",
           cause,
         }),
+    });
+
+  /**
+   * Leftover Codex marketplace upgrade clones and backups in every Codex home
+   * this profile launches. Null when settings are unavailable.
+   */
+  const computeCodexMarketplaceLeftovers = () =>
+    Effect.gen(function* () {
+      if (settingsService._tag === "None") return null;
+      const settings = yield* settingsService.value.getSettings.pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (settings === null) return null;
+      const homes = resolveCodexLaunchHomes({
+        settings,
+        profile: config.profile,
+        stateDir: config.stateDir,
+      });
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const leftovers = await listCodexMarketplaceLeftovers({ homes, nowMs: Date.now() });
+          const sized: Array<{
+            readonly leftover: CodexMarketplaceLeftover;
+            readonly bytes: number;
+          }> = [];
+          for (const leftover of leftovers) {
+            sized.push({ leftover, bytes: await codexMarketplaceLeftoverBytes(leftover) });
+          }
+          return sized;
+        },
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.inspect.codexMarketplaceStaging",
+            message: "Failed to inspect Codex marketplace staging directories.",
+            cause,
+          }),
+      });
     });
 
   const computeVacuumReclaimableBytes = () =>
@@ -1085,21 +1233,10 @@ const makeStorageMaintenance = Effect.gen(function* () {
       };
     });
 
-  const buildReport = (force: boolean) =>
+  /** The read-only scan behind a usage report, without its confirmation nonce. */
+  const scanUsage = () =>
     Effect.gen(function* () {
       const nowMs = Date.now();
-      if (
-        !force &&
-        cachedReport &&
-        cachedReport.stateDir === config.stateDir &&
-        nowMs - cachedReport.createdAtMs < USAGE_CACHE_TTL_MS &&
-        activeNonce &&
-        !activeNonce.used &&
-        activeNonce.expiresAtMs > nowMs
-      ) {
-        return cachedReport.report;
-      }
-
       const warnings: StoragePathWarning[] = [];
       const allThreads = yield* queryThreadRows();
       const archivedThreadCutoffIso = new Date(nowMs - ARCHIVED_THREAD_RETENTION_MS).toISOString();
@@ -1302,6 +1439,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const f5WorktreeCandidates = yield* computeF5WorktreeTargets();
       warnings.push(...f5WorktreeCandidates.warnings);
       const vacuumBytes = yield* computeVacuumReclaimableBytes();
+      const codexLeftovers = yield* computeCodexMarketplaceLeftovers();
       const archivedDbBytes = yield* estimateArchivedThreadDbBytes(archivedThreadCutoffIso);
 
       const deletedProviderLogBytes = providerLogCandidates.files
@@ -1449,6 +1587,29 @@ const makeStorageMaintenance = Effect.gen(function* () {
           targets: orphanAttachmentTargets,
         }),
       ];
+      if (codexLeftovers !== null) {
+        const codexLeftoverBytes = codexLeftovers.reduce((total, entry) => total + entry.bytes, 0);
+        categories.push(
+          categoryUsage({
+            id: "codexMarketplaceStaging",
+            section: "providers",
+            title: "Delete leftover Codex marketplace clones",
+            description:
+              "Deletes marketplace upgrade clones and backups older than 2 hours that Codex left in .tmp/marketplaces. Codex downloads the marketplace again on its next upgrade. Also runs hourly on its own.",
+            bytes: codexLeftoverBytes,
+            reclaimableBytes: codexLeftoverBytes,
+            defaultSelected: true,
+            impact: "none",
+            targets: codexLeftovers.map(({ leftover, bytes }) => ({
+              id: leftover.path,
+              label: `${leftover.kind === "staging" ? "Upgrade clone" : "Upgrade backup"} ${Path.basename(leftover.path)}`,
+              path: leftover.path,
+              bytes,
+              safeToDelete: true,
+            })),
+          }),
+        );
+      }
 
       const legacyCategoryMeta: ReadonlyArray<{
         readonly id: LegacyCleanupCategoryId;
@@ -1522,28 +1683,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
         );
       }
 
-      const readyCategoryIds = categories
-        .filter((category) => category.availability === "ready")
-        .map((category) => category.id);
-      const scanId = Crypto.randomUUID();
-      const confirmationNonce = Crypto.randomUUID();
-      const nonceExpiresAtMs = nowMs + NONCE_TTL_MS;
-      activeNonce = {
-        scanId,
-        nonce: confirmationNonce,
-        expiresAtMs: nonceExpiresAtMs,
-        categories: new Map(
-          categories
-            .filter((category) => readyCategoryIds.includes(category.id))
-            .map((category) => [category.id, category]),
-        ),
-        used: false,
-      };
-
-      const report: StorageUsageReport = {
-        scanId,
-        confirmationNonce,
-        nonceExpiresAt: new Date(nonceExpiresAtMs).toISOString(),
+      const usage: Omit<StorageUsageReport, "scanId" | "confirmationNonce" | "nonceExpiresAt"> = {
         scannedAt: nowIso(),
         stateDir: config.stateDir,
         totalUsedBytes: sumNonOverlappingPathUsages([
@@ -1571,9 +1711,63 @@ const makeStorageMaintenance = Effect.gen(function* () {
         categories,
         warnings,
       };
+      return usage;
+    });
+
+  const buildReport = (force: boolean) =>
+    Effect.gen(function* () {
+      const nowMs = Date.now();
+      if (
+        !force &&
+        cachedReport &&
+        cachedReport.stateDir === config.stateDir &&
+        nowMs - cachedReport.createdAtMs < USAGE_CACHE_TTL_MS &&
+        activeNonce &&
+        !activeNonce.used &&
+        activeNonce.expiresAtMs > nowMs
+      ) {
+        return cachedReport.report;
+      }
+
+      const usage = yield* scanUsage();
+      const scanId = Crypto.randomUUID();
+      const confirmationNonce = Crypto.randomUUID();
+      const nonceExpiresAtMs = Date.now() + NONCE_TTL_MS;
+      activeNonce = {
+        scanId,
+        nonce: confirmationNonce,
+        expiresAtMs: nonceExpiresAtMs,
+        categories: new Map(
+          usage.categories
+            .filter((category) => category.availability === "ready")
+            .map((category) => [category.id, category]),
+        ),
+        used: false,
+      };
+
+      const report: StorageUsageReport = {
+        scanId,
+        confirmationNonce,
+        nonceExpiresAt: new Date(nonceExpiresAtMs).toISOString(),
+        ...usage,
+      };
       cachedReport = { stateDir: config.stateDir, createdAtMs: nowMs, report };
       return report;
     });
+
+  const summarizeReclaimable: StorageMaintenanceShape["summarizeReclaimable"] = scanUsage().pipe(
+    Effect.map((usage) =>
+      usage.categories
+        .filter((category) => category.availability === "ready" && category.reclaimableBytes > 0)
+        .map((category) => ({
+          categoryId: category.id,
+          title: category.title,
+          bytes: category.reclaimableBytes,
+        }))
+        .toSorted((left, right) => right.bytes - left.bytes),
+    ),
+    Effect.mapError(toStorageMaintenanceError("StorageMaintenance.summarizeReclaimable")),
+  );
 
   const inspect: StorageMaintenanceShape["inspect"] = (request = {}) =>
     buildReport(request.force ?? false).pipe(
@@ -1675,7 +1869,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
     });
 
   const publishProgress = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context: StorageCleanupContext | undefined,
     event: Omit<StorageCleanupProgressPayload, "operationId">,
   ) =>
@@ -1687,7 +1881,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
   const checkCancelled = (operationId: string) => cancelledOperations.has(operationId);
 
   const deleteProviderLogFiles = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context: StorageCleanupContext | undefined,
     categoryId: StorageCleanupCategoryId,
     files: ReadonlyArray<EnumeratedFile>,
@@ -1746,12 +1940,17 @@ const makeStorageMaintenance = Effect.gen(function* () {
     });
 
   const purgeDeletedThreads = (
-    request: StorageCleanupRequest,
+    request: CleanupOperation,
     context?: StorageCleanupContext,
     input?: {
       readonly categoryId?: StorageCleanupCategoryId;
       readonly threadIds?: ReadonlyArray<ThreadId>;
       readonly warnings?: ReadonlyArray<StoragePathWarning>;
+      /**
+       * Sizing reads every deleted thread's payloads. The hourly purge skips
+       * it and reports only file bytes.
+       */
+      readonly estimateDatabaseBytes?: boolean;
     },
   ) =>
     Effect.gen(function* () {
@@ -1796,7 +1995,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
           .map((thread) => toSafeThreadAttachmentSegment(thread.threadId))
           .filter((segment): segment is string => segment !== null),
       );
-      const deletedDbBytes = yield* estimateDeletedThreadDbBytes();
+      const deletedDbBytes =
+        input?.estimateDatabaseBytes === false ? 0 : yield* estimateDeletedThreadDbBytes();
       const estimatedDbBytesPerThread =
         deletedThreads.length > 0 ? Math.floor(deletedDbBytes / deletedThreads.length) : 0;
       let completedTargets = 0;
@@ -1901,6 +2101,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 `;
               }
               yield* eventStore.deleteForThreadStream(thread.threadId);
+              yield* sql`DELETE FROM orchestration_event_compaction WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_threads WHERE thread_id = ${thread.threadId}`;
             }),
           ),
@@ -2030,21 +2231,81 @@ const makeStorageMaintenance = Effect.gen(function* () {
       );
     });
 
-  const dispatchArchivedThreadDeletes = (
+  /**
+   * Remove the leftovers the confirmed scan listed that are still leftovers
+   * now (the age guard is re-applied), so nothing newer than the scan goes.
+   */
+  const cleanCodexMarketplaceStaging = (
     request: StorageCleanupRequest,
     context: StorageCleanupContext | undefined,
     category: StorageCleanupCategoryUsage | undefined,
   ) =>
     Effect.gen(function* () {
+      const confirmed = new Set(category?.targets.map((target) => target.id) ?? []);
+      const current = (yield* computeCodexMarketplaceLeftovers()) ?? [];
+      const leftovers = current.filter(({ leftover }) => confirmed.has(leftover.path));
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const warnings: StoragePathWarning[] = [];
+          const perTargetReclaimed: PerTargetReclaimed = [];
+          let completedTargets = 0;
+          for (const { leftover } of leftovers) {
+            if (checkCancelled(request.operationId)) break;
+            await Effect.runPromise(
+              publishProgress(request, context, {
+                categoryId: "codexMarketplaceStaging",
+                phase: "deleting",
+                message: `Deleting ${Path.basename(leftover.path)}`,
+                completedTargets,
+                totalTargets: leftovers.length,
+              }),
+            );
+            const removal = await removeCodexMarketplaceLeftover(leftover);
+            if (removal.warning) warnings.push(removal.warning);
+            if (removal.reclaimedBytes > 0) {
+              perTargetReclaimed.push({
+                id: leftover.path,
+                path: leftover.path,
+                reclaimedBytes: removal.reclaimedBytes,
+              });
+            }
+            completedTargets += 1;
+          }
+          return resultFor({
+            categoryId: "codexMarketplaceStaging",
+            status: perTargetReclaimed.length > 0 ? "Cleaned" : "Skipped",
+            reclaimedBytes: perTargetReclaimed.reduce(
+              (total, target) => total + target.reclaimedBytes,
+              0,
+            ),
+            perTargetReclaimed,
+            warnings,
+          });
+        },
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.cleanup.codexMarketplaceStaging",
+            message: "Failed to delete Codex marketplace staging directories.",
+            cause,
+          }),
+      });
+    });
+
+  /**
+   * Soft-deletes the archived targets that are still archived at or before
+   * `cutoffIso`, guarded on their archive time, so the purge can remove them.
+   */
+  const dispatchArchivedThreadDeletes = (
+    request: CleanupOperation,
+    context: StorageCleanupContext | undefined,
+    targets: ReadonlyArray<Pick<StorageCleanupTarget, "id" | "label">>,
+    cutoffIso: string,
+  ) =>
+    Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const deletedThreadIds: ThreadId[] = [];
-      if (!category) {
-        return { deletedThreadIds, warnings };
-      }
-
-      const cutoffIso = new Date(Date.now() - ARCHIVED_THREAD_RETENTION_MS).toISOString();
       let completedTargets = 0;
-      for (const target of category.targets) {
+      for (const target of targets) {
         if (checkCancelled(request.operationId)) {
           break;
         }
@@ -2053,7 +2314,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           phase: "deleting",
           message: `Deleting archived thread ${target.label}`,
           completedTargets,
-          totalTargets: category.targets.length,
+          totalTargets: targets.length,
         });
 
         const threadId = ThreadId.makeUnsafe(target.id);
@@ -2565,11 +2826,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
           message: "Filesystem free-space inspection is unavailable.",
         });
       }
-      const freeSpace = yield* Effect.tryPromise({
-        try: async () => {
-          const stat = await statfs(Path.dirname(config.dbPath));
-          return stat.bavail * stat.bsize;
-        },
+      // VACUUM copies only live pages, so free pages need no room.
+      const pages = yield* readPages;
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
         catch: (cause) =>
           new StorageMaintenanceError({
             operation: "StorageMaintenance.cleanup.databaseVacuum.statfs",
@@ -2577,21 +2842,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
             cause,
           }),
       });
-      if (freeSpace < beforeBytes * 1.2) {
+      if (shortfall !== null) {
         return resultFor({
           categoryId: "databaseVacuum",
           status: "Skipped",
-          warnings: [
-            warningFor(
-              config.dbPath,
-              "Skipped VACUUM because available disk space is below 1.2x database size.",
-            ),
-          ],
+          warnings: [warningFor(config.dbPath, `Skipped VACUUM because ${shortfall}.`)],
           message: "Not enough free disk space to compact the database.",
         });
       }
-      yield* sql`PRAGMA wal_checkpoint(TRUNCATE)`;
-      yield* sql`VACUUM`;
+      yield* vacuumIncremental;
       const afterBytes = yield* Effect.tryPromise({
         try: () => fileSizeIfExists(config.dbPath),
         catch: (cause) =>
@@ -2837,7 +3096,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
         ? yield* dispatchArchivedThreadDeletes(
             request,
             context,
-            requestedCategoryById.get("purgeArchivedThreads"),
+            requestedCategoryById.get("purgeArchivedThreads")?.targets ?? [],
+            new Date(Date.now() - ARCHIVED_THREAD_RETENTION_MS).toISOString(),
           )
         : { deletedThreadIds: [] as ThreadId[], warnings: [] as StoragePathWarning[] };
       const f5WorktreeReferenceWarnings = categoryIds.includes("inactiveF5Worktrees")
@@ -2889,6 +3149,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 return pruneEventsLogRotations(request, context);
               case "orphanAttachments":
                 return cleanOrphanAttachments(request, context, targetSelections.get(categoryId));
+              case "codexMarketplaceStaging":
+                return cleanCodexMarketplaceStaging(
+                  request,
+                  context,
+                  requestedCategoryById.get(categoryId),
+                );
               case "databaseVacuum":
                 return vacuumDatabase();
               case "legacyT3Userdata":
@@ -2906,7 +3172,12 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 );
             }
           })();
-          if (categoryId !== "databaseVacuum" && result.reclaimedBytes > 0) {
+          // Codex staging lives outside the database; removing it frees no pages.
+          if (
+            categoryId !== "databaseVacuum" &&
+            categoryId !== "codexMarketplaceStaging" &&
+            result.reclaimedBytes > 0
+          ) {
             performedDeletes = true;
           }
           results.push(result);
@@ -2953,10 +3224,212 @@ const makeStorageMaintenance = Effect.gen(function* () {
       }
     });
 
+  const purgeThreads: StorageMaintenanceShape["purgeThreads"] = (input) =>
+    Effect.gen(function* () {
+      const allThreads = yield* queryThreadRows();
+      const busySegments = yield* readBusyThreadSegments(allThreads);
+      const nowMs = Date.now();
+      for (const [threadId, retryAtMs] of purgeRetryAtMs) {
+        if (retryAtMs <= nowMs) purgeRetryAtMs.delete(threadId);
+      }
+      const { deletedBefore, archivedBefore } = input;
+      const purgeable = (thread: ThreadRow) => {
+        const segment = toSafeThreadAttachmentSegment(thread.threadId);
+        return segment === null || !busySegments.has(segment);
+      };
+      // Threads that failed recently go last, then oldest first.
+      const order = (at: (thread: ThreadRow) => string) => (left: ThreadRow, right: ThreadRow) =>
+        Number(purgeRetryAtMs.has(left.threadId)) - Number(purgeRetryAtMs.has(right.threadId)) ||
+        at(left).localeCompare(at(right));
+      // At most `maxThreads` in total: the purge holds the maintenance lock,
+      // which pauses command dispatch until it finishes.
+      const deleted = (
+        deletedBefore === null
+          ? []
+          : allThreads.filter(
+              (thread) =>
+                thread.deletedAt !== null && thread.deletedAt <= deletedBefore && purgeable(thread),
+            )
+      )
+        .toSorted(order((thread) => thread.deletedAt!))
+        .slice(0, input.maxThreads);
+      const archived = (
+        archivedBefore === null
+          ? []
+          : allThreads.filter(
+              (thread) =>
+                thread.deletedAt === null &&
+                thread.archivedAt !== null &&
+                thread.archivedAt <= archivedBefore &&
+                purgeable(thread),
+            )
+      )
+        .toSorted(order((thread) => thread.archivedAt!))
+        .slice(0, Math.max(0, input.maxThreads - deleted.length));
+      if (deleted.length === 0 && archived.length === 0) {
+        return { purgedThreadIds: [], archivedThreadIds: [], reclaimedBytes: 0, warnings: [] };
+      }
+      const operation = { operationId: input.operationId };
+      // Dispatching needs the engine, so it runs before the exclusive lock.
+      const archivedDeletes =
+        archivedBefore !== null && archived.length > 0
+          ? yield* dispatchArchivedThreadDeletes(
+              operation,
+              undefined,
+              archived.map((thread) => ({ id: thread.threadId, label: thread.title })),
+              archivedBefore,
+            )
+          : { deletedThreadIds: [] as ThreadId[], warnings: [] as StoragePathWarning[] };
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      const result = yield* purgeDeletedThreads(operation, undefined, {
+        threadIds: [
+          ...deleted.map((thread) => thread.threadId),
+          ...archivedDeletes.deletedThreadIds,
+        ],
+        warnings: archivedDeletes.warnings,
+        estimateDatabaseBytes: false,
+      }).pipe(
+        Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)),
+        Effect.ensuring(
+          Effect.sync(() => {
+            cachedReport = null;
+          }),
+        ),
+      );
+      const purgedThreadIds = result.perTargetReclaimed.map((target) =>
+        ThreadId.makeUnsafe(target.id),
+      );
+      const purged = new Set<string>(purgedThreadIds);
+      for (const thread of [...deleted, ...archived]) {
+        if (!purged.has(thread.threadId)) {
+          purgeRetryAtMs.set(thread.threadId, Date.now() + PURGE_FAILURE_BACKOFF_MS);
+        }
+      }
+      return {
+        purgedThreadIds,
+        archivedThreadIds: archivedDeletes.deletedThreadIds,
+        reclaimedBytes: result.reclaimedBytes,
+        warnings: result.warnings,
+      };
+    }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.purgeThreads")));
+
+  const reclaimDatabaseSpace: StorageMaintenanceShape["reclaimDatabaseSpace"] = (input) =>
+    Effect.gen(function* () {
+      const pages = yield* readPages;
+      if (pages.autoVacuum === AUTO_VACUUM_INCREMENTAL) {
+        const released = yield* withSql(incrementalVacuum(input));
+        return {
+          action: released > 0 ? "incremental" : "none",
+          reclaimedBytes: released * pages.pageSize,
+        } satisfies DatabaseSpaceResult;
+      }
+      const freeBytes = freeDatabaseBytes(pages);
+      if (
+        pages.autoVacuum !== 0 ||
+        freeBytes < AUTO_CONVERT_MIN_FREE_BYTES ||
+        freeBytes < pages.pageCount * pages.pageSize * AUTO_CONVERT_MIN_FREE_FRACTION
+      ) {
+        return { action: "none", reclaimedBytes: 0 } satisfies DatabaseSpaceResult;
+      }
+      const skipped = (skippedReason: string): DatabaseSpaceResult => ({
+        action: "none",
+        reclaimedBytes: 0,
+        skippedReason,
+      });
+      const quietSince = new Date(Date.now() - AUTO_CONVERT_QUIET_MS).toISOString();
+      const recent = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM projection_threads
+        WHERE deleted_at IS NULL AND last_interaction_at >= ${quietSince}
+      `;
+      if ((recent[0]?.count ?? 0) > 0) return skipped("a thread was used recently");
+      const busy = yield* readBusyThreadSegments(yield* queryThreadRows());
+      if (busy.size > 0) return skipped("an agent is working");
+      const statfs = yield* Effect.tryPromise({
+        try: () => loadStatfs(),
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.reclaimDatabaseSpace.loadStatfs",
+            message: "Failed to load filesystem free-space inspection.",
+            cause,
+          }),
+      });
+      if (!statfs) return skipped("free disk space cannot be inspected");
+      const shortfall = yield* Effect.tryPromise({
+        try: () =>
+          vacuumFreeSpaceShortfall({
+            dbPath: config.dbPath,
+            liveBytes: liveDatabaseBytes(pages),
+            statfs,
+          }),
+        catch: (cause) =>
+          new StorageMaintenanceError({
+            operation: "StorageMaintenance.reclaimDatabaseSpace.statfs",
+            message: "Failed to inspect free disk space.",
+            cause,
+          }),
+      });
+      if (shortfall !== null) return skipped(shortfall);
+      const beforeBytes = yield* Effect.promise(() => fileSizeIfExists(config.dbPath));
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      yield* vacuumIncremental.pipe(
+        Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)),
+      );
+      const afterBytes = yield* Effect.promise(() => fileSizeIfExists(config.dbPath));
+      cachedReport = null;
+      return {
+        action: "converted",
+        reclaimedBytes: Math.max(0, beforeBytes - afterBytes),
+      } satisfies DatabaseSpaceResult;
+    }).pipe(Effect.mapError(toStorageMaintenanceError("StorageMaintenance.reclaimDatabaseSpace")));
+
+  const terminalThreadLogs = (input: {
+    readonly modifiedBefore: string;
+    readonly includeArchived: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const cutoffMs = Date.parse(input.modifiedBefore);
+      const candidates = yield* computeProviderLogCandidates(yield* queryThreadRows(), {
+        archivedAlive: !input.includeArchived,
+      });
+      return candidates.files.filter((file) => file.mtimeMs < cutoffMs);
+    });
+
+  const listTerminalThreadLogs: StorageMaintenanceShape["listTerminalThreadLogs"] = (input) =>
+    terminalThreadLogs(input).pipe(
+      Effect.mapError(toStorageMaintenanceError("StorageMaintenance.listTerminalThreadLogs")),
+    );
+
+  const pruneTerminalThreadLogs: StorageMaintenanceShape["pruneTerminalThreadLogs"] = (input) =>
+    Effect.gen(function* () {
+      // Listed and deleted under the maintenance lock, which holds back every
+      // command: no thread can be unarchived or resumed between the check
+      // and the delete.
+      const lockScope = yield* engine.acquireMaintenanceLock();
+      const result = yield* Effect.gen(function* () {
+        const files = yield* terminalThreadLogs(input);
+        const deleted = yield* deleteProviderLogFiles(
+          { operationId: input.operationId },
+          undefined,
+          "providerLogsForTerminalThreads",
+          files,
+        );
+        if (files.length > 0) cachedReport = null;
+        return deleted;
+      }).pipe(Effect.ensuring(Scope.close(lockScope, Exit.void).pipe(Effect.ignore)));
+      return result;
+    }).pipe(
+      Effect.mapError(toStorageMaintenanceError("StorageMaintenance.pruneTerminalThreadLogs")),
+    );
+
   return {
     inspect,
+    summarizeReclaimable,
     cleanup,
     cancel,
+    purgeThreads,
+    reclaimDatabaseSpace,
+    listTerminalThreadLogs,
+    pruneTerminalThreadLogs,
   } satisfies StorageMaintenanceShape;
 });
 

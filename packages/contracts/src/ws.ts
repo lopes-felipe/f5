@@ -171,12 +171,15 @@ import {
   ServerValidateHarnessesInput,
 } from "./server";
 import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
+import { ServerGetProviderInventoryInput } from "./providerInventory";
 import {
+  DiskSpaceStatus,
   StorageAutomationAuditInput,
   StorageAutomationDryRunInput,
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
+  StorageGetDiskSpaceRequest,
   StorageGetUsageRequest,
   StorageInvalidatedPayload,
 } from "./storage";
@@ -356,6 +359,7 @@ export const WS_METHODS = {
   serverMigrateClientSetting: "server.migrateClientSetting",
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
+  serverGetProviderInventory: "server.getProviderInventory",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverAddKeybinding: "server.addKeybinding",
   serverUpdateKeybinding: "server.updateKeybinding",
@@ -369,6 +373,8 @@ export const WS_METHODS = {
   // Automatic cleanup and auto-pull: read-only preview and the audit trail
   storageAutomationDryRun: "storage.automationDryRun",
   storageAutomationAudit: "storage.automationAudit",
+  // Free disk space on the volumes F5 and its providers write to
+  storageGetDiskSpace: "storage.getDiskSpace",
 
   // Durable per-thread next-turn queue
   nextTurnQueueList: "nextTurnQueue.list",
@@ -443,6 +449,7 @@ export const WS_CHANNELS = {
   mcpStatusUpdated: "mcp.statusUpdated",
   storageInvalidated: "storage.invalidated",
   storageCleanupProgress: "storage.cleanupProgress",
+  storageDiskSpaceUpdated: "storage.diskSpaceUpdated",
   nextTurnQueueUpdated: "nextTurnQueue.updated",
   nextTurnQueueSummaryUpdated: "nextTurnQueue.summaryUpdated",
   worktreeSetupUpdated: "worktreeSetup.updated",
@@ -668,6 +675,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
+  tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
   tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),
@@ -678,6 +686,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
   tagRequestBody(WS_METHODS.storageAutomationDryRun, StorageAutomationDryRunInput),
   tagRequestBody(WS_METHODS.storageAutomationAudit, StorageAutomationAuditInput),
+  tagRequestBody(WS_METHODS.storageGetDiskSpace, StorageGetDiskSpaceRequest),
   tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnQueueSubmitInput),
   tagRequestBody(WS_METHODS.nextTurnQueueSummary, NextTurnQueueSummaryInput),
@@ -867,6 +876,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
+  readonly [WS_CHANNELS.storageDiskSpaceUpdated]: typeof DiskSpaceStatus.Type;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [WS_CHANNELS.worktreeSetupUpdated]: WorktreeSetupUpdatedPayload;
@@ -960,6 +970,10 @@ export const WsPushStorageCleanupProgress = makeWsPushSchema(
   WS_CHANNELS.storageCleanupProgress,
   StorageCleanupProgressPayload,
 );
+export const WsPushStorageDiskSpaceUpdated = makeWsPushSchema(
+  WS_CHANNELS.storageDiskSpaceUpdated,
+  DiskSpaceStatus,
+);
 export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueUpdated,
   NextTurnQueueSnapshot,
@@ -1002,6 +1016,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
+  WS_CHANNELS.storageDiskSpaceUpdated,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   WS_CHANNELS.worktreeSetupUpdated,
@@ -1031,6 +1046,7 @@ export const WsPush = Schema.Union([
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,
+  WsPushStorageDiskSpaceUpdated,
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
   WsPushWorktreeSetupUpdated,

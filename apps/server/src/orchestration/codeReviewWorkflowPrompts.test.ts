@@ -45,8 +45,22 @@ describe("codeReviewWorkflowPrompts", () => {
       "## Review Target",
       "## Provider-Specific Guidance",
       "## Requirements",
-      "Return a single code review report, not a plan and not code changes.",
+      "Return a single code review report, not code changes. Reply with the complete report as your message; do not submit it as a plan.",
     ]);
+  });
+
+  it("asks reviewers to reply with the report instead of submitting a plan", () => {
+    const text = buildCodeReviewReviewerPrompt({
+      workflowId: "review-1",
+      reviewPrompt: "Review current changes",
+      reviewerLabel: "Reviewer A",
+      lensBranch: "a",
+      branch: null,
+      reviewerSlot: CLAUDE_SLOT,
+    });
+    expect(text).toContain("Reply with the complete report as your message");
+    expect(text).toContain("do not submit it as a plan");
+    expect(text).not.toContain("not a plan");
   });
 
   it("uses the original consolidation request", () => {
@@ -62,6 +76,8 @@ describe("codeReviewWorkflowPrompts", () => {
     expect(text).toContain("Deduplicate overlapping findings");
     expect(text).toContain("Rank findings by severity");
     expect(text).toContain("Return only the consolidated review");
+    expect(text).toContain("Reply with the complete report as your message");
+    expect(text).toContain("do not submit it as a plan");
     expect(text).not.toContain("workflow_upstream_artifact");
   });
 });

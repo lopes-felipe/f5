@@ -2,14 +2,17 @@ import { describeMcpElicitation, mcpElicitationResponse } from "./codex/mcpElici
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import * as OS from "node:os";
 import readline from "node:readline";
 
 import {
   ApprovalRequestId,
+  CODEX_REASONING_EFFORT_OPTIONS,
   type CodexMcpServerEntry,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_RUNTIME_MODE,
   EventId,
+  type ModelCapabilities,
   type ProjectMemory,
   ProviderItemId,
   ProviderRequestKind,
@@ -27,7 +30,13 @@ import {
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
-import { normalizeModelSlug, resolveCodexReasoningEffortForModel } from "@t3tools/shared/model";
+import {
+  normalizeModelSlug,
+  resolveCodexReasoningEffortForModel,
+  resolveModelCapabilities,
+  resolveReasoningEffortForProvider,
+} from "@t3tools/shared/model";
+import { readCodexReportedModelCapabilities } from "./provider/codexModelCatalog.ts";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { Effect, ServiceMap } from "effect";
@@ -127,6 +136,8 @@ interface CodexSessionContext {
   configuredBase?: Record<string, unknown>;
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   modelContextWindowCatalog: ReadonlyMap<string, number>;
+  /** Capabilities this session's `model/list` reported, keyed by slug. */
+  reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
   availableSkills: ReadonlyArray<SupportedSlashCommand>;
   supportedCommandsFingerprint: string;
   skillsLoaded: boolean;
@@ -251,6 +262,10 @@ export interface CodexAppServerStartSessionInput {
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly runtimeMode: RuntimeMode;
   readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
+  /** Internal: launch the app-server with Codex plugins (and marketplace auto-upgrade) off. */
+  readonly disablePlugins?: boolean;
+  /** Internal: working directory of the app-server process, when it differs from the thread cwd. */
+  readonly processCwd?: string;
 }
 
 export interface CodexThreadTurnSnapshot {
@@ -290,6 +305,10 @@ const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 const CODEX_SPARK_DISABLED_PLAN_TYPES = new Set<CodexPlanType>(["free", "go", "plus"]);
 const CODEX_ONE_OFF_THREAD_PREFIX = "one-off:";
 const CODEX_ONE_OFF_PROMPT_TIMEOUT_MS = 120_000;
+/** A warm one-off app-server stops after this long without a prompt. */
+export const CODEX_ONE_OFF_WORKER_IDLE_MS = 5 * 60_000;
+/** Retire a warm one-off app-server after this many prompts to bound its memory. */
+const CODEX_ONE_OFF_WORKER_MAX_PROMPTS = 50;
 const CODEX_SKILLS_REFRESH_TIMEOUT_MS = 5_000;
 const CODEX_INITIAL_SKILLS_RETRY_DELAY_MS = 2_000;
 const CODEX_NATIVE_REQUEST_CORRELATION_CAPACITY = 256;
@@ -649,6 +668,26 @@ export function normalizeCodexModelSlug(
   return normalized;
 }
 
+/**
+ * Same downgrade rule as `resolveCodexReasoningEffortForModel` (walk towards
+ * lower efforts until one is supported), over the reported effort list.
+ */
+function resolveReportedCodexEffort(
+  model: string,
+  effort: string,
+  reported: ModelCapabilities,
+): string | undefined {
+  const capabilities = resolveModelCapabilities("codex", model, reported);
+  const requested = resolveReasoningEffortForProvider("codex", effort);
+  if (requested) {
+    const start = CODEX_REASONING_EFFORT_OPTIONS.indexOf(requested);
+    for (const candidate of CODEX_REASONING_EFFORT_OPTIONS.slice(start)) {
+      if (capabilities.effortOptions.includes(candidate)) return candidate;
+    }
+  }
+  return capabilities.defaultEffort;
+}
+
 export function buildCodexTurnStartParams(
   input: CodexAppServerSendTurnInput,
   state: {
@@ -657,6 +696,7 @@ export function buildCodexTurnStartParams(
     readonly account: CodexAccountSnapshot;
     readonly instructionContext?: Partial<SharedInstructionInput> | undefined;
     readonly resumedContextSent?: boolean | undefined;
+    readonly reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities> | undefined;
   },
 ) {
   const turnInput: Array<
@@ -715,18 +755,28 @@ export function buildCodexTurnStartParams(
   if (normalizedModel) {
     turnStartParams.model = normalizedModel;
   }
-  if (input.serviceTier !== undefined) {
-    turnStartParams.serviceTier = input.serviceTier;
-  }
   // Persisted state and non-web callers can supply stale or invalid values;
-  // resolve them to a model-supported effort at the provider boundary.
+  // resolve them to a model-supported effort at the provider boundary. Efforts
+  // the session's `model/list` reported win over F5's built-in table, so a
+  // CLI-only model receives the effort the composer offered for it.
+  const effortModel = normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
+  const reportedCapabilities = state.reportedModelCapabilities?.get(effortModel);
+  if (input.serviceTier !== undefined) {
+    // A persisted fast-mode choice must not reach a model whose reported tiers
+    // lack it (the composer hides the toggle); null clears a thread-level tier.
+    turnStartParams.serviceTier =
+      input.serviceTier === "fast" &&
+      reportedCapabilities &&
+      !resolveModelCapabilities("codex", effortModel, reportedCapabilities).supportsFastMode
+        ? null
+        : input.serviceTier;
+  }
   const resolvedEffort =
-    input.effort !== undefined
-      ? resolveCodexReasoningEffortForModel(
-          normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
-          input.effort,
-        )
-      : undefined;
+    input.effort === undefined
+      ? undefined
+      : reportedCapabilities
+        ? resolveReportedCodexEffort(effortModel, input.effort, reportedCapabilities)
+        : resolveCodexReasoningEffortForModel(effortModel, input.effort);
   if (resolvedEffort) {
     turnStartParams.effort = resolvedEffort;
   }
@@ -765,6 +815,10 @@ export function buildCodexInitializeParams() {
     capabilities: {
       experimentalApi: true,
       requestAttestation: false,
+      // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
+      // `openai/form` in `capabilities.extensions`; switch once the private
+      // elicitation answer path (Release 3) passes end-to-end and the supported
+      // minimum is past 0.147. Until then F5 must not advertise form support.
       mcpServerOpenaiFormElicitation: false,
       // Current servers suppress this high-volume diagnostic. The adapter and
       // UI still accept starts from older servers and persisted worklogs.
@@ -867,6 +921,35 @@ export function isSyntheticOneOffThreadId(threadId: ThreadId): boolean {
   return threadId.startsWith(CODEX_ONE_OFF_THREAD_PREFIX);
 }
 
+interface CodexOneOffWorker {
+  readonly key: string;
+  readonly threadId: ThreadId;
+  busy: boolean;
+  prompts: number;
+  idleTimer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/**
+ * Everything that changes the app-server process itself. Per-prompt values
+ * (cwd, model, runtime mode) go on the provider thread instead.
+ *
+ * The signed-in account is not part of the key: after `codex login` switches
+ * accounts in the same home, an idle warm worker can serve background prompts
+ * with the previous login until it retires (at most `CODEX_ONE_OFF_WORKER_IDLE_MS`
+ * after its last prompt). Changing the instance's settings rebuilds the
+ * adapter, which stops every worker.
+ */
+export function codexOneOffPoolKey(
+  providerOptions: ProviderSessionStartInput["providerOptions"],
+): string {
+  const options = providerOptions?.codex;
+  return JSON.stringify([
+    options?.binaryPath ?? "codex",
+    resolveCodexHome({ homePath: options?.homePath }) ?? "",
+    options?.launchArgs ?? [],
+  ]);
+}
+
 function toCodexUserInputAnswer(value: unknown): CodexUserInputAnswer {
   if (typeof value === "string") {
     return { answers: [value] };
@@ -936,6 +1019,7 @@ export interface CodexAppServerManagerEvents {
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
   private readonly sessionStartLocks = new Map<ThreadId, Promise<void>>();
+  private readonly oneOffWorkers = new Map<ThreadId, CodexOneOffWorker>();
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
   constructor(services?: ServiceMap.ServiceMap<never>) {
@@ -993,10 +1077,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const codexOptions = readCodexProviderOptions(input);
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
+      const processCwd = input.processCwd ?? resolvedCwd;
       this.assertSupportedCodexCliVersion({
         processEnvironment: input.processEnvironment ?? process.env,
         binaryPath: codexBinaryPath,
-        cwd: resolvedCwd,
+        cwd: processCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
       const childEnvironment = buildProviderChildProcessEnv(
@@ -1012,6 +1097,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         mcpServers: input.mcpServers ?? {},
         ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
         ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
+        ...(input.disablePlugins ? { disablePlugins: true } : {}),
       });
       if (appServerCommand.dropped.length > 0) {
         await this.runPromise(
@@ -1026,11 +1112,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         appServerCommand.argv,
         childEnvironment,
         {
-          cwd: resolvedCwd,
+          cwd: processCwd,
         },
       );
       const child = spawn(invocation.file, [...invocation.args], {
-        cwd: resolvedCwd,
+        cwd: processCwd,
         env: childEnvironment,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -1080,6 +1166,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       try {
         const modelListResponse = await this.sendRequest(context, "model/list", {});
         context.modelContextWindowCatalog = readCodexModelContextWindowCatalog(modelListResponse);
+        context.reportedModelCapabilities = readCodexReportedModelCapabilities(modelListResponse);
       } catch (error) {
         await Effect.logWarning("codex model/list did not expose context window metadata", {
           threadId,
@@ -1178,14 +1265,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         );
       }
 
-      const threadOpenRecord = this.readObject(threadOpenResponse);
-      const threadIdRaw =
-        this.readString(this.readObject(threadOpenRecord, "thread"), "id") ??
-        this.readString(threadOpenRecord, "threadId");
-      if (!threadIdRaw) {
-        throw new Error(`${threadOpenMethod} response did not include a thread id.`);
-      }
-      const providerThreadId = threadIdRaw;
+      const providerThreadId = this.readThreadOpenProviderThreadId(
+        threadOpenMethod,
+        threadOpenResponse,
+      );
 
       this.updateSession(context, {
         status: "ready",
@@ -1260,6 +1343,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       account: context.account,
       instructionContext: context.instructionContext,
       resumedContextSent: context.resumedContextSent,
+      reportedModelCapabilities: context.reportedModelCapabilities,
     });
 
     if (input.expectedTurnId !== undefined) {
@@ -1336,7 +1420,18 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     readonly timeoutMs?: number;
   }): Promise<string> {
-    const threadId = ThreadId.makeUnsafe(`${CODEX_ONE_OFF_THREAD_PREFIX}${randomUUID()}`);
+    // One-off prompts reuse a warm app-server for the same launch config
+    // instead of spawning one per prompt; each prompt still gets a fresh
+    // provider thread. Acquiring is synchronous, so two prompts can never
+    // claim the same worker.
+    const poolKey = codexOneOffPoolKey(input.providerOptions);
+    // Resolved once and sent explicitly on both paths, so a prompt runs in the
+    // same directory whether or not a warm worker exists.
+    const cwd = input.cwd ?? process.cwd();
+    let worker = this.acquireOneOffWorker(poolKey);
+    const threadId =
+      worker?.threadId ?? ThreadId.makeUnsafe(`${CODEX_ONE_OFF_THREAD_PREFIX}${randomUUID()}`);
+    let succeeded = false;
     const timeoutMs = input.timeoutMs ?? CODEX_ONE_OFF_PROMPT_TIMEOUT_MS;
     let capturedText = "";
     const followUpPromises = new Set<Promise<unknown>>();
@@ -1361,8 +1456,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
     };
 
+    // A reused worker may still deliver stragglers from its previous prompt
+    // until the new provider thread is open; only this prompt's turn counts.
+    let turnRequested = false;
     const listener = (event: ProviderEvent) => {
-      if (event.threadId !== threadId) {
+      if (event.threadId !== threadId || !turnRequested) {
         return;
       }
 
@@ -1417,14 +1515,34 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.on("event", listener);
 
     try {
-      await this.startSession({
-        threadId,
-        provider: "codex",
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-        runtimeMode: input.runtimeMode ?? "approval-required",
-      });
+      if (worker) {
+        await this.openOneOffThread(threadId, {
+          cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          runtimeMode: input.runtimeMode ?? "approval-required",
+        });
+      } else {
+        worker = { key: poolKey, threadId, busy: true, prompts: 0, idleTimer: undefined };
+        this.oneOffWorkers.set(threadId, worker);
+        await this.startSession({
+          threadId,
+          provider: "codex",
+          cwd,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.providerOptions !== undefined
+            ? { providerOptions: input.providerOptions }
+            : {}),
+          runtimeMode: input.runtimeMode ?? "approval-required",
+          // The process outlives this prompt's cwd (which may be a temp dir)
+          // and serves later prompts in other dirs, so it runs somewhere
+          // neutral that carries no project or home-directory instructions.
+          processCwd: OS.tmpdir(),
+          // One-offs never use plugins; keep Codex from starting a marketplace
+          // upgrade that a stopped app-server would leave behind on disk.
+          disablePlugins: true,
+        });
+      }
+      turnRequested = true;
       await this.sendTurn({
         threadId,
         input: input.prompt,
@@ -1436,6 +1554,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (text.length === 0) {
         throw new Error("Codex one-off prompt completed without returning any assistant text.");
       }
+      succeeded = true;
       return text;
     } finally {
       clearTimeout(timer);
@@ -1443,8 +1562,105 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (followUpPromises.size > 0) {
         await Promise.allSettled(followUpPromises);
       }
-      this.stopSession(threadId);
+      this.releaseOneOffWorker(threadId, succeeded);
     }
+  }
+
+  /** An idle, live warm worker for this launch config, now marked busy. */
+  private acquireOneOffWorker(key: string): CodexOneOffWorker | undefined {
+    for (const worker of this.oneOffWorkers.values()) {
+      if (worker.key !== key || worker.busy) continue;
+      const context = this.sessions.get(worker.threadId);
+      if (!context || context.stopping || context.session.status !== "ready") {
+        // The process exited (or broke) while idle.
+        this.stopSession(worker.threadId);
+        continue;
+      }
+      clearTimeout(worker.idleTimer);
+      worker.idleTimer = undefined;
+      worker.busy = true;
+      return worker;
+    }
+    return undefined;
+  }
+
+  /**
+   * Keep a healthy worker warm for the next one-off, at most one idle worker
+   * per launch config; stop everything else. A failed or timed-out prompt
+   * may leave a turn running, so its process is never reused.
+   */
+  private releaseOneOffWorker(threadId: ThreadId, succeeded: boolean): void {
+    const worker = this.oneOffWorkers.get(threadId);
+    const context = this.sessions.get(threadId);
+    if (!worker) {
+      this.stopSession(threadId);
+      return;
+    }
+    worker.busy = false;
+    worker.prompts += 1;
+    const reusable =
+      succeeded &&
+      context !== undefined &&
+      !context.stopping &&
+      context.session.status === "ready" &&
+      context.session.activeTurnId === undefined &&
+      worker.prompts < CODEX_ONE_OFF_WORKER_MAX_PROMPTS &&
+      ![...this.oneOffWorkers.values()].some(
+        (other) => other !== worker && other.key === worker.key && !other.busy,
+      );
+    if (!reusable) {
+      this.stopSession(threadId);
+      return;
+    }
+    worker.idleTimer = setTimeout(() => {
+      this.stopSession(threadId);
+    }, CODEX_ONE_OFF_WORKER_IDLE_MS);
+    worker.idleTimer.unref?.();
+  }
+
+  /** Start a fresh provider thread on a warm one-off app-server. */
+  private async openOneOffThread(
+    threadId: ThreadId,
+    input: { readonly cwd: string; readonly model?: string; readonly runtimeMode: RuntimeMode },
+  ): Promise<void> {
+    const context = this.requireSession(threadId);
+    const resolvedCwd = input.cwd;
+    const model = resolveCodexModelForAccount(
+      normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+      context.account,
+    );
+    const params = buildCodexThreadOpenRequestParams({
+      ...(model ? { model } : {}),
+      cwd: resolvedCwd,
+      runtimeMode: input.runtimeMode,
+    });
+    const response = await this.sendRequest(context, "thread/start", params.start);
+    const providerThreadId = this.readThreadOpenProviderThreadId("thread/start", response);
+    context.instructionContext = buildCodexInstructionContext(
+      { threadId, runtimeMode: input.runtimeMode },
+      resolvedCwd,
+    );
+    context.resumedContextSent = false;
+    // Notifications from the previous provider thread are dropped from here on.
+    this.updateSession(context, {
+      status: "ready",
+      runtimeMode: input.runtimeMode,
+      cwd: resolvedCwd,
+      ...(model ? { model } : {}),
+      activeTurnId: undefined,
+      resumeCursor: { threadId: providerThreadId },
+    });
+  }
+
+  private readThreadOpenProviderThreadId(method: string, response: unknown): string {
+    const record = this.readObject(response);
+    const providerThreadId =
+      this.readString(this.readObject(record, "thread"), "id") ??
+      this.readString(record, "threadId");
+    if (!providerThreadId) {
+      throw new Error(`${method} response did not include a thread id.`);
+    }
+    return providerThreadId;
   }
 
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
@@ -1903,6 +2119,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   stopSession(threadId: ThreadId): void {
+    const worker = this.oneOffWorkers.get(threadId);
+    if (worker) {
+      clearTimeout(worker.idleTimer);
+      this.oneOffWorkers.delete(threadId);
+    }
     const context = this.sessions.get(threadId);
     if (!context) {
       return;
@@ -1935,14 +2156,30 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     this.sessions.delete(threadId);
   }
 
+  /** Thread sessions only; one-off app-servers are internal and never bound to a thread. */
   listSessions(): ProviderSession[] {
-    return Array.from(this.sessions.values(), ({ session }) => ({
-      ...session,
-    }));
+    return Array.from(this.sessions.values())
+      .filter(({ session }) => !isSyntheticOneOffThreadId(session.threadId))
+      .map(({ session }) => ({ ...session }));
   }
 
   hasSession(threadId: ThreadId): boolean {
     return this.sessions.has(threadId);
+  }
+
+  /** Native discovery state: the skills catalog is Codex's session command catalog. */
+  getSessionDiscovery(
+    threadId: ThreadId,
+  ):
+    | { readonly outcome: "pending" | "discovered" | "failed"; readonly nativeCommands?: boolean }
+    | undefined {
+    const context = this.sessions.get(threadId);
+    if (!context || context.stopping) return undefined;
+    if (context.skillsLoaded) return { outcome: "discovered", nativeCommands: true };
+    // After the one retry a missing catalog is final for this session.
+    return context.initialSkillsRetryAttempted && !context.skillRefreshInFlight
+      ? { outcome: "failed", nativeCommands: false }
+      : { outcome: "pending" };
   }
 
   stopAll(): void {

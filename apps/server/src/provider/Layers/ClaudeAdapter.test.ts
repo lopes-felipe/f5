@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { afterAll, beforeAll, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ import {
   ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
-import { createModelSelection } from "@t3tools/shared/model";
+import { createModelSelection, createReportedClaudeModelCapabilities } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -65,7 +65,6 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly interruptCalls: Array<void> = [];
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
-  public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
   public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
   public closeCalls = 0;
   public onClose: (() => void) | undefined;
@@ -164,10 +163,6 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.setPermissionModeCalls.push(mode);
   };
 
-  readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
-    this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
-  };
-
   readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
     this.applyFlagSettingsCalls.push(settings);
   };
@@ -247,6 +242,7 @@ function makeHarness(config?: {
   readonly resumeConfirmationTimeoutMs?: number;
   /** Runs the adapter in desktop mode with F5's preview broker. */
   readonly previewAutomationBroker?: ClaudeAdapterLiveOptions["previewAutomationBroker"];
+  readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -287,6 +283,9 @@ function makeHarness(config?: {
     // The fake CLI only emits messages when a test pushes them, so most tests
     // cannot confirm a resume while sendTurn waits. Tests of that wait opt in.
     resumeConfirmationTimeoutMs: config?.resumeConfirmationTimeoutMs ?? 0,
+    ...(config?.reportedModelCapabilities
+      ? { reportedModelCapabilities: config.reportedModelCapabilities }
+      : {}),
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -821,17 +820,29 @@ describe("ClaudeAdapter agent browser", () => {
         vi.waitFor(() => assert.ok(harness.query.mcpServerStatusCalls > 0)),
       );
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
-      const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const options = harness.getLastCreateQueryInput()!.options;
+      const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const canUseTool = options.canUseTool!;
       const sdk = { name: "f5_preview", source: "sdk" };
-      const decide = (toolName: string, mcpServer = sdk) =>
+      // Read-only stages run in plan mode: the hook leaves non-edit tools to native
+      // evaluation, which escalates them to canUseTool and its workflow policy.
+      const hookResponse = yield* Effect.promise(() =>
+        hook(preToolUse("mcp__f5_preview__preview_click", sdk), undefined, {
+          signal: new AbortController().signal,
+        }),
+      );
+      assert.equal("hookSpecificOutput" in hookResponse, false);
+      const decide = (toolName: string, input: Record<string, unknown> = {}, mcpServer = sdk) =>
         Effect.promise(() =>
-          hook(preToolUse(toolName, mcpServer), undefined, {
-            signal: new AbortController().signal,
-          }),
+          canUseTool(
+            toolName,
+            input,
+            permissionOptions(`${toolName}-${mcpServer.source}`, mcpServer),
+          ),
         );
       for (const tool of ["preview_status", "preview_snapshot", "preview_screenshot"]) {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
-        assert.equal("hookSpecificOutput" in response, false, tool);
+        assert.equal(response.behavior, "allow", tool);
       }
       for (const tool of [
         "preview_open",
@@ -840,19 +851,17 @@ describe("ClaudeAdapter agent browser", () => {
         "preview_evaluate",
       ]) {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
-        assert.equal(
-          "hookSpecificOutput" in response &&
-            response.hookSpecificOutput?.hookEventName === "PreToolUse" &&
-            response.hookSpecificOutput.permissionDecision,
-          "deny",
-          tool,
-        );
+        assert.equal(response.behavior, "deny", tool);
       }
-      const impostor = yield* decide("mcp__f5_preview__preview_status", {
-        name: "f5_preview",
-        source: "project",
-      });
-      assert.equal("hookSpecificOutput" in impostor, true);
+      // Saving writes an artifact file, which a read-only stage may not do.
+      const saved = yield* decide("mcp__f5_preview__preview_screenshot", { save: true });
+      assert.equal(saved.behavior, "deny");
+      const impostor = yield* decide(
+        "mcp__f5_preview__preview_status",
+        {},
+        { name: "f5_preview", source: "project" },
+      );
+      assert.equal(impostor.behavior, "deny");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1012,6 +1021,21 @@ describe("ClaudeAdapter agent browser", () => {
 });
 
 describe("ClaudeAdapterLive", () => {
+  // The adapter inherits process.env; a host Claude Code session may export task
+  // variables that would be honored as operator overrides. Assert F5 defaults.
+  const inheritedTaskEnv = {
+    CLAUDE_CODE_ENABLE_TASKS: process.env.CLAUDE_CODE_ENABLE_TASKS,
+    CLAUDE_CODE_ENABLE_TODO_TOOLS: process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS,
+  };
+  beforeAll(() => {
+    for (const key of Object.keys(inheritedTaskEnv)) delete process.env[key];
+  });
+  afterAll(() => {
+    for (const [key, value] of Object.entries(inheritedTaskEnv)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  });
+
   for (const sessionSignals of [false, true]) {
     it.effect(
       `keeps background continuations in one turn (idle signals: ${sessionSignals})`,
@@ -1669,8 +1693,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.permissionMode, "default");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -1680,10 +1704,16 @@ describe("ClaudeAdapterLive", () => {
 
   it("honors the operator task-tool override in every subagent environment branch", () => {
     for (const options of [undefined, { subagentModel: "inherit" }, { subagentModel: "fable-5" }]) {
-      const env = buildClaudeQueryEnv(options, { CLAUDE_CODE_ENABLE_TASKS: "1" });
-      assert.equal(env.CLAUDE_CODE_ENABLE_TASKS, "1");
-      assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
+      const optedOut = buildClaudeQueryEnv(options, { CLAUDE_CODE_ENABLE_TASKS: "0" });
+      assert.equal(optedOut.CLAUDE_CODE_ENABLE_TASKS, "0");
+      // TODO_TOOLS is the master switch; TASKS=0 selects the TodoWrite surface.
+      assert.equal(optedOut.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      const explicit = buildClaudeQueryEnv(options, {
+        CLAUDE_CODE_ENABLE_TASKS: "0",
+        CLAUDE_CODE_ENABLE_TODO_TOOLS: "0",
+      });
+      assert.equal(explicit.CLAUDE_CODE_ENABLE_TODO_TOOLS, "0");
+      assert.equal(explicit.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
     }
   });
 
@@ -1716,8 +1746,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1741,8 +1771,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-opus-5");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "1");
       assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1812,6 +1842,50 @@ describe("ClaudeAdapterLive", () => {
         ),
       );
       assert.ok(events.some((event) => event.type === "request.opened"));
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("leaves Bash to native plan-mode evaluation in read-only workflows", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.permissionMode, "plan");
+      const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const response = yield* Effect.promise(() =>
+        hook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "native",
+            cwd: "/tmp",
+            transcript_path: "/tmp/transcript",
+            tool_name: "Bash",
+            tool_input: { command: "git diff" },
+            tool_use_id: "workflow-bash-hook",
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        ),
+      );
+      assert.deepEqual(response, {});
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+      assert.isFalse(events.some((event) => event.type === "request.opened"));
       yield* Fiber.interrupt(listener);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -2076,7 +2150,7 @@ describe("ClaudeAdapterLive", () => {
   });
 
   it.effect(
-    "forwards launchArgs, permissionMode, and maxThinkingTokens for one-off prompt queries",
+    "forwards launchArgs, permissionMode, and legacy maxThinkingTokens as typed thinking for one-off prompt queries",
     () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
@@ -2110,7 +2184,9 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(queryOptions?.pathToClaudeCodeExecutable, process.execPath);
         assert.equal(queryOptions?.permissionMode, "bypassPermissions");
         assert.equal(queryOptions?.allowDangerouslySkipPermissions, undefined);
-        assert.equal(queryOptions?.maxThinkingTokens, 321);
+        // Unknown model: the deprecated input maps to a fixed budget, never sent as-is.
+        assert.equal("maxThinkingTokens" in (queryOptions ?? {}), false);
+        assert.deepEqual(queryOptions?.thinking, { type: "enabled", budgetTokens: 321 });
         assert.deepEqual(queryOptions?.extraArgs, {
           "--verbose": null,
         });
@@ -2181,6 +2257,35 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("forwards a CLI-only model's reported effort into query options", () => {
+    const reported = createReportedClaudeModelCapabilities({
+      value: "claude-cli-only-9",
+      supportsEffort: true,
+      supportedEffortLevels: ["low", "xhigh"],
+    });
+    const harness = makeHarness({
+      reportedModelCapabilities: (model) =>
+        Effect.succeed(model === "claude-cli-only-9" ? reported : undefined),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-cli-only-9",
+        runtimeMode: "full-access",
+        modelOptions: { claudeAgent: { effort: "xhigh" } },
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-cli-only-9");
+      assert.equal(createInput?.options.effort, "xhigh");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards Claude Fable 5 default high effort into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -2224,6 +2329,117 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(createInput?.options.model, "claude-opus-5");
       assert.equal(createInput?.options.effort, "high");
       assert.deepEqual(createInput?.options.settings, { cleanupPeriodDays: 3650, fastMode: true });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("maps legacy maxThinkingTokens to adaptive thinking on adaptive models", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect, Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+        ),
+        providerOptions: { claudeAgent: { maxThinkingTokens: 2048 } },
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.thinking, { type: "adaptive" });
+      assert.equal("maxThinkingTokens" in (options ?? {}), false);
+      const [configured] = Array.from(yield* Fiber.join(configuredFiber));
+      const config =
+        configured?.type === "session.configured" ? configured.payload.config : undefined;
+      assert.deepEqual(config?.thinking, { type: "adaptive" });
+      assert.equal(config?.thinkingSource, "legacy");
+      assert.match(String(config?.thinkingFallback), /ignore fixed budgets/);
+      assert.equal(config?.maxThinkingTokens, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("prefers typed thinking over legacy maxThinkingTokens", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        providerOptions: {
+          claudeAgent: { maxThinkingTokens: 0, thinking: { type: "adaptive", display: "omitted" } },
+        },
+        runtimeMode: "full-access",
+      });
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.thinking, {
+        type: "adaptive",
+        display: "omitted",
+      });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps the per-turn toggle and launch thinking consistent", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-haiku-4-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-haiku-4-5",
+          [{ id: "thinking", value: false }],
+        ),
+        providerOptions: { claudeAgent: { maxThinkingTokens: 4096 } },
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.thinking, { type: "disabled" });
+      assert.equal(
+        (options?.settings as { alwaysThinkingEnabled?: boolean } | undefined)
+          ?.alwaysThinkingEnabled,
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("rejects explicit adaptive thinking on a model without adaptive support", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const error = yield* adapter
+        .startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: "claude-haiku-4-5",
+          providerOptions: { claudeAgent: { thinking: { type: "adaptive" } } },
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.flip);
+      assert.match(
+        String((error as { issue?: string }).issue),
+        /Adaptive thinking is not supported/,
+      );
+      assert.equal(harness.getLastCreateQueryInput(), undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -2748,7 +2964,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("passes plan interaction mode into the appended assistant contract", () => {
+  it.effect("sends plan-mode instructions through the SDK instead of the append", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -2759,15 +2975,44 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
       });
 
-      const createQueryInput = harness.getLastCreateQueryInput();
-      assert.ok(createQueryInput);
-      const append = (
-        createQueryInput.options as ClaudeQueryOptions & {
-          readonly systemPrompt?: { readonly append?: string };
-        }
-      ).systemPrompt?.append;
-      assert.equal(append?.includes("# Plan Mode (Conversational)"), true);
-      assert.equal(append?.includes("# Collaboration Mode: Default"), false);
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.ok(options);
+      const append =
+        options.systemPrompt && typeof options.systemPrompt === "object"
+          ? (options.systemPrompt as { readonly append?: string }).append
+          : undefined;
+      assert.equal(append?.includes("# Plan Mode (Conversational)"), false);
+      assert.equal(append?.includes("F5 switches between Default and Plan mode"), true);
+      assert.equal(options.planModeInstructions?.startsWith("# Plan Mode (Conversational)"), true);
+      assert.equal(
+        options.planModeInstructions?.includes("Workflow Read-Only Host Contract"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("puts the workflow host contract last in plan-mode instructions", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.equal(options?.permissionMode, "plan");
+      const plan = options?.planModeInstructions ?? "";
+      assert.ok(plan.indexOf("# Workflow Read-Only Host Contract") > plan.indexOf("# Plan Mode"));
+      assert.match(plan, /No user reply path exists/);
+      // The append keeps the stage policy for any mode.
+      const append = (options?.systemPrompt as { readonly append?: string } | undefined)?.append;
+      assert.match(append ?? "", /# Workflow Read-Only Host Contract/);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3001,6 +3246,53 @@ describe("ClaudeAdapterLive", () => {
       );
     },
   );
+
+  it.effect("replaces the slash command catalog from commands_changed", () => {
+    const harness = makeHarness();
+    harness.query.setSupportedCommandsResult([
+      { name: "review", description: "Review the current diff", argumentHint: "<target>" },
+    ]);
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const configuredFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "session.configured"),
+        Stream.take(3),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "system",
+        subtype: "commands_changed",
+        commands: [{ name: "deploy", description: "Deploy the app", argumentHint: "" }],
+        session_id: "sdk-session-commands",
+        uuid: "commands-changed-1",
+      } as unknown as SDKMessage);
+
+      const configured = Array.from(yield* Fiber.join(configuredFiber));
+      const last = configured.at(-1) as Extract<
+        ProviderRuntimeEvent,
+        { type: "session.configured" }
+      >;
+      assert.deepEqual(
+        (
+          (last.payload.config as Record<string, unknown>).slashCommands as ReadonlyArray<{
+            name: string;
+          }>
+        ).map((command) => command.name),
+        ["deploy"],
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
 
   it.effect("omits slashCommands until supportedCommands has been loaded", () => {
     const harness = makeHarness();
@@ -4153,6 +4445,134 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("attaches a typed completion envelope to native Task tool results", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const completedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "item.completed" || event.type === "item.updated",
+      ).pipe(
+        Stream.takeUntil(
+          (event) => event.type === "item.completed" && event.itemId === "tool-task-update-1",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "plan", attachments: [] });
+
+      const toolUse = (index: number, id: string, name: string, input: unknown) =>
+        harness.query.emit({
+          type: "stream_event",
+          session_id: "sdk-session-tasks",
+          uuid: `stream-${id}`,
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id, name, input },
+          },
+        } as unknown as SDKMessage);
+      const toolResult = (id: string, structured: unknown) =>
+        harness.query.emit({
+          type: "user",
+          session_id: "sdk-session-tasks",
+          uuid: `user-${id}`,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+          },
+          tool_use_result: structured,
+        } as unknown as SDKMessage);
+
+      // A child agent's own task list must not drive the parent thread's panel.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-tasks",
+        uuid: "stream-child-task",
+        parent_tool_use_id: "agent-tool",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "child-task-create",
+            name: "TaskCreate",
+            input: { subject: "Child work" },
+          },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "user",
+        session_id: "sdk-session-tasks",
+        uuid: "user-child-task",
+        parent_tool_use_id: "agent-tool",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "child-task-create", content: "ok" }],
+        },
+        tool_use_result: { task: { id: "1", subject: "Child work" } },
+      } as unknown as SDKMessage);
+      toolUse(0, "tool-task-create-1", "TaskCreate", {
+        subject: "Run tests",
+        description: "Run the suite",
+        activeForm: "Running tests",
+      });
+      toolResult("tool-task-create-1", { task: { id: "1", subject: "Run tests" } });
+      toolUse(1, "tool-task-update-1", "TaskUpdate", { taskId: "9", status: "completed" });
+      toolResult("tool-task-update-1", {
+        success: false,
+        taskId: "9",
+        updatedFields: [],
+        error: "Task not found",
+      });
+
+      const events = Array.from(yield* Fiber.join(completedFiber));
+      const completions = events.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.completed" }> =>
+          event.type === "item.completed",
+      );
+      assert.equal(
+        events.some((event) => event.itemId === "child-task-create"),
+        false,
+      );
+      const created = completions.find((event) => event.itemId === "tool-task-create-1");
+      assert.equal(created?.payload.itemType, "dynamic_tool_call");
+      assert.equal(created?.payload.status, "completed");
+      assert.deepEqual(created?.payload.completion, {
+        version: 1,
+        nativeCallId: "tool-task-create-1",
+        nativeSessionId: "sdk-session-tasks",
+        toolName: "TaskCreate",
+        input: { subject: "Run tests", description: "Run the suite", activeForm: "Running tests" },
+        structuredOutput: { task: { id: "1", subject: "Run tests" } },
+        transportError: false,
+        semanticSuccess: true,
+      });
+      const updated = completions.find((event) => event.itemId === "tool-task-update-1");
+      // Semantic failure without is_error is still a failed call.
+      assert.equal(updated?.payload.status, "failed");
+      assert.equal(updated?.payload.completion?.transportError, false);
+      assert.equal(updated?.payload.completion?.semanticSuccess, false);
+      assert.equal(updated?.payload.completion?.semanticError, "Task not found");
+      // The envelope is attached once, never to updates.
+      for (const event of events) {
+        if (event.type === "item.updated") {
+          assert.equal("completion" in event.payload, false);
+        }
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits TodoWrite task input updates while Claude streams tool JSON", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -5015,10 +5435,19 @@ describe("ClaudeAdapterLive", () => {
           usage: {},
           modelUsage: {},
         } as unknown as SDKMessage);
-        const completed = yield* adapter.streamEvents.pipe(
-          Stream.filter((event) => event.type === "turn.completed"),
-          Stream.runHead,
+        const events = Array.from(
+          yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+          ),
         );
+        const completedEvent = events.find(
+          (event): event is Extract<(typeof events)[number], { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        const completed = completedEvent
+          ? { _tag: "Some" as const, value: completedEvent }
+          : { _tag: "None" as const };
         assert.equal(completed._tag, "Some");
         if (completed._tag === "Some") {
           assert.equal(
@@ -5034,6 +5463,15 @@ describe("ClaudeAdapterLive", () => {
           if (scenario === "login")
             assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
           if (scenario === "blocked") {
+            const warning = events.find((event) => event.type === "runtime.warning");
+            assert.deepEqual(
+              warning?.type === "runtime.warning" ? warning.payload.detail : undefined,
+              {
+                rateLimitType: "five_hour",
+                windowLabel: "5-hour",
+                resetsAt: new Date(1790607600 * 1000).toISOString(),
+              },
+            );
             assert.match(completed.value.payload.errorMessage ?? "", /5-hour.*Resets at/);
             assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
             assert.equal(completed.value.payload.usageLimit?.windows[0]?.id, "five_hour");
@@ -7190,7 +7628,7 @@ describe("ClaudeAdapterLive", () => {
           readonly systemPrompt?: { readonly append?: string };
         }
       )?.systemPrompt?.append;
-      assert.equal(append?.includes("# Collaboration Mode: Default"), true);
+      assert.equal(append?.includes("F5 switches between Default and Plan mode"), true);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

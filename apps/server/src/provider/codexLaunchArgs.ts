@@ -164,19 +164,38 @@ export interface BuildCodexAppServerCommandInput {
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
   readonly mcpOAuthCallbackPort?: number | null;
   readonly mcpOAuthCallbackUrl?: string | null;
+  /**
+   * Turn off Codex plugins for this process. Codex runs its plugin startup
+   * tasks, including the configured Git marketplace auto-upgrade, only when
+   * the `plugins` feature is on. That upgrade clones the whole marketplace
+   * into `.tmp/marketplaces/.staging/marketplace-upgrade-*`, and the clone
+   * leaks whenever the app-server is stopped before the upgrade finishes.
+   * Short-lived app-servers that never use plugins (one-off prompts) must not
+   * start it.
+   */
+  readonly disablePlugins?: boolean;
 }
+
+/** Codex config override that skips plugin startup tasks such as marketplace auto-upgrade. */
+export const CODEX_PLUGINS_DISABLED_CONFIG_ARGS = [
+  "-c",
+  "features.plugins=false",
+] as const satisfies ReadonlyArray<string>;
 
 /** Build the one canonical argv used by every Codex app-server process. */
 export function buildCodexAppServerCommand(
   input: BuildCodexAppServerCommandInput = {},
 ): FilteredCodexLaunchArgs {
   const resolved = resolveCodexLaunchArgv(input);
-  const managedArgs = prependCodexCliTelemetryDisabledConfig([], {
-    managedCredentials: input.environment?.F5_PROFILE_ISOLATED === "1",
-    mcpServers: input.mcpServers ?? null,
-    mcpOAuthCallbackPort: input.mcpOAuthCallbackPort ?? null,
-    mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl ?? null,
-  });
+  const managedArgs = prependCodexCliTelemetryDisabledConfig(
+    input.disablePlugins ? CODEX_PLUGINS_DISABLED_CONFIG_ARGS : [],
+    {
+      managedCredentials: input.environment?.F5_PROFILE_ISOLATED === "1",
+      mcpServers: input.mcpServers ?? null,
+      mcpOAuthCallbackPort: input.mcpOAuthCallbackPort ?? null,
+      mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl ?? null,
+    },
+  );
   return {
     argv: ["app-server", ...resolved.argv, ...managedArgs],
     dropped: resolved.dropped,

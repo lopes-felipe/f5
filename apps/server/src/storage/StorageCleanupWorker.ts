@@ -1,4 +1,5 @@
 import * as FS from "node:fs/promises";
+import * as OS from "node:os";
 import * as Path from "node:path";
 
 import type {
@@ -37,10 +38,31 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
 import { pruneStorageAutomationAudit, recordStorageAutomationAudit } from "./automationAudit.ts";
+import {
+  CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS,
+  type CodexMarketplaceLeftover,
+  listCodexMarketplaceLeftovers,
+  removeCodexMarketplaceLeftover,
+  resolveCodexLaunchHomes,
+} from "./codexMarketplaceStaging.ts";
+import { DiskSpaceMonitor } from "./DiskSpaceMonitor.ts";
+import { compactThreadEvents } from "./eventCompaction.ts";
+import { StorageMaintenance } from "./StorageMaintenance.ts";
 
 /**
  * Automatic storage cleanup: removes idle managed worktrees under the rules a
- * project resolves to, and provider logs past their retention. Off by default.
+ * project resolves to, provider logs past their retention, and archived
+ * threads past `archivedThreadsPurgeAfterDays`. Off by default.
+ *
+ * Some jobs run even when cleanup is off, because they remove nothing anyone
+ * can still open:
+ * - Codex marketplace upgrade clones that Codex app-servers F5 spawned left
+ *   behind (see `codexMarketplaceStaging.ts`).
+ * - Purging threads deleted more than `deletedThreadsPurgeAfterDays` ago.
+ * - Provider logs of deleted threads past `terminalThreadLogsAfterDays`.
+ *   Archived threads can be unarchived, so their logs go only with cleanup on.
+ * - Event compaction (`eventCompaction.ts`) and returning free database pages
+ *   to the file system (`databaseSpace.ts`).
  *
  * A worktree is removed only when it lives under this profile's managed
  * worktrees directory, contains no project root, is a linked worktree, has a
@@ -68,8 +90,27 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 const STARTUP_DELAY = "30 seconds";
 const CLEANUP_INTERVAL = "1 hour";
 const EVALUATION_CONCURRENCY = 2;
+/** Per-pass time budgets: the database connection is shared with the server. */
+const EVENT_COMPACTION_BUDGET_MS = 60_000;
+const INCREMENTAL_VACUUM_BUDGET_MS = 15_000;
+/** A purge pauses command dispatch while it runs, so a backlog drains over several passes. */
+const PURGE_THREADS_PER_PASS = 10;
 
 export { blockingIgnoredEntries } from "../project/worktreeClaims.ts";
+
+/** Audit and dry-run label for a path: `~`-relative when under the user's home. */
+export function redactHomePath(value: string, home: string = OS.homedir()): string {
+  const relative = Path.relative(home, value);
+  return relative.length > 0 && !relative.startsWith("..") && !Path.isAbsolute(relative)
+    ? Path.join("~", relative)
+    : value;
+}
+
+/** Archived threads can be unarchived, so their logs go only with cleanup on. */
+const terminalLogsLabel = (includeArchived: boolean) =>
+  includeArchived ? "deleted and archived thread logs" : "deleted thread logs";
+
+const CODEX_LEFTOVER_MIN_AGE_HOURS = CODEX_MARKETPLACE_LEFTOVER_MIN_AGE_MS / (60 * 60 * 1_000);
 
 /** Which rule makes a worktree eligible, or null when none applies. */
 export function matchWorktreeCleanupRule(input: {
@@ -120,6 +161,8 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const git = yield* GitCore;
   const gitManager = yield* Effect.serviceOption(GitManager);
+  const storageMaintenance = yield* StorageMaintenance;
+  const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
 
   const canonical = (value: string) =>
     Effect.tryPromise(() => canonicalWorktreePath(value)).pipe(
@@ -404,6 +447,253 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
       }),
     );
 
+  const codexMarketplaceLeftovers = Effect.gen(function* () {
+    const settings = yield* settingsService.getSettings.pipe(Effect.orElseSucceed(() => null));
+    if (settings === null) return [] as ReadonlyArray<CodexMarketplaceLeftover>;
+    const homes = resolveCodexLaunchHomes({
+      settings,
+      profile: config.profile,
+      stateDir: config.stateDir,
+    });
+    return yield* Effect.promise(() => listCodexMarketplaceLeftovers({ homes, nowMs: Date.now() }));
+  });
+
+  const codexLeftoverDryRunTargets = (leftovers: ReadonlyArray<CodexMarketplaceLeftover>) => {
+    const byHome = new Map<string, number>();
+    for (const leftover of leftovers) {
+      byHome.set(leftover.home, (byHome.get(leftover.home) ?? 0) + 1);
+    }
+    return [...byHome].map(
+      ([home, count]): StorageAutomationTarget => ({
+        job: "codex-marketplace-staging",
+        target: redactHomePath(Path.join(home, ".tmp", "marketplaces")),
+        projectId: null,
+        threadId: null,
+        action: "remove",
+        reason: `${count} leftover marketplace upgrade dir(s) older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours`,
+      }),
+    );
+  };
+
+  const removeCodexMarketplaceLeftovers = (operationId: string) =>
+    Effect.gen(function* () {
+      const leftovers = yield* codexMarketplaceLeftovers;
+      for (const leftover of leftovers) {
+        const outcome = yield* Effect.promise(() => removeCodexMarketplaceLeftover(leftover));
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "codex-marketplace-staging",
+            target: redactHomePath(leftover.path),
+            result: outcome.warning ? "failed" : "removed",
+            reason: outcome.warning
+              ? outcome.warning.reason
+              : `${leftover.kind === "staging" ? "upgrade clone" : "upgrade backup"} older than ${CODEX_LEFTOVER_MIN_AGE_HOURS} hours; ${outcome.reclaimedBytes} bytes`,
+            // A dir that cannot be deleted fails again on every pass.
+          },
+          { skipIfRepeated: outcome.warning !== undefined },
+        ).pipe(Effect.provideServices(services));
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("codex marketplace staging cleanup failed", {
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
+
+  const logJobFailure =
+    (job: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A | void, never, R> =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning(`${job} failed`, { cause: Cause.pretty(cause) }),
+        ),
+      );
+
+  const daysAgoIso = (days: number) => new Date(Date.now() - days * DAY_MS).toISOString();
+
+  /** Retention cutoffs; archived threads are purged only with cleanup on. */
+  const purgeCutoffs = (settings: ServerSettings) => {
+    const deletedDays = settings.storageCleanup.deletedThreadsPurgeAfterDays;
+    const archivedDays = settings.storageCleanup.enabled
+      ? settings.storageCleanup.archivedThreadsPurgeAfterDays
+      : null;
+    return {
+      deletedDays,
+      archivedDays,
+      deletedBefore: deletedDays === null ? null : daysAgoIso(deletedDays),
+      archivedBefore: archivedDays === null ? null : daysAgoIso(archivedDays),
+    };
+  };
+
+  const purgeThreadDryRunTargets = (settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const cutoffs = purgeCutoffs(settings);
+      const threads = (yield* engine.getReadModel()).threads;
+      const deleted = threads.filter(
+        (thread) =>
+          cutoffs.deletedBefore !== null &&
+          thread.deletedAt !== null &&
+          thread.deletedAt <= cutoffs.deletedBefore,
+      ).length;
+      const archived = threads.filter(
+        (thread) =>
+          cutoffs.archivedBefore !== null &&
+          thread.deletedAt === null &&
+          thread.archivedAt !== null &&
+          thread.archivedAt <= cutoffs.archivedBefore,
+      ).length;
+      const targets: StorageAutomationTarget[] = [];
+      const target = (label: string, reason: string): StorageAutomationTarget => ({
+        job: "thread-purge",
+        target: label,
+        projectId: null,
+        threadId: null,
+        action: "remove",
+        reason,
+      });
+      if (deleted > 0) {
+        targets.push(
+          target(
+            "deleted threads",
+            `${deleted} thread(s) deleted more than ${cutoffs.deletedDays} days ago`,
+          ),
+        );
+      }
+      if (archived > 0) {
+        targets.push(
+          target(
+            "archived threads",
+            `${archived} thread(s) archived more than ${cutoffs.archivedDays} days ago`,
+          ),
+        );
+      }
+      return targets;
+    });
+
+  const purgeThreads = (operationId: string, settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const cutoffs = purgeCutoffs(settings);
+      if (cutoffs.deletedBefore === null && cutoffs.archivedBefore === null) return;
+      const result = yield* storageMaintenance.purgeThreads({
+        operationId,
+        deletedBefore: cutoffs.deletedBefore,
+        archivedBefore: cutoffs.archivedBefore,
+        maxThreads: PURGE_THREADS_PER_PASS,
+      });
+      const archived = new Set<string>(result.archivedThreadIds);
+      for (const threadId of result.purgedThreadIds) {
+        yield* recordStorageAutomationAudit({
+          operationId,
+          job: "thread-purge",
+          target: threadId,
+          threadId,
+          result: "removed",
+          reason: archived.has(threadId)
+            ? `archived more than ${cutoffs.archivedDays} days ago`
+            : `deleted more than ${cutoffs.deletedDays} days ago`,
+        });
+      }
+      for (const warning of result.warnings) {
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "thread-purge",
+            target: redactHomePath(warning.path),
+            result: "skipped",
+            reason: warning.reason,
+          },
+          { skipIfRepeated: true },
+        );
+      }
+    }).pipe(Effect.provideServices(services), logJobFailure("automatic thread purge"));
+
+  const pruneTerminalThreadLogs = (operationId: string, settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const days = settings.storageCleanup.terminalThreadLogsAfterDays;
+      if (days === null) return;
+      const includeArchived = settings.storageCleanup.enabled;
+      const result = yield* storageMaintenance.pruneTerminalThreadLogs({
+        operationId,
+        modifiedBefore: daysAgoIso(days),
+        includeArchived,
+      });
+      const removed = result.perTargetReclaimed.length;
+      if (removed === 0 && result.warnings.length === 0) return;
+      yield* recordStorageAutomationAudit(
+        {
+          operationId,
+          job: "provider-logs",
+          target: terminalLogsLabel(includeArchived),
+          result: result.warnings.length === 0 ? "removed" : "failed",
+          reason: `removed ${removed} file(s) (${result.reclaimedBytes} bytes) not written for ${days} days${
+            result.warnings.length > 0 ? `; ${result.warnings.length} could not be removed` : ""
+          }`,
+        },
+        { skipIfRepeated: removed === 0 },
+      );
+    }).pipe(Effect.provideServices(services), logJobFailure("terminal thread log cleanup"));
+
+  const compactDatabase = (operationId: string) =>
+    Effect.gen(function* () {
+      const compaction = yield* compactThreadEvents({
+        nowMs: Date.now(),
+        maxDurationMs: EVENT_COMPACTION_BUDGET_MS,
+      });
+      if (compaction.eventsRemoved > 0 || compaction.receiptsRemoved > 0) {
+        yield* recordStorageAutomationAudit({
+          operationId,
+          job: "event-compaction",
+          target: "orchestration events",
+          result: "removed",
+          reason: `compacted ${compaction.commandOutputsCompacted} command output(s) and ${compaction.messagesCompacted} message(s) in ${compaction.threadsCompacted} thread(s); removed ${compaction.eventsRemoved} event(s) and ${compaction.receiptsRemoved} receipt(s), about ${compaction.bytesRemoved} bytes`,
+        });
+      }
+      if (compaction.threadsFailed > 0 || compaction.groupsSkipped > 0) {
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "event-compaction",
+            target: "orchestration events",
+            result: "failed",
+            reason: `${compaction.threadsFailed} thread(s) failed and wait a day; ${compaction.groupsSkipped} group(s) with malformed payloads were left alone`,
+          },
+          { skipIfRepeated: true },
+        );
+      }
+      const space = yield* storageMaintenance.reclaimDatabaseSpace({
+        maxDurationMs: INCREMENTAL_VACUUM_BUDGET_MS,
+      });
+      if (space.action !== "none") {
+        yield* recordStorageAutomationAudit({
+          operationId,
+          job: "database-vacuum",
+          target: "state database",
+          result: "removed",
+          reason:
+            space.action === "converted"
+              ? `switched to incremental auto-vacuum; the file shrank by ${space.reclaimedBytes} bytes`
+              : `returned ${space.reclaimedBytes} free bytes to the file system`,
+        });
+      } else if (space.skippedReason !== undefined) {
+        yield* recordStorageAutomationAudit(
+          {
+            operationId,
+            job: "database-vacuum",
+            target: "state database",
+            result: "skipped",
+            reason: `switching to incremental auto-vacuum waits: ${space.skippedReason}`,
+          },
+          { skipIfRepeated: true },
+        );
+      }
+    }).pipe(Effect.provideServices(services), logJobFailure("database compaction"));
+
   const dryRun: StorageCleanupWorkerShape["dryRun"] = Effect.gen(function* () {
     const { global, evaluations } = yield* evaluateAll;
     const targets: StorageAutomationTarget[] = evaluations.flatMap((evaluation) =>
@@ -420,6 +710,27 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
           action: "remove",
           reason: `${logs.length} file(s) older than ${global.storageCleanup.providerLogsAfterDays} days`,
         });
+      }
+    }
+    targets.push(...codexLeftoverDryRunTargets(yield* codexMarketplaceLeftovers));
+    if (global !== null) {
+      targets.push(...(yield* purgeThreadDryRunTargets(global)));
+      const days = global.storageCleanup.terminalThreadLogsAfterDays;
+      if (days !== null) {
+        const includeArchived = global.storageCleanup.enabled;
+        const logs = yield* storageMaintenance
+          .listTerminalThreadLogs({ modifiedBefore: daysAgoIso(days), includeArchived })
+          .pipe(Effect.orElseSucceed(() => []));
+        if (logs.length > 0) {
+          targets.push({
+            job: "provider-logs",
+            target: terminalLogsLabel(includeArchived),
+            projectId: null,
+            threadId: null,
+            action: "remove",
+            reason: `${logs.length} file(s) not written for ${days} days`,
+          });
+        }
       }
     }
     return {
@@ -463,6 +774,16 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         }).pipe(Effect.provideServices(services));
       }
     }
+    // Runs regardless of `storageCleanup.enabled`: F5-spawned app-servers
+    // leave these behind and nothing else ever removes them.
+    yield* removeCodexMarketplaceLeftovers(operationId);
+    // Also regardless of `enabled`: each removes only data nothing can open,
+    // and purges run first so compaction and vacuum see their freed pages.
+    if (global !== null) {
+      yield* purgeThreads(operationId, global);
+      yield* pruneTerminalThreadLogs(operationId, global);
+    }
+    yield* compactDatabase(operationId);
     yield* pruneStorageAutomationAudit.pipe(Effect.provideServices(services));
     return results;
   }).pipe(
@@ -472,6 +793,11 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         : Effect.logWarning("storage cleanup pass failed", { cause: Cause.pretty(cause) }).pipe(
             Effect.as([] as StorageAutomationTarget[]),
           ),
+    ),
+    // Space a pass freed, even partway, releases held turns without waiting
+    // for the next periodic disk check.
+    Effect.ensuring(
+      diskSpaceMonitor._tag === "Some" ? diskSpaceMonitor.value.noteStorageChanged : Effect.void,
     ),
   );
 

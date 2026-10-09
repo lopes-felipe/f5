@@ -20,7 +20,10 @@ import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { prependCodexCliTelemetryDisabledConfig } from "../../provider/codexCliConfig.ts";
-import { resolveCodexLaunchArgv } from "../../provider/codexLaunchArgs.ts";
+import {
+  CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
+  resolveCodexLaunchArgv,
+} from "../../provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "../../providerProcessEnv.ts";
 import { resolveCodexHome } from "../../os-jank.ts";
 import { sanitizeThreadTitle } from "../../threadTitle.ts";
@@ -294,6 +297,10 @@ export const makeCodexTextGeneration = (
           }
           const args = prependCodexCliTelemetryDisabledConfig(
             [
+              // Text generation never uses plugins; skip plugin startup tasks
+              // such as the marketplace auto-upgrade, which leaks clones when
+              // the process ends before it finishes.
+              ...CODEX_PLUGINS_DISABLED_CONFIG_ARGS,
               ...launchArgs.argv,
               "exec",
               "--ephemeral",

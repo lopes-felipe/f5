@@ -4054,6 +4054,9 @@ describe("ChatView timeline (full app)", () => {
 
       expect(taskPanelButton.getAttribute("aria-expanded")).toBe("true");
       expect(taskPanelButton.textContent).toContain("1 active · 1 pending · 1 done");
+      // The panel is attached to the composer, not the top of the timeline.
+      expect(taskPanelButton.closest("[data-slot='composer-tray']")).not.toBeNull();
+      expect(taskPanelButton.closest("[data-slot='messages-scroll-container']")).toBeNull();
       expect(document.body.textContent).toContain("Implementing the task panel");
 
       taskPanelButton.click();
@@ -6306,8 +6309,8 @@ describe("ChatView timeline (full app)", () => {
   // Regression for the LegendList port: empty threads that happen to have
   // tracked tasks used to hide the tasks panel because the panel was handed
   // to LegendList's `ListHeaderComponent`, which never renders when the list
-  // has zero rows. The empty-state branch in MessagesTimeline must render
-  // `listHeaderContent` alongside the "send a message to start..." copy.
+  // has zero rows. The panel now lives in the composer tray; keep checking
+  // that it renders next to the "send a message to start..." copy.
   it("renders the tasks panel when the thread is empty but has tasks", async () => {
     const emptyThreadWithTasks: OrchestrationReadModel = {
       snapshotSequence: 1,

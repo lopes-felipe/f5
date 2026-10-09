@@ -20,6 +20,7 @@ import {
   ProjectSkill,
   TaskItem,
   ThreadCompaction,
+  ThreadTaskTracking,
   ThreadReference,
   ThreadSessionNotes,
   PlanningWorkflow,
@@ -119,6 +120,9 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     tasks: Schema.fromJsonString(Schema.Array(TaskItem)),
+    tasksTracking: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadTaskTracking))).pipe(
+      Schema.withDecodingDefault(() => null),
+    ),
     modelSelection: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.modelSelection)),
     compaction: Schema.NullOr(Schema.fromJsonString(ThreadCompaction)),
     sessionNotes: Schema.NullOr(Schema.fromJsonString(ThreadSessionNotes)),
@@ -167,6 +171,7 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession.mapFields(
   Struct.assign({
     usageLimit: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.usageLimit)),
+    capabilities: Schema.NullOr(Schema.fromJsonString(ProjectionThreadSession.fields.capabilities)),
   }),
 );
 const ProjectionCheckpointDbRowSchema = ProjectionCheckpoint.mapFields(
@@ -462,6 +467,7 @@ function buildThreadSnapshot(params: {
     tasks: detailRow?.tasks ?? [],
     tasksTurnId: detailRow?.tasksTurnId ?? null,
     tasksUpdatedAt: detailRow?.tasksUpdatedAt ?? null,
+    tasksTracking: detailRow?.tasksTracking ?? null,
     activities: params.activitiesByThread.get(row.threadId) ?? [],
     checkpoints: params.checkpointsByThread.get(row.threadId) ?? [],
     compaction: detailRow?.compaction ?? null,
@@ -486,6 +492,7 @@ function buildThreadDetailsResult(params: {
     tasks: params.thread?.tasks ?? [],
     tasksTurnId: params.thread?.tasksTurnId ?? null,
     tasksUpdatedAt: params.thread?.tasksUpdatedAt ?? null,
+    tasksTracking: params.thread?.tasksTracking ?? null,
     sessionNotes: params.thread?.sessionNotes ?? null,
     threadReferences: params.thread?.threadReferences ?? [],
     detailSequence: params.detailSequence,
@@ -701,6 +708,7 @@ function buildThreadTailDetailsResult(params: {
     tasks: params.thread?.tasks ?? [],
     tasksTurnId: params.thread?.tasksTurnId ?? null,
     tasksUpdatedAt: params.thread?.tasksUpdatedAt ?? null,
+    tasksTracking: params.thread?.tasksTracking ?? null,
     sessionNotes: params.thread?.sessionNotes ?? null,
     threadReferences: params.thread?.threadReferences ?? [],
     hasOlderMessages: params.hasOlderMessages,
@@ -867,6 +875,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           tasks_json AS "tasks",
           tasks_turn_id AS "tasksTurnId",
           tasks_updated_at AS "tasksUpdatedAt",
+          tasks_tracking_json AS "tasksTracking",
           compaction_json AS "compaction",
           session_notes_json AS "sessionNotes",
           thread_references_json AS "threadReferences",
@@ -1202,6 +1211,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
+          capabilities_json AS "capabilities",
           updated_at AS "updatedAt"
         FROM projection_thread_sessions
         ORDER BY thread_id ASC
@@ -2529,6 +2539,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ? { estimatedContextTokens: row.estimatedContextTokens }
             : {}),
           ...(row.tokenUsageSource !== null ? { tokenUsageSource: row.tokenUsageSource } : {}),
+          ...(row.capabilities ? { capabilities: row.capabilities } : {}),
           updatedAt: row.updatedAt,
         });
       }

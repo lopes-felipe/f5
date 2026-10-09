@@ -101,6 +101,8 @@ function createProviderServiceHarness(
     respondToUserInput: () => unsupported(),
     stopSession: () => unsupported(),
     listSessions,
+    getSessionCapabilities: () => Effect.succeed(null),
+    assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     readThread: () => unsupported(),
     rollbackConversation,

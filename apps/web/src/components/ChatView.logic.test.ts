@@ -25,6 +25,7 @@ import {
   identityAbsolutePathNormalizer,
   readAttachedFileAbsolutePath,
   resolveClaudeSubagentModel,
+  resolveComposerNativeSlashCommands,
   resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
@@ -317,6 +318,7 @@ describe("buildSlashComposerMenuItems", () => {
         label: "/review",
         description: "Review the diff",
         argumentHint: "<target>",
+        source: "session",
       },
     ]);
   });
@@ -345,6 +347,7 @@ describe("buildSlashComposerMenuItems", () => {
       label: "/review",
       description: "Review the diff",
       argumentHint: "<target>",
+      source: "project",
     });
   });
 
@@ -438,6 +441,7 @@ describe("buildSlashComposerMenuItems", () => {
         label: "/review",
         description: "Review the diff",
         argumentHint: null,
+        source: "session",
       },
     ]);
   });
@@ -462,6 +466,7 @@ describe("buildSlashComposerMenuItems", () => {
         label: "/review",
         description: "Review the diff",
         argumentHint: null,
+        source: "session",
       },
     ]);
   });
@@ -491,6 +496,7 @@ describe("buildSlashComposerMenuItems", () => {
         label: "/review",
         description: "Runtime review",
         argumentHint: null,
+        source: "session",
       },
     ]);
   });
@@ -1333,4 +1339,55 @@ it("does not suppress a native provider skill with a project entry excluded from
       providerSkills,
     }).text,
   ).toBe("$review");
+});
+
+describe("resolveComposerNativeSlashCommands", () => {
+  const instanceSlashCommands: ServerProvider["slashCommands"] = [
+    { name: "private-b", description: "Instance B command" },
+  ];
+
+  it("uses the live session catalog when the session belongs to the selected instance", () => {
+    expect(
+      resolveComposerNativeSlashCommands({
+        runtimeSlashCommands: [{ name: "private-a", description: "Session command" }],
+        sessionInstanceId: "claude-a",
+        selectedInstanceId: "claude-a",
+        instanceSlashCommands,
+      }),
+    ).toEqual({
+      commands: [{ name: "private-a", description: "Session command" }],
+      source: "session",
+    });
+  });
+
+  it("drops the previous instance's private catalog after switching instance", () => {
+    const resolved = resolveComposerNativeSlashCommands({
+      runtimeSlashCommands: [{ name: "private-a", description: "Session command" }],
+      sessionInstanceId: "claude-a",
+      selectedInstanceId: "claude-b",
+      instanceSlashCommands,
+    });
+    expect(resolved.source).toBe("instance");
+    expect(resolved.commands.map((command) => command.name)).toEqual(["private-b"]);
+    const items = buildSlashComposerMenuItems({
+      query: "",
+      runtimeSlashCommands: resolved.commands,
+      runtimeSlashCommandsSource: resolved.source,
+      provider: "claudeAgent",
+    });
+    expect(items.filter((item) => item.type === "skill").map((item) => item.name)).toEqual([
+      "private-b",
+    ]);
+  });
+
+  it("keeps host-reserved commands when the native catalog publishes the same name", () => {
+    const items = buildSlashComposerMenuItems({
+      query: "",
+      runtimeSlashCommands: [{ name: "model", description: "Native model picker" }],
+      provider: "claudeAgent",
+    });
+    expect(items.filter((item) => item.label === "/model")).toEqual([
+      expect.objectContaining({ type: "slash-command", command: "model" }),
+    ]);
+  });
 });

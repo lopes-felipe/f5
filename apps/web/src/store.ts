@@ -24,7 +24,7 @@ import {
   type TurnDiffSummary,
 } from "./types";
 import { Debouncer } from "@tanstack/react-pacer";
-import { applyDomainEvent } from "./applyDomainEvent";
+import { applyDomainEvent, taskItemsEqual } from "./applyDomainEvent";
 import {
   areUnknownEqual,
   arraysShallowEqual,
@@ -497,12 +497,7 @@ function mapTasksFromReadModel(
 
   const next = incoming.map((task) => {
     const existing = previousById.get(task.id);
-    if (
-      existing &&
-      existing.content === task.content &&
-      existing.activeForm === task.activeForm &&
-      existing.status === task.status
-    ) {
+    if (existing && taskItemsEqual(existing, task)) {
       return existing;
     }
     reusedAll = false;
@@ -594,6 +589,7 @@ type ThreadTailSource = {
   readonly tasks: OrchestrationThreadTailDetails["tasks"];
   readonly tasksTurnId: OrchestrationThreadTailDetails["tasksTurnId"];
   readonly tasksUpdatedAt: OrchestrationThreadTailDetails["tasksUpdatedAt"];
+  readonly tasksTracking?: OrchestrationThreadTailDetails["tasksTracking"];
   readonly sessionNotes?: OrchestrationThreadTailDetails["sessionNotes"];
   readonly threadReferences?: OrchestrationThreadTailDetails["threadReferences"];
   readonly hasOlderMessages: OrchestrationThreadTailDetails["hasOlderMessages"];
@@ -667,6 +663,7 @@ function preserveThreadDetailFields(
   | "tasks"
   | "tasksTurnId"
   | "tasksUpdatedAt"
+  | "tasksTracking"
   | "sessionNotes"
   | "threadReferences"
   | "history"
@@ -681,6 +678,7 @@ function preserveThreadDetailFields(
       tasks: existing.tasks,
       tasksTurnId: existing.tasksTurnId,
       tasksUpdatedAt: existing.tasksUpdatedAt,
+      tasksTracking: existing.tasksTracking ?? null,
       sessionNotes: existing.sessionNotes ?? null,
       threadReferences: existing.threadReferences ?? [],
       history: ensureThreadHistoryState(existing.history),
@@ -696,6 +694,7 @@ function preserveThreadDetailFields(
     tasks: [],
     tasksTurnId: null,
     tasksUpdatedAt: null,
+    tasksTracking: null,
     sessionNotes: null,
     threadReferences: [],
     history: createEmptyThreadHistoryState(ensureThreadHistoryState(existing?.history).generation),
@@ -714,6 +713,7 @@ function clearThreadDetailFields(
   | "tasks"
   | "tasksTurnId"
   | "tasksUpdatedAt"
+  | "tasksTracking"
   | "sessionNotes"
   | "threadReferences"
   | "history"
@@ -727,6 +727,7 @@ function clearThreadDetailFields(
     tasks: [],
     tasksTurnId: null,
     tasksUpdatedAt: null,
+    tasksTracking: null,
     sessionNotes: null,
     threadReferences: [],
     history: createEmptyThreadHistoryState(
@@ -914,6 +915,7 @@ function mapThreadTailFieldsFromReadModel(
   | "tasks"
   | "tasksTurnId"
   | "tasksUpdatedAt"
+  | "tasksTracking"
   | "sessionNotes"
   | "threadReferences"
   | "history"
@@ -945,6 +947,14 @@ function mapThreadTailFieldsFromReadModel(
     incoming.oldestLoadedCommandExecutionCursor,
   );
   const tasks = mapTasksFromReadModel(incoming.tasks, existing?.tasks ?? []);
+  // Snapshots carry a fresh tracking object; keep the old one when unchanged
+  // so threads are not rebuilt on every sync.
+  const tasksTracking = areUnknownEqual(
+    existing?.tasksTracking ?? null,
+    incoming.tasksTracking ?? null,
+  )
+    ? (existing?.tasksTracking ?? null)
+    : (incoming.tasksTracking ?? null);
   const sessionNotes = mapThreadSessionNotesFromReadModel(
     incoming.sessionNotes,
     existing?.sessionNotes,
@@ -995,6 +1005,7 @@ function mapThreadTailFieldsFromReadModel(
     existing.tasks === tasks &&
     existing.tasksTurnId === incoming.tasksTurnId &&
     existing.tasksUpdatedAt === incoming.tasksUpdatedAt &&
+    (existing.tasksTracking ?? null) === tasksTracking &&
     existing.sessionNotes === sessionNotes &&
     existing.threadReferences === threadReferences &&
     existingHistory.hasOlderMessages === hasOlderMessages &&
@@ -1018,6 +1029,7 @@ function mapThreadTailFieldsFromReadModel(
     tasks,
     tasksTurnId: incoming.tasksTurnId,
     tasksUpdatedAt: incoming.tasksUpdatedAt,
+    tasksTracking,
     sessionNotes,
     threadReferences,
     history: historyUnchanged
@@ -1053,6 +1065,7 @@ function buildThreadFromReadModel(
         | "tasks"
         | "tasksTurnId"
         | "tasksUpdatedAt"
+        | "tasksTracking"
         | "sessionNotes"
         | "threadReferences"
         | "history"
@@ -1147,6 +1160,7 @@ function buildThreadFromReadModel(
     existing.tasks === nextDetailFields.tasks &&
     existing.tasksTurnId === nextDetailFields.tasksTurnId &&
     existing.tasksUpdatedAt === nextDetailFields.tasksUpdatedAt &&
+    (existing.tasksTracking ?? null) === (nextDetailFields.tasksTracking ?? null) &&
     existing.sessionNotes === nextDetailFields.sessionNotes &&
     existing.threadReferences === nextDetailFields.threadReferences &&
     existing.history === nextDetailFields.history
@@ -1196,6 +1210,7 @@ function buildThreadFromReadModel(
     tasks: nextDetailFields.tasks,
     tasksTurnId: nextDetailFields.tasksTurnId,
     tasksUpdatedAt: nextDetailFields.tasksUpdatedAt,
+    tasksTracking: nextDetailFields.tasksTracking ?? null,
     sessionNotes: nextDetailFields.sessionNotes,
     threadReferences: nextDetailFields.threadReferences,
     history: nextDetailFields.history,
@@ -1375,6 +1390,7 @@ export function syncThreadTailDetails(
       thread.tasks === detailFields.tasks &&
       thread.tasksTurnId === detailFields.tasksTurnId &&
       thread.tasksUpdatedAt === detailFields.tasksUpdatedAt &&
+      (thread.tasksTracking ?? null) === (detailFields.tasksTracking ?? null) &&
       thread.sessionNotes === detailFields.sessionNotes &&
       thread.threadReferences === detailFields.threadReferences &&
       thread.history === detailFields.history
@@ -1391,6 +1407,7 @@ export function syncThreadTailDetails(
       tasks: detailFields.tasks,
       tasksTurnId: detailFields.tasksTurnId,
       tasksUpdatedAt: detailFields.tasksUpdatedAt,
+      tasksTracking: detailFields.tasksTracking ?? null,
       sessionNotes: detailFields.sessionNotes,
       threadReferences: detailFields.threadReferences,
       history: detailFields.history,
@@ -1856,6 +1873,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
           tasks: thread.tasks,
           tasksTurnId: thread.tasksTurnId,
           tasksUpdatedAt: thread.tasksUpdatedAt,
+          tasksTracking: thread.tasksTracking ?? null,
           hasOlderMessages: false,
           hasOlderCheckpoints: false,
           hasOlderActivities: false,

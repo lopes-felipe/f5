@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildClaudeAssistantInstructions,
+  buildClaudePlanModeInstructions,
   buildCodexAssistantInstructions,
   buildInstructionProfile,
   buildSharedAssistantContractText,
@@ -242,15 +243,50 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("## Claude Runtime Notes");
     expect(text).toContain("planning-workflow role");
     expect(text).toContain("prior-work summary");
-    expect(text).toContain("use the TodoWrite tool to track progress");
+    expect(text).toContain("track progress with the task-tracking tools available");
+    expect(text).toContain("TaskCreate/TaskUpdate/TaskList, or TodoWrite");
+    expect(text).not.toContain("exactly one task in_progress");
     expect(text).toContain('subagent_type: "Explore"');
     expect(text).toContain("smart colleague who just walked into the room");
     expect(text).toContain("Never delegate understanding");
     expect(text).toContain("Do not peek at a forked agent's transcript");
     expect(text).toContain("Do not race or fabricate sub-agent results");
     expect(text).toContain("verification-focused sub-agent");
-    expect(text).toContain("# Plan Mode (Conversational)");
-    expect(text).toContain("request_user_input");
+    // Plan instructions travel as SDK planModeInstructions, not in the append,
+    // so the append is identical for plan and default sessions.
+    expect(text).not.toContain("# Plan Mode (Conversational)");
+    expect(text).toContain("F5 switches between Default and Plan mode");
+    expect(text).toBe(
+      buildClaudeAssistantInstructions({
+        interactionMode: "default",
+        runtimeMode: "full-access",
+        projectTitle: "F3 Code",
+        threadTitle: "Prompt improvements",
+        turnCount: 3,
+        priorWorkSummary: "Summary:\n1. Implemented phase 4 scaffolding",
+        restoredRecentFileRefs: ["apps/server/src/orchestration/decider.ts"],
+        restoredActivePlan: "1. Add compaction worker\n2. Wire Claude restore prompt",
+        restoredTasks: ["[in_progress] Finish phase 4"],
+        projectMemories: [
+          {
+            id: "memory-1",
+            projectId: "project-1" as never,
+            scope: "user",
+            type: "feedback",
+            name: "Avoid extra comments",
+            description: "Keep explanations terse.",
+            body: "Do not add unnecessary comments.",
+            createdAt: "2026-04-01T12:00:00.000Z",
+            updatedAt: "2026-04-02T12:00:00.000Z",
+            deletedAt: null,
+          },
+        ],
+        cwd: "/tmp/f3-code",
+        currentDate: "2026-04-03",
+        model: "claude-sonnet-4-6",
+        effort: "max",
+      }),
+    );
     expect(text).toContain("## F5 Runtime Context");
     expect(text).toContain("## Project Memory");
     expect(text).toContain("### Types of memory");
@@ -298,11 +334,13 @@ describe("sharedAssistantContract", () => {
     // must override that, so the host contract has to come last (recency).
     // Regression: merge/revision turns were killed because the model followed
     // plan mode's "ask early" guidance over a single earlier "never ask" line.
-    for (const build of [buildClaudeAssistantInstructions, buildCodexAssistantInstructions]) {
-      const text = build({
+    for (const text of [
+      buildClaudePlanModeInstructions({ workflowExecutionProfile: "unattended-readonly" }),
+      buildCodexAssistantInstructions({
         interactionMode: "plan",
         workflowExecutionProfile: "unattended-readonly",
-      });
+      }),
+    ]) {
       const modeIndex = text.indexOf("Plan Mode (Conversational)");
       const contractIndex = text.indexOf("# Workflow Read-Only Host Contract");
       expect(modeIndex).toBeGreaterThanOrEqual(0);
@@ -341,7 +379,9 @@ describe("sharedAssistantContract", () => {
       model: "claude-sonnet-4-6",
     });
 
-    expect(text).toContain("# Collaboration Mode: Default");
+    expect(text).toContain("F5 switches between Default and Plan mode");
+    // Codex-only collaboration_mode wording would contradict Claude's native plan reminder.
+    expect(text).not.toContain("# Collaboration Mode: Default");
     expect(text).not.toContain("# Plan Mode (Conversational)");
   });
 
@@ -413,7 +453,7 @@ describe("sharedAssistantContract", () => {
   it("exposes stable version metadata", () => {
     expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v5");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v11");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v12");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
       contractVersion: "v5",
       providerSupplementVersion: "v4",
@@ -421,8 +461,26 @@ describe("sharedAssistantContract", () => {
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
       contractVersion: "v5",
-      providerSupplementVersion: "v11",
+      providerSupplementVersion: "v12",
       strategy: "claude.append_system_prompt",
     });
+  });
+
+  it("builds Claude plan-mode instructions with tool mapping and the host contract last", () => {
+    const plain = buildClaudePlanModeInstructions({});
+    expect(plain).toContain("# Plan Mode (Conversational)");
+    expect(plain).toContain("means the AskUserQuestion tool");
+    expect(plain).toContain("ExitPlanMode");
+    expect(plain).not.toContain("# Workflow Read-Only Host Contract");
+    // Claude Code adds its own wrapper; F5 must not add a second heading.
+    expect(plain.startsWith("# Plan Mode (Conversational)")).toBe(true);
+
+    const attended = buildClaudePlanModeInstructions({
+      workflowExecutionProfile: "attended-readonly",
+    });
+    expect(attended).toContain("Clarifying questions are supported");
+    expect(attended.indexOf("# Workflow Read-Only Host Contract")).toBeGreaterThan(
+      attended.indexOf("means the AskUserQuestion tool"),
+    );
   });
 });

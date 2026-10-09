@@ -191,3 +191,39 @@ describe("areProviderStartOptionsEqual with launchArgs", () => {
     expect(areProviderStartOptionsEqual(left, right)).toBe(false);
   });
 });
+
+describe("Claude thinking launch identity", () => {
+  const legacy = {
+    claudeAgent: {
+      binaryPath: "/usr/local/bin/claude",
+      permissionMode: "plan",
+      maxThinkingTokens: 2048,
+    },
+  };
+  // Golden: produced by the pre-Release-1 implementation. Changing it would
+  // restart every session that uses the legacy input.
+  const LEGACY_KEY =
+    "claudeAgent|binary:/usr/local/bin/claude|permission:plan|maxThinkingTokens:2048|subagentsEnabled:|subagentModel:|launchArgs:";
+
+  it("keeps the exact legacy environment key", () => {
+    expect(getProviderEnvironmentKey("claudeAgent", legacy)).toBe(LEGACY_KEY);
+    expect(normalizeProviderStartOptions("claudeAgent", legacy)?.claudeAgent).toEqual(
+      legacy.claudeAgent,
+    );
+  });
+
+  it("appends a deterministic component only for typed thinking", () => {
+    const typed = (thinking: object) =>
+      getProviderEnvironmentKey("claudeAgent", {
+        claudeAgent: { ...legacy.claudeAgent, thinking } as never,
+      });
+    expect(typed({ type: "adaptive" })).toBe(`${LEGACY_KEY}|thinking:adaptive:`);
+    expect(typed({ type: "enabled", budgetTokens: 900, display: "omitted" })).toBe(
+      `${LEGACY_KEY}|thinking:enabled:900:omitted`,
+    );
+    expect(typed({ type: "disabled" })).toBe(`${LEGACY_KEY}|thinking:disabled`);
+    // Malformed values are dropped rather than producing a new identity.
+    expect(typed({ type: "enabled", budgetTokens: 0 })).toBe(LEGACY_KEY);
+    expect(typed({ type: "bogus" })).toBe(LEGACY_KEY);
+  });
+});
