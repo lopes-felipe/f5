@@ -40,10 +40,13 @@ export function moveItemInOrder(
   return next;
 }
 
-/** The usage-limit card owns a pending auto-continue, so the queue does not list it twice. */
-export function isFoldedUsageLimitItem(item: NextTurnQueueItem, fold: boolean): boolean {
+/** The usage-limit card shows this pending continue, so the queue does not list it twice. */
+export function isFoldedUsageLimitItem(
+  item: NextTurnQueueItem,
+  foldedItemId: CommandId | null,
+): boolean {
   return (
-    fold &&
+    item.itemId === foldedItemId &&
     item.scheduleReason === "usage_limit_reset" &&
     (item.status === "queued" || item.status === "dispatching")
   );

@@ -13,20 +13,28 @@ import {
 } from "./NextTurnQueuePanel.logic";
 
 describe("isFoldedUsageLimitItem", () => {
+  const folded = CommandId.makeUnsafe("folded");
   const item = (
     scheduleReason: NextTurnQueueItem["scheduleReason"],
     status: NextTurnQueueItem["status"],
-  ) => ({ scheduleReason, status }) as NextTurnQueueItem;
+    itemId = folded,
+  ) => ({ itemId, scheduleReason, status }) as NextTurnQueueItem;
 
-  it("folds a pending usage-limit continue only while the card shows it", () => {
-    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "queued"), true)).toBe(true);
-    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "dispatching"), true)).toBe(true);
-    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "queued"), false)).toBe(false);
+  it("folds only the pending continue the card shows", () => {
+    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "queued"), folded)).toBe(true);
+    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "dispatching"), folded)).toBe(true);
+    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "queued"), null)).toBe(false);
+    expect(
+      isFoldedUsageLimitItem(
+        item("usage_limit_reset", "queued", CommandId.makeUnsafe("leftover")),
+        folded,
+      ),
+    ).toBe(false);
   });
 
   it("keeps failed continues and ordinary turns visible", () => {
-    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "failed"), true)).toBe(false);
-    expect(isFoldedUsageLimitItem(item(undefined, "queued"), true)).toBe(false);
+    expect(isFoldedUsageLimitItem(item("usage_limit_reset", "failed"), folded)).toBe(false);
+    expect(isFoldedUsageLimitItem(item(undefined, "queued"), folded)).toBe(false);
   });
 });
 

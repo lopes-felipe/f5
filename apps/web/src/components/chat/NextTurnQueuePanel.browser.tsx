@@ -117,15 +117,20 @@ describe("NextTurnQueuePanel", () => {
         },
       ],
     });
-    active = await render(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume />);
+    active = await render(
+      <NextTurnQueuePanel
+        threadId={threadId}
+        foldedItemId={CommandId.makeUnsafe("usage-resume")}
+      />,
+    );
     await expect.element(page.getByLabelText("Queued turns")).not.toBeInTheDocument();
 
-    await active.rerender(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume={false} />);
+    await active.rerender(<NextTurnQueuePanel threadId={threadId} foldedItemId={null} />);
     await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
     await expect.element(page.getByText(/^Continues after usage limit resets/)).toBeInTheDocument();
   });
 
-  it("keeps a folded usage-limit continue when clearing the listed turns", async () => {
+  it("keeps a folded usage-limit continue in place on move to top and clear", async () => {
     const threadId = ThreadId.makeUnsafe("queue-thread-usage-limit-clear");
     const item = (id: string, text: string, scheduleReason?: "usage_limit_reset") => ({
       itemId: CommandId.makeUnsafe(id),
@@ -168,19 +173,34 @@ describe("NextTurnQueuePanel", () => {
       items: [
         item("usage-resume", "continue", "usage_limit_reset"),
         item("follow-up", "Run the follow-up"),
+        item("second", "Run the second turn"),
       ],
     };
     const clear = vi.fn().mockResolvedValue({ snapshot, removed: [] });
-    nativeApiMock.current = { nextTurnQueue: { clear } };
+    const reorder = vi.fn().mockResolvedValue(snapshot);
+    nativeApiMock.current = { nextTurnQueue: { clear, reorder } };
     useNextTurnQueueStore.getState().applySnapshot(snapshot);
-    active = await render(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume />);
+    active = await render(
+      <NextTurnQueuePanel
+        threadId={threadId}
+        foldedItemId={CommandId.makeUnsafe("usage-resume")}
+      />,
+    );
 
-    await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+    await expect.element(page.getByText("Next turns (2)")).toBeInTheDocument();
+    await page.getByRole("button", { name: "Move queued turn to top" }).nth(1).click();
+    expect(reorder).toHaveBeenCalledWith({
+      threadId,
+      orderedItemIds: ["usage-resume", "second", "follow-up"],
+      expectedRevision: 3,
+    });
+
     await page.getByRole("button", { name: "Clear", exact: true }).click();
     expect(clear).toHaveBeenCalledWith({
       threadId,
-      scope: "except_usage_limit_resume",
+      scope: "all",
       expectedRevision: 3,
+      keepItemIds: ["usage-resume"],
     });
   });
 

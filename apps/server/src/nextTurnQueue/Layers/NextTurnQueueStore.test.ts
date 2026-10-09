@@ -451,7 +451,7 @@ layer("NextTurnQueueStore", (it) => {
     }),
   );
 
-  it.effect("clears the other turns but keeps a scheduled usage-limit continue", () =>
+  it.effect("clears the other turns but keeps the items it was asked to keep", () =>
     Effect.gen(function* () {
       const store = yield* NextTurnQueueStore;
       const threadId = ThreadId.makeUnsafe("usage-resume-clear");
@@ -471,8 +471,9 @@ layer("NextTurnQueueStore", (it) => {
       const before = yield* store.listByThread(threadId);
       const removed = yield* store.clear({
         threadId,
-        scope: "except_usage_limit_resume",
+        scope: "all",
         expectedRevision: before.state.revision,
+        keepItemIds: [input.itemId],
       });
       assert.equal(removed.length, 1);
       assert.notEqual(removed[0]?.itemId, input.itemId);

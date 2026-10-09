@@ -259,9 +259,10 @@ export type NextTurnQueueRefreshGateInput = typeof NextTurnQueueRefreshGateInput
 
 export const NextTurnQueueClearInput = Schema.Struct({
   threadId: ThreadId,
-  /** `except_usage_limit_resume` keeps a pending usage-limit continue and its schedule. */
-  scope: Schema.Literals(["all", "failed", "except_usage_limit_resume"]),
+  scope: Schema.Literals(["all", "failed"]),
   expectedRevision: NonNegativeInt,
+  /** Items to leave in place, e.g. a continue the usage-limit card is showing instead. */
+  keepItemIds: Schema.optional(Schema.Array(CommandId)),
 });
 export type NextTurnQueueClearInput = typeof NextTurnQueueClearInput.Type;
 

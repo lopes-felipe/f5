@@ -337,6 +337,7 @@ import { LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
 import { useDiskSpaceStatus } from "../hooks/useDiskSpaceStatus";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
 import { UsageLimitNotice } from "./chat/UsageLimitNotice";
+import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
@@ -6647,7 +6648,11 @@ export default function ChatView({
     activeThread.error && activeThread.session?.lastError === activeThread.error
       ? (activeThread.session.usageLimit ?? null)
       : null;
-  if (activeThread.error) {
+  const usageLimitNotice = activeUsageLimit
+    ? resolveUsageLimitNotice(activeUsageLimit, nextTurnQueueState.snapshot)
+    : null;
+  // A sent continue leaves nothing to show; skip the slot instead of stacking an empty row.
+  if (activeThread.error && !usageLimitNotice?.hidden) {
     threadNotices.push({
       id: "thread-error",
       content: activeUsageLimit ? (
@@ -7084,7 +7089,7 @@ export default function ChatView({
                           activeProviderStatus?.runtimeCapabilities?.turnSteering === true,
                         )}
                         threadId={activeThread.id}
-                        foldUsageLimitResume={activeUsageLimit !== null}
+                        foldedItemId={usageLimitNotice?.foldedItemId ?? null}
                         provider={selectedProvider}
                         runtimeSlashCommands={composerNativeSlashCommands.commands}
                         projectSkills={activeProject?.skills}

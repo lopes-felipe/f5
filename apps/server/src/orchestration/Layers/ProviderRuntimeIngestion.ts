@@ -36,7 +36,6 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSessionCapabilities,
   type OrchestrationUsageLimit,
-  PROVIDER_DISPLAY_NAMES,
 } from "@t3tools/contracts";
 import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -1042,12 +1041,13 @@ function usageLimitActivityPayload(
   event: ProviderRuntimeEvent,
   windowLabel: string | null,
   resetsAt: string | null,
-): { providerLabel: string; windowLabel: string | null; resetsAt: string | null } {
-  return {
-    providerLabel: PROVIDER_DISPLAY_NAMES[event.provider] ?? event.provider,
-    windowLabel,
-    resetsAt,
-  };
+): {
+  provider: ProviderRuntimeEvent["provider"];
+  windowLabel: string | null;
+  resetsAt: string | null;
+} {
+  // Store the provider kind; the client looks up its current display name.
+  return { provider: event.provider, windowLabel, resetsAt };
 }
 
 function usageLimitFromRuntimeError(

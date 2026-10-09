@@ -1,5 +1,4 @@
 import type { OrchestrationUsageLimit, ThreadId } from "@t3tools/contracts";
-import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 export { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { ChevronDownIcon, EllipsisIcon, InfoIcon, PauseIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -13,6 +12,7 @@ import { Button } from "../ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { resolveUsageLimitNotice } from "./UsageLimitNotice.logic";
 
 /** Re-renders every 30s until the reset passes so the countdown stays current. */
 function useCountdown(resetsAt: string | null): string | null {
@@ -49,15 +49,7 @@ export function UsageLimitNotice({
   const [picker, setPicker] = useState(false);
   const [target, setTarget] = useState(() => new Date(Date.now() + 3_600_000).toISOString());
   const countdown = useCountdown(limit.resetsAt);
-  const limitKey = usageLimitFailureKey(limit);
-  const ledger =
-    snapshot?.usageLimitResume?.limitKey === limitKey ? snapshot.usageLimitResume : null;
-  const item = ledger
-    ? snapshot?.items.find(
-        (candidate) =>
-          candidate.itemId === ledger.itemId && candidate.scheduleReason === "usage_limit_reset",
-      )
-    : undefined;
+  const { limitKey, ledger, item, hidden } = resolveUsageLimitNotice(limit, snapshot);
 
   useEffect(() => {
     let disposed = false;
@@ -111,10 +103,9 @@ export function UsageLimitNotice({
   const scheduled = item?.status === "queued";
   const sending = item?.status === "dispatching";
   const failed = item?.status === "failed";
-  const continued = ledger?.state === "completed" || (ledger?.state === "scheduled" && !item);
   const delivered = limit.deliveryId !== null;
 
-  if (!delivered && !sending && !scheduled && !failed && continued) return null;
+  if (hidden) return null;
 
   const scheduledTime = scheduled
     ? formatUsageResumeTime(item.notBefore ?? limit.resetsAt ?? target)
@@ -147,8 +138,14 @@ export function UsageLimitNotice({
           <p className="text-foreground">Continuing…</p>
         ) : resetTime ? (
           <p className="text-foreground">
-            Resets {resetTime}
-            {countdown ? <span className="text-muted-foreground"> · {countdown}</span> : null}
+            {countdown ? (
+              <>
+                Resets {resetTime}
+                <span className="text-muted-foreground"> · {countdown}</span>
+              </>
+            ) : (
+              `Limit reset at ${resetTime}`
+            )}
           </p>
         ) : (
           <p>{providerLabel} didn&apos;t say when the limit resets</p>

@@ -4278,7 +4278,7 @@ describe("ProviderRuntimeIngestion", () => {
         (activity: ProviderRuntimeTestActivity) => activity.id === "evt-limit-error",
       ),
     );
-    const expected = { providerLabel: "Claude", windowLabel: "5-hour", resetsAt };
+    const expected = { provider: "claudeAgent", windowLabel: "5-hour", resetsAt };
     expect(
       thread.activities.find((activity) => activity.id === "evt-limit-warning")?.payload,
     ).toMatchObject({ usageLimit: expected });

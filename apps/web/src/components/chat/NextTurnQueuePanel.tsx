@@ -65,12 +65,12 @@ export function NextTurnQueuePanel({
   projectSkills,
   turnSteering = false,
   variant = "standalone",
-  foldUsageLimitResume = false,
+  foldedItemId = null,
 }: {
   readonly variant?: ComposerPanelVariant;
   readonly threadId: ThreadId;
-  /** True while the usage-limit card shows the pending auto-continue. */
-  readonly foldUsageLimitResume?: boolean;
+  /** The pending continue the usage-limit card shows instead of this list. */
+  readonly foldedItemId?: CommandId | null;
   readonly turnSteering?: boolean | undefined;
   readonly provider?: ProviderKind | null;
   readonly runtimeSlashCommands?: CompactRuntimeConfiguredActivityPayload["slashCommands"] | null;
@@ -152,10 +152,10 @@ export function NextTurnQueuePanel({
     () =>
       new Set(
         snapshot?.items
-          .filter((item) => isFoldedUsageLimitItem(item, foldUsageLimitResume))
+          .filter((item) => isFoldedUsageLimitItem(item, foldedItemId))
           .map((item) => item.itemId) ?? [],
       ),
-    [foldUsageLimitResume, snapshot?.items],
+    [foldedItemId, snapshot?.items],
   );
   const visibleOrder = order.filter((itemId) => !hiddenIds.has(itemId));
   const orderedItems = visibleOrder.flatMap((itemId) => {
@@ -327,9 +327,10 @@ export function NextTurnQueuePanel({
                 void api.nextTurnQueue
                   .clear({
                     threadId,
-                    // The card owns a folded continue; Clear only removes the listed turns.
-                    scope: hiddenIds.size > 0 ? "except_usage_limit_resume" : "all",
+                    scope: "all",
                     expectedRevision: snapshot.revision,
+                    // The card owns a folded continue; Clear only removes the listed turns.
+                    ...(hiddenIds.size > 0 ? { keepItemIds: [...hiddenIds] } : {}),
                   })
                   .then((result) => {
                     applySnapshot(result.snapshot);
@@ -535,9 +536,9 @@ export function NextTurnQueuePanel({
                   onMoveToTop={async (candidate) => {
                     const next = [
                       candidate.itemId,
-                      ...order.filter((itemId) => itemId !== candidate.itemId),
+                      ...visibleOrder.filter((itemId) => itemId !== candidate.itemId),
                     ];
-                    await reorder(next);
+                    await reorder(mergeVisibleOrder(order, hiddenIds, next));
                   }}
                   canSteer={
                     turnSteering &&

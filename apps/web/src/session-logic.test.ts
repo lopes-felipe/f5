@@ -1048,7 +1048,7 @@ describe("deriveWorkLogEntries", () => {
 
   describe("usage limits", () => {
     const resetsAt = "2026-10-08T18:10:00.000Z";
-    const usageLimit = { providerLabel: "Claude", windowLabel: "5-hour", resetsAt };
+    const usageLimit = { provider: "claudeAgent", windowLabel: "5-hour", resetsAt };
     const message = `Claude 5-hour usage limit reached. Resets at ${resetsAt}.`;
 
     it("merges the warning and the turn error into one neutral row in local time", () => {
@@ -1096,7 +1096,7 @@ describe("deriveWorkLogEntries", () => {
           turnId: "turn-multi",
           payload: {
             message,
-            usageLimit: { providerLabel: "Claude", windowLabel, resetsAt: reset },
+            usageLimit: { provider: "claudeAgent", windowLabel, resetsAt: reset },
           },
         });
       const warnings = [
@@ -1119,7 +1119,7 @@ describe("deriveWorkLogEntries", () => {
             turnId: "turn-multi",
             payload: {
               message,
-              usageLimit: { providerLabel: "Claude", windowLabel: "7-day", resetsAt: weeklyReset },
+              usageLimit: { provider: "claudeAgent", windowLabel: "7-day", resetsAt: weeklyReset },
             },
           }),
         ],
@@ -1141,7 +1141,7 @@ describe("deriveWorkLogEntries", () => {
             turnId: "turn-codex",
             payload: {
               message: "Codex usage limit reached.",
-              usageLimit: { providerLabel: "Codex", windowLabel: null, resetsAt: null },
+              usageLimit: { provider: "codex", windowLabel: null, resetsAt: null },
             },
           }),
         ],

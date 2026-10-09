@@ -163,6 +163,12 @@ describe("UsageLimitNotice", () => {
     await expect.element(page.getByText(/^Resets .* · in 1h 39m$/)).toBeInTheDocument();
   });
 
+  it("says the limit has reset once the reset time has passed", async () => {
+    active = await renderNotice({ resetsAt: new Date(Date.now() - 60_000).toISOString() });
+    await expect.element(page.getByText(/^Limit reset at /)).toBeInTheDocument();
+    await expect.element(page.getByText(/^Resets /)).not.toBeInTheDocument();
+  });
+
   it("toggles the global auto-continue default from the overflow menu", async () => {
     active = await renderNotice();
     await page.getByRole("button", { name: "Usage limit options" }).click();

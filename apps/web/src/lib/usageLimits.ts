@@ -1,4 +1,4 @@
-import type { UsageAccounts } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type UsageAccounts } from "@t3tools/contracts";
 
 /** Local clock time; adds the date only when it is not today. */
 export function formatUsageResumeTime(value: string, now = new Date()): string {
@@ -21,7 +21,7 @@ export function formatTimeUntil(value: string, nowMs = Date.now()): string | nul
   return hours > 0 ? `in ${hours}h ${minutes % 60}m` : `in ${minutes}m`;
 }
 
-/** Display fields the server adds to usage-limit warning and error activities. */
+/** Display fields derived from the server's usage-limit activity payload. */
 export interface UsageLimitActivityDisplay {
   readonly providerLabel: string;
   readonly windowLabel: string | null;
@@ -31,9 +31,11 @@ export interface UsageLimitActivityDisplay {
 export function readUsageLimitActivityDisplay(value: unknown): UsageLimitActivityDisplay | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (typeof record.providerLabel !== "string") return null;
+  if (typeof record.provider !== "string") return null;
   return {
-    providerLabel: record.providerLabel,
+    providerLabel:
+      (PROVIDER_DISPLAY_NAMES as Partial<Record<string, string>>)[record.provider] ??
+      record.provider,
     windowLabel: typeof record.windowLabel === "string" ? record.windowLabel : null,
     resetsAt: typeof record.resetsAt === "string" ? record.resetsAt : null,
   };
