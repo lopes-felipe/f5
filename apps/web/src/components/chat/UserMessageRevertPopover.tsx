@@ -1,4 +1,6 @@
-import { memo, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { NativeFileRewindPreview, ThreadId } from "@t3tools/contracts";
+import { readNativeApi } from "../../nativeApi";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { InfoIcon, Undo2Icon } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -35,6 +37,8 @@ export interface UserMessageRevertPopoverProps {
   /** Why revert is unavailable right now; the trigger stays visible and explains it. */
   disabledReason: string | null;
   canRestoreFiles: boolean;
+  nativeFileRevert?: boolean | undefined;
+  nativeFileTarget?: { threadId: ThreadId; turnId: string; generation: number } | undefined;
   impact: RevertImpact | null;
   /** Forces the files choice, e.g. when reopened from a "Revert keeping files" toast. */
   presetRestoreFiles?: boolean | undefined;
@@ -48,11 +52,51 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
   onOpenChange,
   disabledReason,
   canRestoreFiles,
+  nativeFileRevert,
+  nativeFileTarget,
   impact,
   presetRestoreFiles,
   preferenceKey,
   onConfirm,
 }: UserMessageRevertPopoverProps) {
+  const [nativePreview, setNativePreview] = useState<NativeFileRewindPreview | null>(null);
+  const [nativePreviewError, setNativePreviewError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !nativeFileRevert || !nativeFileTarget) return;
+    let current = true;
+    setNativePreview(null);
+    setNativePreviewError(null);
+    const api = readNativeApi()?.nativeOperations;
+    if (!api) {
+      setNativePreviewError("File preview is unavailable.");
+      return;
+    }
+    void api
+      .inspect({
+        threadId: nativeFileTarget.threadId,
+        generation: nativeFileTarget.generation,
+        kind: "filePreview",
+        nativeId: nativeFileTarget.turnId,
+      })
+      .then(
+        (result) => {
+          if (current) setNativePreview(result as NativeFileRewindPreview);
+        },
+        (cause) => {
+          if (current)
+            setNativePreviewError(cause instanceof Error ? cause.message : "File preview failed.");
+        },
+      );
+    return () => {
+      current = false;
+    };
+  }, [
+    open,
+    nativeFileRevert,
+    nativeFileTarget?.threadId,
+    nativeFileTarget?.turnId,
+    nativeFileTarget?.generation,
+  ]);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [restoreFiles, setRestoreFiles] = useState(false);
   // Only an explicit pick is remembered. A forced "keep" (no worktree) or a
@@ -69,7 +113,12 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
     setRestoreFiles(presetRestoreFiles ?? readRestoreFilesPreference(preferenceKey));
   }, [open, presetRestoreFiles, preferenceKey]);
 
+  const nativeRestoreBlocked =
+    nativeFileRevert &&
+    effectiveRestoreFiles &&
+    (!nativePreview?.canRewind || !!nativePreview.error || !!nativePreviewError);
   const confirm = () => {
+    if (disabled || nativeRestoreBlocked) return;
     if (userChoseRef.current) writeRestoreFilesPreference(preferenceKey, effectiveRestoreFiles);
     onOpenChange(false);
     onConfirm(effectiveRestoreFiles);
@@ -163,10 +212,22 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
               </Toggle>
             </ToggleGroup>
             <p className="text-muted-foreground text-xs" aria-live="polite">
-              {describeRevertFiles(impact, effectiveRestoreFiles)}
+              {nativeFileRevert && effectiveRestoreFiles
+                ? "Restores only files Claude changed through its edit tools. Bash and manual changes are not restored."
+                : describeRevertFiles(impact, effectiveRestoreFiles)}
               {canRestoreFiles ? null : " Restoring files needs an isolated worktree."}
             </p>
           </div>
+          {nativeFileRevert && effectiveRestoreFiles && (
+            <p className="text-xs" aria-live="polite">
+              {nativePreviewError ??
+                (nativePreview
+                  ? nativePreview.canRewind
+                    ? `${nativePreview.filesChanged?.join(", ") || "No tracked changes"} · +${nativePreview.insertions ?? 0} −${nativePreview.deletions ?? 0}`
+                    : (nativePreview.error ?? "This turn has no native file checkpoint.")
+                  : "Loading native file preview…")}
+            </p>
+          )}
           <p className="flex items-start gap-1.5 rounded-md bg-muted/50 px-2 py-1.5 text-muted-foreground text-xs">
             <InfoIcon aria-hidden="true" className="mt-px size-3.5 shrink-0" />
             Your prompt is saved so you can edit and resend it.
@@ -181,7 +242,13 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
             >
               Cancel
             </Button>
-            <Button type="button" size="xs" data-revert-confirm="" onClick={confirm}>
+            <Button
+              type="button"
+              size="xs"
+              data-revert-confirm=""
+              disabled={disabled || !!nativeRestoreBlocked}
+              onClick={confirm}
+            >
               Revert
               <Kbd className="h-4 min-w-4 bg-primary-foreground/15 text-2xs text-primary-foreground">
                 ↵

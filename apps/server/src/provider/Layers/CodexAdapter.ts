@@ -1317,6 +1317,36 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (
+    ["thread/attachment/updated", "thread/goal/updated", "thread/goal/cleared"].includes(
+      event.method ?? "",
+    )
+  ) {
+    const metadata =
+      event.method === "thread/attachment/updated"
+        ? {
+            nativeAttachment: {
+              attachmentId: payload?.attachmentId,
+              attachmentType: payload?.attachmentType,
+              identityKey: payload?.identityKey,
+              operation: payload?.operation,
+              source: "codex",
+            },
+          }
+        : { nativeGoal: event.method === "thread/goal/cleared" ? null : payload?.goal };
+    return [
+      {
+        type: "thread.metadata.updated",
+        ...runtimeEventBase(event, canonicalThreadId),
+        raw: {
+          source: "codex.app-server.notification",
+          method: event.method ?? "native/metadata",
+          payload: metadata,
+        },
+        payload: { metadata },
+      },
+    ];
+  }
   if (event.method === "thread/name/updated") {
     return [
       {
@@ -2812,6 +2842,26 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      executeNativeOperation: (input, onReceipt) =>
+        Effect.tryPromise({
+          try: (signal) => manager.executeNativeOperation(input, onReceipt, signal),
+          catch: (cause) => toRequestError(input.threadId, input.command.kind, cause),
+        }),
+      inspectNativeOperation: (input) =>
+        Effect.tryPromise({
+          try: () => manager.inspectNativeOperation(input),
+          catch: (cause) => toRequestError(input.threadId, "inspect", cause),
+        }),
+      reconcileNativeOperation: (record) =>
+        Effect.tryPromise({
+          try: () => manager.reconcileNativeOperation(record),
+          catch: (cause) => toRequestError(record.threadId, "reconcile", cause),
+        }),
+      renameThread: (threadId, title) =>
+        Effect.tryPromise({
+          try: () => manager.renameThread(threadId, title),
+          catch: (cause) => toRequestError(threadId, "thread/name/set", cause),
+        }),
       startSession,
       sendTurn,
       steerTurn: sendTurn,

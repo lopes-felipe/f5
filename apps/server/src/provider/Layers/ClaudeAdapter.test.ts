@@ -67,6 +67,30 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
+  public readonly stopTaskCalls: string[] = [];
+  public readonly getTaskOutputCalls: string[] = [];
+  public readonly renameSessionCalls: Array<{ title: string; sessionId?: string }> = [];
+  readonly renameSession = async (title: string, sessionId?: string) => {
+    this.renameSessionCalls.push({ title, ...(sessionId ? { sessionId } : {}) });
+  };
+  readonly getTaskOutput = async (taskId: string) => {
+    this.getTaskOutputCalls.push(taskId);
+    return { output: "isolated shell output", total_bytes: 30, truncated: true };
+  };
+  public readonly rewindFilesCalls: Array<{ uuid: string; dryRun: boolean }> = [];
+  public rewindFilesResult = {
+    canRewind: true,
+    filesChanged: ["sample.txt"],
+    insertions: 1,
+    deletions: 2,
+  };
+  readonly stopTask = async (taskId: string) => {
+    this.stopTaskCalls.push(taskId);
+  };
+  readonly rewindFiles = async (uuid: string, options?: { dryRun?: boolean }) => {
+    this.rewindFilesCalls.push({ uuid, dryRun: options?.dryRun === true });
+    return this.rewindFilesResult;
+  };
   public closeCalls = 0;
   public onClose: (() => void) | undefined;
   public readonly deliveredAfterClose: SDKMessage[] = [];
@@ -11473,4 +11497,256 @@ describe("ClaudeAdapterLive", () => {
       );
     });
   });
+});
+
+describe("Claude Release 4 launch and file checkpoint controls", () => {
+  it.effect("defaults suggestions off, enables checkpoints, and names only new sessions", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        threadTitle: "F5 title",
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.promptSuggestions, false);
+      assert.equal(h.getLastCreateQueryInput()?.options.enableFileCheckpointing, true);
+      assert.equal(h.getLastCreateQueryInput()?.options.title, "F5 title");
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        threadTitle: "Resume title",
+        resumeCursor: { resume: "123e4567-e89b-42d3-a456-426614174000" },
+        providerOptions: {
+          claudeAgent: { promptSuggestions: true, enableFileCheckpointing: false },
+        },
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.promptSuggestions, true);
+      assert.equal(h.getLastCreateQueryInput()?.options.enableFileCheckpointing, false);
+      assert.equal(h.getLastCreateQueryInput()?.options.title, undefined);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+  it.effect("uses the recorded user UUID for dry-run preview and real native file rewind", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          resumeSessionAt: "123e4567-e89b-42d3-a456-426614174001",
+          turnBoundaries: [
+            {
+              turnId: "turn",
+              assistantUuid: "123e4567-e89b-42d3-a456-426614174001",
+              userMessageUuid: "123e4567-e89b-42d3-a456-426614174002",
+              fileCheckpointing: true,
+            },
+          ],
+        },
+      });
+      const preview = yield* adapter.previewClaudeFileRewind!(THREAD_ID, "turn");
+      assert.deepEqual(preview.filesChanged, ["sample.txt"]);
+      yield* adapter.revertClaudeFiles!(THREAD_ID, "turn");
+      assert.deepEqual(h.query.rewindFilesCalls, [
+        { uuid: "123e4567-e89b-42d3-a456-426614174002", dryRun: true },
+        { uuid: "123e4567-e89b-42d3-a456-426614174002", dryRun: false },
+      ]);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+  it.effect("leaves pre-checkpointing turns unavailable", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          turnBoundaries: [
+            { turnId: "old", assistantUuid: "123e4567-e89b-42d3-a456-426614174001" },
+          ],
+        },
+      });
+      const result = yield* Effect.result(adapter.previewClaudeFileRewind!(THREAD_ID, "old"));
+      assert.equal(result._tag, "Failure");
+      assert.equal(h.query.rewindFilesCalls.length, 0);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+});
+
+it.effect("reads a persisted native shell task and refuses an older run", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeTaskIds: ["shell-task"],
+        nativeTaskRuns: [["shell-task", "run-2"]],
+        backgroundTasks: [{ taskId: "shell-task", taskType: "local_bash" }],
+      },
+    });
+    const output = yield* adapter.inspectNativeOperation!({
+      threadId: THREAD_ID,
+      generation: 1,
+      kind: "task",
+      nativeId: "shell-task",
+      runId: "run-2",
+    });
+    assert.deepEqual(output, {
+      entries: [{ output: "isolated shell output", totalBytes: 30, omitted: true }],
+      nextCursor: null,
+    });
+    const stale = yield* Effect.result(
+      adapter.inspectNativeOperation!({
+        threadId: THREAD_ID,
+        generation: 1,
+        kind: "task",
+        nativeId: "shell-task",
+        runId: "run-1",
+      }),
+    );
+    assert.equal(stale._tag, "Failure");
+    const stop = yield* Effect.result(
+      adapter.executeNativeOperation!({
+        threadId: THREAD_ID,
+        generation: 1,
+        operationId: "old-stop",
+        command: { kind: "stopTask", taskId: "shell-task", runId: "run-1" },
+      }),
+    );
+    assert.equal(stop._tag, "Failure");
+    assert.deepEqual(h.query.stopTaskCalls, []);
+    assert.deepEqual(h.query.getTaskOutputCalls, ["shell-task"]);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("publishes suggestions only for explicitly enabled sessions", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => events.push(event)),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      providerOptions: { claudeAgent: { promptSuggestions: true } },
+    });
+    h.query.emit({
+      type: "prompt_suggestion",
+      suggestion: "Inspect the next failing test",
+      uuid: "123e4567-e89b-42d3-a456-426614174010",
+      session_id: "123e4567-e89b-42d3-a456-426614174000",
+    } as SDKMessage);
+    yield* Effect.promise(() =>
+      vi.waitFor(() =>
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "thread.metadata.updated" && event.payload.metadata?.promptSuggestion,
+          ),
+        ),
+      ),
+    );
+    yield* adapter.stopSession(THREAD_ID);
+    yield* Fiber.interrupt(listener);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("waits for the native task notification after the stop acknowledgement", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeTaskIds: ["shell-task"],
+        backgroundTasks: [
+          { taskId: "shell-task", toolUseId: "tool-alias", taskType: "local_bash" },
+        ],
+      },
+    });
+    let completed = false;
+    const fiber = yield* adapter.executeNativeOperation!({
+      threadId: THREAD_ID,
+      operationId: "stop-operation",
+      generation: 1,
+      command: { kind: "stopTask", taskId: "tool-alias" },
+    }).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          completed = true;
+        }),
+      ),
+      Effect.forkChild,
+    );
+    yield* Effect.promise(() =>
+      vi.waitFor(() => assert.deepEqual(h.query.stopTaskCalls, ["shell-task"])),
+    );
+    assert.equal(completed, false);
+    h.query.emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "shell-task",
+      status: "stopped",
+      output_file: "native-owned-output",
+      summary: "Stopped",
+      uuid: "123e4567-e89b-42d3-a456-426614174011",
+      session_id: "123e4567-e89b-42d3-a456-426614174000",
+    } as SDKMessage);
+    const result = yield* Fiber.join(fiber);
+    assert.deepEqual(result, { taskId: "shell-task", status: "stopped" });
+    assert.equal(completed, true);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("renames through the isolated child and persists the provider title loop guard", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      threadTitle: "New F5 title",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeProviderTitle: "Old native title",
+      },
+    });
+    assert.deepEqual(h.query.renameSessionCalls, [
+      { title: "New F5 title", sessionId: "123e4567-e89b-42d3-a456-426614174000" },
+    ]);
+    yield* adapter.renameThread!(THREAD_ID, "New F5 title");
+    assert.equal(h.query.renameSessionCalls.length, 1);
+    yield* adapter.renameThread!(THREAD_ID, "Later title");
+    assert.equal(h.query.renameSessionCalls.length, 2);
+    const sessions = yield* adapter.listSessions();
+    assert.equal(
+      (sessions[0]?.resumeCursor as { nativeProviderTitle?: string }).nativeProviderTitle,
+      "Later title",
+    );
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
 });

@@ -1,3 +1,4 @@
+import { ProviderRuntimeInfo } from "./runtimeInfo";
 import { RuntimeUsageLimit } from "./usageLimit";
 import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
@@ -469,6 +470,7 @@ export const ThreadCompactionTrigger = Schema.Literals(["manual", "automatic"]);
 export type ThreadCompactionTrigger = typeof ThreadCompactionTrigger.Type;
 
 export const ThreadCompaction = Schema.Struct({
+  kind: Schema.optional(Schema.Literals(["summary", "native"])),
   summary: TrimmedNonEmptyString,
   trigger: ThreadCompactionTrigger,
   estimatedTokens: NonNegativeInt,
@@ -823,6 +825,7 @@ export const RuntimeAgentBrowserCapabilities = Schema.Struct({
 export type RuntimeAgentBrowserCapabilities = typeof RuntimeAgentBrowserCapabilities.Type;
 
 export const CompactRuntimeConfiguredActivityPayload = Schema.Struct({
+  runtimeInfo: Schema.optional(ProviderRuntimeInfo),
   model: Schema.optional(TrimmedNonEmptyString),
   claudeCodeVersion: Schema.optional(TrimmedNonEmptyString),
   sessionId: Schema.optional(TrimmedNonEmptyString),

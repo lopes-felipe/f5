@@ -136,6 +136,14 @@ export const ServerProviderVersionAdvisory = Schema.Struct({
 export type ServerProviderVersionAdvisory = typeof ServerProviderVersionAdvisory.Type;
 
 export const ProviderRuntimeCapabilities = Schema.Struct({
+  nativeReview: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  nativeFork: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  nativeGoals: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  nativeAttachments: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  childTaskInspection: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  childTaskStop: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  fileCheckpointing: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   turnSteering: Schema.Boolean,
   conversationRollback: Schema.Boolean,
   rollbackAffectsFiles: Schema.Boolean,

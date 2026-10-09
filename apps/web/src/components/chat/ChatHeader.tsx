@@ -50,6 +50,7 @@ interface ChatHeaderProps {
   activeThreadId: ThreadId;
   isServerThread: boolean;
   activeThreadTitle: string;
+  nativeGoalSummary?: string | undefined;
   activeProjectId?: ProjectId | undefined;
   activeProjectIcon?: Project["icon"] | undefined;
   activeProjectName: string | undefined;
@@ -109,6 +110,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   isServerThread,
   activeThreadTitle,
+  nativeGoalSummary,
   activeProjectId,
   activeProjectIcon,
   activeProjectName,
@@ -299,6 +301,14 @@ export const ChatHeader = memo(function ChatHeader({
           >
             {activeThreadTitle}
           </h2>
+        )}
+        {nativeGoalSummary && (
+          <span
+            className="max-w-64 truncate text-xs text-muted-foreground"
+            title={nativeGoalSummary}
+          >
+            {nativeGoalSummary}
+          </span>
         )}
         {isServerThread ? <ThreadPrLinks threadId={activeThreadId} /> : null}
         {threadStatus ? (

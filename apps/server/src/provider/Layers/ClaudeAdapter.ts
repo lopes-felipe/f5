@@ -1,3 +1,5 @@
+import { readClaudeNativeResumeMetadata } from "../claudeResumeState.ts";
+import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { recoverClaudeTranscriptCursor } from "../../maintenance/ClaudeTranscriptRepair.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
@@ -43,6 +45,7 @@ import {
   isClaudeTranscriptUnderMaintenance,
   findClaudeTranscript,
   readClaudeTranscript,
+  readClaudeTranscriptPage,
   selectClaudeResumePoint,
   isClaudeMissingResumeMessageError,
 } from "../claudeTranscript.ts";
@@ -57,6 +60,7 @@ import {
   type CanUseTool,
   type ElicitationResult,
   query,
+  type RewindFilesResult,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
   type McpServerConfig,
@@ -347,8 +351,26 @@ interface ClaudeSessionContext {
   hostContractInstructionText?: string | undefined;
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   rejectedUsageLimits?: Map<string, ReturnType<typeof claudeLimitState>>;
+  nativeCompactionEnabled: boolean;
+  readonly nativeReceipts: Map<string, { state: "completed" | "failed"; result?: unknown }>;
+  readonly nativeTaskIds: Set<string>;
+  readonly nativeTaskRuns: Map<string, string>;
+  readonly nativeTaskStops: Map<
+    string,
+    { operationId: string; settlement?: Deferred.Deferred<unknown, ProviderAdapterRequestError> }
+  >;
   readonly startInput: ProviderSessionStartInput;
-  readonly turnBoundaries: Array<{ turnId: string; assistantUuid: string }>;
+  readonly turnBoundaries: Array<import("../claudeResumeState.ts").ClaudeTurnBoundary>;
+  latestUsage?: Record<string, unknown> | undefined;
+  requestedRuntime?: Record<string, unknown>;
+  lastProviderTitle?: string;
+  nativeControl?:
+    | {
+        operationId: string;
+        compacted: boolean;
+        settlement: Deferred.Deferred<unknown, ProviderAdapterRequestError>;
+      }
+    | undefined;
   session: ProviderSession;
   readonly providerInstanceId: ProviderInstanceId;
   promptQueue: Queue.Queue<PromptQueueItem>;
@@ -448,6 +470,19 @@ function claudeTurnCost(
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
+  /** Shipped native control helper; it uses the running child's isolated environment. */
+  readonly renameSession?: (title: string, sessionId?: string) => Promise<void>;
+  // SDK 0.3.292 ships this bounded native reader; keep it optional because
+  // its Query declaration does not yet expose the control-channel helper.
+  readonly getTaskOutput?: (
+    taskId: string,
+  ) => Promise<{ output: string; total_bytes: number; truncated: boolean }>;
+
+  readonly stopTask?: (taskId: string) => Promise<void>;
+  readonly rewindFiles?: (
+    userMessageId: string,
+    options?: { dryRun?: boolean },
+  ) => Promise<RewindFilesResult>;
   readonly interrupt: () => Promise<unknown>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
@@ -1501,6 +1536,11 @@ export function buildClaudeQueryEnv(
   // TODO_TOOLS unset neither TodoWrite nor TaskCreate is exposed. F5 projects
   // both surfaces and defaults to the native Task tools. Explicit operator
   // values always win.
+  const childEnvironment = Object.fromEntries(
+    Object.entries(environment).filter(
+      ([key]) => !key.toUpperCase().startsWith("F5_PREVIEW_MCP_TOKEN"),
+    ),
+  );
   const taskEnvironment = {
     CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
     CLAUDE_CODE_ENABLE_TODO_TOOLS: environment.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? "1",
@@ -1508,17 +1548,17 @@ export function buildClaudeQueryEnv(
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {
-    return buildProviderChildProcessEnv(environment, taskEnvironment);
+    return buildProviderChildProcessEnv(childEnvironment, taskEnvironment);
   }
 
   if (rawSubagentModel === "inherit") {
-    return buildProviderChildProcessEnv(environment, {
+    return buildProviderChildProcessEnv(childEnvironment, {
       ...taskEnvironment,
       CLAUDE_CODE_SUBAGENT_MODEL: undefined,
     });
   }
 
-  return buildProviderChildProcessEnv(environment, {
+  return buildProviderChildProcessEnv(childEnvironment, {
     ...taskEnvironment,
     CLAUDE_CODE_SUBAGENT_MODEL:
       normalizeModelSlug(rawSubagentModel, "claudeAgent") ?? rawSubagentModel,
@@ -2221,6 +2261,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
+    const pendingForks = new Set<ThreadId>();
     const resumeFailures = new Map<ThreadId, number>();
     const resumeRecoveryGenerations = new Map<ThreadId, unknown>();
     const settlementClock = yield* Clock.Clock;
@@ -2297,6 +2338,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const stamp = yield* makeEventStamp(context.session.threadId);
         yield* offerRuntimeEvent({
           type: "session.configured",
+          resumeCursor: context.session.resumeCursor,
           eventId: stamp.eventId,
           provider: PROVIDER,
           createdAt: stamp.createdAt,
@@ -2304,6 +2346,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           payload: {
             config: {
               ...context.configuredBase,
+              runtimeInfo: normalizeProviderRuntimeInfo(
+                context.requestedRuntime ?? {
+                  model: context.startInput.model,
+                  effort: context.startInput.modelOptions?.claudeAgent?.effort,
+                  thinking: context.startInput.modelOptions?.claudeAgent?.thinking,
+                  fastMode: context.startInput.modelOptions?.claudeAgent?.fastMode,
+                },
+                context.configuredBase,
+              ),
               ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
               ...(context.slashCommandsLoaded
                 ? { slashCommands: [...context.availableSlashCommands] }
@@ -2542,6 +2593,28 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
           turnBoundaries: context.turnBoundaries.slice(-200),
+          ...(context.taskStates.size
+            ? {
+                backgroundTasks: [...context.taskStates.values()]
+                  .slice(-512)
+                  .map(({ taskId, toolUseId, model, description, taskType }) => ({
+                    taskId,
+                    toolUseId,
+                    model,
+                    description,
+                    taskType,
+                  })),
+              }
+            : {}),
+          ...(context.lastProviderTitle ? { nativeProviderTitle: context.lastProviderTitle } : {}),
+          nativeTaskIds: [...context.nativeTaskIds].slice(-512),
+          nativeTaskRuns: [...context.nativeTaskRuns.entries()].slice(-512),
+          nativeTaskStops: [...context.nativeTaskStops.entries()]
+            .slice(-32)
+            .map(([taskId, stop]) => [taskId, stop.operationId]),
+          ...(context.nativeReceipts.size
+            ? { nativeReceipts: [...context.nativeReceipts.entries()].slice(-32) }
+            : {}),
           ...(context.hostContractVersion
             ? { hostContractVersion: context.hostContractVersion }
             : {}),
@@ -3008,6 +3081,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ...(launchResult ? { launchResult } : {}),
         ...(backgrounded !== undefined ? { backgrounded } : {}),
       };
+      context.nativeTaskIds.add(input.taskId);
+      if (context.nativeTaskIds.size > 512)
+        context.nativeTaskIds.delete(context.nativeTaskIds.values().next().value!);
       context.taskStates.set(input.taskId, state);
       return state;
     };
@@ -3228,9 +3304,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
-        const estimatedTokens = roughTokenEstimateFromCharacters(
-          context.baseContextChars + context.approximateConversationChars,
-        );
+        const inputUsage = context.latestUsage;
+        const estimatedTokens = inputUsage
+          ? [
+              "input_tokens",
+              "cache_read_input_tokens",
+              "cache_creation_input_tokens",
+              "output_tokens",
+            ].reduce(
+              (total, key) =>
+                total + (typeof inputUsage[key] === "number" ? (inputUsage[key] as number) : 0),
+              0,
+            )
+          : roughTokenEstimateFromCharacters(
+              context.baseContextChars + context.approximateConversationChars,
+            );
         const thresholdTokens = Math.floor(context.modelContextWindowTokens * 0.8);
         if (estimatedTokens < thresholdTokens) {
           return;
@@ -3404,6 +3492,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.turnBoundaries.push({
               turnId: turnState.turnId,
               assistantUuid: context.lastAssistantUuid,
+              ...(turnState.userMessageUuids?.values().next().value
+                ? { userMessageUuid: turnState.userMessageUuids.values().next().value }
+                : {}),
+              fileCheckpointing: context.queryOptions.enableFileCheckpointing === true,
             });
             if (context.turnBoundaries.length > 200)
               context.turnBoundaries.splice(0, context.turnBoundaries.length - 200);
@@ -3487,6 +3579,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const usageSnapshot = usageFromClaudeStreamEvent(message);
 
         if (usageSnapshot) {
+          const usage = asUnknownRecord(usageSnapshot.usage);
+          if (usage)
+            context.latestUsage =
+              event.type === "message_start" ? usage : { ...context.latestUsage, ...usage };
           const modelContextWindowTokens = emittedModelContextWindowTokens(context);
           const stamp = yield* makeEventStamp(context.session.threadId);
           yield* offerRuntimeEvent({
@@ -4454,6 +4550,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "compact_boundary":
+            context.approximateConversationChars = 0;
+            context.latestUsage = undefined;
+            context.compactionRecommendationEmitted = false;
+            if (context.nativeControl) context.nativeControl.compacted = true;
+            yield* updateResumeCursor(context);
             yield* offerRuntimeEvent({
               ...base,
               type: "thread.state.changed",
@@ -4502,6 +4603,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           case "task_started":
             {
+              const runId = normalizeOptionalString(asUnknownRecord(message)?.run_id);
+              const currentRun = context.nativeTaskRuns.get(message.task_id);
+              if (runId && currentRun && runId < currentRun) return;
+              if (runId) context.nativeTaskRuns.set(message.task_id, runId);
+              if (context.nativeTaskRuns.size > 512)
+                context.nativeTaskRuns.delete(context.nativeTaskRuns.keys().next().value!);
+
               const messageRecord = asUnknownRecord(message);
               const taskId = normalizeOptionalString(message.task_id);
               const toolUseId = normalizeOptionalString(messageRecord?.tool_use_id);
@@ -4524,11 +4632,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 });
               }
             }
+            yield* updateResumeCursor(context);
             yield* offerRuntimeEvent({
               ...base,
+              resumeCursor: context.session.resumeCursor,
               type: "task.started",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                ...(typeof asUnknownRecord(message)?.run_id === "string"
+                  ? { runId: String(asUnknownRecord(message)!.run_id) }
+                  : {}),
                 ...(context.taskStates.get(message.task_id)?.model
                   ? { model: context.taskStates.get(message.task_id)!.model! }
                   : {}),
@@ -4538,11 +4651,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "task_progress":
+            if (
+              typeof asUnknownRecord(message)?.run_id === "string" &&
+              context.nativeTaskRuns.get(message.task_id) &&
+              String(asUnknownRecord(message)!.run_id) <
+                context.nativeTaskRuns.get(message.task_id)!
+            )
+              return;
             yield* offerRuntimeEvent({
               ...base,
               type: "task.progress",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                ...(typeof asUnknownRecord(message)?.run_id === "string"
+                  ? { runId: String(asUnknownRecord(message)!.run_id) }
+                  : {}),
                 ...(context.taskStates.get(message.task_id)?.model
                   ? { model: context.taskStates.get(message.task_id)!.model! }
                   : {}),
@@ -4554,6 +4677,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "task_notification":
+            if (
+              typeof asUnknownRecord(message)?.run_id === "string" &&
+              context.nativeTaskRuns.get(message.task_id) &&
+              String(asUnknownRecord(message)!.run_id) <
+                context.nativeTaskRuns.get(message.task_id)!
+            )
+              return;
             // Either terminal notification can arrive first. Close the tool
             // while its launch metadata still exists, then publish the task edge.
             if (context.taskStates.get(message.task_id)?.tool) {
@@ -4567,11 +4697,26 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               type: "task-completed",
               taskId: message.task_id,
             });
+            context.taskStates.delete(message.task_id);
+            const stoppingTask = context.nativeTaskStops.get(message.task_id);
+            if (stoppingTask) {
+              const result = { taskId: message.task_id, status: message.status };
+              context.nativeReceipts.set(stoppingTask.operationId, { state: "completed", result });
+              if (context.nativeReceipts.size > 32)
+                context.nativeReceipts.delete(context.nativeReceipts.keys().next().value!);
+              if (stoppingTask.settlement) yield* Deferred.succeed(stoppingTask.settlement, result);
+              context.nativeTaskStops.delete(message.task_id);
+            }
+            yield* updateResumeCursor(context);
             yield* offerRuntimeEvent({
               ...base,
+              resumeCursor: context.session.resumeCursor,
               type: "task.completed",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                ...(typeof asUnknownRecord(message)?.run_id === "string"
+                  ? { runId: String(asUnknownRecord(message)!.run_id) }
+                  : {}),
                 status: message.status,
                 ...(message.summary ? { summary: message.summary } : {}),
                 ...(message.usage ? { usage: message.usage } : {}),
@@ -4771,6 +4916,40 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
+        if (context.nativeControl) {
+          const control = context.nativeControl;
+          if (message.type === "result") {
+            context.nativeControl = undefined;
+            if (message.subtype === "success" && control.compacted) {
+              const result = {
+                native: true,
+                operationId: control.operationId,
+                ...claudeTurnCost(context, message.total_cost_usd, false),
+              };
+              context.nativeReceipts.set(control.operationId, { state: "completed", result });
+              if (context.nativeReceipts.size > 32)
+                context.nativeReceipts.delete(context.nativeReceipts.keys().next().value!);
+              yield* updateResumeCursor(context);
+              yield* emitSessionConfigured(context, context.configuredBase);
+              yield* Deferred.succeed(control.settlement, result);
+            } else
+              yield* Deferred.fail(
+                control.settlement,
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "/compact",
+                  detail: "Native compaction did not confirm its boundary.",
+                }),
+              );
+            return;
+          }
+          if (
+            message.type === "assistant" ||
+            message.type === "stream_event" ||
+            message.type === "user"
+          )
+            return;
+        }
         // First stamped reply frames bind later unstamped blocks to the same
         // send. Preserve child-task handling; only fence top-level reply output.
         if (
@@ -4824,6 +5003,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.lastAssistantUuid = undefined;
             context.turns.length = 0;
             context.approximateConversationChars = 0;
+            context.latestUsage = undefined;
             context.compactionRecommendationEmitted = false;
             // ensureThreadId already adopted the harness-reported session_id.
             yield* updateResumeCursor(context);
@@ -4839,8 +5019,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               providerRefs: nativeProviderRefs(context),
             });
             return;
-          case "prompt_suggestion":
+          case "prompt_suggestion": {
+            if (context.queryOptions.promptSuggestions !== true || !message.suggestion.trim())
+              return;
+            const stamp = yield* makeEventStamp(context.session.threadId);
+            yield* offerRuntimeEvent({
+              ...stamp,
+              provider: PROVIDER,
+              threadId: context.session.threadId,
+              type: "thread.metadata.updated",
+              payload: {
+                metadata: {
+                  promptSuggestion: { text: message.suggestion.slice(0, 4000), uuid: message.uuid },
+                },
+              },
+            });
             return;
+          }
           default:
             yield* Effect.logDebug(
               `Unhandled Claude SDK message type '${sdkMessageType(message)}'.`,
@@ -4922,6 +5117,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (Exit.isSuccess(exit)) return;
           if (!isClaudeMissingResumeMessageError(Cause.pretty(exit.cause)))
             return yield* Effect.failCause(exit.cause);
+          yield* settleResume(context, { outcome: "failed", resumeRejected: true });
           const threadId = context.session.threadId;
           if (context.lastAssistantUuid)
             context.recoveryMetadata.missingResumePoint ??=
@@ -5202,6 +5398,33 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.stopped) return;
 
         context.stopped = true;
+        for (const stop of context.nativeTaskStops.values()) {
+          if (stop.settlement)
+            yield* Deferred.fail(
+              stop.settlement,
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "stopTask",
+                detail: "The provider stopped before its child task settled.",
+              }),
+            );
+          delete stop.settlement;
+        }
+        if (context.nativeControl) {
+          context.nativeReceipts.set(context.nativeControl.operationId, {
+            state: "failed",
+            result: { reason: "Provider stopped before settlement." },
+          });
+          yield* updateResumeCursor(context);
+          yield* Deferred.fail(
+            context.nativeControl.settlement,
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "/compact",
+              detail: "The provider stopped before native compaction settled.",
+            }),
+          );
+        }
         yield* settleResume(context, { outcome: "failed", resumeRejected: false });
         if (context.settlementWatchdog) {
           yield* Deferred.succeed(context.settlementWatchdog.cancel, undefined);
@@ -5640,8 +5863,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* Effect.sleep(Duration.millis(500 * 2 ** (failures - 1)));
         const existingResumeSessionId = resumeState?.resume;
         const newSessionId =
-          existingResumeSessionId === undefined ? yield* Random.nextUUIDv4 : undefined;
-        const sessionId = existingResumeSessionId ?? newSessionId;
+          existingResumeSessionId === undefined || pendingForks.has(threadId)
+            ? yield* Random.nextUUIDv4
+            : undefined;
+        const sessionId = newSessionId ?? existingResumeSessionId;
 
         const promptQueue = yield* Queue.unbounded<PromptQueueItem>();
         const prompt = makeClaudePromptInput(promptQueue);
@@ -5650,12 +5875,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
         const elicitations = new ElicitationRegistry();
         const inFlightTools = new Map<number, ToolInFlight>();
-        const taskStates = new Map<string, ClaudeTaskState>();
+        const nativeResumeMetadata = readClaudeNativeResumeMetadata(input.resumeCursor);
+        const taskStates = new Map<string, ClaudeTaskState>(
+          nativeResumeMetadata.tasks.map((task) => [task.taskId, task]),
+        );
 
         const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
         const providerOptions = {
           autoCompactWindow: options?.oneOffProviderOptions?.autoCompactWindow,
           resumeCompactionPrompt: options?.oneOffProviderOptions?.resumeCompactionPrompt,
+          promptSuggestions: options?.oneOffProviderOptions?.promptSuggestions,
+          enableFileCheckpointing: options?.oneOffProviderOptions?.enableFileCheckpointing,
+          nativeCompaction: options?.oneOffProviderOptions?.nativeCompaction,
           ...input.providerOptions?.claudeAgent,
         };
 
@@ -6475,6 +6706,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
         const processDiagnostics = { stderrTail: "" };
         const queryOptions: ClaudeQueryOptions = {
+          ...(pendingForks.has(threadId) ? { forkSession: true } : {}),
+          enableFileCheckpointing: providerOptions?.enableFileCheckpointing !== false,
+          promptSuggestions: providerOptions?.promptSuggestions === true,
+          ...(!existingResumeSessionId && input.threadTitle ? { title: input.threadTitle } : {}),
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(runtimeModelSelection.apiModel ? { model: runtimeModelSelection.apiModel } : {}),
           stderr: (data: string) => {
@@ -6620,6 +6855,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const context: ClaudeSessionContext = {
           startInput: input,
+          nativeCompactionEnabled: providerOptions?.nativeCompaction === true,
+          ...(existingResumeSessionId && nativeResumeMetadata.providerTitle
+            ? { lastProviderTitle: nativeResumeMetadata.providerTitle }
+            : !existingResumeSessionId && input.threadTitle
+              ? { lastProviderTitle: input.threadTitle }
+              : {}),
+          nativeReceipts: new Map(nativeResumeMetadata.receipts),
+          nativeTaskIds: new Set(nativeResumeMetadata.taskIds),
+          nativeTaskRuns: new Map(nativeResumeMetadata.taskRuns),
+          nativeTaskStops: new Map(
+            nativeResumeMetadata.taskStops.map(([taskId, operationId]) => [
+              taskId,
+              { operationId },
+            ]),
+          ),
           turnBoundaries: [...(resumeState?.turnBoundaries ?? [])],
           hostContractVersion: existingResumeSessionId
             ? resumeState?.hostContractVersion
@@ -6673,7 +6923,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
           resumeCompactionDialogShown: false,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,
-          resumeAttemptSessionId: existingResumeSessionId,
+          resumeAttemptSessionId: pendingForks.has(threadId)
+            ? newSessionId
+            : existingResumeSessionId,
           resumeConfirmed: false,
           resumeSettlement:
             existingResumeSessionId !== undefined
@@ -6739,6 +6991,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerRefs: {},
         });
 
+        if (existingResumeSessionId && input.threadTitle)
+          yield* renameThread(threadId, input.threadTitle).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logDebug("Claude title synchronization failed", { cause }),
+            ),
+          );
         yield* emitSessionConfigured(context, configuredBase);
 
         const readyStamp = yield* makeEventStamp(threadId);
@@ -6961,6 +7219,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         }
 
+        context.requestedRuntime = {
+          model: input.model ?? context.startInput.model,
+          ...input.modelOptions?.claudeAgent,
+        };
         const turnId = TurnId.makeUnsafe(yield* Random.nextUUIDv4);
         const turnState: ClaudeTurnState = {
           turnId,
@@ -7356,12 +7618,432 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       Effect.sync(() => {
         const context = sessions.get(threadId);
         if (!context || context.stopped) return undefined;
-        if (context.slashCommandsLoaded) return { outcome: "discovered", nativeCommands: true };
+        const native = {
+          nativeCompaction: context.nativeCompactionEnabled,
+          fileCheckpointing:
+            context.queryOptions.enableFileCheckpointing === true && !!context.query.rewindFiles,
+          childTaskStop: !!context.query.stopTask,
+        };
+        if (context.slashCommandsLoaded)
+          return { outcome: "discovered", nativeCommands: true, ...native };
         return context.query.supportedCommands
-          ? { outcome: "pending" }
-          : { outcome: "failed", nativeCommands: false };
+          ? { outcome: "pending", ...native }
+          : { outcome: "failed", nativeCommands: false, ...native };
       });
 
+    const fileRewind = (threadId: ThreadId, turnOrUuid: string, dryRun: boolean) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        const boundary = context.turnBoundaries.find(
+          (entry) => entry.turnId === turnOrUuid || entry.userMessageUuid === turnOrUuid,
+        );
+        if (
+          !boundary?.userMessageUuid ||
+          boundary.fileCheckpointing !== true ||
+          !context.query.rewindFiles
+        )
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "rewindFiles",
+            detail:
+              "This turn has no native file checkpoint. Sessions started before checkpointing cannot rewind files.",
+          });
+        return yield* Effect.tryPromise({
+          try: () =>
+            context.query.rewindFiles!(
+              boundary.userMessageUuid!,
+              dryRun ? { dryRun: true } : undefined,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "rewindFiles",
+              detail: toMessage(cause, "File rewind failed."),
+            }),
+        });
+      });
+    const stopBackgroundTask: NonNullable<ClaudeAdapterShape["stopBackgroundTask"]> = (
+      threadId,
+      taskId,
+    ) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        const task =
+          context.taskStates.get(taskId) ??
+          [...context.taskStates.values()].find((entry) => entry.toolUseId === taskId);
+        if (!context.query.stopTask || !task)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "stopTask",
+            detail: "This running task is no longer owned by this session.",
+          });
+        yield* Effect.tryPromise({
+          try: () => context.query.stopTask!(task!.taskId),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "stopTask",
+              detail: toMessage(cause, "Could not stop task."),
+            }),
+        });
+      });
+    const executeNativeOperation: NonNullable<ClaudeAdapterShape["executeNativeOperation"]> = (
+      input,
+      onReceipt,
+    ) =>
+      Effect.gen(function* () {
+        if (input.command.kind === "stopTask") {
+          const context = yield* requireSession(input.threadId);
+          const requestedTaskId = input.command.taskId;
+          const stopping =
+            context.taskStates.get(requestedTaskId) ??
+            [...context.taskStates.values()].find((task) => task.toolUseId === requestedTaskId);
+          if (!stopping)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "stopTask",
+              detail: "This task is not running in this session.",
+            });
+          if (
+            input.command.runId &&
+            context.nativeTaskRuns.get(stopping.taskId) !== input.command.runId
+          )
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "stopTask",
+              detail: "This task has a newer native run. Refresh before stopping it.",
+            });
+          const settlement = yield* Deferred.make<unknown, ProviderAdapterRequestError>();
+          const taskId = stopping.taskId;
+          const pendingStop = { operationId: input.operationId, settlement };
+          context.nativeTaskStops.set(taskId, pendingStop);
+          yield* updateResumeCursor(context);
+          if (onReceipt)
+            yield* Effect.tryPromise({
+              try: () =>
+                onReceipt({ nativeTaskId: taskId, nativeSessionId: context.resumeSessionId }),
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "stopTask",
+                  detail: toMessage(cause, "Task-stop receipt persistence failed."),
+                }),
+            }).pipe(
+              Effect.onExit((exit) => {
+                if (Exit.isSuccess(exit)) return Effect.void;
+                context.nativeTaskStops.delete(taskId);
+                context.nativeReceipts.set(input.operationId, {
+                  state: "failed",
+                  result: { reason: "Stop was not dispatched." },
+                });
+                return updateResumeCursor(context);
+              }),
+            );
+          return yield* stopBackgroundTask(input.threadId, taskId).pipe(
+            Effect.andThen(Deferred.await(settlement)),
+            Effect.timeout("30 seconds"),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "stopTask",
+                  detail: toMessage(
+                    cause,
+                    "The task stop has not settled; reconciliation is required.",
+                  ),
+                }),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                const pending = context.nativeTaskStops.get(taskId);
+                if (pending) delete pending.settlement;
+              }),
+            ),
+          );
+        }
+        if (input.command.kind === "revertFiles")
+          return yield* fileRewind(input.threadId, input.command.userMessageId, false);
+        const context = yield* requireSession(input.threadId);
+        if (input.command.kind === "fork") {
+          const command = input.command;
+          const boundary =
+            command.beforeTurnId === undefined
+              ? context.turnBoundaries.length
+              : context.turnBoundaries.findIndex((entry) => entry.turnId === command.beforeTurnId);
+          if (boundary <= 0)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "forkSession",
+              detail: "Claude needs a retained assistant boundary to fork this session.",
+            });
+          const retained = context.turnBoundaries.slice(0, boundary);
+          pendingForks.add(command.targetThreadId);
+          try {
+            const session = yield* startSession({
+              ...context.startInput,
+              threadId: command.targetThreadId,
+              cwd: command.cwd,
+              threadTitle: `Fork of ${context.startInput.threadTitle ?? "conversation"}`,
+              resumeCursor: {
+                ...Object.fromEntries(
+                  Object.entries(asUnknownRecord(context.session.resumeCursor) ?? {}).filter(
+                    ([key]) =>
+                      ![
+                        "backgroundTasks",
+                        "nativeReceipts",
+                        "nativeTaskIds",
+                        "nativeTaskRuns",
+                        "nativeTaskStops",
+                      ].includes(key),
+                  ),
+                ),
+                threadId: command.targetThreadId,
+                resume: context.resumeSessionId,
+                resumeSessionAt: retained.at(-1)!.assistantUuid,
+                turnBoundaries: retained,
+                turnCount: retained.length,
+              },
+            });
+            const target = yield* requireSession(command.targetThreadId);
+            if (target.query.initializationResult)
+              yield* Effect.tryPromise({
+                try: () => target.query.initializationResult!(),
+                catch: (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "forkSession",
+                    detail: toMessage(cause, "Could not initialize the fork."),
+                  }),
+              });
+            if (!target.resumeSessionId || target.resumeSessionId === context.resumeSessionId)
+              return yield* new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "forkSession",
+                detail: "Fork did not establish a distinct session identity.",
+              });
+            if (onReceipt)
+              yield* Effect.tryPromise({
+                try: () =>
+                  onReceipt({
+                    nativeSessionId: target.resumeSessionId,
+                    targetThreadId: command.targetThreadId,
+                  }),
+                catch: (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "forkSession",
+                    detail: toMessage(cause, "Fork receipt persistence failed."),
+                  }),
+              });
+            return {
+              resumeCursor: session.resumeCursor,
+              targetThreadId: command.targetThreadId,
+              cwd: command.cwd,
+            };
+          } finally {
+            pendingForks.delete(command.targetThreadId);
+          }
+        }
+        if (input.command.kind !== "compact")
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: input.command.kind,
+            detail: "This native operation is unavailable for Claude.",
+          });
+        if (context.nativeControl)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "/compact",
+            detail: "A control turn is already running.",
+          });
+        const settlement = yield* Deferred.make<unknown, ProviderAdapterRequestError>();
+        context.nativeControl = { operationId: input.operationId, compacted: false, settlement };
+        if (onReceipt)
+          yield* Effect.tryPromise({
+            try: () =>
+              onReceipt({
+                nativeSessionId: context.resumeSessionId,
+                operationId: input.operationId,
+              }),
+            catch: (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "/compact",
+                detail: toMessage(cause, "Native receipt persistence failed."),
+              }),
+          });
+        const message = buildUserMessage({ sdkContent: [{ type: "text", text: "/compact" }] });
+        yield* Queue.offer(context.promptQueue, { type: "message", message });
+        return yield* Deferred.await(settlement).pipe(
+          Effect.timeout("120 seconds"),
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: "/compact",
+                detail: toMessage(
+                  cause,
+                  "Compaction has not settled; reconcile before continuing.",
+                ),
+              }),
+          ),
+        );
+      });
+    const inspectNativeOperation: NonNullable<ClaudeAdapterShape["inspectNativeOperation"]> = (
+      input,
+    ) => {
+      if (input.kind === "filePreview" && input.nativeId)
+        return fileRewind(input.threadId, input.nativeId, true);
+      return Effect.gen(function* () {
+        const context = yield* requireSession(input.threadId);
+        if (
+          input.kind !== "task" ||
+          !input.nativeId ||
+          !/^[a-zA-Z0-9_-]+$/.test(input.nativeId) ||
+          !context.resumeSessionId
+        )
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "inspect",
+            detail: "Invalid native child identity.",
+          });
+        const requestedTaskId = input.nativeId;
+        const knownTask =
+          context.taskStates.get(requestedTaskId) ??
+          [...context.taskStates.values()].find((task) => task.toolUseId === requestedTaskId);
+        const agent = knownTask?.taskId ?? requestedTaskId;
+        if (input.runId && context.nativeTaskRuns.get(agent) !== input.runId)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "inspect",
+            detail: "This output belongs to a different native task run.",
+          });
+        const offset = input.cursor ? Number(input.cursor) : 0;
+        if (!Number.isSafeInteger(offset) || offset < 0)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "inspect",
+            detail: "Invalid native page cursor.",
+          });
+        const readShellOutput = async () => {
+          if (!context.nativeTaskIds.has(agent) || !context.query.getTaskOutput)
+            throw new Error("This runtime has no native output reader for this task.");
+          if (offset !== 0)
+            throw new Error("Shell output is a bounded native tail; it has no next page.");
+          const output = await context.query.getTaskOutput(agent);
+          return {
+            entries: [
+              {
+                output: output.output.slice(-8192),
+                totalBytes: output.total_bytes,
+                omitted: output.truncated,
+              },
+            ],
+            nextCursor: null,
+          };
+        };
+        return yield* Effect.tryPromise({
+          try: async () => {
+            const configDir = resolveClaudeConfigDir(
+              context.processEnvironment,
+              context.session.cwd,
+            );
+            if (
+              knownTask &&
+              /shell|bash|monitor/i.test(knownTask.taskType ?? knownTask.tool?.toolName ?? "")
+            )
+              return readShellOutput();
+            let parent: string;
+            try {
+              parent = await findClaudeTranscript(configDir, context.resumeSessionId!);
+            } catch (cause) {
+              if (context.nativeTaskIds.has(agent) && context.query.getTaskOutput)
+                return readShellOutput();
+              throw cause;
+            }
+            const directory = NodePath.join(
+              NodePath.dirname(parent),
+              context.resumeSessionId!,
+              "subagents",
+            );
+            const file = NodePath.join(directory, `agent-${agent}.jsonl`);
+            // Reject links so the isolated-store path cannot escape to another profile.
+            const realConfig = await NodeFs.realpath(configDir);
+            let realDirectory: string;
+            try {
+              realDirectory = await NodeFs.realpath(directory);
+            } catch (cause) {
+              if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+              return readShellOutput();
+            }
+            const relativeDirectory = NodePath.relative(realConfig, realDirectory);
+            if (
+              NodePath.isAbsolute(relativeDirectory) ||
+              relativeDirectory === ".." ||
+              relativeDirectory.startsWith(`..${NodePath.sep}`)
+            )
+              throw new Error("Native output escapes this instance’s isolated store.");
+            let realFile: string;
+            try {
+              realFile = await NodeFs.realpath(file);
+            } catch (cause) {
+              if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+              return readShellOutput();
+            }
+            if (
+              NodePath.dirname(realFile) !== realDirectory ||
+              !(await NodeFs.lstat(file)).isFile()
+            )
+              throw new Error("Native output path is not a regular isolated transcript.");
+            return readClaudeTranscriptPage(realFile, offset, input.limit ?? 20);
+          },
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "inspect",
+              detail: toMessage(cause, "Native task output is unavailable."),
+            }),
+        });
+      });
+    };
+    const renameThread: NonNullable<ClaudeAdapterShape["renameThread"]> = (threadId, title) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        if (context.lastProviderTitle === title || !context.resumeSessionId) return;
+        if (!context.query.renameSession)
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "renameSession",
+            detail: "Native title control is unavailable in this runtime.",
+          });
+        yield* Effect.tryPromise({
+          try: () => context.query.renameSession!(title, context.resumeSessionId!),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "renameSession",
+              detail: toMessage(cause, "Title synchronization failed."),
+            }),
+        });
+        context.lastProviderTitle = title;
+        yield* updateResumeCursor(context);
+        yield* emitSessionConfigured(context, context.configuredBase);
+      });
+
+    const reconcileNativeOperation: NonNullable<ClaudeAdapterShape["reconcileNativeOperation"]> = (
+      record,
+    ) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(record.threadId);
+        const receipt = context.nativeReceipts.get(record.operationId);
+        if (receipt) return receipt;
+        if (
+          record.command.kind === "compact" &&
+          context.nativeControl?.operationId === record.operationId
+        )
+          return { state: "indeterminate" as const };
+        return { state: "indeterminate" as const };
+      });
     const stopAll: ClaudeAdapterShape["stopAll"] = () =>
       Effect.forEach(
         sessions,
@@ -7389,6 +8071,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         sessionModelSwitch: "in-session",
         runtimeCapabilities: providerRuntimeCapabilities(PROVIDER),
       },
+      executeNativeOperation,
+      reconcileNativeOperation,
+      inspectNativeOperation,
+      renameThread,
+      stopBackgroundTask,
+      previewClaudeFileRewind: (threadId, userMessageId) =>
+        fileRewind(threadId, userMessageId, true),
+      revertClaudeFiles: (threadId, userMessageId) => fileRewind(threadId, userMessageId, false),
       startSession,
       sendTurn,
       steerTurn,

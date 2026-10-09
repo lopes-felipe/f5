@@ -1,3 +1,9 @@
+import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import {
+  makeNativeOperationCoordinator,
+  nativeOperationSqlRepository,
+  hasNativeOperationReservation,
+} from "../nativeOperations.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { readClaudeRecoveryMetadata } from "../claudeResumeState.ts";
 import { Cause } from "effect";
@@ -347,6 +353,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     // The generation a session is being started as, published before the
     // adapter starts so requests it opens during startup carry the generation
     // that will own them, and can be answered without the start lock.
+    const nativeSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const nativeCoordinator = Option.isSome(nativeSql)
+      ? makeNativeOperationCoordinator(nativeOperationSqlRepository(nativeSql.value))
+      : undefined;
     const startingSessions = new Map<
       ThreadId,
       { readonly generation: number; readonly adapter: ProviderAdapterShape<ProviderAdapterError> }
@@ -1259,6 +1269,181 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const nativeError = (cause: unknown) =>
+      toValidationError(
+        "ProviderService.nativeOperation",
+        cause instanceof Error ? cause.message : String(cause),
+      );
+    const nativeGeneration = (threadId: ThreadId) =>
+      directory
+        .getBinding(threadId)
+        .pipe(
+          Effect.map((binding) =>
+            Option.isSome(binding)
+              ? readPersistedSessionGeneration(binding.value.runtimePayload)
+              : -1,
+          ),
+        );
+    const executeNativeOperation = (
+      input: import("@t3tools/contracts").NativeOperationInput,
+      apply?: (result: unknown) => Effect.Effect<void, import("../Errors.ts").ProviderServiceError>,
+      prepare?: Effect.Effect<void, import("../Errors.ts").ProviderServiceError>,
+    ) =>
+      Effect.gen(function* () {
+        if (!nativeCoordinator)
+          return yield* nativeError("Native operation persistence is unavailable.");
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "nativeOperation.execute",
+          allowRecovery: false,
+        });
+        const action =
+          input.command.kind === "compact"
+            ? "nativeCompaction"
+            : input.command.kind === "review"
+              ? "nativeReview"
+              : input.command.kind === "fork"
+                ? "nativeFork"
+                : input.command.kind === "stopTask"
+                  ? "childTaskStop"
+                  : input.command.kind === "revertFiles"
+                    ? "fileCheckpointing"
+                    : "nativeGoals";
+        return yield* nativeCoordinator
+          .execute(input, {
+            generation: nativeGeneration(input.threadId),
+            ...(apply ? { apply } : {}),
+            ...(prepare ? { prepare } : {}),
+            validate: Effect.gen(function* () {
+              yield* assertSessionAction({
+                threadId: input.threadId,
+                action,
+                expectedGeneration: input.generation,
+              });
+              const current = (yield* routed.adapter.listSessions()).find(
+                (session) => session.threadId === input.threadId,
+              );
+              if (
+                current?.activeTurnId &&
+                !["goalPause", "goalClear", "stopTask"].includes(input.command.kind)
+              )
+                return yield* nativeError(
+                  "Wait for the current turn to finish before starting this operation.",
+                );
+              if (!routed.adapter.executeNativeOperation)
+                return yield* nativeError("The provider does not implement this operation.");
+              const binding = yield* directory.getBinding(input.threadId);
+              if (
+                Option.isSome(binding) &&
+                readPersistedInstructionContext(binding.value.runtimePayload)
+                  ?.workflowExecutionProfile
+              )
+                return yield* nativeError(
+                  "Native operations are unavailable during a workflow stage.",
+                );
+              if (input.command.kind === "revertFiles") {
+                const checkpoints = yield* Effect.serviceOption(CheckpointStore);
+                if (
+                  Option.isNone(checkpoints) ||
+                  !current?.cwd ||
+                  (yield* checkpoints.value.isGitRepository(current.cwd))
+                )
+                  return yield* nativeError(
+                    "Native file rewind is only available in non-git projects. Git projects use F5 checkpoints.",
+                  );
+              }
+            }),
+            dispatch: Effect.suspend(() => routed.adapter.executeNativeOperation!(input)),
+            dispatchWithReceipt: (receipt) =>
+              Effect.suspend(() =>
+                routed.adapter.executeNativeOperation!(input, (value) =>
+                  Effect.runPromise(receipt(value)),
+                ),
+              ),
+          })
+          .pipe(
+            withAccountAdmission(
+              serverConfig.stateDir,
+              routed.instanceId,
+              "ProviderService.nativeOperation",
+            ),
+            Effect.mapError(nativeError),
+          );
+      });
+    const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      list: (threadId) =>
+        nativeCoordinator
+          ? Effect.gen(function* () {
+              yield* nativeCoordinator.reconcileThread(threadId, (record) =>
+                Effect.gen(function* () {
+                  const routed = yield* resolveRoutableSession({
+                    threadId,
+                    operation: "nativeOperation.reconcile",
+                    allowRecovery: true,
+                  });
+                  const outcome = routed.adapter.reconcileNativeOperation
+                    ? yield* routed.adapter.reconcileNativeOperation(record)
+                    : { state: "indeterminate" as const };
+                  return {
+                    ...outcome,
+                    ...((yield* nativeGeneration(threadId)) !== record.generation
+                      ? { staleGeneration: true }
+                      : {}),
+                  };
+                }),
+              );
+              return yield* nativeCoordinator.list(threadId);
+            }).pipe(Effect.mapError(nativeError))
+          : Effect.fail(nativeError("Native operation persistence is unavailable.")),
+      inspect: (input) =>
+        withProviderThreadAccess(
+          input.threadId,
+          Effect.gen(function* () {
+            const action =
+              input.kind === "task"
+                ? "childTaskInspection"
+                : input.kind === "filePreview"
+                  ? "fileCheckpointing"
+                  : input.kind === "goal"
+                    ? "nativeGoals"
+                    : "nativeAttachments";
+            yield* assertSessionAction({
+              threadId: input.threadId,
+              action,
+              expectedGeneration: input.generation,
+            });
+            const routed = yield* resolveRoutableSession({
+              threadId: input.threadId,
+              operation: "nativeOperation.inspect",
+              allowRecovery: false,
+            });
+            if (!routed.adapter.inspectNativeOperation)
+              return yield* nativeError("This provider cannot inspect native operations.");
+            return yield* routed.adapter.inspectNativeOperation(input);
+          }),
+        ),
+      execute: (input) => executeNativeOperation(input),
+      executeWithApply: (input, apply, prepare) => executeNativeOperation(input, apply, prepare),
+    };
+    const renameThread: NonNullable<ProviderServiceShape["renameThread"]> = (threadId, title) =>
+      withProviderThreadAccess(
+        threadId,
+        Effect.gen(function* () {
+          const binding = yield* directory.getBinding(threadId);
+          if (Option.isNone(binding)) return;
+          const routed = yield* resolveRoutableSession({
+            threadId,
+            operation: "renameThread",
+            allowRecovery: false,
+          });
+          if (routed.adapter.renameThread) yield* routed.adapter.renameThread(threadId, title);
+        }),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logDebug("Provider title synchronization failed", { threadId, cause }),
+        ),
+      );
+
     const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput) =>
       Effect.gen(function* () {
         if (isRecord(rawInput) && typeof rawInput.input === "string") {
@@ -1268,6 +1453,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           }
         }
 
+        if (hasNativeOperationReservation(rawInput.threadId))
+          return yield* new ProviderTurnDeliveryError({
+            certainty: "not_sent",
+            retryable: true,
+            detail: "A native operation holds this conversation.",
+          });
         const parsed = yield* decodeInputOrValidationError({
           operation: "ProviderService.sendTurn",
           schema: ProviderSendTurnInput,
@@ -2249,6 +2440,32 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         yield* analytics.flush;
       });
 
+    if (nativeCoordinator) {
+      yield* nativeCoordinator
+        .reconcile((record) =>
+          Effect.gen(function* () {
+            const routed = yield* resolveRoutableSession({
+              threadId: record.threadId,
+              operation: "nativeOperation.reconcile",
+              allowRecovery: true,
+            });
+            if (!routed.adapter.reconcileNativeOperation)
+              return { state: "indeterminate" as const };
+            const outcome = yield* routed.adapter.reconcileNativeOperation(record);
+            return {
+              ...outcome,
+              ...((yield* nativeGeneration(record.threadId)) !== record.generation
+                ? { staleGeneration: true }
+                : {}),
+            };
+          }),
+        )
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("Native operation startup reconciliation failed", { cause }),
+          ),
+        );
+    }
     yield* Effect.addFinalizer(() =>
       Effect.catch(runStopAll(), (cause) =>
         Effect.logWarning("failed to stop provider service", { cause }),
@@ -2256,6 +2473,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     );
 
     return {
+      nativeOperations,
+      renameThread,
       startSession: (threadId, input) =>
         withProviderThreadAccess(threadId, startSession(threadId, input)),
       sendTurn: (input) => withProviderThreadAccess(input.threadId, sendTurn(input)),

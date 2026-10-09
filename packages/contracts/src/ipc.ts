@@ -1,3 +1,9 @@
+import type {
+  NativeOperationInput,
+  NativeOperationInspectInput,
+  NativeOperationRecord,
+  NativeForkInput,
+} from "./nativeOperation";
 import type { ThreadId } from "./baseSchemas";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type { PullRequestKey } from "./prHub";
@@ -857,6 +863,12 @@ export interface NativeApi {
     getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
+  nativeOperations?: {
+    fork: (input: NativeForkInput) => Promise<NativeOperationRecord>;
+    execute: (input: NativeOperationInput) => Promise<NativeOperationRecord>;
+    list: (input: { threadId: ThreadId }) => Promise<readonly NativeOperationRecord[]>;
+    inspect: (input: NativeOperationInspectInput) => Promise<unknown>;
+  };
   elicitation: {
     submit: (input: ElicitationSubmitInput) => Promise<ElicitationSubmitResult>;
   };

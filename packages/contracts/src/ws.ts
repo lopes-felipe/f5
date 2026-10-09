@@ -1,4 +1,11 @@
 import {
+  NATIVE_OPERATION_WS_METHODS,
+  NativeOperationInput,
+  NativeOperationListInput,
+  NativeOperationInspectInput,
+  NativeForkInput,
+} from "./nativeOperation";
+import {
   ForgeAccountInput,
   ForgeAccountRouting,
   ForgeOperationInput,
@@ -516,6 +523,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.fork, NativeForkInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.execute, NativeOperationInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.list, NativeOperationListInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.inspect, NativeOperationInspectInput),
   tagRequestBody(ELICITATION_WS_METHODS.submit, ElicitationSubmitInput),
   // Orchestration methods
   tagRequestBody(

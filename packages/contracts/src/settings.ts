@@ -131,6 +131,9 @@ const ClaudeAutoCompactWindow = Schema.Int.check(
 
 export const ClaudeSettings = Schema.Struct({
   autoCompactWindow: ClaudeAutoCompactWindow.pipe(Schema.withDecodingDefault(() => 0)),
+  promptSuggestions: Schema.optionalKey(Schema.Boolean),
+  enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
+  nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
@@ -306,6 +309,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   worktreeSubmodules: Schema.optionalKey(WorktreeSubmodules),
   textGenerationModelSelection: Schema.optionalKey(ModelSelection),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
+  enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   prHubDefaultMergeMethod: Schema.optionalKey(
     Schema.NullOr(Schema.Literals(["squash", "merge", "rebase"])),
@@ -335,6 +339,7 @@ export const ServerSettings = Schema.Struct({
   ),
   gitAuthorName: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   gitAuthorEmail: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  enableClaudePromptSuggestions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
@@ -440,6 +445,9 @@ const CodexSettingsPatch = Schema.Struct({
 
 const ClaudeSettingsPatch = Schema.Struct({
   autoCompactWindow: Schema.optionalKey(ClaudeAutoCompactWindow),
+  promptSuggestions: Schema.optionalKey(Schema.Boolean),
+  enableFileCheckpointing: Schema.optionalKey(Schema.Boolean),
+  nativeCompaction: Schema.optionalKey(Schema.Boolean),
   resumeCompactionPrompt: Schema.optionalKey(Schema.Boolean),
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
@@ -486,6 +494,7 @@ export const ServerSettingsPatch = Schema.Struct({
   gitAuthorName: Schema.optionalKey(Schema.String),
   gitAuthorEmail: Schema.optionalKey(Schema.String),
   // Server settings
+  enableClaudePromptSuggestions: Schema.optionalKey(Schema.Boolean),
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
@@ -542,6 +551,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "worktreeSubmodules",
   "textGenerationModelSelection",
   "sourceControlWriting",
+  "enableClaudePromptSuggestions",
   "enableAssistantStreaming",
   "prHubDefaultMergeMethod",
   "worktreeCleanup",

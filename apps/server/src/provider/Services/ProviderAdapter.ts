@@ -104,6 +104,26 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Start a provider-backed session.
    */
+  readonly executeNativeOperation?: (
+    input: import("@t3tools/contracts").NativeOperationInput,
+    onReceipt?: (receipt: unknown) => Promise<void>,
+  ) => Effect.Effect<unknown, TError>;
+  readonly inspectNativeOperation?: (
+    input: import("@t3tools/contracts").NativeOperationInspectInput,
+  ) => Effect.Effect<unknown, TError>;
+  readonly reconcileNativeOperation?: (
+    record: import("@t3tools/contracts").NativeOperationRecord,
+  ) => Effect.Effect<{ state: "completed" | "failed" | "indeterminate"; result?: unknown }, TError>;
+  readonly renameThread?: (threadId: ThreadId, title: string) => Effect.Effect<void, TError>;
+  readonly previewClaudeFileRewind?: (
+    threadId: ThreadId,
+    userMessageId: string,
+  ) => Effect.Effect<import("@t3tools/contracts").NativeFileRewindPreview, TError>;
+  readonly revertClaudeFiles?: (
+    threadId: ThreadId,
+    userMessageId: string,
+  ) => Effect.Effect<import("@t3tools/contracts").NativeFileRewindPreview, TError>;
+  readonly stopBackgroundTask?: (threadId: ThreadId, taskId: string) => Effect.Effect<void, TError>;
   readonly startSession: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;

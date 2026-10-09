@@ -1,3 +1,4 @@
+export * from "./nativeOperation";
 export * from "./baseSchemas";
 export { PendingUserInput } from "./userInput";
 export * from "./elicitation";
@@ -50,3 +51,5 @@ export * from "./attachmentUpload";
 export * from "./prHubExtensions";
 
 export * from "./usageLimit";
+
+export * from "./runtimeInfo";

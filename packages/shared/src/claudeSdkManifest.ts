@@ -6,7 +6,7 @@ export const CLAUDE_SDK_MESSAGE_DISPOSITIONS = {
   assistant: "canonical",
   auth_status: "canonical",
   conversation_reset: "canonical",
-  prompt_suggestion: "ignored", // Release 4: opt-in suggestions.
+  prompt_suggestion: "canonical", // Release 4: opt-in suggestions.
   rate_limit_event: "canonical",
   result: "canonical",
   stream_event: "canonical",

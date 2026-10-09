@@ -1,3 +1,9 @@
+import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
+import type {
+  NativeOperationInput,
+  NativeOperationInspectInput,
+  NativeOperationRecord,
+} from "@t3tools/contracts";
 import {
   codexCommandApprovalDecision,
   readCodexCommandApprovalOffer,
@@ -171,6 +177,15 @@ interface CodexSessionContext {
   rollbackUnsupported?: boolean;
   unsettledFork?: boolean;
   legacyHistoryThreadIds?: Set<string>;
+  lastProviderTitle?: string;
+  reviewThreadIds?: Set<string>;
+  reviewOperationActive?: boolean;
+  nativeReviewTurnId?: string;
+  nativeGoalActive?: boolean;
+  nativeGoalBudget?: number;
+  nativeGoalPauseInFlight?: boolean;
+  requestedRuntime?: Record<string, unknown>;
+  childThreadIds?: Set<string>;
   forkNotifications?: JsonRpcNotification[] | undefined;
   forkNotificationOverflow?: boolean;
   /** Set when a count-based `thread/rollback` got no response and may still apply. */
@@ -604,6 +619,7 @@ export function buildCodexThreadOpenRequestParams(input: {
             ...overrides,
             threadId: input.resumeThreadId,
             excludeTurns: true,
+            deferGoalContinuation: true,
           },
         }
       : {}),
@@ -638,11 +654,16 @@ export function buildCodexThreadRevertParams(threadId: string, beforeTurnId: str
 export function buildCodexThreadForkParams(
   input: Parameters<typeof buildCodexThreadOpenRequestParams>[0],
   threadId: string,
-  beforeTurnId: string,
+  beforeTurnId?: string,
 ) {
   const { experimentalRawEvents: _rawEvents, ...overrides } =
     buildCodexThreadOpenRequestParams(input).start;
-  return { ...overrides, threadId, beforeTurnId, excludeTurns: true };
+  return {
+    ...overrides,
+    threadId,
+    ...(beforeTurnId !== undefined ? { beforeTurnId } : {}),
+    excludeTurns: true,
+  };
 }
 
 export function resolveCodexModelForAccount(
@@ -1300,7 +1321,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       this.updateSession(context, {
         status: "ready",
-        resumeCursor: { threadId: providerThreadId },
+        resumeCursor: { ...asObject(input.resumeCursor), threadId: providerThreadId },
       });
       // Only skip replaying restored context when Codex actually reopened the
       // original provider thread. Fallback thread/start still needs that
@@ -1314,6 +1335,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
               catalog: context.modelContextWindowCatalog,
             })
           : undefined;
+      const rememberedChildren = asObject(input.resumeCursor)?.childThreadIds;
+      context.childThreadIds = new Set(
+        Array.isArray(rememberedChildren)
+          ? rememberedChildren.filter((id): id is string => typeof id === "string").slice(-512)
+          : [],
+      );
+      context.requestedRuntime = { model: input.model, serviceTier: input.serviceTier };
       this.emitSessionConfigured(context, {
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
@@ -1402,7 +1430,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error("turn/start response did not include a turn id.");
     }
     const turnId = TurnId.makeUnsafe(turnIdRaw);
-    const previousConfiguredModel = context.session.model;
+
     const nextConfiguredModel = turnStartParams.model ?? context.session.model;
 
     this.updateSession(context, {
@@ -1413,7 +1441,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
     });
-    if (nextConfiguredModel !== undefined && nextConfiguredModel !== previousConfiguredModel) {
+    context.requestedRuntime = {
+      model: input.model ?? context.requestedRuntime?.model,
+      effort: input.effort,
+      serviceTier: input.serviceTier,
+    };
+    if (nextConfiguredModel !== undefined) {
       const modelContextWindowTokens = lookupModelContextWindowTokens({
         provider: "codex",
         model: nextConfiguredModel,
@@ -1424,6 +1457,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.emitSessionConfigured(context, {
         ...configuredBase,
         model: nextConfiguredModel,
+        ...(turnStartParams.effort ? { effort: turnStartParams.effort } : {}),
+        ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
         ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
       });
     }
@@ -1691,8 +1726,364 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return providerThreadId;
   }
 
+  private nativeThreadId(context: CodexSessionContext): string {
+    const id = readResumeCursorThreadId(context.session.resumeCursor);
+    if (!id) throw new Error("The provider thread identity is unavailable.");
+    return id;
+  }
+
+  async renameThread(threadId: ThreadId, title: string): Promise<void> {
+    const context = this.requireSession(threadId);
+    if (context.lastProviderTitle === title) return;
+    try {
+      await this.sendRequest(context, "thread/name/set", {
+        threadId: this.nativeThreadId(context),
+        name: title,
+      });
+    } catch (error) {
+      if (!isUnknownMethodError(error, "thread/name/set")) throw error;
+    }
+    context.lastProviderTitle = title;
+  }
+
+  async inspectNativeOperation(input: NativeOperationInspectInput): Promise<unknown> {
+    const context = this.requireSession(input.threadId);
+    const threadId = this.nativeThreadId(context);
+    if (input.kind === "goal") return this.sendRequest(context, "thread/goal/get", { threadId });
+    if (input.kind === "attachments") {
+      const response = asObject(
+        await this.sendRequest(context, "thread/attachment/list", { threadId }),
+      );
+      // Native payloads may contain file contents or private extension data. Only metadata crosses F5's wire.
+      const data = response?.attachments ?? response?.data;
+      return {
+        attachments: Array.isArray(data)
+          ? data.slice(0, 512).map((entry) => {
+              const value = asObject(entry);
+              return {
+                id: value?.id,
+                attachmentType: value?.attachmentType,
+                identityKey: value?.identityKey,
+                createdAt: value?.createdAt,
+                source: "codex",
+              };
+            })
+          : [],
+      };
+    }
+    if (input.kind !== "task" || !input.nativeId || !context.childThreadIds?.has(input.nativeId))
+      throw new Error("This child thread is not owned by this session.");
+    // One native page, never readPaginatedThread's full-history accumulator.
+    const response = asObject(
+      await this.sendRequest(context, "thread/items/list", {
+        threadId: input.nativeId,
+        limit: input.limit ?? 20,
+        cursor: input.cursor ?? null,
+        sortDirection: "asc",
+      }),
+    );
+    let bytes = 0;
+    const data = Array.isArray(response?.data)
+      ? response.data.slice(0, input.limit ?? 20).map((entry) => {
+          const size = Buffer.byteLength(JSON.stringify(entry) ?? "", "utf8");
+          if (size > 64 * 1024 || bytes + size > 256 * 1024)
+            return { omitted: true, reason: "Native output exceeds the page limit." };
+          bytes += size;
+          return entry;
+        })
+      : [];
+    return {
+      data,
+      nextCursor: typeof response?.nextCursor === "string" ? response.nextCursor : null,
+    };
+  }
+
+  async executeNativeOperation(
+    input: NativeOperationInput,
+    onReceipt?: (receipt: unknown) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const context = this.requireSession(input.threadId);
+    const threadId = this.nativeThreadId(context);
+    const command = input.command;
+    await onReceipt?.({ nativeThreadId: threadId });
+    if (command.kind === "goalPause")
+      return this.sendRequest(context, "thread/goal/set", { threadId, status: "paused" });
+    if (command.kind === "goalClear")
+      return this.sendRequest(context, "thread/goal/clear", { threadId });
+    if (command.kind === "goalSet") {
+      let running = false;
+      let terminal: unknown;
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: Error) => void;
+      const completion = new Promise<unknown>((accept, refuse) => {
+        resolve = accept;
+        reject = refuse;
+      });
+      void completion.catch(() => undefined);
+      const listener = (event: ProviderEvent) => {
+        if (event.threadId !== input.threadId) return;
+        if (event.method === "turn/started") running = true;
+        if (event.method === "turn/completed") {
+          running = false;
+          if (terminal) resolve(terminal);
+        }
+        if (event.method === "thread/goal/updated") {
+          const goal = asObject(asObject(event.payload)?.goal);
+          if (goal && goal.status !== "active") {
+            terminal = { goal };
+            if (!running) resolve(terminal);
+          }
+        }
+        if (event.method === "thread/goal/cleared") {
+          terminal = { goal: null };
+          if (!running) resolve(terminal);
+        }
+        if (event.method === "session/exited" || event.method === "session/closed")
+          reject(new Error("Provider exited during goal execution."));
+      };
+      this.on("event", listener);
+      const aborted = () =>
+        reject(new Error("Goal waiter was cancelled; reconciliation is required."));
+      signal?.addEventListener("abort", aborted, { once: true });
+      context.nativeGoalActive = true;
+      context.nativeGoalBudget = command.tokenBudget;
+      try {
+        await this.sendRequest(context, "thread/goal/set", {
+          threadId,
+          objective: command.objective,
+          tokenBudget: command.tokenBudget,
+          status: "active",
+        });
+        // The operation reservation owns every continuation until the goal settles.
+        return await completion;
+      } finally {
+        this.off("event", listener);
+        signal?.removeEventListener("abort", aborted);
+      }
+    }
+    if (command.kind === "fork") {
+      const history = await this.readThread(input.threadId);
+      const boundary =
+        command.beforeTurnId === undefined
+          ? history.turns.length
+          : history.turns.findIndex((turn) => turn.id === command.beforeTurnId);
+      if (boundary < 0) throw new Error("The selected fork boundary no longer exists.");
+      const request = buildCodexThreadForkParams(
+        {
+          cwd: command.cwd,
+          ...(context.session.model ? { model: context.session.model } : {}),
+          runtimeMode: context.session.runtimeMode,
+        },
+        threadId,
+        command.beforeTurnId,
+      );
+      const response = asObject(
+        await this.sendRequest(context, "thread/fork", { ...request, deferGoalContinuation: true }),
+      );
+      const forkId = asObject(response?.thread)?.id;
+      if (typeof forkId !== "string" || forkId === threadId)
+        throw new Error("Invalid native fork identity.");
+      await onReceipt?.({
+        nativeThreadId: forkId,
+        sourceNativeThreadId: threadId,
+        targetThreadId: command.targetThreadId,
+      });
+      const fork = await this.readPaginatedThread(context, forkId);
+      if (
+        JSON.stringify(fork.turns.map((turn) => turn.id)) !==
+        JSON.stringify(history.turns.slice(0, boundary).map((turn) => turn.id))
+      )
+        throw new Error(
+          "Fork history differs from the selected boundary; source thread was not modified.",
+        );
+      return {
+        resumeCursor: { threadId: forkId },
+        targetThreadId: command.targetThreadId,
+        cwd: command.cwd,
+      };
+    }
+    if (command.kind !== "compact" && command.kind !== "review")
+      throw new Error("This native operation is unsupported by Codex.");
+    // Subscribe before dispatch because native events may precede the RPC response.
+    let nativeTurnId: string | undefined;
+    let reviewAnchorResolved = false;
+    const completedCandidates: ProviderEvent[] = [];
+    let nativeItemId: string | undefined;
+    let settled: ProviderEvent | undefined;
+    let resolve!: (event: ProviderEvent) => void;
+    let reject!: (error: Error) => void;
+    const completion = new Promise<ProviderEvent>((accept, refuse) => {
+      resolve = accept;
+      reject = refuse;
+    });
+    // The promise can reject before dispatch returns. Install a handler immediately.
+    void completion.catch(() => undefined);
+    let receiptWrites: Promise<unknown> = Promise.resolve();
+    const listener = (event: ProviderEvent) => {
+      if (event.threadId !== input.threadId) return;
+      if (event.method === "session/exited" || event.method === "session/closed")
+        reject(new Error("Provider exited during native operation."));
+      if (event.method === "turn/started" && (command.kind !== "review" || !reviewAnchorResolved)) {
+        nativeTurnId = String(asObject(asObject(event.payload)?.turn)?.id ?? event.turnId ?? "");
+        receiptWrites = receiptWrites
+          .then(() => onReceipt?.({ nativeThreadId: threadId, nativeTurnId }))
+          .catch((cause) => {
+            reject(cause instanceof Error ? cause : new Error("Receipt persistence failed."));
+          });
+      }
+      if (
+        event.method === "item/completed" &&
+        asObject(asObject(event.payload)?.item)?.type === "contextCompaction"
+      ) {
+        nativeItemId = String(asObject(asObject(event.payload)?.item)?.id ?? event.itemId ?? "");
+        receiptWrites = receiptWrites
+          .then(() => onReceipt?.({ nativeThreadId: threadId, nativeTurnId, nativeItemId }))
+          .catch((cause) =>
+            reject(cause instanceof Error ? cause : new Error("Receipt persistence failed.")),
+          );
+      }
+      if (event.method === "turn/completed" && completedCandidates.length < 32)
+        completedCandidates.push(event);
+      if (
+        event.method === "turn/completed" &&
+        (command.kind !== "review" || reviewAnchorResolved) &&
+        (!nativeTurnId || String(event.turnId) === nativeTurnId)
+      ) {
+        settled = event;
+        resolve(event);
+      }
+    };
+    this.on("event", listener);
+    const aborted = () =>
+      reject(new Error("Native operation waiter was cancelled; reconcile the provider outcome."));
+    signal?.addEventListener("abort", aborted, { once: true });
+    const timer = setTimeout(
+      () => reject(new Error("Native operation timed out; its outcome requires reconciliation.")),
+      120_000,
+    );
+    try {
+      if (command.kind === "review") {
+        context.reviewOperationActive = true;
+        context.forkNotifications = [];
+        context.forkNotificationOverflow = false;
+        const response = asObject(
+          await this.sendRequest(context, "review/start", {
+            threadId,
+            delivery: "inline",
+            target:
+              command.target.type === "commit"
+                ? { ...command.target, title: null }
+                : command.target,
+          }),
+        );
+        nativeTurnId = String(asObject(response?.turn)?.id ?? "");
+        if (!nativeTurnId) throw new Error("Review did not return a native turn identity.");
+        reviewAnchorResolved = true;
+        context.nativeReviewTurnId = nativeTurnId;
+        settled = completedCandidates.find((event) => String(event.turnId) === nativeTurnId);
+        await onReceipt?.({
+          nativeThreadId: threadId,
+          nativeTurnId,
+          reviewThreadId: response?.reviewThreadId,
+        });
+        const reviewId = response?.reviewThreadId;
+        const buffered = context.forkNotifications;
+        context.forkNotifications = undefined;
+        if (typeof reviewId === "string" && reviewId !== threadId) {
+          (context.reviewThreadIds ??= new Set()).add(reviewId);
+          for (const notification of buffered ?? [])
+            if (readNotificationProviderThreadId(notification.params) === reviewId)
+              this.handleServerNotification(context, notification);
+        }
+      } else await this.sendRequest(context, "thread/compact/start", { threadId });
+      const event = settled ?? (await completion);
+      const turn = asObject(asObject(event.payload)?.turn);
+      if (turn?.status !== "completed")
+        throw new Error(`Native operation ended as ${String(turn?.status ?? "unknown")}.`);
+      if (command.kind === "compact" && !nativeItemId)
+        throw new Error("Compaction turn ended without a correlated contextCompaction item.");
+      return {
+        native: true,
+        nativeTurnId,
+        ...(nativeItemId ? { nativeItemId } : {}),
+        status: "completed",
+      };
+    } finally {
+      clearTimeout(timer);
+      this.off("event", listener);
+      context.reviewOperationActive = false;
+      if (settled && String(settled.turnId) === nativeTurnId) delete context.nativeReviewTurnId;
+      context.forkNotifications = undefined;
+      signal?.removeEventListener("abort", aborted);
+      await receiptWrites;
+    }
+  }
+
+  async reconcileNativeOperation(
+    record: NativeOperationRecord,
+  ): Promise<{ state: "completed" | "failed" | "indeterminate"; result?: unknown }> {
+    const context = this.requireSession(record.threadId);
+    const receipt = asObject(record.receipt);
+    const result = asObject(record.result);
+    const nativeTurnId = result?.nativeTurnId ?? receipt?.nativeTurnId;
+    const threadId =
+      typeof receipt?.nativeThreadId === "string"
+        ? receipt.nativeThreadId
+        : this.nativeThreadId(context);
+    if (record.command.kind === "goalSet") {
+      const response = asObject(await this.sendRequest(context, "thread/goal/get", { threadId }));
+      const goal = asObject(response?.goal);
+      if (goal?.status === "active" && !context.nativeGoalActive) {
+        await this.sendRequest(context, "thread/goal/set", { threadId, status: "paused" });
+        const read = asObject(
+          await this.sendRequest(context, "thread/read", { threadId, includeTurns: false }),
+        );
+        if (asObject(asObject(read?.thread)?.status)?.type === "active")
+          return { state: "indeterminate" };
+        return { state: "completed", result: { goal: { ...goal, status: "paused" } } };
+      }
+      if (!goal || goal.status !== "active") {
+        const read = asObject(
+          await this.sendRequest(context, "thread/read", { threadId, includeTurns: false }),
+        );
+        if (asObject(asObject(read?.thread)?.status)?.type === "active")
+          return { state: "indeterminate" };
+        return { state: "completed", result: { goal } };
+      }
+      return { state: "indeterminate" };
+    }
+    if (typeof nativeTurnId !== "string") return { state: "indeterminate" };
+    const response = asObject(
+      await this.sendRequest(context, "thread/read", { threadId, includeTurns: true }),
+    );
+    const turns = asObject(response?.thread)?.turns;
+    const turn = Array.isArray(turns)
+      ? turns.map(asObject).find((turn) => turn?.id === nativeTurnId)
+      : undefined;
+    if (turn?.status === "completed")
+      return { state: "completed", result: { nativeTurnId, native: true } };
+    if (turn?.status === "failed" || turn?.status === "interrupted")
+      return { state: "failed", result: { nativeTurnId, status: turn.status } };
+    return { state: "indeterminate" };
+  }
+
   async interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void> {
     const context = this.requireSession(threadId);
+    if (context.nativeGoalActive) {
+      try {
+        await this.sendRequest(context, "thread/goal/set", {
+          threadId: this.nativeThreadId(context),
+          status: "paused",
+        });
+      } catch (cause) {
+        this.stopSession(threadId);
+        throw new Error("The native goal could not be paused. Its provider session was stopped.", {
+          cause,
+        });
+      }
+      context.nativeGoalActive = false;
+    }
     const effectiveTurnId = turnId ?? context.session.activeTurnId;
 
     const providerThreadId = readResumeThreadId({
@@ -2578,7 +2969,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (
       primaryProviderThreadId !== undefined &&
       notificationProviderThreadId !== undefined &&
-      notificationProviderThreadId !== primaryProviderThreadId
+      notificationProviderThreadId !== primaryProviderThreadId &&
+      !context.reviewThreadIds?.has(notificationProviderThreadId)
     ) {
       if (context.forkNotifications) {
         if (context.forkNotifications.length < 512) context.forkNotifications.push(notification);
@@ -2598,7 +2990,67 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
+    if (notification.method === "thread/goal/updated") {
+      const goal = asObject(asObject(notification.params)?.goal);
+      if (goal && goal.status !== "active") context.nativeGoalActive = false;
+      if (
+        goal?.status === "active" &&
+        (!context.nativeGoalActive ||
+          (context.nativeGoalBudget !== undefined &&
+            typeof goal.tokensUsed === "number" &&
+            goal.tokensUsed >= context.nativeGoalBudget)) &&
+        !context.nativeGoalPauseInFlight
+      ) {
+        context.nativeGoalPauseInFlight = true;
+        void this.sendRequest(context, "thread/goal/set", {
+          threadId: this.nativeThreadId(context),
+          status: "paused",
+        })
+          .catch(() => {
+            this.emitLifecycleEvent(
+              context,
+              "session/goalPauseFailed",
+              "Native goal could not be paused; its provider session was stopped.",
+            );
+            this.stopSession(context.session.threadId);
+          })
+          .finally(() => {
+            context.nativeGoalPauseInFlight = false;
+          });
+      }
+    }
+    if (notification.method === "thread/goal/cleared") context.nativeGoalActive = false;
+    if (notification.method === "thread/name/updated") {
+      const title = asObject(notification.params)?.threadName;
+      if (typeof title === "string") context.lastProviderTitle = title;
+    }
+    const item = asObject(asObject(notification.params)?.item);
+    if (context.reviewOperationActive && item?.type === "enteredReviewMode") {
+      const reviewTurnId = asObject(notification.params)?.turnId;
+      if (typeof reviewTurnId === "string") context.nativeReviewTurnId = reviewTurnId;
+    }
+    if (item && (item.type === "collabAgentToolCall" || item.type === "collab_agent_tool_call")) {
+      const previousSize = context.childThreadIds?.size ?? 0;
+      const children = item.receiverThreadIds;
+      if (Array.isArray(children))
+        for (const child of children)
+          if (typeof child === "string") {
+            const ids = (context.childThreadIds ??= new Set());
+            if (ids.size < 512) ids.add(child);
+          }
+      if (context.childThreadIds && context.childThreadIds.size !== previousSize)
+        this.updateSession(context, {
+          resumeCursor: {
+            ...asObject(context.session.resumeCursor),
+            childThreadIds: [...context.childThreadIds],
+          },
+        });
+    }
     const route = this.readRouteFields(notification.params);
+    // review/start returns the review identity. Certified Codex also emits a
+    // transport control turn with another id; keep F5's lifecycle on the review.
+    if (notification.method === "turn/started" && context.nativeReviewTurnId)
+      route.turnId = TurnId.makeUnsafe(context.nativeReviewTurnId);
     const textDelta =
       notification.method === "item/agentMessage/delta"
         ? this.readString(notification.params, "delta")
@@ -2614,14 +3066,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       turnId: route.turnId,
       itemId: route.itemId,
       textDelta,
-      payload: notification.params,
+      payload:
+        notification.method === "turn/started" && context.nativeReviewTurnId
+          ? {
+              ...asObject(notification.params),
+              turn: {
+                ...asObject(asObject(notification.params)?.turn),
+                id: context.nativeReviewTurnId,
+              },
+            }
+          : notification.params,
     });
 
     if (notification.method === "thread/started") {
       const providerThreadId = normalizeProviderThreadId(
         this.readString(this.readObject(notification.params)?.thread, "id"),
       );
-      if (providerThreadId) {
+      if (providerThreadId && !context.reviewThreadIds?.has(providerThreadId)) {
         this.updateSession(context, {
           resumeCursor: {
             ...this.readObject(context.session.resumeCursor),
@@ -2633,6 +3094,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     if (notification.method === "thread/deleted" || notification.method === "thread/closed") {
+      if (
+        notificationProviderThreadId &&
+        context.reviewThreadIds?.delete(notificationProviderThreadId)
+      )
+        return;
       this.updateSession(context, {
         status: "closed",
         activeTurnId: undefined,
@@ -2677,7 +3143,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     if (notification.method === "turn/started") {
-      const turnId = toTurnId(this.readString(this.readObject(notification.params)?.turn, "id"));
+      const turnId = toTurnId(
+        context.nativeReviewTurnId ??
+          this.readString(this.readObject(notification.params)?.turn, "id"),
+      );
       this.updateSession(context, {
         status: "running",
         activeTurnId: turnId,
@@ -2692,6 +3161,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       // A finished turn has consumed or abandoned its elicitations; older
       // servers may not acknowledge them with serverRequest/resolved.
       const completedTurnId = toTurnId(this.readString(turn, "id"));
+      if (completedTurnId === context.nativeReviewTurnId) delete context.nativeReviewTurnId;
       if (completedTurnId)
         for (const requestId of context.elicitations?.forTurn(completedTurnId) ?? [])
           this.settleElicitation(context, requestId, "completed");
@@ -3008,7 +3478,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       createdAt: new Date().toISOString(),
       method: "session/configured",
       payload: {
-        config: configuredPayload,
+        config: {
+          ...configuredPayload,
+          runtimeInfo: normalizeProviderRuntimeInfo(context.requestedRuntime ?? {}, config),
+        },
       },
     });
   }

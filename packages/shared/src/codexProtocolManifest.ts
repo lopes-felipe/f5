@@ -127,9 +127,9 @@ export const CODEX_NOTIFICATION_DISPOSITIONS = {
   "thread/reverted": "state-only",
   "skills/changed": "state-only",
   "thread/name/updated": "state-only",
-  "thread/attachment/updated": "state-only",
-  "thread/goal/updated": "state-only",
-  "thread/goal/cleared": "state-only",
+  "thread/attachment/updated": "canonical",
+  "thread/goal/updated": "canonical",
+  "thread/goal/cleared": "canonical",
   // Native queue, projects and environments would create a second owner for
   // F5's queue, project and workspace model; they are deliberately not mapped.
   "thread/queue/changed": "state-only",
@@ -251,6 +251,14 @@ export const CODEX_SERVER_REQUEST_DISPOSITIONS = {
  * so a renamed or removed method is caught before users hit it.
  */
 export const CODEX_CLIENT_REQUEST_METHODS = [
+  ["review/start"],
+  ["thread/name/set"],
+  ["thread/compact/start"],
+  ["thread/goal/set"],
+  ["thread/goal/get"],
+  ["thread/goal/clear"],
+  ["thread/attachment/list"],
+  ["thread/items/list"],
   ["initialize"],
   ["thread/start"],
   ["thread/resume"],

@@ -1,3 +1,5 @@
+import { ProviderValidationError } from "./provider/Errors.ts";
+import { NATIVE_OPERATION_WS_METHODS, ThreadId as NativeForkThreadId } from "@t3tools/contracts";
 import {
   getClaudeTranscriptMaintenance,
   runClaudeTranscriptMaintenance,
@@ -2965,6 +2967,136 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
       }
 
+      case NATIVE_OPERATION_WS_METHODS.fork: {
+        const input = stripRequestTag(request.body);
+        const { orchestrationEngine, providerSessionDirectory, projectSetupScriptRunner } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const source = snapshot.threads.find(
+          (entry) => entry.id === input.threadId && entry.deletedAt === null,
+        );
+        const project = snapshot.projects.find((entry) => entry.id === source?.projectId);
+        if (!source || !project || !providerService.nativeOperations?.executeWithApply)
+          return yield* new RouteRequestError({ message: "This conversation cannot be forked." });
+        if (!/^[0-9a-f-]{36}$/i.test(input.operationId))
+          return yield* new RouteRequestError({ message: "Invalid fork identifier." });
+        const targetId = NativeForkThreadId.makeUnsafe(`fork-${input.operationId}`);
+        const branch = `t3code/${input.operationId.slice(0, 8)}`;
+        const cwd = resolveDefaultWorktreePath({
+          worktreesDir: serverConfig.worktreesDir,
+          cwd: project.workspaceRoot,
+          branch,
+        });
+        const binding = yield* providerSessionDirectory
+          .getBinding(input.threadId)
+          .pipe(Effect.mapError((cause) => new RouteRequestError({ message: String(cause) })));
+        if (Option.isNone(binding))
+          return yield* new RouteRequestError({
+            message: "The source provider session is unavailable.",
+          });
+        const validation = (cause: unknown) =>
+          new ProviderValidationError({
+            operation: "nativeFork",
+            issue: cause instanceof Error ? cause.message : String(cause),
+          });
+        return yield* providerService.nativeOperations
+          .executeWithApply(
+            {
+              threadId: input.threadId,
+              operationId: input.operationId,
+              generation: input.generation,
+              command: {
+                kind: "fork",
+                targetThreadId: targetId,
+                cwd,
+                ...(input.beforeTurnId ? { beforeTurnId: input.beforeTurnId } : {}),
+              },
+            },
+            (result) =>
+              Effect.gen(function* () {
+                if (!result || typeof result !== "object" || !("resumeCursor" in result))
+                  return yield* validation("Native fork returned no resume cursor.");
+                const at = new Date().toISOString();
+                yield* orchestrationEngine
+                  .dispatch({
+                    type: "thread.create",
+                    commandId: CommandId.makeUnsafe(`fork-create:${input.operationId}`),
+                    threadId: targetId,
+                    projectId: project.id,
+                    title: `Fork of ${source.title}`,
+                    model: source.model,
+                    ...(source.modelSelection ? { modelSelection: source.modelSelection } : {}),
+                    runtimeMode: source.runtimeMode,
+                    interactionMode: source.interactionMode,
+                    branch,
+                    worktreePath: cwd,
+                    threadReferences: [{ threadId: source.id, relation: "source", createdAt: at }],
+                    createdAt: at,
+                  })
+                  .pipe(Effect.mapError(validation));
+                yield* providerSessionDirectory.upsert({
+                  ...binding.value,
+                  threadId: targetId,
+                  resumeCursor: result.resumeCursor,
+                  launchFingerprint: null,
+                  status: "stopped",
+                  runtimePayload: {
+                    ...(typeof binding.value.runtimePayload === "object"
+                      ? binding.value.runtimePayload
+                      : {}),
+                    cwd,
+                  },
+                });
+                yield* projectSetupScriptRunner
+                  .runForThread({
+                    threadId: targetId,
+                    projectId: project.id,
+                    projectCwd: project.workspaceRoot,
+                    worktreePath: cwd,
+                  })
+                  .pipe(Effect.mapError(validation));
+              }),
+            createConfiguredWorktree({
+              cwd: source.worktreePath ?? project.workspaceRoot,
+              branch: source.branch ?? "HEAD",
+              baseRefName: source.branch ?? "HEAD",
+              newBranch: branch,
+              path: cwd,
+            }).pipe(Effect.asVoid, Effect.mapError(validation)),
+          )
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
+      case NATIVE_OPERATION_WS_METHODS.execute:
+      case NATIVE_OPERATION_WS_METHODS.list:
+      case NATIVE_OPERATION_WS_METHODS.inspect: {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const input = stripRequestTag(request.body);
+        const snapshot = yield* orchestrationEngine.getReadModel();
+        const thread = snapshot.threads.find(
+          (entry) => entry.id === input.threadId && entry.deletedAt === null,
+        );
+        if (!thread || !providerService.nativeOperations)
+          return yield* new RouteRequestError({
+            message: "Native operations are unavailable for this conversation.",
+          });
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.execute) {
+          const operation = stripRequestTag(request.body);
+          if (operation.command.kind === "fork" || operation.command.kind === "revertFiles")
+            return yield* new RouteRequestError({
+              message: "Use the conversation fork or checkpoint action for this operation.",
+            });
+          return yield* providerService.nativeOperations
+            .execute(operation)
+            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        }
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.inspect)
+          return yield* providerService.nativeOperations
+            .inspect(stripRequestTag(request.body))
+            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        return yield* providerService.nativeOperations
+          .list(input.threadId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      }
       case ELICITATION_WS_METHODS.submit: {
         // The connection is authenticated at upgrade; the submission itself
         // authorizes against the thread's open request, its generation and

@@ -32,6 +32,9 @@ export const ClaudeThinkingOption = Schema.Union([
 export type ClaudeThinkingOption = typeof ClaudeThinkingOption.Type;
 
 export const ClaudeProviderStartOptions = Schema.Struct({
+  promptSuggestions: Schema.optional(Schema.Boolean),
+  enableFileCheckpointing: Schema.optional(Schema.Boolean),
+  nativeCompaction: Schema.optional(Schema.Boolean),
   autoCompactWindow: Schema.optional(NonNegativeInt),
   resumeCompactionPrompt: Schema.optional(Schema.Boolean),
   binaryPath: Schema.optional(TrimmedNonEmptyString),

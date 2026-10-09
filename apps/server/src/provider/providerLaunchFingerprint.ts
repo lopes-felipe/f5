@@ -29,6 +29,12 @@ export function computeProviderLaunchFingerprint(input: {
     instanceLaunchIdentity: input.instanceLaunchIdentity ?? "",
     mcpEffectiveConfigVersion: input.mcpEffectiveConfigVersion ?? "",
     workflowExecutionProfile: input.workflowExecutionProfile ?? "",
+    ...(input.provider === "claudeAgent" &&
+    input.providerOptions?.claudeAgent?.enableFileCheckpointing !== undefined
+      ? {
+          enableFileCheckpointing: input.providerOptions.claudeAgent.enableFileCheckpointing,
+        }
+      : {}),
   });
   return createHash("sha256").update(identity).digest("hex");
 }

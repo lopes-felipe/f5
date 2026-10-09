@@ -176,6 +176,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         oneOffProviderOptions: {
           autoCompactWindow: effectiveConfig.autoCompactWindow,
           resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,
+          ...(effectiveConfig.promptSuggestions !== undefined
+            ? { promptSuggestions: effectiveConfig.promptSuggestions }
+            : {}),
+          ...(effectiveConfig.enableFileCheckpointing !== undefined
+            ? { enableFileCheckpointing: effectiveConfig.enableFileCheckpointing }
+            : {}),
+          ...(effectiveConfig.nativeCompaction !== undefined
+            ? { nativeCompaction: effectiveConfig.nativeCompaction }
+            : {}),
           binaryPath: effectiveConfig.binaryPath,
           launchArgs,
         },

@@ -72,7 +72,9 @@ import { estimateProviderInstructionTokens } from "../../provider/contextTokenEs
 import { resolveModelContextWindowTokens } from "../../provider/modelContextWindowMetadata.ts";
 import type { ProviderRuntimeBinding } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import { buildThreadResumeContext } from "../compactionService.ts";
+import { buildThreadResumeContext, buildThreadCompactionTranscript } from "../compactionService.ts";
+import { formatCompactSummary, getCompactPrompt } from "../compactionPrompts.ts";
+import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -708,6 +710,7 @@ const make = Effect.gen(function* () {
         memory: memoryStartConfig,
         persisted: persistedStartConfig,
       });
+      const projectRuntimeSettings = yield* settingsForThread(thread);
       const effectiveStartConfig = {
         ...unresolvedEffectiveStartConfig,
         providerOptions: preferredProvider
@@ -717,6 +720,19 @@ const make = Effect.gen(function* () {
             )
           : unresolvedEffectiveStartConfig.providerOptions,
       };
+      if (
+        preferredProvider === "claudeAgent" &&
+        effectiveStartConfig.providerOptions?.claudeAgent?.promptSuggestions === undefined &&
+        projectRuntimeSettings.enableClaudePromptSuggestions
+      ) {
+        effectiveStartConfig.providerOptions = {
+          ...effectiveStartConfig.providerOptions,
+          claudeAgent: {
+            ...effectiveStartConfig.providerOptions?.claudeAgent,
+            promptSuggestions: true,
+          },
+        };
+      }
       const desiredModel = effectiveStartConfig.model;
       const recordEffectiveStartConfig = () =>
         Effect.sync(() => {
@@ -763,12 +779,45 @@ const make = Effect.gen(function* () {
             ...(desiredModel ? { "provider.model": desiredModel } : {}),
             "provider.has_resume_cursor": input?.resumeCursor !== undefined,
           });
+          let recoverySummary: string | undefined;
+          if (input?.resumeCursor === undefined && providerService.nativeOperations) {
+            const records = yield* providerService.nativeOperations.list(threadId);
+            if (
+              records.some(
+                (record) => record.command.kind === "compact" && record.state === "completed",
+              )
+            ) {
+              const transcript = buildThreadCompactionTranscript({
+                thread,
+                direction: null,
+                pivotMessageId: null,
+              });
+              const route = resolveOneOffPromptRoute({
+                model: thread.model,
+                sessionProviderName: thread.session?.providerName ?? null,
+              });
+              const result = yield* providerService.runOneOffPrompt({
+                threadId,
+                provider: route.provider,
+                model: route.model,
+                prompt: `${getCompactPrompt()}\n\n## Conversation Context\n${transcript.transcript}`,
+                ...(instructionContext.cwd ? { cwd: instructionContext.cwd } : {}),
+                runtimeMode: desiredRuntimeMode,
+              });
+              recoverySummary = formatCompactSummary(result.text);
+              if (!recoverySummary)
+                return yield* Effect.fail(
+                  new Error("Native compaction recovery returned an empty summary."),
+                );
+            }
+          }
           return yield* providerService.startSession(threadId, {
             threadId,
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
             ...(preferredInstanceId ? { providerInstanceId: preferredInstanceId } : {}),
             ...instructionContext,
+            ...(recoverySummary ? { priorWorkSummary: recoverySummary } : {}),
             ...(desiredModel ? { model: desiredModel } : {}),
             ...(options?.modelSelection !== undefined
               ? { modelSelection: options.modelSelection }
@@ -2161,6 +2210,8 @@ const make = Effect.gen(function* () {
         case "thread.title-regenerated":
         case "thread.turn-processing-quiesced": {
           const thread = yield* resolveThread(event.payload.threadId);
+          if (event.type === "thread.title-regenerated" && thread && providerService.renameThread)
+            yield* providerService.renameThread(thread.id, thread.title);
           const completedAt =
             event.type === "thread.turn-processing-quiesced"
               ? event.payload.processingQuiescedAt
@@ -2207,6 +2258,12 @@ const make = Effect.gen(function* () {
           break;
         }
         case "thread.meta-updated": {
+          if (
+            event.payload.title &&
+            !String(event.commandId).includes("thread-meta-update") &&
+            providerService.renameThread
+          )
+            yield* providerService.renameThread(event.payload.threadId, event.payload.title);
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (

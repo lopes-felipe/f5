@@ -515,7 +515,7 @@ export function buildThreadResumeContext(thread: OrchestrationThread): ThreadRes
     ...(thread.sessionNotes ? { sessionNotes: thread.sessionNotes } : {}),
   } satisfies ThreadResumeContextInput;
 
-  if (!thread.compaction) {
+  if (!thread.compaction || thread.compaction.kind === "native") {
     return sharedResumeContext;
   }
 

@@ -28,6 +28,9 @@ export interface ProviderSessionDiscovery {
   readonly outcome: Exclude<ProviderSessionDiscoveryOutcome, "static">;
   /** The session published its native command catalog. */
   readonly nativeCommands?: boolean;
+  readonly nativeCompaction?: boolean;
+  readonly fileCheckpointing?: boolean;
+  readonly childTaskStop?: boolean;
 }
 
 export interface BuildProviderSessionCapabilitiesInput {
@@ -100,6 +103,26 @@ function supportFor(
       if (input.discovery?.outcome === "failed" || input.discovery?.nativeCommands === false)
         return refuse(unavailable("unsupported", "The provider did not report its commands."));
       return { action, supported: true };
+    case "nativeReview":
+    case "nativeCompaction":
+    case "nativeFork":
+    case "nativeGoals":
+    case "nativeAttachments":
+    case "childTaskInspection":
+    case "childTaskStop":
+    case "fileCheckpointing":
+      if (
+        !runtime[action] ||
+        (action === "nativeCompaction" &&
+          input.driver === "claudeAgent" &&
+          input.discovery?.nativeCompaction !== true) ||
+        (action === "fileCheckpointing" && input.discovery?.fileCheckpointing !== true) ||
+        (action === "childTaskStop" && input.discovery?.childTaskStop !== true)
+      )
+        return refuse(
+          unavailable("unsupported", "This session does not support this native operation."),
+        );
+      return input.active ? { action, supported: true } : noSession();
     case "nativeSessionCleanup":
       return runtime.nativeSessionCleanup
         ? { action, supported: true }

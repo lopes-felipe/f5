@@ -278,6 +278,19 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
             }
           />
           <ProjectSettingRow
+            title="Claude prompt suggestions"
+            description="Suggestions fill the composer without sending. Applies after the current turn."
+            source={badge("enableClaudePromptSuggestions")}
+            control={
+              <Switch
+                aria-label="Claude prompt suggestions"
+                disabled={saving}
+                checked={settings.enableClaudePromptSuggestions}
+                onCheckedChange={(checked) => set("enableClaudePromptSuggestions", checked)}
+              />
+            }
+          />
+          <ProjectSettingRow
             title="Enable agent browser access"
             source={badge("enableAgentBrowserAccess")}
             control={

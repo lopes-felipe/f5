@@ -1,3 +1,4 @@
+import { nativeTaskWorkItemId } from "@t3tools/shared/nativeTaskIdentity";
 import {
   MAX_BACKGROUND_WORK_OUTPUT_BYTES,
   type BackgroundWorkClassification,
@@ -124,7 +125,7 @@ function taskTransition(
     const classification = classifyTask(taskType);
     return {
       threadId: event.threadId,
-      workItemId: event.payload.taskId,
+      workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
       provider: event.provider,
       ...(event.payload.model ? { model: event.payload.model } : {}),
       turnId: event.turnId ?? null,
@@ -146,7 +147,7 @@ function taskTransition(
   if (event.type === "task.progress") {
     return {
       threadId: event.threadId,
-      workItemId: event.payload.taskId,
+      workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
       provider: event.provider,
       ...(event.payload.model ? { model: event.payload.model } : {}),
       turnId: event.turnId ?? null,
@@ -160,7 +161,7 @@ function taskTransition(
 
   return {
     threadId: event.threadId,
-    workItemId: event.payload.taskId,
+    workItemId: nativeTaskWorkItemId(event.payload.taskId, event.payload.runId),
     provider: event.provider,
     turnId: event.turnId ?? null,
     status: event.payload.status,

@@ -842,6 +842,38 @@ export function ProviderInstanceCard({
                     }
                   />
                 </label>
+                {(
+                  ["promptSuggestions", "enableFileCheckpointing", "nativeCompaction"] as const
+                ).map((key) => (
+                  <label key={key} className="flex items-center justify-between gap-2 text-xs">
+                    {key === "promptSuggestions"
+                      ? "Prompt suggestions (applies after current turn)"
+                      : key === "enableFileCheckpointing"
+                        ? "Keep native file checkpoints (uses profile disk space)"
+                        : "Native compaction (requires runtime certification)"}
+                    <Switch
+                      checked={
+                        key === "enableFileCheckpointing"
+                          ? !(
+                              typeof instance.config === "object" &&
+                              instance.config !== null &&
+                              key in instance.config &&
+                              (instance.config as Record<string, unknown>)[key] === false
+                            )
+                          : typeof instance.config === "object" &&
+                            instance.config !== null &&
+                            key in instance.config &&
+                            (instance.config as Record<string, unknown>)[key] === true
+                      }
+                      onCheckedChange={(value) =>
+                        onUpdate({
+                          ...instance,
+                          config: nextConfigBlobWithValue(instance.config, key, value),
+                        })
+                      }
+                    />
+                  </label>
+                ))}
                 <label className="block text-xs">
                   Auto-compact window (tokens; 0 uses the CLI default)
                   <input

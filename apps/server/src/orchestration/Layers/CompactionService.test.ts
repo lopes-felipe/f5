@@ -121,6 +121,8 @@ function makeCompactRequestedEvent(
 }
 
 async function createHarness(input?: {
+  readonly nativeOperations?: ProviderServiceShape["nativeOperations"];
+  readonly getSessionCapabilities?: ProviderServiceShape["getSessionCapabilities"];
   readonly compactConversation?: ProviderServiceShape["compactConversation"];
   readonly runOneOffPrompt?: ProviderServiceShape["runOneOffPrompt"];
   readonly stopSession?: ProviderServiceShape["stopSession"];
@@ -182,7 +184,8 @@ async function createHarness(input?: {
     stopSession:
       input?.stopSession ?? (() => Effect.void as ReturnType<ProviderServiceShape["stopSession"]>),
     listSessions: () => Effect.succeed([]),
-    getSessionCapabilities: () => Effect.succeed(null),
+    ...(input?.nativeOperations ? { nativeOperations: input.nativeOperations } : {}),
+    getSessionCapabilities: input?.getSessionCapabilities ?? (() => Effect.succeed(null)),
     assertSessionAction: () => Effect.die(new Error("assertSessionAction is unused here")),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "restart-session" }),
     readThread: () => unsupported(),
@@ -234,6 +237,82 @@ describe("CompactionService", () => {
   afterEach(async () => {
     await Promise.all(disposers.splice(0).map((dispose) => dispose()));
   });
+
+  it("records native whole compaction without stopping the session or generating a summary", async () => {
+    const operations: string[] = [];
+    const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
+      execute: () => Effect.die("unused"),
+      list: () => Effect.succeed([]),
+      inspect: () => Effect.die("unused"),
+      executeWithApply: (input, apply) =>
+        Effect.gen(function* () {
+          operations.push(input.command.kind);
+          yield* apply({ native: true });
+          return { ...input, state: "completed" as const, createdAt: NOW, updatedAt: NOW };
+        }),
+    };
+    const harness = await createHarness({
+      nativeOperations,
+      getSessionCapabilities: () =>
+        Effect.succeed({
+          generation: 4,
+          discovery: "discovered",
+          checkedAt: NOW,
+          actions: [{ action: "nativeCompaction", supported: true }],
+        }),
+      stopSession: () => Effect.die("native compaction must keep the session"),
+      runOneOffPrompt: () => Effect.die("native compaction must not make a summary"),
+    });
+    disposers.push(harness.dispose);
+    harness.emit(makeCompactRequestedEvent("event-native"));
+    await Effect.runPromise(harness.service.drain);
+    expect(operations).toEqual(["compact"]);
+    expect(
+      harness.dispatched.find((command) => command.type === "thread.compacted.record"),
+    ).toMatchObject({ compaction: { kind: "native", direction: null } });
+  });
+
+  it.each(["from", "up_to"] as const)(
+    "keeps %s compaction on the F5 summary path",
+    async (direction) => {
+      let summaries = 0;
+      const harness = await createHarness({
+        nativeOperations: {
+          execute: () => Effect.die("unused"),
+          executeWithApply: () => Effect.die("partial compaction must not dispatch native work"),
+          list: () => Effect.succeed([]),
+          inspect: () => Effect.die("unused"),
+        },
+        getSessionCapabilities: () =>
+          Effect.succeed({
+            generation: 4,
+            discovery: "discovered",
+            checkedAt: NOW,
+            actions: [{ action: "nativeCompaction", supported: true }],
+          }),
+        runOneOffPrompt: () =>
+          Effect.sync(() => {
+            summaries++;
+            return { text: "<summary>Partial history</summary>" };
+          }),
+      });
+      disposers.push(harness.dispose);
+      const event = makeCompactRequestedEvent(`event-partial-${direction}`);
+      harness.emit({
+        ...event,
+        payload: {
+          ...event.payload,
+          direction,
+          pivotMessageId: MessageId.makeUnsafe("message-user-1"),
+        },
+      });
+      await Effect.runPromise(harness.service.drain);
+      expect(summaries).toBe(1);
+      expect(
+        harness.dispatched.find((command) => command.type === "thread.compacted.record"),
+      ).toMatchObject({ compaction: { direction } });
+    },
+  );
 
   it("does not record compaction success when stopSession fails", async () => {
     const harness = await createHarness({

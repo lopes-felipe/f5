@@ -31,6 +31,11 @@ const harness = (
     forkCodex?: boolean;
     failReadback?: boolean;
     cancelDuringCapture?: boolean;
+    nativeClaude?: boolean;
+    nativeCanRewind?: boolean;
+    nativeSkippedLinks?: number;
+    nativeWorkspace?: string;
+    isGit?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -64,18 +69,19 @@ const harness = (
     let failReadback = options.failReadback === true;
     const model = {
       snapshotSequence: 3,
-      projects: [{ id: projectId, workspaceRoot: "/tmp/no-git-phase8" }],
+      projects: [{ id: projectId, workspaceRoot: options.nativeWorkspace ?? "/tmp/no-git-phase8" }],
       threads: [
         {
           id: threadId,
           projectId,
           worktreePath,
           session: {
-            providerName: options.zeroTurnClaude
-              ? "claudeAgent"
-              : worktreePath
-                ? "opencode"
-                : "codex",
+            providerName:
+              options.zeroTurnClaude || options.nativeClaude
+                ? "claudeAgent"
+                : worktreePath
+                  ? "opencode"
+                  : "codex",
           },
           messages: [{ id: messageId, text: "Recovered source", attachments: [] }],
           checkpoints: [],
@@ -84,7 +90,37 @@ const harness = (
     };
     const rewind = yield* makeConversationRewind.pipe(
       Effect.provideService(ProviderService, {
-        getSessionCapabilities: () => Effect.succeed(null),
+        getSessionCapabilities: () =>
+          Effect.succeed(
+            options.nativeClaude
+              ? {
+                  generation: 1,
+                  actions: [
+                    { action: "rollback", supported: true },
+                    { action: "fileCheckpointing", supported: true },
+                  ],
+                }
+              : null,
+          ),
+        nativeOperations: options.nativeClaude
+          ? {
+              executeWithApply: (
+                _input: unknown,
+                apply: (result: unknown) => Effect.Effect<void>,
+              ) =>
+                Effect.gen(function* () {
+                  fileActions.push("native-revert");
+                  const result = {
+                    canRewind: options.nativeCanRewind !== false,
+                    skippedLinks: options.nativeSkippedLinks ?? 0,
+                  };
+                  if (!result.canRewind)
+                    return { state: "failed", error: "Backups unavailable", result };
+                  yield* apply(result);
+                  return { state: "completed", result };
+                }),
+            }
+          : undefined,
         getCapabilities: () =>
           Effect.succeed({
             runtimeCapabilities: {
@@ -108,7 +144,7 @@ const harness = (
           Effect.sync(() => [
             {
               threadId,
-              cwd: options.providerCwd ?? worktreePath,
+              cwd: options.providerCwd ?? options.nativeWorkspace ?? worktreePath,
               resumeCursor: {
                 threadId: identity,
                 ...(options.forkCodex && rollbackCalls > 0
@@ -147,6 +183,7 @@ const harness = (
           }),
       } as never),
       Effect.provideService(CheckpointStore, {
+        isGitRepository: () => Effect.succeed(options.isGit === true),
         hasCheckpointRef: () => Effect.succeed(false),
         captureCheckpoint: () =>
           worktreePath
@@ -576,6 +613,49 @@ layer("conversation rewind recovery", (it) => {
         }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]?.state,
         "reconciliation-required",
       );
+    }),
+  );
+});
+
+layer("native file rewind in non-git Claude projects", (it) => {
+  for (const canRewind of [true, false])
+    it.effect(
+      `native rewind ${canRewind ? "restores files before conversation rewind" : "refusal leaves the conversation untouched"}`,
+      () =>
+        Effect.gen(function* () {
+          const workspace = yield* Effect.acquireRelease(
+            Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-rewind-"))),
+            (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+          );
+          const h = yield* harness(`native-files:${canRewind}`, null, null, {
+            nativeClaude: true,
+            nativeCanRewind: canRewind,
+            nativeWorkspace: workspace,
+            nativeSkippedLinks: 2,
+          });
+          yield* h.rewind.run({ ...h.request, restoreFiles: true });
+          assert.deepEqual(
+            h.fileActions,
+            canRewind ? ["native-revert", "rollback"] : ["native-revert"],
+          );
+          assert.equal(h.rollbackCalls(), canRewind ? 1 : 0);
+          if (canRewind)
+            assert(h.activityCommandIds.some((id) => id.startsWith("native-files-warning:")));
+        }),
+    );
+  it.effect("never calls native rewind in a git project", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-git-"))),
+        (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+      );
+      const h = yield* harness("native-files-git", null, workspace, {
+        nativeClaude: true,
+        nativeWorkspace: workspace,
+        isGit: true,
+      });
+      yield* h.rewind.run({ ...h.request, restoreFiles: true });
+      assert(!h.fileActions.includes("native-revert"));
     }),
   );
 });

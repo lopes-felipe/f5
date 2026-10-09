@@ -674,6 +674,31 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!(yield* checkpointStore.isGitRepository(sessionRuntime.value.cwd))) {
+      if (thread.session?.providerName === "claudeAgent" && Option.isSome(sqlOption)) {
+        const history = (yield* turns.listByThreadId({ threadId: thread.id }))
+          .filter((turn) => turn.turnId !== null)
+          .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+        const target = history[event.payload.turnCount];
+        const targetMessage =
+          target?.pendingMessageId ??
+          thread.messages.find(
+            (message) => message.role === "user" && message.turnId === target?.turnId,
+          )?.id;
+        if (!targetMessage) throw new Error("No native user-message checkpoint maps to this turn.");
+        yield* conversationRewind.run(
+          {
+            type: "thread.conversation.revert",
+            commandId: serverCommandId("native-checkpoint"),
+            operationId: CommandId.makeUnsafe(`native-checkpoint:${event.eventId}`),
+            threadId: thread.id,
+            targetMessageId: targetMessage,
+            restoreFiles: true,
+            createdAt: event.payload.createdAt,
+          },
+          { userInitiated: true },
+        );
+        return;
+      }
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,

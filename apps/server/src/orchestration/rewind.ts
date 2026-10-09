@@ -127,10 +127,22 @@ export const makeConversationRewind = Effect.gen(function* () {
       const workspace =
         thread.worktreePath ??
         model.projects.find((project) => project.id === thread.projectId)?.workspaceRoot;
+      const nativeFiles =
+        request.restoreFiles &&
+        thread.session?.providerName === "claudeAgent" &&
+        !!workspace &&
+        !(yield* checkpoints.isGitRepository(workspace));
+      if (
+        nativeFiles &&
+        !sessionCapabilities?.actions.some(
+          (action) => action.action === "fileCheckpointing" && action.supported,
+        )
+      )
+        return yield* fail("Native file checkpointing is unavailable for this session.");
       const requiresWorkspace = request.restoreFiles || caps.rollbackAffectsFiles;
       if (requiresWorkspace && !workspace) return yield* fail("This rewind needs a workspace.");
       if (requiresWorkspace) {
-        if (!thread.worktreePath)
+        if (!thread.worktreePath && !nativeFiles)
           return yield* fail("File rollback requires an isolated worktree.");
         const cwd = yield* Effect.tryPromise(() => realpath(workspace!));
         const owners = model.threads
@@ -225,6 +237,7 @@ export const makeConversationRewind = Effect.gen(function* () {
           const at = new Date().toISOString();
           if (
             request.restoreFiles &&
+            !nativeFiles &&
             !(yield* checkpoints.hasCheckpointRef({
               cwd: workspace!,
               checkpointRef: checkpointRefForThreadTurn(thread.id, target),
@@ -349,12 +362,52 @@ export const makeConversationRewind = Effect.gen(function* () {
             return;
           }
           state = "provider-pending";
+          const conversation = provider.rollbackConversation({
+            threadId: thread.id,
+            numTurns: op.relative_count,
+            ...(removed[0] !== undefined ? { beforeTurnId: removed[0] } : {}),
+          });
           const attempt = yield* Effect.exit(
-            provider.rollbackConversation({
-              threadId: thread.id,
-              numTurns: op.relative_count,
-              ...(removed[0] !== undefined ? { beforeTurnId: removed[0] } : {}),
-            }),
+            nativeFiles
+              ? Effect.gen(function* () {
+                  const native = provider.nativeOperations;
+                  if (!native?.executeWithApply || !sessionCapabilities)
+                    return yield* fail("Native file rewind is unavailable.");
+                  const record = yield* native.executeWithApply(
+                    {
+                      threadId: thread.id,
+                      operationId: `native-files:${request.operationId}`,
+                      generation: sessionCapabilities.generation,
+                      command: { kind: "revertFiles", userMessageId: removed[0]! },
+                    },
+                    () => conversation,
+                  );
+                  if (record.state !== "completed" || record.staleGeneration)
+                    return yield* fail(
+                      record.error ??
+                        "Native file rewind needs reconciliation; the conversation was left untouched.",
+                    );
+                  const result = record.result as { skippedLinks?: number } | undefined;
+                  if (result?.skippedLinks)
+                    yield* engine.dispatch({
+                      type: "thread.activity.append",
+                      commandId: CommandId.makeUnsafe(
+                        `native-files-warning:${request.operationId}`,
+                      ),
+                      threadId: thread.id,
+                      activity: {
+                        id: EventId.makeUnsafe(`native-files-warning:${request.operationId}`),
+                        kind: "native.files.warning",
+                        tone: "info",
+                        summary: `Native file rewind skipped ${result.skippedLinks} unsafe file links.`,
+                        payload: { skippedLinks: result.skippedLinks },
+                        turnId: null,
+                        createdAt: new Date().toISOString(),
+                      },
+                      createdAt: new Date().toISOString(),
+                    });
+                })
+              : conversation,
           );
           if (Exit.isFailure(attempt)) {
             // A rejected request usually changed nothing. Prove it before marking the
@@ -389,7 +442,7 @@ export const makeConversationRewind = Effect.gen(function* () {
           yield* sql`UPDATE rewind_operations SET provider_session_id = ${confirmedIdentity}, state = 'provider-confirmed', error = NULL, updated_at = ${new Date().toISOString()} WHERE operation_id = ${op.operation_id}`;
         }
         if (state !== "files-confirmed") {
-          if (request.restoreFiles || caps.rollbackAffectsFiles) {
+          if (!nativeFiles && (request.restoreFiles || caps.rollbackAffectsFiles)) {
             const ref = request.restoreFiles
               ? checkpointRefForThreadTurn(thread.id, op.retained_count)
               : keepFilesRef;

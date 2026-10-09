@@ -3,6 +3,7 @@ import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Layer, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { ProviderValidationError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { buildThreadCompactionTranscript } from "../compactionService.ts";
 import {
@@ -105,6 +106,76 @@ const make = Effect.gen(function* () {
           createdAt: event.occurredAt,
         });
         return;
+      }
+
+      // Partial ranges retain F5's summary path. A whole native compaction
+      // keeps its cursor and never becomes a prior-work summary on resume.
+      if (event.payload.direction === null && providerService.nativeOperations?.executeWithApply) {
+        const capabilities = yield* providerService
+          .getSessionCapabilities(thread.id)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (
+          capabilities?.actions.some(
+            (action) => action.action === "nativeCompaction" && action.supported,
+          )
+        ) {
+          const completed = yield* providerService.nativeOperations.executeWithApply(
+            {
+              threadId: thread.id,
+              operationId: `compact:${event.eventId}`,
+              generation: capabilities.generation,
+              command: { kind: "compact" },
+            },
+            () => {
+              const at = new Date().toISOString();
+              return orchestrationEngine
+                .dispatch({
+                  type: "thread.compacted.record",
+                  commandId: compactionCommandId("native-record"),
+                  threadId: thread.id,
+                  compaction: {
+                    kind: "native",
+                    summary: "Native context compacted",
+                    trigger: event.payload.trigger,
+                    estimatedTokens: 0,
+                    modelContextWindowTokens: thread.modelContextWindowTokens ?? 0,
+                    createdAt: at,
+                    direction: null,
+                    pivotMessageId: null,
+                    fromTurnCount: null,
+                    toTurnCount: null,
+                  },
+                  createdAt: at,
+                })
+                .pipe(
+                  Effect.asVoid,
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderValidationError({
+                        operation: "nativeCompaction.record",
+                        issue: cause.message,
+                      }),
+                  ),
+                );
+            },
+          );
+          yield* appendActivity({
+            threadId: thread.id,
+            tone: completed.state === "completed" ? "info" : "error",
+            kind: `thread.compaction.${completed.state}`,
+            summary:
+              completed.state === "completed"
+                ? "Conversation compacted natively"
+                : "Native compaction has not completed",
+            payload: {
+              operationId: completed.operationId,
+              state: completed.state,
+              ...(completed.error ? { detail: completed.error } : {}),
+            },
+            createdAt: new Date().toISOString(),
+          });
+          return;
+        }
       }
 
       const transcript = buildThreadCompactionTranscript({

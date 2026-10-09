@@ -1,3 +1,4 @@
+import { compareCodexCliVersions, parseCodexCliVersion } from "./codexCliVersion";
 import {
   isKnownProviderKind,
   type ProviderRuntimeCapabilities,
@@ -16,7 +17,20 @@ export function providerRuntimeCapabilities(
   version?: string | null,
 ): ProviderRuntimeCapabilities {
   const rollback = driver === "codex" || driver === "claudeAgent" || driver === "opencode";
+  const nativeVersion = version ? parseCodexCliVersion(version) : null;
+  const codexNative =
+    driver === "codex" &&
+    nativeVersion !== null &&
+    compareCodexCliVersions(nativeVersion, "0.160.1") >= 0;
   return {
+    nativeReview: codexNative,
+    nativeCompaction: driver === "claudeAgent" || codexNative,
+    nativeFork: driver === "claudeAgent" || codexNative,
+    nativeGoals: codexNative,
+    nativeAttachments: codexNative,
+    childTaskInspection: driver === "claudeAgent" || codexNative,
+    childTaskStop: driver === "claudeAgent",
+    fileCheckpointing: driver === "claudeAgent",
     turnSteering: ["codex", "claudeAgent", "grok", "cursor", "antigravity"].includes(driver),
     conversationRollback: rollback,
     rollbackReadback: rollback,

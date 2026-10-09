@@ -271,6 +271,14 @@
     "./claudeSdkManifest": {
       "types": "./src/claudeSdkManifest.ts",
       "import": "./src/claudeSdkManifest.ts"
+    },
+    "./nativeTaskIdentity": {
+      "types": "./src/nativeTaskIdentity.ts",
+      "import": "./src/nativeTaskIdentity.ts"
+    },
+    "./runtimeInfo": {
+      "types": "./src/runtimeInfo.ts",
+      "import": "./src/runtimeInfo.ts"
     }
   },
   "scripts": {
