@@ -88,6 +88,19 @@ describe("elicitation receipts", () => {
     expect(projectPendingUserInputs([elicitation], sessionSet("stopped"))).toEqual([]);
   });
 
+  it("ignores a submitted activity that arrives after the resolved receipt", () => {
+    const resolved = projectPendingUserInputs(
+      [elicitation],
+      activity("user-input.resolved", { requestId: "form", receipt: "resolved" }),
+    );
+    expect(
+      projectPendingUserInputs(
+        resolved,
+        activity(ELICITATION_SUBMITTED_ACTIVITY_KIND, { requestId: "form" }),
+      ),
+    ).toEqual([]);
+  });
+
   it("keeps a form request opened outside a turn until the session ends", () => {
     // No turn end settles it, and the provider is still waiting for the answer.
     expect(projectPendingUserInputs([elicitation], sessionSet("ready"))).toEqual([elicitation]);

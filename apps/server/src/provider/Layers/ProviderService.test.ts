@@ -729,6 +729,51 @@ it.effect("answers form requests a new session opens while it is still starting"
     ),
   );
 });
+it.effect(
+  "refuses form answers it cannot route to the session that asked, without recovering",
+  () => {
+    const codex = makeFakeCodexAdapter();
+    const respondToElicitation = vi.fn(() => Effect.succeed("submitted" as const));
+    return Effect.gen(function* () {
+      const service = yield* ProviderService;
+      const threadId = asThreadId("elicitation-refusals");
+      const answer = (generation: number, thread = threadId) =>
+        service
+          .respondToElicitation({
+            threadId: thread,
+            requestId: asRequestId("form-1"),
+            generation,
+            action: "cancel",
+          })
+          .pipe(Effect.flip);
+
+      const noBinding = yield* answer(1, asThreadId("elicitation-unknown"));
+      assert.include(noBinding.message, "no provider session");
+
+      yield* service.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const stale = yield* answer(0);
+      assert.include(stale.message, "earlier provider session");
+
+      // The adapter lost the session; answering must not start a new one.
+      yield* codex.stopSession(threadId);
+      const inactive = yield* answer(1);
+      assert.include(inactive.message, "no longer running");
+      assert.equal(codex.startSession.mock.calls.length, 1);
+      assert.equal(respondToElicitation.mock.calls.length, 0);
+    }).pipe(
+      Effect.provide(
+        makeProviderServiceLayerForAdapters(
+          new Map([["codex", { ...codex.adapter, respondToElicitation }]]),
+        ),
+      ),
+    );
+  },
+);
 it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
   const codex = makeFakeCodexAdapter();
   const compactConversation = vi.fn(() => Effect.succeed({ summary: "unexpected" }));
