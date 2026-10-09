@@ -1066,6 +1066,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   showFileChangeDiffsInline={settings.showFileChangeDiffsInline}
                   chatDiffContext={chatDiffContext}
                   onOpenTurnDiff={onOpenTurnDiff}
+                  onImageExpand={onImageExpand}
                 />
               </div>
             );
@@ -1145,6 +1146,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     showFileChangeDiffsInline={settings.showFileChangeDiffsInline}
                     chatDiffContext={chatDiffContext}
                     onOpenTurnDiff={onOpenTurnDiff}
+                    onImageExpand={onImageExpand}
                   />
                 ))}
               </div>
@@ -3127,8 +3129,10 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
   turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
   workspaceRoot: string | undefined;
   markdownCwd: string | undefined;
+  timestamp: ReactNode;
+  onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
-  const { workEntry, markdownCwd, expandByDefault } = props;
+  const { workEntry, markdownCwd, expandByDefault, onImageExpand } = props;
   const hasNestedContent = Boolean(workEntry.mcpInput) || Boolean(workEntry.mcpResult);
   const defaultOpen = hasNestedContent && expandByDefault;
   const [open, setOpen] = useState(defaultOpen);
@@ -3197,20 +3201,40 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
             {heading}
           </p>
         </div>
+        {props.timestamp}
       </CollapsibleTrigger>
       {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
         <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-13" data-testid="mcp-tool-images">
           {workEntry.mcpImages.map((image) => {
             const url = attachmentPreviewUrlForId(image.attachmentId);
             return (
-              <a key={image.attachmentId} href={url} target="_blank" rel="noreferrer">
+              // Attachment URLs need the app's session, so open them in the in-app viewer;
+              // a plain link handed them to the system browser, which got a 401.
+              <button
+                key={image.attachmentId}
+                type="button"
+                className="cursor-zoom-in rounded-md"
+                aria-label="Preview tool result screenshot"
+                onClick={() => {
+                  const preview = buildExpandedImagePreview(
+                    (workEntry.mcpImages ?? []).map((candidate, candidateIndex) => ({
+                      id: candidate.attachmentId,
+                      name: `Screenshot ${candidateIndex + 1}`,
+                      mimeType: candidate.mimeType,
+                      previewUrl: attachmentPreviewUrlForId(candidate.attachmentId),
+                    })),
+                    image.attachmentId,
+                  );
+                  if (preview) onImageExpand(preview);
+                }}
+              >
                 <img
                   src={url}
                   alt="Tool result screenshot"
                   loading="lazy"
                   className="h-24 max-w-64 rounded-md border border-border object-cover object-top"
                 />
-              </a>
+              </button>
             );
           })}
           {workEntry.mcpImagesOmitted ? (
@@ -3622,8 +3646,25 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   showFileChangeDiffsInline: boolean;
   chatDiffContext: ChatDiffContext;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  onImageExpand: (preview: ExpandedImagePreview) => void;
 }) {
   const { workEntry } = props;
+  const timestamp = (className: string) => (
+    <time
+      dateTime={workEntry.createdAt}
+      title={new Date(workEntry.createdAt).toLocaleString()}
+      className={cn(
+        "text-2xs tabular-nums text-muted-foreground opacity-0 group-hover/work-entry:opacity-100 group-focus-within/work-entry:opacity-100 pointer-coarse:opacity-100",
+        className,
+      )}
+    >
+      {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
+    </time>
+  );
+  // A bordered MCP card spans the full row and shows its time in its own header; a time
+  // in the shared right gutter overlapped the card's corner whenever it was wider.
+  const mcpCard =
+    !workEntry.diagnostic && workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls;
   const row = workEntry.diagnostic ? (
     <DiagnosticWorkEntryRow workEntry={workEntry} />
   ) : workEntry.itemType === "collab_agent_tool_call" ? (
@@ -3633,13 +3674,15 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
       workspaceRoot={props.workspaceRoot}
       markdownCwd={props.markdownCwd}
     />
-  ) : workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls ? (
+  ) : mcpCard ? (
     <McpToolCallRow
       workEntry={workEntry}
       expandByDefault={props.expandMcpByDefault}
       turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
       workspaceRoot={props.workspaceRoot}
       markdownCwd={props.markdownCwd}
+      timestamp={timestamp("shrink-0 pt-0.5")}
+      onImageExpand={props.onImageExpand}
     />
   ) : (
     <SimpleWorkEntryRow
@@ -3654,14 +3697,8 @@ const WorkEntryRow = memo(function WorkEntryRow(props: {
   );
 
   return (
-    <div className="group/work-entry relative min-w-0 pr-14">
-      <time
-        dateTime={workEntry.createdAt}
-        title={new Date(workEntry.createdAt).toLocaleString()}
-        className="absolute right-1 top-1.5 text-2xs tabular-nums text-muted-foreground opacity-0 group-hover/work-entry:opacity-100 group-focus-within/work-entry:opacity-100 pointer-coarse:opacity-100"
-      >
-        {formatTimestamp(workEntry.createdAt, props.timestampFormat)}
-      </time>
+    <div className={cn("group/work-entry relative min-w-0", !mcpCard && "pr-14")}>
+      {mcpCard ? null : timestamp("absolute right-1 top-1.5")}
       {row}
       {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
         <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />
