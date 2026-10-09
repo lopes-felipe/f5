@@ -1,3 +1,4 @@
+import { NativeFilePreview } from "./NativeFilePreview";
 import { AttachmentFileChip } from "./AttachmentFileChip";
 import { ChatAssetImage } from "../ChatAssetImage";
 import { readTimelineScrollAnchor, timelineScrollAnchors } from "./timelineScrollAnchors";
@@ -204,6 +205,10 @@ const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.1;
 const EMPTY_WORK_GROUP_COLLAPSE_OVERRIDES: Readonly<Record<string, boolean>> = {};
 
 interface MessagesTimelineProps {
+  nativeSessionCapabilities?:
+    | import("@t3tools/contracts").ProviderSessionCapabilities
+    | null
+    | undefined;
   threadId?: ThreadId | null;
   hasMessages: boolean;
   isWorking: boolean;
@@ -341,6 +346,7 @@ const EMPTY_CHAT_DIFF_CONTEXT: ChatDiffContext = {
 };
 
 export const MessagesTimeline = memo(function MessagesTimeline({
+  nativeSessionCapabilities,
   threadId = null,
   hasMessages,
   isWorking,
@@ -909,6 +915,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       nowIso,
       revertTurnCountByUserMessageId,
       canRestoreFiles,
+      nativeSessionCapabilities,
       effectiveRevertDisabledReason,
       revertPopover,
       revertImpact,
@@ -922,6 +929,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
     [
       canRestoreFiles,
+      nativeSessionCapabilities,
       effectiveRevertDisabledReason,
       revertPopover,
       revertImpact,
@@ -1275,6 +1283,28 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   {displayedUserMessage.copyText && (
                     <MessageCopyButton text={displayedUserMessage.copyText} />
                   )}
+                  {threadId &&
+                    row.message.turnId &&
+                    nativeSessionCapabilities?.actions.some(
+                      (action) =>
+                        ["fileCheckpointing", "nativeFork"].includes(action.action) &&
+                        action.supported,
+                    ) && (
+                      <NativeFilePreview
+                        threadId={threadId}
+                        turnId={row.message.turnId}
+                        generation={nativeSessionCapabilities.generation}
+                        filePreview={nativeSessionCapabilities.actions.some(
+                          (action) => action.action === "fileCheckpointing" && action.supported,
+                        )}
+                        nativeFork={
+                          chatDiffContext.isGitRepo &&
+                          nativeSessionCapabilities.actions.some(
+                            (action) => action.action === "nativeFork" && action.supported,
+                          )
+                        }
+                      />
+                    )}
                   {canRevertAgentWork && (
                     <UserMessageRevertPopover
                       open={revertPopover?.messageId === row.message.id}
@@ -1291,6 +1321,21 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         )
                       }
                       disabledReason={effectiveRevertDisabledReason}
+                      nativeFileRevert={
+                        !chatDiffContext.isGitRepo &&
+                        nativeSessionCapabilities?.actions.some(
+                          (action) => action.action === "fileCheckpointing" && action.supported,
+                        )
+                      }
+                      nativeFileTarget={
+                        threadId && row.message.turnId && nativeSessionCapabilities
+                          ? {
+                              threadId,
+                              turnId: row.message.turnId,
+                              generation: nativeSessionCapabilities.generation,
+                            }
+                          : undefined
+                      }
                       canRestoreFiles={canRestoreFiles === true}
                       impact={revertPopover?.messageId === row.message.id ? revertImpact : null}
                       presetRestoreFiles={

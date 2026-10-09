@@ -1,3 +1,4 @@
+import { ProviderRuntimeInfo } from "./runtimeInfo";
 import { RuntimeUsageLimit } from "./usageLimit";
 import { PendingUserInput } from "./userInput";
 import { UploadedAttachmentRef, ATTACHMENT_MAX_FILE_BYTES } from "./attachmentUpload";
@@ -469,6 +470,7 @@ export const ThreadCompactionTrigger = Schema.Literals(["manual", "automatic"]);
 export type ThreadCompactionTrigger = typeof ThreadCompactionTrigger.Type;
 
 export const ThreadCompaction = Schema.Struct({
+  kind: Schema.optional(Schema.Literals(["summary", "native"])),
   summary: TrimmedNonEmptyString,
   trigger: ThreadCompactionTrigger,
   estimatedTokens: NonNegativeInt,
@@ -823,6 +825,7 @@ export const RuntimeAgentBrowserCapabilities = Schema.Struct({
 export type RuntimeAgentBrowserCapabilities = typeof RuntimeAgentBrowserCapabilities.Type;
 
 export const CompactRuntimeConfiguredActivityPayload = Schema.Struct({
+  runtimeInfo: Schema.optional(ProviderRuntimeInfo),
   model: Schema.optional(TrimmedNonEmptyString),
   claudeCodeVersion: Schema.optional(TrimmedNonEmptyString),
   sessionId: Schema.optional(TrimmedNonEmptyString),
@@ -1297,6 +1300,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  titleOrigin: Schema.optional(Schema.Literals(["host", "provider"])),
   regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
@@ -1505,8 +1509,9 @@ export const ThreadConversationRevertCommand = Schema.Struct({
 });
 /**
  * `resolve` (the default) releases a completed rewind's recovered draft.
- * `cancel` abandons a rewind the provider never applied; it is rejected once the
- * operation has moved past `prepared`, so it can never discard a completed draft.
+ * `cancel` abandons an untouched rewind, or an uncertain native file rewind whose
+ * native operation was explicitly acknowledged after stopping the provider.
+ * Completed drafts are released only by `resolve`.
  */
 export const RewindDraftResolveIntent = Schema.Literals(["resolve", "cancel"]);
 export type RewindDraftResolveIntent = typeof RewindDraftResolveIntent.Type;
@@ -2102,6 +2107,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  titleOrigin: Schema.optional(Schema.Literals(["host", "provider"])),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   titleSource: Schema.optional(ThreadTitleSource),
   titleRevision: Schema.optional(NonNegativeInt),

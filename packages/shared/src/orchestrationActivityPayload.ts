@@ -11,8 +11,9 @@ import {
   type ProviderRequestKind,
   type RuntimeItemStatus,
   ToolCompletionEnvelope,
+  ProviderRuntimeInfo,
 } from "@t3tools/contracts";
-import { Schema } from "effect";
+import { Schema, Option } from "effect";
 import {
   deriveSearchSummaryFromPatternsAndTargets,
   formatLineRangeSummary,
@@ -861,6 +862,7 @@ function compactRuntimeConfiguredPayload(
   payload: CompactRuntimeConfiguredActivityPayload,
 ): Record<string, unknown> {
   return {
+    ...(payload.runtimeInfo ? { runtimeInfo: payload.runtimeInfo } : {}),
     ...(payload.model ? { model: payload.model } : {}),
     ...(payload.claudeCodeVersion ? { claudeCodeVersion: payload.claudeCodeVersion } : {}),
     ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
@@ -1080,7 +1082,11 @@ export function readRuntimeConfiguredPayload(
   const instructionProfile = readInstructionProfile(record) ?? readInstructionProfile(config);
   const slashCommands = readRuntimeSlashCommands(record.slashCommands ?? config?.slashCommands);
   const agentBrowser = readRuntimeAgentBrowser(record.agentBrowser ?? config?.agentBrowser);
+  const runtimeInfo = Schema.decodeUnknownOption(ProviderRuntimeInfo)(
+    record.runtimeInfo ?? config?.runtimeInfo,
+  );
   const result: CompactRuntimeConfiguredActivityPayload = {
+    ...(Option.isSome(runtimeInfo) ? { runtimeInfo: runtimeInfo.value } : {}),
     ...(readConfiguredValue(record.model, config?.model)
       ? { model: readConfiguredValue(record.model, config?.model)! }
       : {}),

@@ -67,6 +67,30 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
+  public readonly stopTaskCalls: string[] = [];
+  public readonly getTaskOutputCalls: string[] = [];
+  public readonly renameSessionCalls: Array<{ title: string; sessionId?: string }> = [];
+  readonly renameSession = async (title: string, sessionId?: string) => {
+    this.renameSessionCalls.push({ title, ...(sessionId ? { sessionId } : {}) });
+  };
+  readonly getTaskOutput = async (taskId: string) => {
+    this.getTaskOutputCalls.push(taskId);
+    return { output: "isolated shell output", total_bytes: 30, truncated: true };
+  };
+  public readonly rewindFilesCalls: Array<{ uuid: string; dryRun: boolean }> = [];
+  public rewindFilesResult = {
+    canRewind: true,
+    filesChanged: ["sample.txt"],
+    insertions: 1,
+    deletions: 2,
+  };
+  readonly stopTask = async (taskId: string) => {
+    this.stopTaskCalls.push(taskId);
+  };
+  readonly rewindFiles = async (uuid: string, options?: { dryRun?: boolean }) => {
+    this.rewindFilesCalls.push({ uuid, dryRun: options?.dryRun === true });
+    return this.rewindFilesResult;
+  };
   public closeCalls = 0;
   public onClose: (() => void) | undefined;
   public readonly deliveredAfterClose: SDKMessage[] = [];
@@ -11473,4 +11497,431 @@ describe("ClaudeAdapterLive", () => {
       );
     });
   });
+});
+
+describe("Claude Release 4 launch and file checkpoint controls", () => {
+  it.effect("defaults suggestions off, enables checkpoints, and names only new sessions", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        threadTitle: "F5 title",
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.promptSuggestions, false);
+      assert.equal(h.getLastCreateQueryInput()?.options.enableFileCheckpointing, true);
+      assert.equal(h.getLastCreateQueryInput()?.options.title, "F5 title");
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        threadTitle: "Resume title",
+        resumeCursor: { resume: "123e4567-e89b-42d3-a456-426614174000" },
+        providerOptions: {
+          claudeAgent: { promptSuggestions: true, enableFileCheckpointing: false },
+        },
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.promptSuggestions, true);
+      assert.equal(h.getLastCreateQueryInput()?.options.enableFileCheckpointing, false);
+      assert.equal(h.getLastCreateQueryInput()?.options.title, undefined);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+  it.effect("uses the recorded user UUID for dry-run preview and real native file rewind", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          resumeSessionAt: "123e4567-e89b-42d3-a456-426614174001",
+          turnBoundaries: [
+            {
+              turnId: "turn",
+              assistantUuid: "123e4567-e89b-42d3-a456-426614174001",
+              userMessageUuid: "123e4567-e89b-42d3-a456-426614174002",
+              fileCheckpointing: true,
+            },
+          ],
+        },
+      });
+      const preview = yield* adapter.previewClaudeFileRewind!(THREAD_ID, "turn");
+      assert.deepEqual(preview.filesChanged, ["sample.txt"]);
+      yield* adapter.revertClaudeFiles!(THREAD_ID, "turn");
+      assert.deepEqual(h.query.rewindFilesCalls, [
+        { uuid: "123e4567-e89b-42d3-a456-426614174002", dryRun: true },
+        { uuid: "123e4567-e89b-42d3-a456-426614174002", dryRun: false },
+      ]);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+  it.effect("leaves pre-checkpointing turns unavailable", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          turnBoundaries: [
+            { turnId: "old", assistantUuid: "123e4567-e89b-42d3-a456-426614174001" },
+          ],
+        },
+      });
+      const result = yield* Effect.result(adapter.previewClaudeFileRewind!(THREAD_ID, "old"));
+      assert.equal(result._tag, "Failure");
+      assert.equal(h.query.rewindFilesCalls.length, 0);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  });
+});
+
+it.effect("reads a persisted native shell task and refuses an older run", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeTaskIds: ["shell-task"],
+        nativeTaskRuns: [["shell-task", "run-2"]],
+        backgroundTasks: [{ taskId: "shell-task", taskType: "local_bash" }],
+      },
+    });
+    const output = yield* adapter.inspectNativeOperation!({
+      threadId: THREAD_ID,
+      generation: 1,
+      kind: "task",
+      nativeId: "shell-task",
+      runId: "run-2",
+    });
+    assert.deepEqual(output, {
+      entries: [{ output: "isolated shell output", totalBytes: 30, omitted: true }],
+      nextCursor: null,
+    });
+    const stale = yield* Effect.result(
+      adapter.inspectNativeOperation!({
+        threadId: THREAD_ID,
+        generation: 1,
+        kind: "task",
+        nativeId: "shell-task",
+        runId: "run-1",
+      }),
+    );
+    assert.equal(stale._tag, "Failure");
+    const stop = yield* Effect.result(
+      adapter.executeNativeOperation!({
+        threadId: THREAD_ID,
+        generation: 1,
+        operationId: "old-stop",
+        command: { kind: "stopTask", taskId: "shell-task", runId: "run-1" },
+      }),
+    );
+    assert.equal(stop._tag, "Failure");
+    assert.deepEqual(h.query.stopTaskCalls, []);
+    assert.deepEqual(h.query.getTaskOutputCalls, ["shell-task"]);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("publishes suggestions only for explicitly enabled sessions", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    const events: ProviderRuntimeEvent[] = [];
+    const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+      Effect.sync(() => events.push(event)),
+    ).pipe(Effect.forkChild);
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      providerOptions: { claudeAgent: { promptSuggestions: true } },
+    });
+    h.query.emit({
+      type: "prompt_suggestion",
+      suggestion: "Inspect the next failing test",
+      uuid: "123e4567-e89b-42d3-a456-426614174010",
+      session_id: "123e4567-e89b-42d3-a456-426614174000",
+    } as SDKMessage);
+    yield* Effect.promise(() =>
+      vi.waitFor(() =>
+        assert.ok(
+          events.some(
+            (event) =>
+              event.type === "thread.metadata.updated" && event.payload.metadata?.promptSuggestion,
+          ),
+        ),
+      ),
+    );
+    yield* adapter.stopSession(THREAD_ID);
+    yield* Fiber.interrupt(listener);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("waits for the native task notification after the stop acknowledgement", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeTaskIds: ["shell-task"],
+        backgroundTasks: [
+          { taskId: "shell-task", toolUseId: "tool-alias", taskType: "local_bash" },
+        ],
+      },
+    });
+    let completed = false;
+    const fiber = yield* adapter.executeNativeOperation!({
+      threadId: THREAD_ID,
+      operationId: "stop-operation",
+      generation: 1,
+      command: { kind: "stopTask", taskId: "tool-alias" },
+    }).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          completed = true;
+        }),
+      ),
+      Effect.forkChild,
+    );
+    yield* Effect.promise(() =>
+      vi.waitFor(() => assert.deepEqual(h.query.stopTaskCalls, ["shell-task"])),
+    );
+    assert.equal(completed, false);
+    h.query.emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "shell-task",
+      status: "stopped",
+      output_file: "native-owned-output",
+      summary: "Stopped",
+      uuid: "123e4567-e89b-42d3-a456-426614174011",
+      session_id: "123e4567-e89b-42d3-a456-426614174000",
+    } as SDKMessage);
+    const result = yield* Fiber.join(fiber);
+    assert.deepEqual(result, { taskId: "shell-task", status: "stopped" });
+    assert.equal(completed, true);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("renames through the isolated child and persists the provider title loop guard", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      threadTitle: "New F5 title",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        nativeProviderTitle: "Old native title",
+      },
+    });
+    assert.deepEqual(h.query.renameSessionCalls, [
+      { title: "New F5 title", sessionId: "123e4567-e89b-42d3-a456-426614174000" },
+    ]);
+    yield* adapter.renameThread!(THREAD_ID, "New F5 title");
+    assert.equal(h.query.renameSessionCalls.length, 1);
+    yield* adapter.renameThread!(THREAD_ID, "Later title");
+    assert.equal(h.query.renameSessionCalls.length, 2);
+    const sessions = yield* adapter.listSessions();
+    assert.equal(
+      (sessions[0]?.resumeCursor as { nativeProviderTitle?: string }).nativeProviderTitle,
+      "Later title",
+    );
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect(
+  "tracks opaque task run IDs by accepted starts and persists superseded identities",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          nativeTaskRuns: [["shell-task", "run-9"]],
+        },
+      });
+      h.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-task",
+        run_id: "run-10",
+        task_type: "local_bash",
+        description: "new run",
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174011",
+      } as unknown as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          assert.deepEqual(
+            (sessions[0]!.resumeCursor as { nativeTaskRuns: unknown }).nativeTaskRuns,
+            [["shell-task", "run-10"]],
+          );
+        }),
+      );
+      h.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-task",
+        run_id: "run-9",
+        task_type: "local_bash",
+        description: "late old run",
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174012",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+        nativeTaskRuns: unknown;
+        supersededTaskRuns: unknown;
+      };
+      assert.deepEqual(cursor.nativeTaskRuns, [["shell-task", "run-10"]]);
+      assert.deepEqual(cursor.supersededTaskRuns, [["shell-task", ["run-9"]]]);
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: cursor,
+      });
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect(
+  "resumes the compacted transcript tip without reusing a pre-compaction assistant pin",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          resumeSessionAt: "123e4567-e89b-42d3-a456-426614174001",
+          turnBoundaries: [
+            {
+              turnId: "old-turn",
+              assistantUuid: "123e4567-e89b-42d3-a456-426614174001",
+              userMessageUuid: "123e4567-e89b-42d3-a456-426614174002",
+              fileCheckpointing: true,
+            },
+          ],
+        },
+      });
+      h.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 1000 },
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174013",
+      } as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          assert.equal(
+            (sessions[0]!.resumeCursor as { resumeLatest?: boolean }).resumeLatest,
+            true,
+          );
+        }),
+      );
+      const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+        resumeSessionAt?: string;
+        turnBoundaries: unknown[];
+      };
+      assert.equal(cursor.resumeSessionAt, undefined);
+      assert.equal(cursor.turnBoundaries.length, 1);
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: cursor,
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.resumeSessionAt, undefined);
+      const resumedCursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: resumedCursor,
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.resumeSessionAt, undefined);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect("cleans up the temporary fork query and fork flag when receipt persistence fails", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        turnBoundaries: [
+          { turnId: "source-turn", assistantUuid: "123e4567-e89b-42d3-a456-426614174001" },
+        ],
+      },
+    });
+    const target = ThreadId.makeUnsafe("failed-native-fork-target");
+    const result = yield* Effect.result(
+      adapter.executeNativeOperation!(
+        {
+          threadId: THREAD_ID,
+          generation: 1,
+          operationId: "failed-fork",
+          command: { kind: "fork", targetThreadId: target, cwd: "/tmp/failed-native-fork-target" },
+        },
+        async () => {
+          throw new Error("Receipt persistence failed");
+        },
+      ),
+    );
+    assert.equal(result._tag, "Failure");
+    assert.equal(yield* adapter.hasSession(target), false);
+    assert.equal(h.queries[1]?.closeCalls, 1);
+    yield* adapter.startSession({
+      threadId: target,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: { resume: "123e4567-e89b-42d3-a456-426614174000" },
+    });
+    assert.equal(h.getLastCreateQueryInput()?.options.forkSession, undefined);
+    yield* adapter.stopSession(target);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
 });

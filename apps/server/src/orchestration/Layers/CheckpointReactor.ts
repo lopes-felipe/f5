@@ -674,6 +674,61 @@ const make = Effect.gen(function* () {
       return;
     }
     if (!(yield* checkpointStore.isGitRepository(sessionRuntime.value.cwd))) {
+      if (thread.session?.providerName === "claudeAgent" && Option.isSome(sqlOption)) {
+        yield* Effect.gen(function* () {
+          const history = (yield* turns.listByThreadId({ threadId: thread.id }))
+            .filter((turn) => turn.turnId !== null)
+            .toSorted((a, b) => a.requestedAt.localeCompare(b.requestedAt));
+          if (event.payload.turnCount === history.length) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.revert.complete",
+              commandId: serverCommandId("native-checkpoint-noop"),
+              threadId: thread.id,
+              turnCount: event.payload.turnCount,
+              retainedTurnIds: history.map((turn) => turn.turnId!),
+              createdAt: now,
+            });
+            return;
+          }
+          const target = history[event.payload.turnCount];
+          const targetMessage =
+            target?.pendingMessageId ??
+            thread.messages.find(
+              (message) => message.role === "user" && message.turnId === target?.turnId,
+            )?.id;
+          if (!targetMessage) {
+            yield* appendRevertFailureActivity({
+              threadId: thread.id,
+              turnCount: event.payload.turnCount,
+              detail: "No native user-message checkpoint maps to this turn.",
+              createdAt: now,
+            }).pipe(Effect.catch(() => Effect.void));
+            return;
+          }
+          yield* conversationRewind.run(
+            {
+              type: "thread.conversation.revert",
+              commandId: serverCommandId("native-checkpoint"),
+              operationId: CommandId.makeUnsafe(`native-checkpoint:${event.eventId}`),
+              threadId: thread.id,
+              targetMessageId: targetMessage,
+              restoreFiles: true,
+              createdAt: event.payload.createdAt,
+            },
+            { userInitiated: true },
+          );
+        }).pipe(
+          Effect.catchCause((cause) =>
+            appendRevertFailureActivity({
+              threadId: thread.id,
+              turnCount: event.payload.turnCount,
+              detail: Cause.pretty(cause).slice(0, 400),
+              createdAt: now,
+            }).pipe(Effect.catch(() => Effect.void)),
+          ),
+        );
+        return;
+      }
       yield* appendRevertFailureActivity({
         threadId: event.payload.threadId,
         turnCount: event.payload.turnCount,

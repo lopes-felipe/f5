@@ -467,6 +467,7 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -475,6 +476,7 @@ const TaskStartedPayload = Schema.Struct({
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
+  runId: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
@@ -484,6 +486,7 @@ const TaskProgressPayload = Schema.Struct({
 export type TaskProgressPayload = typeof TaskProgressPayload.Type;
 
 const TaskCompletedPayload = Schema.Struct({
+  runId: Schema.optional(TrimmedNonEmptyStringSchema),
   taskId: RuntimeTaskId,
   status: Schema.Literals(["completed", "failed", "stopped"]),
   summary: Schema.optional(TrimmedNonEmptyStringSchema),

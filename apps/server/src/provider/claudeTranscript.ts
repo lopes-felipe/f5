@@ -128,3 +128,72 @@ export function beginClaudeTranscriptMaintenance(sessionId: string): () => void 
     transcriptMaintenance.delete(sessionId);
   };
 }
+
+/** A bounded native page from an already authorized isolated transcript. */
+export async function readClaudeTranscriptPage(
+  file: string,
+  offset: number,
+  limit: number,
+  signal?: AbortSignal,
+) {
+  const input = createReadStream(file, signal ? { signal } : {});
+  // Cap the retained line before parsing it. readline would allocate an entire
+  // oversized tool-output line before we could decide to omit it.
+  async function* boundedLines(): AsyncGenerator<string | null> {
+    let parts: Buffer[] = [];
+    let size = 0;
+    let oversized = false;
+    for await (const value of input) {
+      const chunk = value as Buffer;
+      let start = 0;
+      while (start < chunk.length) {
+        const end = chunk.indexOf(10, start);
+        const segment = chunk.subarray(start, end < 0 ? chunk.length : end);
+        size += segment.length;
+        if (size > 64 * 1024) {
+          oversized = true;
+          parts = [];
+        } else if (!oversized) parts.push(segment);
+        if (end < 0) break;
+        yield oversized ? null : Buffer.concat(parts).toString("utf8");
+        parts = [];
+        size = 0;
+        oversized = false;
+        start = end + 1;
+      }
+    }
+    if (size || oversized) yield oversized ? null : Buffer.concat(parts).toString("utf8");
+  }
+  const entries: Record<string, unknown>[] = [];
+  let index = 0;
+  let bytes = 0;
+  let hasMore = false;
+  try {
+    for await (const line of boundedLines()) {
+      if (line !== null && !line.trim()) continue;
+      if (index++ < offset) continue;
+      if (entries.length >= limit) {
+        hasMore = true;
+        break;
+      }
+      if (line === null || bytes + Buffer.byteLength(line) > 256 * 1024)
+        entries.push({ omitted: true, reason: "Native output exceeds the page limit." });
+      else {
+        try {
+          entries.push(
+            transcriptRecord(JSON.parse(line)) ?? {
+              omitted: true,
+              reason: "Malformed native output.",
+            },
+          );
+          bytes += Buffer.byteLength(line);
+        } catch {
+          entries.push({ omitted: true, reason: "Malformed native output." });
+        }
+      }
+    }
+  } finally {
+    input.destroy();
+  }
+  return { entries, nextCursor: hasMore ? String(index - 1) : null };
+}

@@ -1,3 +1,4 @@
+import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { executionProviderFingerprintFor } from "../../provider/providerConfigurationFingerprint.ts";
@@ -184,6 +185,12 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const readGate = (item: NextTurnQueueItem, recreate = false) =>
     Effect.gen(function* () {
+      if (hasNativeOperationReservation(item.threadId))
+        return {
+          kind: "wait" as const,
+          reasonCode: "active_turn" as const,
+          detail: "A native provider operation is still pending.",
+        };
       const pendingBeforeRepair = yield* turns
         .getPendingTurnStartByThreadId({ threadId: item.threadId })
         .pipe(Effect.mapError(storageError));

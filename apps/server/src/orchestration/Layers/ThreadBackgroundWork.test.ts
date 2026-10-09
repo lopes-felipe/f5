@@ -360,3 +360,18 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     }),
   );
 });
+
+it("persists distinct work identities for successive native task runs", () => {
+  const first = transitionFromProviderEvent({
+    ...eventBase(1),
+    type: "task.started",
+    payload: { taskId: RuntimeTaskId.makeUnsafe("task-1"), runId: "run-1", taskType: "local_bash" },
+  });
+  const second = transitionFromProviderEvent({
+    ...eventBase(2),
+    type: "task.started",
+    payload: { taskId: RuntimeTaskId.makeUnsafe("task-1"), runId: "run-2", taskType: "local_bash" },
+  });
+  assert.equal(first?.workItemId, "task-1::run:run-1");
+  assert.equal(second?.workItemId, "task-1::run:run-2");
+});

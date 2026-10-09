@@ -31,7 +31,7 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
-F5 pins Claude Agent SDK 0.3.292, which bundles Claude Code v2.1.292. Claude Fable 5.1
+F5 pins Claude Agent SDK 0.3.295, which bundles Claude Code v2.1.295. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
 with `medium` effort.
 F5 defaults `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, which
@@ -666,3 +666,163 @@ reports restart required.
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply
 result. Clients and servers must both run Release 3.
+
+## Release 4: runtime controls and file checkpoints
+
+Release 4 uses wire protocol **19** in this repository. Release 3 already used 18;
+19 is the next increment under `docs/protocol-versioning.md`. Older sockets and HTTP
+mutations retain the existing 4426/426 handling and draft recovery.
+
+The runtime panel reports requested and observed model, effort, thinking and fast
+mode, fallback notices, outcomes, native operations and child output. These fields
+never convert cumulative cost into per-turn cost or reinterpret whole-tree usage.
+Compaction recommendations use the latest native token snapshot, including cache
+reads and writes; character estimates apply only until the first snapshot.
+
+Every native mutation uses the shared durable `native_operations` table. Receipts
+progress through requested, dispatched, running and a terminal outcome. A timeout,
+transport loss or shutdown after dispatch leaves an indeterminate receipt and keeps
+the thread reserved. Startup and subsequent operation-list reads reconcile with the
+provider; uncertain file rewinds and forks are never automatically repeated. The
+reservation excludes direct and queued turn starts. Approvals and Stop can still
+settle existing work; stopping a child is a control request, not a new model turn.
+Generation checks prevent old results from changing a replacement session. An
+operation that completed at the provider but whose F5 application was not confirmed
+remains indeterminate for inspection rather than repeating the application.
+
+### Titles and suggestions
+
+New sessions receive the F5 title through `Options.title`. Resumes do not send a
+creation title. Later F5 renames use the SDK's running-query `renameSession` control
+helper, so the selected child's isolated config environment owns the write. The
+standalone helper's `dir` selects a project directory and cannot select a private
+config root; F5 does not use it for this path. The observed title is retained in the
+resume cursor, and an offline F5 rename is synchronized on the next natural resume.
+Provider-originated metadata changes do not echo back, and rename failures are logged
+without failing the thread.
+
+Prompt suggestions default off. Enable them in an instance's Claude settings or in
+project settings. The option participates in launch identity and takes effect at a
+safe start or resume. Suggestions fill the composer without submitting; editing the
+composer or starting a newer turn invalidates the suggestion.
+
+### Child output and cancellation
+
+The runtime panel can stop a native task using `stopTask`; the operation waits for
+a correlated native settlement notification, not only the request acknowledgement.
+A timeout retains correlation for late completion and reconciliation. Its identity is retained
+in the session cursor across restart. Native run IDs produce distinct work rows;
+inspection and stop refuse a row whose run has been superseded, and delayed frames
+from older runs are ignored. Agent output is read from the parent session's
+isolated subagent transcripts, using native cursors and bounded pages (20 entries by
+default, at most 50; 64 KiB per line and 256 KiB per page). Symlinks escaping the
+instance store are refused. Background shell and Monitor output use the bounded
+`get_task_output` helper shipped by SDK 0.3.292 when available: it returns the latest
+8 KiB and explicitly marks truncation. It is a tail, not a paginated full transcript;
+there is no fabricated next page. SDK Query declarations do not yet advertise this
+helper, so the adapter checks its presence and reports unavailability when absent.
+
+### Native compaction and forks
+
+Native compaction is **off by default** for Claude. The instance setting enables an
+exclusive hidden `/compact` control turn. Completion requires both its correlated
+`compact_boundary` and successful result; a timeout cannot start a competing F5
+summary operation. Whole-conversation requests use it when enabled. Partial ranges
+and pivots continue using F5 summaries. Native records have `kind: native` and are
+never passed to `buildThreadResumeContext` as `priorWorkSummary`. If the cursor is
+lost, F5 generates a summary from its stored conversation before starting fresh.
+
+“Fork from here” uses the configured child query's `resume`, `resumeSessionAt` and
+`forkSession` options, with a distinct session UUID. A retained assistant boundary
+is required; an empty-history Claude fork is unavailable. F5 creates a new worktree
+and thread and retains a source reference. Source tasks, native receipts and file
+revert history are not transferred to the fork. Lost responses remain indeterminate.
+
+### File checkpoint preview and non-Git revert
+
+New launches enable file checkpointing by default. Operators can disable
+`enableFileCheckpointing` in the instance's Claude settings. This launch option takes
+effect at the next safe start; older turns without a recorded checkpoint-enabled
+user UUID remain unavailable. Backup files grow in the instance's Claude config
+store alongside retained transcripts. Account for this disk cost when choosing the
+instance location and retention policy; thread deletion uses the existing isolated
+SDK session cleanup path.
+
+“Files changed since here” calls `rewindFiles` with `dryRun: true` and displays file
+names and insertion/deletion counts without changing files. In Git projects, F5's
+Git checkpoints remain the sole file revert mechanism. In a non-Git Claude project,
+file revert uses `rewindFiles` followed by verified conversation rewind under one
+native operation reservation. The confirmation states the limit: **only files changed
+through Claude's edit tools are covered; Bash and manual changes are not restored**.
+Shared workspaces are refused. A refused preview or rewind leaves conversation
+history unchanged. Skipped links produce a visible warning; a real rewind is never
+retried automatically.
+
+### SDK 0.3.295 bump
+
+Release 4 updates the bundled SDK from 0.3.292 to **0.3.295** and Claude Code from
+2.1.292 to **2.1.295**. The SDK message audit still classifies all 38 discriminators.
+The declaration diff adds optional background-task `subagent_type`, rate-limit
+`overageEnabled`, startup-policy failure reasons and hook `onFailure` settings;
+launch Options and Query contracts remain compatible.
+
+SDK-owned named option values now use `--flag=value`. The real-query transport probe
+checks this encoding, host initialize instructions, permission mode, effort, thinking
+and mandatory tool exclusions; custom `extraArgs` still follow the SDK's own handling.
+The bump also fixes MCP catalog reconciliation and streamed citation retention and
+bounds oversized MCP output metadata. Existing F5 structured-result limits remain.
+
+### Live verification status
+
+On 2026-10-09, the installed Claude Code 2.1.295 had no authenticated account in this
+execution environment. `bun run --cwd apps/server test:claude:live` was attempted and
+failed its credential checks. Consequently live `/compact` transcript behavior,
+fork creation, rename visibility, checkpoint coverage of Edit versus Bash, and
+checkpoint behavior after resume/compaction are **unverified here**. Adapter and
+transport tests cover launch options, UUID mapping, preview versus mutation,
+refusal behavior and generation fencing. Claude native compaction stays off pending
+an authenticated acceptance run. This does not certify Linux/Windows lifecycle
+behavior; those release environments must run the documented live suites.
+
+### Native-operation recovery
+
+Listing operation receipts is read-only. Reconciliation runs separately with bounded
+provider reads and never starts a stopped session just to poll it. An uncertain
+outcome stays reserved until it is verified or the user chooses **Stop provider and
+acknowledge**. Acknowledgement stops the provider and releases the reservation; it
+never repeats file rewind or fork creation. Files or conversation may already have
+changed, so inspect the workspace before continuing. A failed conversation rewind
+after native file restoration remains `reconciliation-required`, even if conversation
+history still looks unchanged.
+
+A compact boundary clears the old assistant resume pin while retaining user UUIDs
+for file previews. Subsequent starts resume the compacted transcript tip. A missing
+transcript gets an on-demand F5 summary only when the latest compaction was native;
+an empty or failed summary is logged without blocking session startup.
+
+Fork operations close temporary child queries on every exit path. Their worktree
+paths remain in durable operation records, including failures and stale results.
+The workspace starts at the source branch tip; historical conversation boundaries
+do not restore historical files. F5 preserves failed fork worktrees and branches
+for inspection instead of deleting them automatically.
+
+The child environment strips inherited `F5_PREVIEW_MCP_TOKEN*` values before
+launch. F5's preview broker supplies only the token belonging to the current
+session, preventing a child from inheriting another session's preview credential.
+
+Acknowledging a native file rewind completes receipt acknowledgement and F5 rewind
+cancellation in one server request. A cancelled receipt retains a Finish acknowledgement
+action, so a restart or temporary cancellation error between durable writes can be
+retried without restoring files again. Stale results that need F5 application remain
+indeterminate and can also be acknowledged. Native admission blocks session replacement;
+generation is checked again after preparation and before dispatch.
+
+Native compaction waits for settlement or provider exit rather than timing out a healthy
+control turn at two minutes. Pre-send native refusals can use the F5 summary path;
+an active or uncertain native reservation prevents fallback.
+
+File restore still requires a workspace isolated from other live conversations,
+including native restore in non-Git projects: Claude's edit-tool backups can overlap
+another conversation's edits. Deleted threads do not claim the workspace. In Git
+projects a worktree is required for restore; native change preview remains available
+in all projects. Fork controls are hidden for non-Git projects.

@@ -339,6 +339,9 @@ export function normalizeProviderStartOptions(
         providerOptions.claudeAgent.maxThinkingTokens >= 0
           ? providerOptions.claudeAgent.maxThinkingTokens
           : undefined;
+      const promptSuggestions = providerOptions?.claudeAgent?.promptSuggestions;
+      const enableFileCheckpointing = providerOptions?.claudeAgent?.enableFileCheckpointing;
+      const nativeCompaction = providerOptions?.claudeAgent?.nativeCompaction;
       const thinking = normalizeClaudeThinkingOption(providerOptions?.claudeAgent?.thinking);
       const subagentsEnabled =
         typeof providerOptions?.claudeAgent?.subagentsEnabled === "boolean"
@@ -352,6 +355,9 @@ export function normalizeProviderStartOptions(
         !permissionMode &&
         maxThinkingTokens === undefined &&
         thinking === undefined &&
+        promptSuggestions === undefined &&
+        enableFileCheckpointing === undefined &&
+        nativeCompaction === undefined &&
         subagentsEnabled === undefined &&
         !subagentModel &&
         !launchArgs &&
@@ -366,11 +372,17 @@ export function normalizeProviderStartOptions(
         permissionMode ||
         maxThinkingTokens !== undefined ||
         thinking !== undefined ||
+        promptSuggestions !== undefined ||
+        enableFileCheckpointing !== undefined ||
+        nativeCompaction !== undefined ||
         subagentsEnabled !== undefined ||
         subagentModel ||
         launchArgs
           ? {
               claudeAgent: {
+                ...(promptSuggestions !== undefined ? { promptSuggestions } : {}),
+                ...(enableFileCheckpointing !== undefined ? { enableFileCheckpointing } : {}),
+                ...(nativeCompaction !== undefined ? { nativeCompaction } : {}),
                 ...(binaryPath ? { binaryPath } : {}),
                 ...(permissionMode ? { permissionMode } : {}),
                 ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
@@ -487,7 +499,7 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}`;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}${claudeThinkingEnvironmentKeyComponent(normalized?.claudeAgent?.thinking)}${normalized?.claudeAgent?.promptSuggestions === true ? "|promptSuggestions:true" : ""}${normalized?.claudeAgent?.enableFileCheckpointing !== undefined ? `|fileCheckpointing:${normalized.claudeAgent.enableFileCheckpointing}` : ""}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;

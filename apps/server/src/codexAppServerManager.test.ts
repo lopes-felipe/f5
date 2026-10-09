@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -723,6 +724,47 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.162.0");
+    const requests = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockImplementation(async (_context, method) => {
+        if (method === "thread/resume") return { thread: { id: "replacement" } };
+        if (method === "turn/start") return { turn: { id: "turn" } };
+        return {};
+      });
+    try {
+      await manager.startSession({
+        threadId: asThreadId("recovery"),
+        cwd: directory,
+        runtimeMode: "full-access",
+        providerOptions: { codex: { binaryPath } },
+        resumeCursor: { threadId: "replacement", f5ResumedContextPending: true },
+        priorWorkSummary: "Recovered requirement: preserve the user's API",
+      });
+      await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
+      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
+        collaborationMode: { settings: { developer_instructions: string } };
+      };
+      expect(first.collaborationMode.settings.developer_instructions).toContain(
+        "Recovered requirement",
+      );
+    } finally {
+      manager.stopAll();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["empty", "failed"])(
     "isolates the catalog when a second session has %s model/list",
     async (response) => {
@@ -769,7 +811,7 @@ describe("startSession", () => {
         );
         expect(first?.payload).toMatchObject({ config: { modelContextWindowTokens: 872_000 } });
         expect(second?.payload).toMatchObject({ config: { model: "gpt-6.1-sol" } });
-        expect((second?.payload as { config: Record<string, unknown> }).config).not.toHaveProperty(
+        expect((second!.payload as { config: Record<string, unknown> }).config).not.toHaveProperty(
           "modelContextWindowTokens",
         );
       } finally {
@@ -949,7 +991,10 @@ describe("sendTurn", () => {
     expect(context.configuredBase).toEqual(expected);
     expect(context.session.model).toBe("gpt-6.1-sol");
     expect(events.find((event) => event.method === "session/configured")?.payload).toEqual({
-      config: expected,
+      config: {
+        ...expected,
+        runtimeInfo: normalizeProviderRuntimeInfo({ model: "gpt-6.1-sol" }, expected),
+      },
     });
   });
 
@@ -1313,6 +1358,32 @@ describe("sendTurn", () => {
     );
   });
 
+  it("delivers pending recovery context on turn/start and clears its persisted marker", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness({
+      instructionContext: { priorWorkSummary: "Recovered requirement: preserve the user's API" },
+      resumedContextSent: false,
+    });
+    Object.assign(context.session.resumeCursor, {
+      threadId: "replacement",
+      f5ResumedContextPending: true,
+    });
+    updateSession.mockImplementation((_context, updates) => {
+      Object.assign(context.session, updates);
+    });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
+    const params = sendRequest.mock.calls[0]?.[2] as {
+      collaborationMode: { settings: { developer_instructions: string } };
+    };
+    expect(params.collaborationMode.settings.developer_instructions).toContain(
+      "Recovered requirement",
+    );
+    expect(context.session.resumeCursor).toEqual({ threadId: "replacement" });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue again" });
+    const next = sendRequest.mock.calls[1]?.[2] as typeof params;
+    expect(next.collaborationMode.settings.developer_instructions).not.toContain(
+      "Recovered requirement",
+    );
+  });
   it("omits resumed context when the provider thread was actually resumed", async () => {
     const { manager, sendRequest } = createSendTurnHarness({
       instructionContext: {
@@ -1423,6 +1494,7 @@ describe("skills refresh", () => {
         payload: {
           config: {
             model: "gpt-5.3-codex",
+            runtimeInfo: { requested: {}, effective: { model: "gpt-5.3-codex" } },
           },
         },
       }),
@@ -1450,6 +1522,7 @@ describe("skills refresh", () => {
         payload: {
           config: {
             model: "gpt-5.3-codex",
+            runtimeInfo: { requested: {}, effective: { model: "gpt-5.3-codex" } },
             slashCommands: [
               {
                 name: "review",
@@ -1574,6 +1647,7 @@ describe("skills refresh", () => {
         payload: {
           config: {
             model: "gpt-5.3-codex",
+            runtimeInfo: { requested: {}, effective: { model: "gpt-5.3-codex" } },
             slashCommands: [
               {
                 name: "review",
@@ -1712,6 +1786,7 @@ describe("skills refresh", () => {
         payload: {
           config: {
             model: "gpt-5.3-codex",
+            runtimeInfo: { requested: {}, effective: { model: "gpt-5.3-codex" } },
             slashCommands: [],
           },
         },
@@ -3732,3 +3807,300 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
     }
   }, 180_000);
 });
+
+describe("Release 4 native operations", () => {
+  const input = (kind: "compact" | "review") => ({
+    threadId: asThreadId("thread_1"),
+    operationId: "native-operation",
+    generation: 1,
+    command:
+      kind === "compact"
+        ? { kind: "compact" as const }
+        : { kind: "review" as const, target: { type: "uncommittedChanges" as const } },
+  });
+  const emit = (
+    manager: CodexAppServerManager,
+    method: string,
+    payload: unknown,
+    turnId = "control",
+  ) =>
+    manager.emit("event", {
+      id: asEventId(randomUUID()),
+      provider: "codex",
+      threadId: asThreadId("thread_1"),
+      kind: "notification",
+      createdAt: "2026-10-09T00:00:00.000Z",
+      method,
+      payload,
+      turnId: TurnId.makeUnsafe(turnId),
+    });
+  it("correlates early compaction events and persists the contextCompaction item identity", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const receipt = vi.fn(async (_value: unknown) => undefined);
+    sendRequest.mockImplementation(async (_context, method) => {
+      expect(method).toBe("thread/compact/start");
+      emit(manager, "turn/started", { turn: { id: "control" } });
+      emit(manager, "item/completed", { item: { id: "compact-item", type: "contextCompaction" } });
+      emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+      return {};
+    });
+    const result = await manager.executeNativeOperation(input("compact"), receipt);
+    expect(result).toEqual({
+      native: true,
+      nativeTurnId: "control",
+      nativeItemId: "compact-item",
+      status: "completed",
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/compact/start", {
+      threadId: "thread_1",
+    });
+    expect(receipt).toHaveBeenLastCalledWith({
+      nativeThreadId: "thread_1",
+      nativeTurnId: "control",
+      nativeItemId: "compact-item",
+    });
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("keeps review inline and accepts completion arriving before the RPC response", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    sendRequest.mockImplementation(async () => {
+      emit(manager, "turn/started", { turn: { id: "control" } });
+      emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+      return { turn: { id: "control" }, reviewThreadId: "thread_1" };
+    });
+    expect(await manager.executeNativeOperation(input("review"))).toMatchObject({
+      status: "completed",
+    });
+    expect(sendRequest).toHaveBeenCalledWith(context, "review/start", {
+      threadId: "thread_1",
+      delivery: "inline",
+      target: { type: "uncommittedChanges" },
+    });
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it.each(["review", "compact"] as const)(
+    "waits beyond two minutes for a healthy %s",
+    async (kind) => {
+      vi.useFakeTimers();
+      try {
+        const { manager, sendRequest } = createThreadControlHarness();
+        sendRequest.mockResolvedValue({ turn: { id: "control" } });
+        let settled = false;
+        const pending = manager.executeNativeOperation(input(kind)).then((value) => {
+          settled = true;
+          return value;
+        });
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(settled).toBe(false);
+        if (kind === "compact")
+          emit(manager, "item/completed", {
+            item: { id: "compact-item", type: "contextCompaction" },
+          });
+        emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+        expect(await pending).toMatchObject({ status: "completed" });
+        expect(manager.listenerCount("event")).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("removes listeners when review dispatch fails", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockRejectedValue(new Error("Lost response"));
+    await expect(manager.executeNativeOperation(input("review"))).rejects.toThrow("Lost response");
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("cancels a waiter without pretending the native operation settled", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue({});
+    const abort = new AbortController();
+    const pending = manager.executeNativeOperation(input("compact"), undefined, abort.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    abort.abort();
+    await expect(pending).rejects.toThrow("reconcile");
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("does not call a completed control turn a compaction without its boundary item", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockImplementation(async () => {
+      emit(manager, "turn/started", { turn: { id: "control" } });
+      emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+      return {};
+    });
+    await expect(manager.executeNativeOperation(input("compact"))).rejects.toThrow(
+      "contextCompaction",
+    );
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("holds goal execution until both the budget notification and its last turn settle", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue({});
+    let settled = false;
+    const pending = manager
+      .executeNativeOperation({
+        ...input("compact"),
+        command: { kind: "goalSet", objective: "Goal", tokenBudget: 100 },
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await Promise.resolve();
+    await Promise.resolve();
+    emit(manager, "turn/started", { turn: { id: "control" } });
+    emit(manager, "thread/goal/updated", { goal: { objective: "Goal", status: "budgetLimited" } });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+    expect(await pending).toEqual({ goal: { objective: "Goal", status: "budgetLimited" } });
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/goal/set", {
+      threadId: "thread_1",
+      objective: "Goal",
+      tokenBudget: 100,
+      status: "active",
+    });
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("clears goal ownership and listeners on dispatch refusal and abort", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const command = {
+      ...input("compact"),
+      command: { kind: "goalSet" as const, objective: "Goal", tokenBudget: 100 },
+    };
+    sendRequest.mockRejectedValueOnce(new Error("Rejected"));
+    await expect(manager.executeNativeOperation(command)).rejects.toThrow("Rejected");
+    expect((context as typeof context & { nativeGoalActive?: boolean }).nativeGoalActive).toBe(
+      false,
+    );
+    expect(manager.listenerCount("event")).toBe(0);
+    sendRequest.mockResolvedValue({});
+    const abort = new AbortController();
+    const pending = manager.executeNativeOperation(command, undefined, abort.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    abort.abort();
+    await expect(pending).rejects.toThrow();
+    expect((context as typeof context & { nativeGoalActive?: boolean }).nativeGoalActive).toBe(
+      false,
+    );
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("marks a local unsupported operation as not sent", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    await expect(
+      manager.executeNativeOperation({
+        ...input("compact"),
+        command: { kind: "stopTask", taskId: "task" },
+      }),
+    ).rejects.toMatchObject({ deliveryCertainty: "not_sent" });
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+  it("keeps native attachment contents out of inspection", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue({
+      attachments: [
+        {
+          id: "a",
+          attachmentType: "file",
+          identityKey: "key",
+          payload: { content: "PRIVATE_CONTENT" },
+        },
+      ],
+    });
+    const result = await manager.inspectNativeOperation({
+      threadId: asThreadId("thread_1"),
+      generation: 1,
+      kind: "attachments",
+    });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_CONTENT");
+    expect(result).toMatchObject({ attachments: [{ id: "a", source: "codex" }] });
+  });
+  it("syncs a changed title once and ignores unknown-method errors", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue({});
+    await manager.renameThread(asThreadId("thread_1"), "Title");
+    await manager.renameThread(asThreadId("thread_1"), "Title");
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+    expect(sendRequest).toHaveBeenCalledWith(context, "thread/name/set", {
+      threadId: "thread_1",
+      name: "Title",
+    });
+  });
+});
+
+it("keeps the review/start identity when Codex starts a transport control turn with a different id", async () => {
+  const { manager, sendRequest } = createThreadControlHarness();
+  sendRequest.mockResolvedValue({ turn: { id: "review-turn" }, reviewThreadId: "thread_1" });
+  const input = {
+    threadId: asThreadId("thread_1"),
+    operationId: "review-identity",
+    generation: 1,
+    command: { kind: "review" as const, target: { type: "uncommittedChanges" as const } },
+  };
+  const pending = manager.executeNativeOperation(input);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  const emit = (method: string, id: string) =>
+    manager.emit("event", {
+      id: asEventId(randomUUID()),
+      provider: "codex",
+      threadId: asThreadId("thread_1"),
+      kind: "notification",
+      createdAt: "2026-10-09T00:00:00.000Z",
+      method,
+      turnId: TurnId.makeUnsafe(id),
+      payload: { turn: { id, status: method === "turn/completed" ? "completed" : "inProgress" } },
+    });
+  emit("turn/started", "transport-control-turn");
+  emit("turn/completed", "review-turn");
+  expect(await pending).toMatchObject({ nativeTurnId: "review-turn", status: "completed" });
+  expect(manager.listenerCount("event")).toBe(0);
+});
+
+it("reads one bounded native item page for an owned child thread", async () => {
+  const { manager, context, sendRequest } = createThreadControlHarness();
+  Object.assign(context, { childThreadIds: new Set(["native-child"]) });
+  sendRequest.mockResolvedValue({
+    data: [
+      { item: { type: "agentMessage", text: "first page" } },
+      { item: { text: "x".repeat(70_000) } },
+    ],
+    nextCursor: "next-native-page",
+  });
+  const page = await manager.inspectNativeOperation({
+    threadId: asThreadId("thread_1"),
+    generation: 1,
+    kind: "task",
+    nativeId: "native-child",
+    cursor: "current-native-page",
+    limit: 2,
+  });
+  expect(sendRequest).toHaveBeenCalledWith(context, "thread/items/list", {
+    threadId: "native-child",
+    cursor: "current-native-page",
+    limit: 2,
+    sortDirection: "asc",
+  });
+  expect(page).toEqual({
+    data: [
+      { item: { type: "agentMessage", text: "first page" } },
+      { omitted: true, reason: "Native output exceeds the page limit." },
+    ],
+    nextCursor: "next-native-page",
+  });
+  expect(sendRequest).toHaveBeenCalledTimes(1);
+});
+
+it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
+  "gates goal deferral on resume for %s",
+  (cliVersion) => {
+    const params = buildCodexThreadOpenRequestParams({
+      resumeThreadId: "thread",
+      runtimeMode: "full-access",
+      cliVersion,
+    });
+    expect("deferGoalContinuation" in params.resume!).toBe(cliVersion === "0.162.0");
+  },
+);

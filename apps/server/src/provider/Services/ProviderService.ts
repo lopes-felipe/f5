@@ -54,6 +54,33 @@ export interface ProviderMcpReloadOutcome {
  * ProviderServiceShape - Service API for provider session and turn orchestration.
  */
 export interface ProviderServiceShape {
+  readonly nativeOperations?: {
+    readonly resolve?: (
+      input: import("@t3tools/contracts").NativeOperationResolutionInput,
+    ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
+    readonly execute: (
+      input: import("@t3tools/contracts").NativeOperationInput,
+    ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
+    readonly executeWithApply?: (
+      input: import("@t3tools/contracts").NativeOperationInput,
+      apply: (result: unknown) => Effect.Effect<void, ProviderServiceError>,
+      prepare?: Effect.Effect<void, ProviderServiceError>,
+      options?: { readonly background?: boolean },
+    ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
+    readonly list: (
+      threadId: ThreadId,
+    ) => Effect.Effect<
+      readonly import("@t3tools/contracts").NativeOperationRecord[],
+      ProviderServiceError
+    >;
+    readonly inspect: (
+      input: import("@t3tools/contracts").NativeOperationInspectInput,
+    ) => Effect.Effect<unknown, ProviderServiceError>;
+  };
+  readonly renameThread?: (
+    threadId: ThreadId,
+    title: string,
+  ) => Effect.Effect<void, ProviderServiceError>;
   /**
    * Start a provider session.
    */

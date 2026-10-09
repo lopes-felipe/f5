@@ -1,6 +1,6 @@
 {
-  "cliVersion": "0.160.1",
-  "sourceRevision": "d27764b82f7118f674371e6d6e76271d9d606edb",
+  "cliVersion": "0.162.0",
+  "sourceRevision": "c1382380de69521303b416720a52f42d51af6248",
   "experimental": true,
   "sha256": {
     "InitializeParams.ts": "bfc13b4fc9e37f629ee67b42d6e7f342ba38668ff528e738a911de5ebcfd545f",
@@ -8,7 +8,7 @@
     "v2/ThreadResumeParams.ts": "6ea6561448792277f9b52ac9d920d71ef8c9be6e43621ee6329fb948329e8ff7",
     "v2/ThreadForkParams.ts": "ea9dd8fb39979f32293a31f98e599509430b7cc80840b2a0afc90a2b953e942e",
     "v2/ThreadRevertParams.ts": "524ca156c2bcb47f2f0b62250299f4c01aefb1155d49c3ec82047991cd25f87f",
-    "v2/TurnStartParams.ts": "18a8492238c2b7476d1db5a96ec4dd57df6eb49e05e49f13820eb9298c412dfa",
+    "v2/TurnStartParams.ts": "849401f5c04842391cb2838c5bfa315b92c6ce85a059a8f032201ce83baa07ed",
     "v2/TurnSteerParams.ts": "df6283cc3dbc264b40a372806a2e3e0ec2d834b6584c1a8a4576116064f04e4e"
   }
 }

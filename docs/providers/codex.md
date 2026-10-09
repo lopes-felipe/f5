@@ -147,7 +147,7 @@ should use the shared-home plus shadow-home setup instead.
 
 ### Isolated profiles
 
-[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.160.1 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials. Versions older than the audited 0.162.0 baseline show a notice that newer protocol features may be missing; newer versions show an informational notice. Legacy Default shadow-home behavior is unchanged.
 
 ## Disk space from Codex marketplace upgrades
 
@@ -426,3 +426,143 @@ warning is posted at once, it restarts at its next turn, and the login reports s
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply
 result. Clients and servers must both run Release 3.
+
+## Release 4: native operations
+
+Release 4 uses wire protocol **19**, the increment after this repository's Release 3
+protocol 18. Native actions require both the session capability and an audited
+codex-cli version at least **0.162.0**. Older executable paths remain supported with
+these new actions hidden. F5 continues owning queues, projects and worktree history.
+
+The shared durable operation coordinator persists admission, dispatch, native
+identity and outcomes. Direct/queued turn delivery waits while native work owns the
+thread. Generation checks fence results from replaced sessions. Lost responses,
+timeouts and shutdown keep an indeterminate reservation until provider read-back
+establishes settlement; they never dispatch a replacement operation automatically.
+F5 application receipts are separate from native completion, so a crash between the
+two cannot silently repeat a fork or file mutation.
+
+The runtime panel presents requested versus effective configuration, fallback and
+retry notices, outcomes, child output, native receipts, attachments and goals without
+changing the meaning of cost or cumulative usage. F5 renames call `thread/name/set`
+with a loop guard. Unsupported methods and rename failures do not fail the thread.
+
+### Compaction, review and forks
+
+Whole-conversation native compaction uses `thread/compact/start`, requiring a
+correlated `contextCompaction` item and completed native turn. Partial ranges and
+pivots retain F5's summary path. A native compaction record is never a prior-work
+summary; lost-cursor recovery generates an F5 summary before a fresh session.
+
+`/review` defaults to uncommitted changes. `/review <branch>` and `/review <commit>`
+select a base branch or commit; the runtime panel exposes the same targets. Review
+uses inline delivery, existing approvals and usage events, and the shared operation
+reservation. Auxiliary review events arriving before the response are buffered with
+bounds and routed to the F5 thread. Review completion is anchored to the returned
+review turn ID, rather than an unrelated control-turn lifecycle ID.
+
+“Fork from here” creates a new F5 thread and configured worktree. Native history is
+validated against the selected boundary before adoption. The source thread and its
+workspace are untouched, and the target receives a distinct resume cursor. Child
+thread inspection uses `thread/items/list` pages and persisted child identities;
+it does not expose the manager's full-history accumulator as pagination.
+
+### Goals and Stop
+
+Goal operations use `thread/goal/set`, `get` and `clear`. The operation reservation
+owns all continuations until the goal settles, preventing races with F5 queues or
+workflow stages. The goal's objective and state appear in the thread header. F5's
+token budget is authoritative: observed exhaustion pauses the native goal. Stop
+pauses it before interrupting the current native turn; a failed pause closes the
+provider process rather than allowing uncontrolled continuations. Resume and fork
+requests defer goal continuation. Reconciliation pauses an active goal with no live
+F5 owner and waits for any running turn before releasing the reservation.
+
+### Attachments
+
+Native `thread/attachment/updated` is canonical metadata: attachment IDs, type,
+identity key and operation. The UI labels these entries **From Codex**. Events do not
+contain file bytes. The audited attachment API stores extension metadata; it is not
+an upload endpoint for arbitrary model inputs. User images/files therefore continue
+through F5's existing attachment path exactly once, with no duplicate native upload.
+
+### Live spike: codex-cli 0.160.1, 2026-10-09
+
+`apps/server/scripts/spike-release4-codex.ts` runs an authenticated app-server in a
+temporary isolated home and Git workspace, and removes its temporary state on exit.
+It confirmed:
+
+- Forks with and without `beforeTurnId` are accepted; the source history remains.
+- Attachment add/list/update works for metadata, establishing the upload distinction
+  above.
+- Setting an active goal automatically starts continuations. A 100-token budget
+  reaches its terminal budget state; the manager's F5 guard pauses it and waits for
+  the native turn. Goal-updated and goal-cleared notifications were observed.
+- Compaction retains prior turns and appends a native turn containing a
+  `contextCompaction` item. Settlement came through `turn/completed`; this runtime
+  did not emit the older `thread/compacted` notification.
+- Inline review completed and emitted entered/exited review items. Its response and
+  items used one review turn ID while a later `turn/started` used another control
+  ID. The implementation anchors completion to the response and normalizes the
+  control lifecycle ID; a regression test reproduces the ordering. The corrected
+  manager completed the authenticated spike successfully.
+
+The fixed-version protocol and request-builder audits pass on 0.160.1. These native
+feature spikes do not replace the older-version rewind matrix or platform-specific
+release lifecycle tests.
+
+### Release 4 version bump: codex-cli 0.162.0
+
+The current protocol baseline is **0.162.0**, source commit
+`c1382380de69521303b416720a52f42d51af6248`. The historical 0.160.1 fixture remains
+available. The refreshed inventory has 86 notifications, 11 server requests and 19
+item discriminators; all 66 decoded response fields and all seven real request
+builders pass the generated experimental schema audits. The added
+`thread/prediction/updated` notification is state-only: F5 does not enable native
+predictions as a second prompt producer.
+
+The authenticated 0.162.0 Release 4 spike passed forks, attachment metadata,
+goal continuation/budget pause, native compaction and inline review. New-history
+rewind used `thread/revert`, preserved the expected history, and completed a follow-up
+model turn. The compatibility matrix was also rerun on 0.144.3 and 0.147.0
+(rollback) and a 0.147.0 thread resumed on 0.156.0 (validated fork); retained turn
+IDs and follow-up model turns passed on all three. The live-spike script initializes
+its isolated home once and fails if
+any required request or completion does not succeed.
+
+Codex remains an external executable. Updating F5 or this baseline does not replace
+an operator's installation or custom executable path. For an npm installation,
+`npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
+`codex --version`, or select the upgraded executable in Settings > Providers & Models.
+Native capability gates require the certified 0.162.0 runtime; older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is omitted from resume requests below 0.162.0.
+
+### Review targets and recovery
+
+`/review` reviews uncommitted changes. `/review branch:<name>` selects a base branch;
+`/review commit:<sha>` selects a 7–40 character commit SHA. A bare argument always
+means a branch, including hexadecimal names such as `deadbeef`. The runtime panel
+uses the same parser.
+
+Review, goal and fork requests return a durable admission receipt promptly; the
+runtime panel follows completion separately. Goals hold the thread reservation,
+not an account lease for their whole lifetime. Operation polling is read-only and
+never resumes a stopped provider. Reconciliation checks are bounded and skip live
+waiters. Lost fork responses without a known fork identity remain uncertain; absence
+of an ID does not prove that the provider created nothing. Fork reconciliation
+validates the persisted retained turn IDs before reporting provider completion.
+
+**Stop provider and acknowledge** releases an uncertain reservation without repeating
+the mutation. Inspect files, conversation and any preserved fork workspace first.
+Fork workspaces start at the source branch tip, and their paths remain in operation
+records after failure; F5 does not delete those worktrees or branches automatically.
+
+Native review and compaction waiters follow correlated settlement, provider exit or
+explicit interruption rather than a fixed two-minute deadline. Long healthy turns
+remain running and retain admission. A goal holds the same exclusive reservation;
+interrupt the conversation turn to pause a running goal, then use Clear settled goal.
+Pause/clear commands are not admitted alongside another native operation.
+
+Recovery of a missing native-compacted rollout marks the replacement cursor's context
+as pending. Its recovered summary is delivered in the first `turn/start` developer
+instructions even when the replacement thread is resumed, and the marker is cleared
+only after that request succeeds.

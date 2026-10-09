@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import { parseCodexCliVersion } from "@t3tools/shared/codexCliVersion";
 import {
   extractCodexTaggedUnionValues,
@@ -9,7 +10,7 @@ import {
 } from "@t3tools/shared/codexProtocolAudit";
 import { codexRequestShapeProbe } from "./codexRequestShapeAudit.ts";
 
-const PINNED_VERSION = "0.160.1";
+const PINNED_VERSION = CODEX_PROTOCOL_BASELINE_VERSION;
 async function command(file: string, args: string[]) {
   const child = Bun.spawn([file, ...args], { stdout: "pipe", stderr: "pipe" });
   const [code, out, err] = await Promise.all([

@@ -1,0 +1,30 @@
+{
+  "cliVersion": "0.162.0",
+  "sourceRevision": "c1382380de69521303b416720a52f42d51af6248",
+  "experimental": true,
+  "sha256": {
+    "ClientRequest.ts": "29df6f372314d84d00436b23a3f6f0bfbcb81e646379464344f140ba18dd7019",
+    "ServerNotification.ts": "5e0d56b131445f17424d88bf26f33135cd3c4c2c0fc2a1c84b4cc528d0a224de",
+    "ServerRequest.ts": "1c5837adbfbdd005f387478ba87840808d1353b47b82dcf63739a78bb1c8d3be",
+    "v2/AppsListResponse.json": "5811fda68d6274decfc11744ad72bbe93e601d8514549e94f361ba3131d1adeb",
+    "v2/ConfigReadResponse.json": "4ec77e1a3eed746037149799c3b6bb8fe7b4b593e5930fc9f410e6282de9df50",
+    "v2/ConfigWriteResponse.json": "1d690287d9e8a0c552f664038d3810dfc3903ec8042eb2c0f772856414f59954",
+    "v2/GetAccountRateLimitsResponse.json": "cb9655e68130116f634ed9353e45b336492e6069a6628f424d1cd52e54eda0e0",
+    "v2/GetAccountResponse.json": "67ac3095b058a7d3c1627ff4dd9e52c8ee3c55f961cb1b980959ac15336d6827",
+    "v2/GetAccountTokenUsageResponse.json": "a58e58c852c888e5de925d99a66688d55ebb2fff038e795aadf04f8a8426dff8",
+    "v2/HooksListResponse.json": "891dd10ef7f78e59631fce05fff2becddb8004b3c0338dbbbd6b4f17ef1fa64f",
+    "v2/ListMcpServerStatusResponse.json": "00c56c0faacbd4950b7f446f20b11b8a95456c5108de2f1e7366a1b2e60db8c6",
+    "v2/ModelListResponse.json": "2fb387a2ed258fc74258828ea342d68f89ce4e8e22cd0329ca59d2b423f9108b",
+    "v2/PluginListResponse.json": "a405d2514d6236df75130c87c749e0e070b946a889f143a0448bbcd27d1d8501",
+    "v2/SkillsListResponse.json": "d11084bd4bfa50f747e880ab9a08eb8e8073c67d67c79907f4cff090db7b48f4",
+    "v2/ThreadForkResponse.json": "e63cfbeb846304309c9c64fa1235abb1723f8a0abd413aef2d342598bbaf902c",
+    "v2/ThreadItem.ts": "9eec6b2ee0ce090fa0c8976e0afa5eca07cc3b529bbbe75ead5520291ec9f7f0",
+    "v2/ThreadReadResponse.json": "d8b6934897c959f589fdf33be4f750a81f46f075df77bedcaaa92e15ad80a2b1",
+    "v2/ThreadResumeResponse.json": "3ea7c6d06bab091cea98431c72b644ac026492217842335fcc2105a472be4aa2",
+    "v2/ThreadRevertResponse.json": "00106ee73f6f8e094693dc45f8e13efea407489eb35ac04352c1eb6c4166788f",
+    "v2/ThreadStartResponse.json": "107fe36c99ebaeb750a371580beec807a28c6451e9c8a02cd7d451a0135f1c91",
+    "v2/ThreadTurnsListResponse.json": "eba82395d4479bb28091bbe6f39c929c7c66a30d7b0eeabedac39057ce72aceb",
+    "v2/TurnStartResponse.json": "20e837d07826b9c01578ff40b962ab08f58a355a9984e96226733498514e9bad",
+    "v2/TurnSteerResponse.json": "866ba9a77c12b5d570c837d58f73bf40b24e50fa93404bdf792dd984d313b1aa"
+  }
+}

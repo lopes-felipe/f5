@@ -1,3 +1,5 @@
+import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
+import { NativeRuntimePanel } from "./chat/NativeRuntimePanel";
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
@@ -4592,6 +4594,48 @@ export default function ChatView({
       onAdvanceActivePendingUserInput();
       return;
     }
+    if (
+      /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
+      activeThread.session?.provider === "codex" &&
+      api.nativeOperations &&
+      activeThread.session.capabilities?.actions.some(
+        (action) => action.action === "nativeReview" && action.supported,
+      )
+    ) {
+      const argument = promptRef.current.trim().slice(7).trim();
+      sendInFlightRef.current = true;
+      try {
+        const record = await api.nativeOperations.execute({
+          threadId: activeThread.id,
+          operationId: crypto.randomUUID(),
+          generation: activeThread.session.capabilities.generation,
+          command: {
+            kind: "review",
+            target: parseNativeReviewTarget(argument),
+          },
+        });
+        if (["requested", "dispatched", "running", "completed"].includes(record.state)) {
+          setPrompt("");
+          promptRef.current = "";
+          onAdmitted?.();
+        } else
+          toastManager.add({
+            type: "error",
+            title: "Review requires attention",
+            description: record.error ?? record.state,
+          });
+      } catch (cause) {
+        toastManager.add({
+          type: "error",
+          title: "Review could not start",
+          description:
+            cause instanceof Error ? cause.message : "Retry after the current operation settles.",
+        });
+      } finally {
+        sendInFlightRef.current = false;
+      }
+      return;
+    }
     const promptForSend = promptRef.current;
     const composerImagesSnapshot = [...composerImages];
     const composerFilePathsSnapshotBeforePreflight = [...composerFilePaths];
@@ -6518,6 +6562,14 @@ export default function ChatView({
       ),
     [activeProviderStatus, activeThread],
   );
+  const rewindWorkspaceShared =
+    Boolean(workspaceRoot) &&
+    threads.some(
+      (other) =>
+        other.id !== activeThread?.id &&
+        (other.worktreePath ?? projects.find((project) => project.id === other.projectId)?.cwd) ===
+          workspaceRoot,
+    );
   const revertDisabledReason = !revertSupported
     ? `${activeProviderLabel} doesn't support revert`
     : hasPendingTurnDispatch || isSendBusy
@@ -6902,6 +6954,22 @@ export default function ChatView({
             isServerThread={isServerThread}
             activeThreadId={activeThread.id}
             activeThreadTitle={activeThread.title}
+            nativeGoalSummary={(() => {
+              const payload = activeThread.activities.findLast(
+                (activity) =>
+                  activity.kind === "native.metadata" &&
+                  activity.payload &&
+                  typeof activity.payload === "object" &&
+                  "nativeGoal" in activity.payload,
+              )?.payload;
+              const goal =
+                payload && typeof payload === "object" && "nativeGoal" in payload
+                  ? payload.nativeGoal
+                  : null;
+              return goal && typeof goal === "object" && "objective" in goal && "status" in goal
+                ? `Goal: ${String(goal.objective)} · ${String(goal.status)}`
+                : undefined;
+            })()}
             activeProjectId={activeProject?.id}
             activeProjectIcon={activeProject?.icon}
             activeProjectName={activeProject?.name}
@@ -7004,7 +7072,16 @@ export default function ChatView({
                   emptyState={timelineEmptyState}
                   onOpenTurnDiff={onOpenTurnDiff}
                   revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
-                  canRestoreFiles={Boolean(activeThread.worktreePath)}
+                  nativeSessionCapabilities={activeThread.session?.capabilities}
+                  canRestoreFiles={
+                    !rewindWorkspaceShared &&
+                    (Boolean(activeThread.worktreePath) ||
+                      (branchesQuery.data?.isRepo === false &&
+                        activeThread.session?.provider === "claudeAgent" &&
+                        activeThread.session.capabilities?.actions.some(
+                          (action) => action.action === "fileCheckpointing" && action.supported,
+                        ) === true))
+                  }
                   onRevertUserMessage={onRevertUserMessageFromTimeline}
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   revertDisabledReason={revertDisabledReason}
@@ -7179,6 +7256,17 @@ export default function ChatView({
                         ))
                       : null}
                   </ComposerTray>
+                  <NativeRuntimePanel
+                    threadId={activeThread.id}
+                    capabilities={activeThread.session?.capabilities}
+                    activities={activeThread.activities}
+                    requestedModel={activeThread.model}
+                    outcome={activeThread.latestTurn?.state}
+                    prompt={prompt}
+                    latestMessageAt={activeThread.messages.at(-1)?.createdAt}
+                    onSuggestion={setPrompt}
+                    onStop={onInterrupt}
+                  />
                   <ChatComposer
                     redesignEnabled={composerRedesign}
                     getTimeline={getComposerTimeline}

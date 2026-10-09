@@ -31,6 +31,12 @@ const harness = (
     forkCodex?: boolean;
     failReadback?: boolean;
     cancelDuringCapture?: boolean;
+    nativeClaude?: boolean;
+    nativeCanRewind?: boolean;
+    nativeSkippedLinks?: number;
+    nativeWorkspace?: string;
+    isGit?: boolean;
+    sibling?: "live" | "deleted";
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -53,6 +59,7 @@ const harness = (
     };
     yield* sql`INSERT INTO rewind_requests(operation_id, thread_id, payload_json, created_at) VALUES (${operationId}, ${threadId}, ${JSON.stringify(request)}, ${at})`;
     const fileActions: string[] = [];
+    let nativeRecord: { operationId: string; state: string; result: unknown } | undefined;
     const beforeTurnIds: Array<string | undefined> = [];
     const deletedRefs: string[] = [];
     const activityCommandIds: string[] = [];
@@ -64,27 +71,72 @@ const harness = (
     let failReadback = options.failReadback === true;
     const model = {
       snapshotSequence: 3,
-      projects: [{ id: projectId, workspaceRoot: "/tmp/no-git-phase8" }],
+      projects: [{ id: projectId, workspaceRoot: options.nativeWorkspace ?? "/tmp/no-git-phase8" }],
       threads: [
         {
           id: threadId,
           projectId,
+          deletedAt: null as string | null,
           worktreePath,
           session: {
-            providerName: options.zeroTurnClaude
-              ? "claudeAgent"
-              : worktreePath
-                ? "opencode"
-                : "codex",
+            providerName:
+              options.zeroTurnClaude || options.nativeClaude
+                ? "claudeAgent"
+                : worktreePath
+                  ? "opencode"
+                  : "codex",
           },
           messages: [{ id: messageId, text: "Recovered source", attachments: [] }],
           checkpoints: [],
         },
       ],
     };
+    if (options.sibling)
+      model.threads.push({
+        ...model.threads[0]!,
+        id: ThreadId.makeUnsafe(`${name}:sibling`),
+        deletedAt: options.sibling === "deleted" ? at : null,
+      });
     const rewind = yield* makeConversationRewind.pipe(
       Effect.provideService(ProviderService, {
-        getSessionCapabilities: () => Effect.succeed(null),
+        getSessionCapabilities: () =>
+          Effect.succeed(
+            options.nativeClaude
+              ? {
+                  generation: 1,
+                  actions: [
+                    { action: "rollback", supported: true },
+                    { action: "fileCheckpointing", supported: true },
+                  ],
+                }
+              : null,
+          ),
+        nativeOperations: options.nativeClaude
+          ? {
+              list: () => Effect.succeed(nativeRecord ? [nativeRecord] : []),
+              executeWithApply: (
+                input: { operationId: string },
+                apply: (result: unknown) => Effect.Effect<void>,
+              ) =>
+                Effect.gen(function* () {
+                  fileActions.push("native-revert");
+                  const result = {
+                    canRewind: options.nativeCanRewind !== false,
+                    skippedLinks: options.nativeSkippedLinks ?? 0,
+                  };
+                  if (!result.canRewind)
+                    return { state: "failed", error: "Backups unavailable", result };
+                  nativeRecord = { operationId: input.operationId, state: "running", result };
+                  const outcome = yield* Effect.exit(apply(result));
+                  if (outcome._tag === "Failure") {
+                    nativeRecord = { ...nativeRecord, state: "indeterminate" };
+                    return { ...nativeRecord, error: "Files restored; conversation unconfirmed" };
+                  }
+                  nativeRecord = { ...nativeRecord, state: "completed" };
+                  return { state: "completed", result };
+                }),
+            }
+          : undefined,
         getCapabilities: () =>
           Effect.succeed({
             runtimeCapabilities: {
@@ -108,7 +160,7 @@ const harness = (
           Effect.sync(() => [
             {
               threadId,
-              cwd: options.providerCwd ?? worktreePath,
+              cwd: options.providerCwd ?? options.nativeWorkspace ?? worktreePath,
               resumeCursor: {
                 threadId: identity,
                 ...(options.forkCodex && rollbackCalls > 0
@@ -147,6 +199,7 @@ const harness = (
           }),
       } as never),
       Effect.provideService(CheckpointStore, {
+        isGitRepository: () => Effect.succeed(options.isGit === true),
         hasCheckpointRef: () => Effect.succeed(false),
         captureCheckpoint: () =>
           worktreePath
@@ -574,6 +627,104 @@ layer("conversation rewind recovery", (it) => {
         (yield* sql<{
           state: string;
         }>`SELECT state FROM rewind_operations WHERE operation_id = ${h.operationId}`)[0]?.state,
+        "reconciliation-required",
+      );
+    }),
+  );
+});
+
+layer("native file rewind in non-git Claude projects", (it) => {
+  for (const canRewind of [true, false])
+    it.effect(
+      `native rewind ${canRewind ? "restores files before conversation rewind" : "refusal leaves the conversation untouched"}`,
+      () =>
+        Effect.gen(function* () {
+          const workspace = yield* Effect.acquireRelease(
+            Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-rewind-"))),
+            (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+          );
+          const h = yield* harness(`native-files:${canRewind}`, null, null, {
+            nativeClaude: true,
+            nativeCanRewind: canRewind,
+            nativeWorkspace: workspace,
+            nativeSkippedLinks: 2,
+          });
+          yield* h.rewind.run({ ...h.request, restoreFiles: true });
+          assert.deepEqual(
+            h.fileActions,
+            canRewind ? ["native-revert", "rollback"] : ["native-revert"],
+          );
+          assert.equal(h.rollbackCalls(), canRewind ? 1 : 0);
+          if (canRewind)
+            assert(h.activityCommandIds.some((id) => id.startsWith("native-files-warning:")));
+        }),
+    );
+  it.effect("never calls native rewind in a git project", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-git-"))),
+        (cwd) => Effect.sync(() => fs.rmSync(cwd, { recursive: true, force: true })),
+      );
+      const h = yield* harness("native-files-git", null, workspace, {
+        nativeClaude: true,
+        nativeWorkspace: workspace,
+        isGit: true,
+      });
+      yield* h.rewind.run({ ...h.request, restoreFiles: true });
+      assert(!h.fileActions.includes("native-revert"));
+    }),
+  );
+});
+
+layer("native rewind workspace ownership", (it) => {
+  it.effect.each(["live", "deleted"] as const)(
+    "handles a %s sibling in a non-git workspace",
+    (sibling) =>
+      Effect.gen(function* () {
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "native-owner-"));
+        try {
+          const h = yield* harness(`native-owner:${sibling}`, null, null, {
+            nativeClaude: true,
+            nativeWorkspace: cwd,
+            sibling,
+          });
+          yield* h.rewind.run({ ...h.request, restoreFiles: true });
+          assert.deepEqual(h.fileActions, sibling === "live" ? [] : ["native-revert", "rollback"]);
+        } finally {
+          fs.rmSync(cwd, { recursive: true, force: true });
+        }
+      }),
+  );
+});
+
+layer("native file recovery safety", (it) => {
+  it.effect("never retries file mutation when only the conversation rollback failed", () =>
+    Effect.gen(function* () {
+      const cwd = yield* Effect.acquireRelease(
+        Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "f5-native-recovery-"))),
+        (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
+      );
+      const h = yield* harness("native-files-conversation-loss", "disconnect", null, {
+        nativeClaude: true,
+        nativeWorkspace: cwd,
+        isGit: false,
+      });
+      const request = { ...h.request, restoreFiles: true };
+      yield* h.rewind.run(request);
+      const sql = yield* SqlClient.SqlClient;
+      const row = (yield* sql<{
+        state: string;
+        error: string;
+      }>`SELECT state, error FROM rewind_operations WHERE operation_id = ${request.operationId}`)[0]!;
+      assert.equal(row.state, "reconciliation-required");
+      assert.equal(h.fileActions.filter((action) => action === "native-revert").length, 1);
+      yield* h.rewind.run(request);
+      assert.equal(h.fileActions.filter((action) => action === "native-revert").length, 1);
+      assert.equal(
+        (yield* sql<{
+          state: string;
+        }>`SELECT state FROM rewind_operations WHERE operation_id = ${request.operationId}`)[0]!
+          .state,
         "reconciliation-required",
       );
     }),

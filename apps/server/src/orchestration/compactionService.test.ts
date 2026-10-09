@@ -262,3 +262,10 @@ describe("compactionService helpers", () => {
     expect(estimateModelContextWindowTokens("unknown-codex-model", "codex")).toBe(200_000);
   });
 });
+
+it("never uses a native compaction label as a resume summary", () => {
+  const original = makeThread();
+  expect(original.compaction).not.toBeNull();
+  const thread = { ...original, compaction: { ...original.compaction!, kind: "native" as const } };
+  expect(buildThreadCompactionRestoreInput(thread).priorWorkSummary).toBeUndefined();
+});

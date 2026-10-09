@@ -13,6 +13,14 @@ export const PROVIDER_SESSION_ACTIONS = [
   "mcpReload",
   "nativeCommands",
   "nativeSessionCleanup",
+  "nativeReview",
+  "nativeCompaction",
+  "nativeFork",
+  "nativeGoals",
+  "nativeAttachments",
+  "childTaskInspection",
+  "childTaskStop",
+  "fileCheckpointing",
 ] as const;
 export const ProviderSessionAction = Schema.Literals(PROVIDER_SESSION_ACTIONS);
 export type ProviderSessionAction = typeof ProviderSessionAction.Type;
