@@ -187,6 +187,19 @@ export function classifyF5PreviewTool(
   return PREVIEW_OBSERVE_TOOL_NAMES.has(name as PreviewToolName) ? "observe" : "mutate";
 }
 
+/**
+ * True when an F5 preview observe call writes an artifact file, which a read-only
+ * workflow stage may not do: `preview_screenshot` always saves; snapshots on `save: true`.
+ */
+export function writesPreviewArtifact(toolName: string, toolInput: unknown): boolean {
+  if (toolName.endsWith("__preview_screenshot")) return true;
+  return (
+    typeof toolInput === "object" &&
+    toolInput !== null &&
+    (toolInput as { readonly save?: unknown }).save === true
+  );
+}
+
 export function isClaudeInChromeTool(toolName: string): boolean {
   return toolName.startsWith(`mcp__${CLAUDE_IN_CHROME_SERVER_NAME}__`);
 }

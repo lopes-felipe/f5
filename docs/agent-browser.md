@@ -24,9 +24,12 @@ call without restarting the session. Policy lookups fail closed.
 - **Provenance.** Claude tools are classified by exact `mcp__<server>__<tool>` name, and
   only after `mcpServerStatus()` reports the server as `source: "sdk"`. A project server
   with a look-alike name never inherits F5's exemptions.
-- **Approvals.** Observation (`status`, `snapshot`, `screenshot`, `wait_for`) never prompts
-  and is allowed in read-only workflow stages. Mutating tools follow the runtime mode; one
+- **Approvals.** Observation (`status`, `snapshot`, `screenshot`, `wait_for`) never prompts.
+  Read-only workflow stages may observe but not write artifacts, so they get `snapshot`
+  without `save: true` and no `screenshot`. Mutating tools follow the runtime mode; one
   "allow for session" grants the whole mutating family.
+- **Screenshots.** `preview_screenshot` captures through a saving snapshot: the agent gets
+  the image plus the saved artifact's id, without the page text and element lists.
 - **Owner.** When no preview is open the server asks the most recently active window to
   host one (`ownerRequested`). The window pins a headless preview (at most 2 pinned of 4
   instances) and adds a Preview tab without stealing focus. Pins are released on user

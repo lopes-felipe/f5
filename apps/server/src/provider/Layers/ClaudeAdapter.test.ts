@@ -840,7 +840,7 @@ describe("ClaudeAdapter agent browser", () => {
             permissionOptions(`${toolName}-${mcpServer.source}`, mcpServer),
           ),
         );
-      for (const tool of ["preview_status", "preview_snapshot", "preview_screenshot"]) {
+      for (const tool of ["preview_status", "preview_snapshot"]) {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
         assert.equal(response?.behavior, "allow", tool);
       }
@@ -853,9 +853,12 @@ describe("ClaudeAdapter agent browser", () => {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
         assert.equal(response?.behavior, "deny", tool);
       }
-      // Saving writes an artifact file, which a read-only stage may not do.
-      const saved = yield* decide("mcp__f5_preview__preview_screenshot", { save: true });
+      // Saving writes an artifact file, which a read-only stage may not do; screenshots
+      // always save.
+      const saved = yield* decide("mcp__f5_preview__preview_snapshot", { save: true });
       assert.equal(saved?.behavior, "deny");
+      const screenshot = yield* decide("mcp__f5_preview__preview_screenshot");
+      assert.equal(screenshot?.behavior, "deny");
       const impostor = yield* decide(
         "mcp__f5_preview__preview_status",
         {},

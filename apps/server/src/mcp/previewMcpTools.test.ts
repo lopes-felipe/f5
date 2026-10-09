@@ -162,6 +162,44 @@ describe("callPreviewTool", () => {
     assert.deepEqual((calls[0]!.input as { url?: string }).url, "https://example.com/docs");
   });
 
+  it("returns the screenshot image to the agent and keeps the saved artifact", async () => {
+    const calls: PreviewAutomationInvokeInput[] = [];
+    const base = makePreviewAutomationBroker();
+    const artifact = {
+      artifactId: "preview-1",
+      kind: "screenshot",
+      mimeType: "image/png",
+      bytes: 3,
+      createdAt: "2026-10-09T00:00:00.000Z",
+      width: 2,
+      height: 1,
+    };
+    const broker = {
+      ...base,
+      invoke: <A>(input: PreviewAutomationInvokeInput) =>
+        Effect.sync(() => {
+          calls.push(input);
+          return {
+            url: "http://127.0.0.1:4791/",
+            title: "Agent check",
+            visibleText: "not sent to the agent",
+            savedScreenshot: artifact,
+            screenshot: { mimeType: "image/png", data: "iVBO", width: 2, height: 1 },
+          } as A;
+        }),
+    };
+    const result = await callPreviewTool(
+      { broker, policy: ENABLED, threadId, automationSessionId: "s" },
+      "preview_screenshot",
+      {},
+    );
+    assert.equal(calls[0]?.operation, "snapshot");
+    assert.deepEqual(calls[0]?.input, { save: true });
+    assert.deepEqual(result.content[1], { type: "image", mimeType: "image/png", data: "iVBO" });
+    assert.equal((result.structuredContent as { artifactId?: string }).artifactId, "preview-1");
+    assert.equal(JSON.stringify(result.structuredContent).includes("not sent"), false);
+  });
+
   it("rejects invalid input with Effect Schema even when zod would accept it", async () => {
     const { broker, calls } = recordingBroker();
     const result = await callPreviewTool(

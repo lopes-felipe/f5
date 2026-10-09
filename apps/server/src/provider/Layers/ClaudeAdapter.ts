@@ -180,6 +180,7 @@ import {
   CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL,
   type ClaudeAgentBrowserState,
   classifyF5PreviewTool,
+  writesPreviewArtifact,
   COMPUTER_USE_UNAVAILABLE_DETAIL,
   forceClaudeChromeFlag,
   isClaudeComputerUseTool,
@@ -5767,8 +5768,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
               if (
                 previewToolClass === "observe" &&
-                // `save: true` writes an artifact file, which a read-only stage may not do.
-                !(input.workflowExecutionProfile && asUnknownRecord(toolInput)?.save === true)
+                !(input.workflowExecutionProfile && writesPreviewArtifact(toolName, toolInput))
               ) {
                 return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
               }
@@ -6324,8 +6324,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               subagentsEnabled: providerOptions?.subagentsEnabled,
               allowReadOnlyMcpTool: (toolName, mcpServer, toolInput) =>
                 classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
-                // `save: true` writes an artifact file, which a read-only stage may not do.
-                asUnknownRecord(toolInput)?.save !== true,
+                !writesPreviewArtifact(toolName, toolInput),
               evaluateDynamic: (toolName) =>
                 Effect.runPromise(evaluateAgentBrowserToolPolicy(threadId, toolName)),
               plansDirectory: NodePath.join(
