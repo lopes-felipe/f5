@@ -2,7 +2,7 @@ import type { ProviderKind, RuntimeMode } from "@t3tools/contracts";
 
 const BASIC_MODES = new Set<RuntimeMode>(["approval-required", "full-access"]);
 const EDIT_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "full-access"]);
-const CODEX_MODES = new Set<RuntimeMode>([
+const REVIEWED_MODES = new Set<RuntimeMode>([
   "approval-required",
   "auto-accept-edits",
   "auto",
@@ -12,8 +12,9 @@ const CODEX_MODES = new Set<RuntimeMode>([
 export function runtimeModeCapabilities(provider: ProviderKind): ReadonlySet<RuntimeMode> {
   switch (provider) {
     case "codex":
-      return CODEX_MODES;
+    // Claude `auto` fails closed to asking when the model or CLI lacks it.
     case "claudeAgent":
+      return REVIEWED_MODES;
     case "opencode":
       return EDIT_MODES;
     case "cursor":

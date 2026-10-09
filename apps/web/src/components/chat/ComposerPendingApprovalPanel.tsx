@@ -72,6 +72,27 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
         ) : null}
       </div>
       {approval.appName ? <p className="mt-2 text-sm font-medium">{approval.appName}</p> : null}
+      {approval.presentation?.title ? (
+        <p className="mt-2 text-sm font-medium">{approval.presentation.title}</p>
+      ) : null}
+      {approval.presentation?.description ? (
+        <p className="mt-1 text-xs text-muted-foreground">{approval.presentation.description}</p>
+      ) : null}
+      {approval.presentation?.decisionReason ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Reason: {approval.presentation.decisionReason}
+        </p>
+      ) : null}
+      {approval.presentation?.blockedPath ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Path: <code>{approval.presentation.blockedPath}</code>
+        </p>
+      ) : null}
+      {approval.presentation?.agentId ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Requested by sub-agent <code>{approval.presentation.agentId}</code>
+        </p>
+      ) : null}
       {approval.requestKind === "unknown" && approval.requestType ? (
         <p className="mt-2 text-xs text-muted-foreground">
           Raw request type: <code>{approval.requestType}</code>

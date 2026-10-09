@@ -5,6 +5,10 @@ import {
   mergeCodexLimitSnapshot,
   type CodexLimitSnapshot,
 } from "../codexErrors.ts";
+import {
+  codexCommandApprovalOptions,
+  readCodexCommandApprovalOffer,
+} from "../../codex/commandApprovalOffer.ts";
 import { describeMcpElicitation } from "../../codex/mcpElicitation.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
@@ -21,6 +25,7 @@ import {
   type ProviderStartOptions,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
+  ElicitationDescriptor,
   EventId,
   RuntimeItemId,
   RuntimeRequestId,
@@ -37,9 +42,17 @@ import {
   getProviderOptionBooleanSelectionValue,
 } from "@t3tools/shared/model";
 import {
+  filterEnabledMcpServers,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
+import { codexServerNamesMatch } from "../../codex/codexMcpServerStatus.ts";
+import {
+  codexObservedMcpStatus,
+  restartRequiredMcpReload,
+  stableMcpConfigKey,
+  summarizeMcpReload,
+} from "../mcpReconcile.ts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import {
   codexNotificationDisposition,
@@ -57,6 +70,8 @@ import {
 } from "../Errors.ts";
 import { CodexAdapter, type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import {
+  CODEX_ELICITATION_OPENED_METHOD,
+  CODEX_ELICITATION_SETTLED_METHOD,
   CodexAppServerManager,
   CodexJsonRpcError,
   type CodexAppServerStartSessionInput,
@@ -1072,6 +1087,17 @@ function mapToRuntimeEvents(
   const turn = asObject(payload?.turn);
 
   if (event.kind === "request") {
+    if (event.method === CODEX_ELICITATION_OPENED_METHOD) {
+      const elicitation = Schema.decodeUnknownOption(ElicitationDescriptor)(payload?.elicitation);
+      if (elicitation._tag === "None") return [];
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "user-input.requested",
+          payload: { questions: [], elicitation: elicitation.value },
+        },
+      ];
+    }
     if (event.method === "item/tool/requestUserInput") {
       const questions = toUserInputQuestions(payload);
       if (!questions) {
@@ -1082,6 +1108,8 @@ function mapToRuntimeEvents(
           ...runtimeEventBase(event, canonicalThreadId),
           type: "user-input.requested",
           payload: {
+            // Only an explicit `isBlocking: false` relaxes blocking; older CLIs omit it.
+            ...(payload?.isBlocking === false ? { blocking: false } : {}),
             questions,
           },
         },
@@ -1103,6 +1131,10 @@ function mapToRuntimeEvents(
       !Array.isArray(requestedPermissionsValue)
         ? (requestedPermissionsValue as Record<string, unknown>)
         : undefined;
+    const commandApprovalOptions =
+      event.method === "item/commandExecution/requestApproval"
+        ? codexCommandApprovalOptions(readCodexCommandApprovalOffer(payload))
+        : undefined;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -1112,6 +1144,7 @@ function mapToRuntimeEvents(
           ...(event.method === "mcpServer/elicitation/request"
             ? describeMcpElicitation(payload)
             : {}),
+          ...(commandApprovalOptions ? { approvalOptions: commandApprovalOptions } : {}),
           ...(detail ? { detail } : {}),
           ...(requestedPermissions ? { requestedPermissions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
@@ -1450,6 +1483,7 @@ function mapToRuntimeEvents(
           ),
           payload: {
             responseMode: "message",
+            blocking: false,
             questions: asyncItem.questions.map((value, index) => {
               const question = asObject(value);
               return {
@@ -1596,6 +1630,18 @@ function mapToRuntimeEvents(
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
         },
+      },
+    ];
+  }
+
+  if (event.method === CODEX_ELICITATION_SETTLED_METHOD) {
+    const receipt = payload?.receipt;
+    if (receipt !== "resolved" && receipt !== "cancelled" && receipt !== "indeterminate") return [];
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "user-input.resolved",
+        payload: { answers: {}, receipt },
       },
     ];
   }
@@ -2257,6 +2303,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         }),
     );
     const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    // Sessions pin F5's MCP servers with `-c mcp_servers=...` at launch, so a
+    // reload cannot change that set; a different desired set needs a restart.
+    const launchedMcpConfigKeys = new Map<ThreadId, string>();
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
         for (const session of previewMcpSessions.values()) {
@@ -2382,6 +2431,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               if (previewMcpSession) {
                 previewMcpSessions.set(input.threadId, previewMcpSession);
               }
+              launchedMcpConfigKeys.set(
+                input.threadId,
+                stableMcpConfigKey(translateMcpForCodex(baseProviderMcpServers) ?? {}),
+              );
             }),
           ),
         );
@@ -2569,10 +2622,21 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         catch: (cause) => toRequestError(threadId, "item/tool/requestUserInput", cause),
       });
 
+    const respondToElicitation: NonNullable<CodexAdapterShape["respondToElicitation"]> = (
+      threadId,
+      requestId,
+      response,
+    ) =>
+      Effect.tryPromise({
+        try: () => manager.respondToElicitation(threadId, requestId, response),
+        catch: (cause) => toRequestError(threadId, "mcpServer/elicitation/request", cause),
+      });
+
     const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
       Effect.sync(() => {
         previewMcpSessions.get(threadId)?.dispose();
         previewMcpSessions.delete(threadId);
+        launchedMcpConfigKeys.delete(threadId);
         manager.stopSession(threadId);
       });
 
@@ -2585,11 +2649,44 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const getSessionDiscovery: NonNullable<CodexAdapterShape["getSessionDiscovery"]> = (threadId) =>
       Effect.sync(() => manager.getSessionDiscovery?.(threadId));
 
-    const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = (threadId) =>
+    const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = ({ threadId, mcpServers }) =>
       Effect.tryPromise({
         try: () => manager.reloadMcpConfig(threadId),
         catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
-      });
+      }).pipe(
+        Effect.map((statuses) => {
+          const launched = launchedMcpConfigKeys.get(threadId);
+          if (
+            launched !== undefined &&
+            launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
+          ) {
+            return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
+          }
+          return summarizeMcpReload({
+            desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+            observed: statuses?.flatMap((status) => {
+              const name = typeof status.name === "string" ? status.name : undefined;
+              if (!name) return [];
+              const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+              const error = text(status.error);
+              return [
+                {
+                  name,
+                  status: codexObservedMcpStatus({
+                    ...(text(status.startupStatus)
+                      ? { startupStatus: text(status.startupStatus)! }
+                      : {}),
+                    ...(text(status.authStatus) ? { authStatus: text(status.authStatus)! } : {}),
+                    ...(error ? { error } : {}),
+                  }),
+                  ...(error ? { error } : {}),
+                },
+              ];
+            }),
+            sameName: codexServerNamesMatch,
+          });
+        }),
+      );
 
     const stopAll: CodexAdapterShape["stopAll"] = () =>
       Effect.sync(() => {
@@ -2597,6 +2694,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           session.dispose();
         }
         previewMcpSessions.clear();
+        launchedMcpConfigKeys.clear();
         manager.stopAll();
       });
 
@@ -2688,6 +2786,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       runOneOffPrompt,
       respondToRequest,
       respondToUserInput,
+      respondToElicitation,
       stopSession,
       listSessions,
       hasSession,

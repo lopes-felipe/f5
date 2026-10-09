@@ -15,6 +15,8 @@ import {
 import {
   buildCodexInitializeParams,
   buildCodexThreadOpenRequestParams,
+  CODEX_ELICITATION_OPENED_METHOD,
+  CODEX_ELICITATION_SETTLED_METHOD,
   CODEX_ONE_OFF_WORKER_IDLE_MS,
   codexOneOffPoolKey,
   codexRequestTimeoutMs,
@@ -35,6 +37,7 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "./provider/sharedAssistantContract";
 import { fingerprintSupportedSlashCommands } from "./provider/supportedSlashCommands";
+import { ElicitationRegistry } from "./provider/elicitationRegistry";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
@@ -2898,6 +2901,7 @@ describe("Codex server requests", () => {
       },
       pendingApprovals: new Map(),
       pendingUserInputs: new Map(),
+      elicitations: new ElicitationRegistry(),
       nativeRequestCorrelations: new Map(),
     };
   }
@@ -3057,7 +3061,7 @@ describe("Codex server requests", () => {
     ).rejects.toThrow("Unknown pending approval");
   });
 
-  it("cancels unsupported MCP data forms without publishing an approval", () => {
+  it("sends an execpolicy amendment only when the command approval offered it", async () => {
     const manager = new CodexAppServerManager();
     const context = requestContext();
     const writeMessage = vi
@@ -3066,7 +3070,77 @@ describe("Codex server requests", () => {
         "writeMessage",
       )
       .mockResolvedValue();
-    const events: Array<{ kind?: string; method?: string }> = [];
+    vi.spyOn(
+      manager as unknown as { requireSession: (...args: unknown[]) => unknown },
+      "requireSession",
+    ).mockReturnValue(context);
+    const events: Array<{ requestId?: ApprovalRequestId | undefined }> = [];
+    manager.on("event", (event) => events.push(event));
+    const handle = (request: Record<string, unknown>) =>
+      (
+        manager as unknown as {
+          handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+        }
+      ).handleServerRequest(context, request);
+
+    handle({
+      id: 90,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        itemId: "item_1",
+        command: "git status --short",
+        proposedExecpolicyAmendment: ["git", "status"],
+        availableDecisions: [
+          "accept",
+          { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["git", "status"] } },
+          "decline",
+        ],
+      },
+    });
+    const offered = events[0]?.requestId;
+    expect(offered).toBeDefined();
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), offered!, "acceptForSession"),
+    ).rejects.toThrow("does not offer 'acceptForSession'");
+    expect(writeMessage).not.toHaveBeenCalled();
+    await manager.respondToRequest(asThreadId("thread_1"), offered!, "acceptAlways");
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 90,
+      result: {
+        decision: {
+          acceptWithExecpolicyAmendment: { execpolicy_amendment: ["git", "status"] },
+        },
+      },
+    });
+
+    handle({
+      id: 91,
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread_1", turnId: "turn_1", itemId: "item_2", command: "ls" },
+    });
+    const plain = events.at(-1)?.requestId;
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), plain!, "acceptAlways"),
+    ).rejects.toThrow("only supported when the provider offered it");
+    await manager.respondToRequest(asThreadId("thread_1"), plain!, "acceptForSession");
+    expect(writeMessage).toHaveBeenLastCalledWith(context, {
+      id: 91,
+      result: { decision: "acceptForSession" },
+    });
+  });
+
+  it("cancels MCP forms with unsupported constraints visibly, without publishing a request", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    const events: Array<{ kind?: string; method?: string; message?: string | undefined }> = [];
     manager.on("event", (event) => events.push(event));
     (
       manager as unknown as {
@@ -3080,13 +3154,94 @@ describe("Codex server requests", () => {
         message: "Optional profile data",
         requestedSchema: {
           type: "object",
-          properties: { remember: { type: "boolean", default: true } },
+          properties: { code: { type: "string", pattern: "^[0-9]+$" } },
         },
       },
     });
-    expect(writeMessage).toHaveBeenCalledWith(context, { id: 85, result: { action: "cancel" } });
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 85,
+      result: { action: "cancel", content: null, _meta: null },
+    });
     expect(events.some((event) => event.kind === "request")).toBe(false);
-    expect(events.some((event) => event.method === "protocol/unsupportedServerRequest")).toBe(true);
+    const warning = events.find((event) => event.method === "protocol/unsupportedServerRequest");
+    expect(warning?.message).toContain('unsupported constraint "pattern"');
+  });
+
+  it("answers supported MCP forms privately and settles them on native completion", async () => {
+    const SENTINEL = "sentinel-value-4be1";
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    vi.spyOn(
+      manager as unknown as { requireSession: (...args: unknown[]) => unknown },
+      "requireSession",
+    ).mockReturnValue(context);
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+    };
+    internals.handleServerRequest(context, {
+      id: 86,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread_1",
+        turnId: "turn_1",
+        serverName: "profile",
+        mode: "form",
+        message: "Optional profile data",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            nickname: { type: "string", maxLength: 40 },
+            remember: { type: "boolean", default: true },
+          },
+          required: ["nickname"],
+        },
+      },
+    });
+    expect(writeMessage).not.toHaveBeenCalled();
+    const opened = events.find((event) => event.method === CODEX_ELICITATION_OPENED_METHOD);
+    if (!opened) throw new Error("expected an elicitation request");
+    expect(opened.kind).toBe("request");
+    const requestId = opened.requestId as ApprovalRequestId;
+    expect(
+      (opened.payload as { elicitation: { fields: unknown[] } }).elicitation.fields,
+    ).toHaveLength(2);
+
+    await expect(
+      manager.respondToElicitation(asThreadId("thread_1"), requestId, {
+        action: "accept",
+        content: { remember: false },
+      }),
+    ).rejects.toThrow('"nickname" is required');
+    expect(writeMessage).not.toHaveBeenCalled();
+
+    await manager.respondToElicitation(asThreadId("thread_1"), requestId, {
+      action: "accept",
+      content: { nickname: SENTINEL },
+    });
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 86,
+      result: { action: "accept", content: { nickname: SENTINEL }, _meta: null },
+    });
+    await expect(
+      manager.respondToElicitation(asThreadId("thread_1"), requestId, { action: "cancel" }),
+    ).rejects.toThrow("never sends an answer twice");
+
+    internals.handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 86 },
+    });
+    const settled = events.find((event) => event.method === CODEX_ELICITATION_SETTLED_METHOD);
+    expect(settled).toMatchObject({ requestId, payload: { receipt: "resolved" } });
+    expect(JSON.stringify(events)).not.toContain(SENTINEL);
   });
 
   it.each([

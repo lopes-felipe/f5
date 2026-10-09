@@ -248,6 +248,10 @@
       "types": "./src/pendingUserInputs.ts",
       "import": "./src/pendingUserInputs.ts"
     },
+    "./elicitationForm": {
+      "types": "./src/elicitationForm.ts",
+      "import": "./src/elicitationForm.ts"
+    },
     "./providerRuntimeCapabilities": {
       "types": "./src/providerRuntimeCapabilities.ts",
       "import": "./src/providerRuntimeCapabilities.ts"

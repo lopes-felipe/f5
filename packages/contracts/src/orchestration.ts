@@ -191,6 +191,22 @@ export const ProviderApprovalOption = Schema.Struct({
   warning: Schema.optional(Schema.String),
 });
 export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;
+/**
+ * Provider-authored prompt metadata for an approval. Strings are display-only
+ * and untrusted; `defaultToNo` focuses Decline, and `suppressAlwaysAllowRule`
+ * hides persistent choices (the server also downgrades them to a plain accept).
+ */
+export const ProviderApprovalPresentation = Schema.Struct({
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  displayName: Schema.optional(Schema.String),
+  decisionReason: Schema.optional(Schema.String),
+  blockedPath: Schema.optional(Schema.String),
+  agentId: Schema.optional(Schema.String),
+  defaultToNo: Schema.optional(Schema.Boolean),
+  suppressAlwaysAllowRule: Schema.optional(Schema.Boolean),
+});
+export type ProviderApprovalPresentation = typeof ProviderApprovalPresentation.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 

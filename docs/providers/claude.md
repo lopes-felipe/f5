@@ -559,3 +559,75 @@ followed.
 
 Wire protocol 17 adds session capability snapshots, reported model capabilities,
 catalog sources and the inventory RPC. Clients and servers must both run Release 2.
+
+## Release 3: MCP, elicitation, approvals and auto mode
+
+### Approval details
+
+`canUseTool` metadata is shown on the approval: title, description, the reason Claude
+asked, the blocked path and the sub-agent that asked. Text is trimmed to 2,000
+characters. With `defaultToNo`, focus starts on **Decline** and **Approve** is not the
+primary button. With `suppressAlwaysAllowRule`, the persistent choices are hidden, and
+the server downgrades any persistent decision it still receives to a one-time accept.
+
+### MCP elicitation
+
+`onElicitation` form and URL requests open a form in the composer. Supported fields
+are bounded strings (no `pattern`), numbers, integers, booleans, enums and multiselects
+with unique values, up to 32 fields and 64 KiB. A schema with anything else is
+cancelled with a visible warning. Suggested values are shown in the form and never
+sent unless the user submits them. URL requests show the host and the full URL, and
+open only on an explicit click.
+
+Answers are private:
+
+- They go through the `elicitation.submit` RPC, never through the event-sourced
+  answer command. The server checks the thread, the request id and the session
+  generation, and accepts one submission per request.
+- Values stay in memory until they are delivered. Event rows, activities, logs,
+  telemetry and drafts only hold value-free receipts: pending, submitted, resolved,
+  cancelled or indeterminate.
+- F5 never resends an answer. If the session stops after an answer was sent but before
+  Claude confirmed it, the request is marked **indeterminate**, and the user can only
+  dismiss it.
+- When F5 restarts, pending requests are cancelled and submitted ones become
+  indeterminate.
+
+`system/elicitation_complete` and turn completion settle requests. Unattended
+read-only workflows cancel elicitations instead of asking.
+
+### Auto permission mode
+
+The `auto` runtime mode maps to Claude's `auto` permission mode, where Claude's
+reviewer decides routine approvals and escalates the rest. It fails closed:
+
+- It is used only when `resolveModelCapabilities` reports `supportsAutoMode` for the
+  model. Otherwise the session runs in `default` with the warning "Auto review is
+  unavailable here; F5 will ask before actions".
+- If the CLI then reports any effective mode other than `auto` (outside plan), F5
+  switches to `default` and shows the same warning.
+- Escalations reach `canUseTool`, which asks the user as in approval-required mode.
+- A live model change re-checks support. In plan turns, only the base mode changes,
+  and workflow sessions never call `setPermissionMode`, so they stay in plan.
+- One-off prompts cannot verify the effective mode, so they never use `auto`.
+
+This has not been checked against a live Claude runtime yet. The behavior above is
+covered by adapter tests with a fake query.
+
+### MCP reconciliation
+
+**Apply to live sessions** now reconciles Claude sessions in place with
+`setMcpServers`, sending only F5's servers. Settings-file and plugin servers are never
+named in the payload, so leaving them out never removes them. A desired server whose
+name a settings or plugin server already uses is skipped, with a notice. After the call,
+F5 always re-reads `mcpServerStatus()`, even after errors. A server that is still
+failing is reconnected on the next attempt, up to three attempts with backoff. The
+session's config version advances only when every F5 server is applied and none has
+failed. If the runtime cannot change servers in place, an idle session restarts through
+the existing restart path with its resume cursor kept. A busy session keeps its stale
+version and restarts at its next turn. Remaining failures appear as a thread warning
+and in the settings panel.
+
+Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
+RPC, approval presentation fields, non-blocking questions and the structured MCP apply
+result. Clients and servers must both run Release 3.

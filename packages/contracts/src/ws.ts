@@ -252,6 +252,7 @@ import {
   UsageGetAccountsInput,
   UsageGetSummaryInput,
 } from "./usage";
+import { ELICITATION_WS_METHODS, ElicitationSubmitInput } from "./elicitation";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { ReviewPreviewDiffInput } from "./review";
 import {
@@ -506,6 +507,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
+  tagRequestBody(ELICITATION_WS_METHODS.submit, ElicitationSubmitInput),
   // Orchestration methods
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.dispatchCommand,

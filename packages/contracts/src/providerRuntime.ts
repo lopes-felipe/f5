@@ -12,7 +12,12 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas";
-import { ProviderKind, ProviderRequestKind, ProviderApprovalOption } from "./orchestration";
+import {
+  ProviderKind,
+  ProviderRequestKind,
+  ProviderApprovalOption,
+  ProviderApprovalPresentation,
+} from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
 import { TOOL_LIFECYCLE_ITEM_TYPES, ToolCompletionEnvelope } from "./toolLifecycle";
 
@@ -424,6 +429,7 @@ export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 const RequestOpenedPayload = Schema.Struct({
   appName: Schema.optional(Schema.String),
   approvalOptions: Schema.optional(Schema.Array(ProviderApprovalOption)),
+  presentation: Schema.optional(ProviderApprovalPresentation),
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
@@ -440,15 +446,23 @@ export type RequestResolvedPayload = typeof RequestResolvedPayload.Type;
 
 export { UserInputQuestion, type UserInputQuestionOption } from "./userInput";
 import { UserInputQuestion } from "./userInput";
+import { ElicitationDescriptor } from "./elicitation";
 
 const UserInputRequestedPayload = Schema.Struct({
   responseMode: Schema.optional(Schema.Literal("message")),
+  /** `false` when the provider keeps working without the answer (Codex `isBlocking`). */
+  blocking: Schema.optional(Schema.Boolean),
   questions: Schema.Array(UserInputQuestion),
+  /** Form/URL request answered privately; `questions` is empty for these. */
+  elicitation: Schema.optional(ElicitationDescriptor),
 });
 export type UserInputRequestedPayload = typeof UserInputRequestedPayload.Type;
 
 const UserInputResolvedPayload = Schema.Struct({
+  /** Always empty for elicitations: their values never enter runtime events. */
   answers: UnknownRecordSchema,
+  /** Value-free terminal elicitation receipt. */
+  receipt: Schema.optional(Schema.Literals(["resolved", "cancelled", "indeterminate"])),
 });
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 

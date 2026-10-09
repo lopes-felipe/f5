@@ -12,6 +12,8 @@ import {
   EventId,
   type ModelSelection,
   type McpApplyToLiveSessionsResult,
+  type McpLiveSessionReloadFailure,
+  type McpReloadResult,
   type OrchestrationEvent,
   ProjectId,
   ProviderDriverKind,
@@ -1951,9 +1953,26 @@ const make = Effect.gen(function* () {
             count: number;
           }
         >();
+        const claudeThreadsByProject = new Map<ProjectId, ThreadId[]>();
+        const claudeBindings = new Map<ThreadId, ProviderRuntimeBinding>();
+        const failures: Array<McpLiveSessionReloadFailure> = [];
         let codexReloaded = 0;
         let claudeRestarted = 0;
+        let claudeReconciled = 0;
+        let deferred = 0;
         let skipped = 0;
+        const recordFailure = (
+          threadId: ThreadId,
+          provider: ProviderKind,
+          result: McpReloadResult,
+        ) => {
+          failures.push({
+            threadId,
+            provider,
+            restartRequired: result.restartRequired,
+            errors: result.errors,
+          });
+        };
 
         const readEffectiveConfigForProject = (projectId: ProjectId) => {
           const cached = effectiveConfigCache.get(projectId);
@@ -2012,12 +2031,10 @@ const make = Effect.gen(function* () {
           }
 
           if (binding.provider === "claudeAgent") {
-            const restarted = yield* restartClaudeSessionForMcpApply(binding, createdAt);
-            if (restarted) {
-              claudeRestarted += 1;
-            } else {
-              skipped += 1;
-            }
+            const threads = claudeThreadsByProject.get(binding.projectId) ?? [];
+            threads.push(binding.threadId);
+            claudeThreadsByProject.set(binding.projectId, threads);
+            claudeBindings.set(binding.threadId, binding);
             continue;
           }
 
@@ -2025,14 +2042,55 @@ const make = Effect.gen(function* () {
         }
 
         for (const group of codexGroups.values()) {
-          yield* providerService.reloadMcpConfigForProject({
+          const outcome = yield* providerService.reloadMcpConfigForProject({
             provider: "codex",
             projectId: group.projectId,
             ...(group.providerOptions !== undefined
               ? { providerOptions: group.providerOptions }
               : {}),
           });
-          codexReloaded += group.count;
+          // Codex pins MCP servers at launch; a changed set restarts at the next turn.
+          for (const session of outcome.sessions) {
+            if (session.result.converged) {
+              codexReloaded += 1;
+              continue;
+            }
+            if (session.result.restartRequired) deferred += 1;
+            recordFailure(session.threadId, "codex", session.result);
+          }
+          skipped += Math.max(0, group.count - outcome.sessions.length);
+        }
+
+        // Claude reconciles F5-owned servers in place. Only a session that
+        // cannot do so restarts, and only while idle; a busy one keeps its
+        // stale config version so the next turn start restarts it.
+        const liveSessions = yield* providerService.listSessions();
+        for (const [projectId, threadIds] of claudeThreadsByProject) {
+          const outcome = yield* providerService.reloadMcpConfigForProject({
+            provider: "claudeAgent",
+            projectId,
+            threadIds,
+          });
+          const reached = new Set(outcome.sessions.map((session) => session.threadId));
+          skipped += threadIds.filter((threadId) => !reached.has(threadId)).length;
+          for (const session of outcome.sessions) {
+            if (session.result.converged) {
+              claudeReconciled += 1;
+              continue;
+            }
+            const binding = claudeBindings.get(session.threadId);
+            const live = liveSessions.find((entry) => entry.threadId === session.threadId);
+            const idle = live !== undefined && !live.activeTurnId && live.status !== "running";
+            if (session.result.restartRequired && binding && idle) {
+              const restarted = yield* restartClaudeSessionForMcpApply(binding, createdAt);
+              if (restarted) {
+                claudeRestarted += 1;
+                continue;
+              }
+            }
+            if (session.result.restartRequired) deferred += 1;
+            recordFailure(session.threadId, "claudeAgent", session.result);
+          }
         }
 
         const responseProjectId = projectScopeProjectId ?? input.projectId;
@@ -2046,7 +2104,10 @@ const make = Effect.gen(function* () {
           ...(responseProjectId !== undefined ? { projectId: responseProjectId } : {}),
           codexReloaded,
           claudeRestarted,
+          claudeReconciled,
+          deferred,
           skipped,
+          ...(failures.length > 0 ? { failures } : {}),
           ...(responseConfig ? { configVersion: responseConfig.effectiveVersion } : {}),
         } satisfies McpApplyToLiveSessionsResult;
       });

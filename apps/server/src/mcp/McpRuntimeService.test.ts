@@ -89,6 +89,7 @@ function makeProviderServiceStub(): ProviderServiceShape {
     interruptTurn: (_input) => unused(),
     respondToRequest: (_input) => unused(),
     respondToUserInput: (_input) => unused(),
+    respondToElicitation: (_input) => unused(),
     stopSession: (_input) => unused(),
     listSessions: () => Effect.succeed([] satisfies ReadonlyArray<ProviderSession>),
     getSessionCapabilities: () => Effect.succeed(null),
@@ -98,7 +99,7 @@ function makeProviderServiceStub(): ProviderServiceShape {
     rollbackConversation: (_input) => unused(),
     runOneOffPrompt: (_input) => unused(),
     compactConversation: (_input) => unused(),
-    reloadMcpConfigForProject: (_input) => Effect.void,
+    reloadMcpConfigForProject: (_input) => Effect.succeed({ sessions: [] }),
     streamEvents: Stream.empty,
   };
 }

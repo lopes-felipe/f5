@@ -130,6 +130,7 @@ function createProviderServiceHarness() {
     interruptTurn: (input) => Effect.sync(() => void interruptedTurns.push(input)),
     respondToRequest: (input) => Effect.sync(() => void requestResponses.push(input)),
     respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
+    respondToElicitation: () => Effect.die("unused"),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getSessionCapabilities: () => Effect.sync(() => sessionCapabilities),

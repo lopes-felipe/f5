@@ -1,4 +1,7 @@
-import { projectPendingUserInputs } from "@t3tools/shared/pendingUserInputs";
+import {
+  ELICITATION_SUBMITTED_ACTIVITY_KIND,
+  projectPendingUserInputs,
+} from "@t3tools/shared/pendingUserInputs";
 import { PendingUserInput } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
@@ -2262,7 +2265,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       if (
         event.type === "thread.activity-appended" &&
         event.payload.activity.kind !== "user-input.requested" &&
-        event.payload.activity.kind !== "user-input.resolved"
+        event.payload.activity.kind !== "user-input.resolved" &&
+        event.payload.activity.kind !== ELICITATION_SUBMITTED_ACTIVITY_KIND
       )
         return;
       if (
@@ -2300,8 +2304,15 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
         if (!next.some((candidate) => candidate.requestId === input.requestId)) {
           yield* sql`UPDATE projection_pending_user_inputs SET resolution = 'resolved' WHERE thread_id = ${threadId} AND request_id = ${input.requestId}`;
         }
-      for (const input of next)
+      for (const input of next) {
+        const previous = current.find((candidate) => candidate.requestId === input.requestId);
+        if (previous && previous.receipt !== input.receipt) {
+          // Receipt transitions (submitted, indeterminate) update in place.
+          yield* sql`UPDATE projection_pending_user_inputs SET payload_json = ${JSON.stringify(input)} WHERE thread_id = ${threadId} AND request_id = ${input.requestId} AND resolution IS NULL`;
+          continue;
+        }
         yield* sql`INSERT OR IGNORE INTO projection_pending_user_inputs(thread_id, request_id, payload_json) VALUES (${threadId}, ${input.requestId}, ${JSON.stringify(input)})`;
+      }
     }).pipe(Effect.mapError(toPersistenceSqlError("ProjectionPipeline.pendingUserInputs")));
 
   // Adding a projector: on an existing install it has no cursor, so bootstrap

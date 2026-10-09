@@ -76,6 +76,7 @@ function makeProviderServiceStub(input?: {
     interruptTurn: (_input) => unused(),
     respondToRequest: (_input) => unused(),
     respondToUserInput: (_input) => unused(),
+    respondToElicitation: (_input) => unused(),
     stopSession: (_input) => unused(),
     listSessions: () => Effect.succeed([] satisfies ReadonlyArray<ProviderSession>),
     getSessionCapabilities: () => Effect.succeed(null),
@@ -85,7 +86,8 @@ function makeProviderServiceStub(input?: {
     rollbackConversation: (_input) => unused(),
     runOneOffPrompt: (_input) => unused(),
     compactConversation: (_input) => unused(),
-    reloadMcpConfigForProject: input?.reloadMcpConfigForProject ?? ((_input) => Effect.void),
+    reloadMcpConfigForProject:
+      input?.reloadMcpConfigForProject ?? ((_input) => Effect.succeed({ sessions: [] })),
     streamEvents: Stream.empty,
   };
 }
@@ -559,7 +561,7 @@ describe("CodexOAuthManager", () => {
                 new Promise<void>((resolve) => {
                   setTimeout(resolve, 100);
                 }),
-            ),
+            ).pipe(Effect.as({ sessions: [] })),
         }),
       ),
       makeProjectMcpConfigServiceStub(),

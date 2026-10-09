@@ -2,6 +2,9 @@ import { Schema } from "effect";
 import {
   ApprovalRequestId,
   ProviderApprovalOption,
+  ProviderApprovalPresentation,
+  ElicitationDescriptor,
+  type ElicitationReceiptState,
   type CodexCollaborationTool,
   type CompactSubagentState,
   ProviderItemId,
@@ -19,6 +22,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import { ELICITATION_SUBMITTED_ACTIVITY_KIND } from "@t3tools/shared/pendingUserInputs";
 import {
   normalizeCodexCollaborationTool,
   readToolActivityPayload,
@@ -130,6 +134,7 @@ export interface PendingApproval {
   requestKind: ProviderRequestKind;
   appName?: string;
   approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
+  presentation?: ProviderApprovalPresentation;
   requestType?: string;
   createdAt: string;
   detail?: string;
@@ -138,6 +143,9 @@ export interface PendingApproval {
 
 export interface PendingUserInput {
   responseMode?: "message" | undefined;
+  blocking?: boolean | undefined;
+  elicitation?: ElicitationDescriptor | undefined;
+  receipt?: ElicitationReceiptState | undefined;
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
@@ -362,6 +370,12 @@ export function derivePendingApprovals(
     const requestedPermissions = asUnknownRecord(payload?.requestedPermissions);
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
+      const approvalOptions = Array.isArray(payload?.approvalOptions)
+        ? payload.approvalOptions.filter(Schema.is(ProviderApprovalOption))
+        : undefined;
+      const presentation = Schema.decodeUnknownOption(ProviderApprovalPresentation)(
+        payload?.presentation,
+      );
       openByRequestId.set(requestId, {
         requestId,
         requestKind,
@@ -369,11 +383,12 @@ export function derivePendingApprovals(
         ...(requestKind === "mcp-elicitation"
           ? {
               appName: typeof payload?.appName === "string" ? payload.appName : "MCP app",
-              approvalOptions: Array.isArray(payload?.approvalOptions)
-                ? payload.approvalOptions.filter(Schema.is(ProviderApprovalOption))
-                : [],
+              approvalOptions: approvalOptions ?? [],
             }
-          : {}),
+          : approvalOptions?.length
+            ? { approvalOptions }
+            : {}),
+        ...(presentation._tag === "Some" ? { presentation: presentation.value } : {}),
         ...(requestKind === "unknown" && requestType ? { requestType } : {}),
         ...(detail ? { detail } : {}),
         ...(requestKind === "permission" && requestedPermissions ? { requestedPermissions } : {}),
@@ -477,20 +492,42 @@ export function derivePendingUserInputs(
         : null;
 
     if (activity.kind === "user-input.requested" && requestId) {
-      const questions = parseUserInputQuestions(payload);
+      const elicitation = Schema.decodeUnknownOption(ElicitationDescriptor)(payload?.elicitation);
+      const questions =
+        parseUserInputQuestions(payload) ?? (elicitation._tag === "Some" ? [] : null);
       if (!questions) {
         continue;
       }
       openByRequestId.set(requestId, {
         requestId,
         ...(payload?.responseMode === "message" ? { responseMode: "message" as const } : {}),
+        ...(payload?.blocking === false ? { blocking: false } : {}),
+        ...(elicitation._tag === "Some" ? { elicitation: elicitation.value } : {}),
         createdAt: activity.createdAt,
         questions,
       });
       continue;
     }
 
+    if (activity.kind === ELICITATION_SUBMITTED_ACTIVITY_KIND && requestId) {
+      const open = openByRequestId.get(requestId);
+      if (open?.elicitation && !open.receipt)
+        openByRequestId.set(requestId, { ...open, receipt: "submitted" });
+      continue;
+    }
+
     if (activity.kind === "user-input.resolved" && requestId) {
+      const open = openByRequestId.get(requestId);
+      if (payload?.receipt === "indeterminate" && open) {
+        openByRequestId.set(requestId, { ...open, receipt: "indeterminate" });
+        continue;
+      }
+      if (
+        open?.receipt === "indeterminate" &&
+        payload?.receipt !== "resolved" &&
+        payload?.receipt !== "cancelled"
+      )
+        continue;
       openByRequestId.delete(requestId);
     }
   }

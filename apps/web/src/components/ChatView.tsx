@@ -1,5 +1,6 @@
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
+import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { getProviderModelCapabilities } from "../providerModels";
 import { OpenLinkThread } from "../hooks/useOpenLink";
 import { formatUsageLimits } from "../lib/usageLimits";
@@ -314,6 +315,7 @@ import { nextRewindUiExpiry } from "../rewindUi.logic";
 import type { RewindDraft } from "@t3tools/contracts";
 import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
+import { ElicitationPanel } from "./chat/ElicitationPanel";
 import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
 import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeSetupCard";
 import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
@@ -1811,9 +1813,12 @@ export default function ChatView({
         : derivePendingUserInputs(threadActivities),
     [threadActivities, activeThread?.pendingUserInputs],
   );
-  const blockingUserInputs = pendingUserInputs.filter((input) => input.responseMode !== "message");
-  const activePendingUserInput =
-    pendingUserInputs.find((input) => input.responseMode !== "message") ?? null;
+  // Provider forms render in their own panel and never feed the question drafts.
+  const blockingUserInputs = pendingUserInputs.filter(
+    (input) => !input.elicitation && isBlockingUserInput(input),
+  );
+  const elicitationInputs = pendingUserInputs.filter((input) => input.elicitation);
+  const activePendingUserInput = blockingUserInputs[0] ?? null;
   const preservedDismissedAnswers = useRef(new Set<string>());
   useEffect(() => {
     for (const activity of threadActivities) {
@@ -6717,7 +6722,7 @@ export default function ChatView({
   const composerPendingInteraction: ComposerPendingInteraction = {
     activePendingApproval,
     pendingApprovals,
-    pendingUserInputs: pendingUserInputs.filter((input) => input.responseMode !== "message"),
+    pendingUserInputs: blockingUserInputs,
     respondingRequestIds,
     activePendingDraftAnswers,
     activePendingQuestionIndex,
@@ -7083,7 +7088,7 @@ export default function ChatView({
                       />
                     ) : null}
                     {activeThread?.pendingUserInputs
-                      ?.filter((input) => input.responseMode === "message")
+                      ?.filter((input) => !input.elicitation && !isBlockingUserInput(input))
                       .map((input) => (
                         <AsyncUserInputPanel
                           variant="tray"
@@ -7092,6 +7097,16 @@ export default function ChatView({
                           input={input}
                         />
                       ))}
+                    {activeThread
+                      ? elicitationInputs.map((input) => (
+                          <ElicitationPanel
+                            variant="tray"
+                            key={input.requestId}
+                            threadId={activeThread.id}
+                            input={input}
+                          />
+                        ))
+                      : null}
                     {activePendingUserInput && activeThread ? (
                       <div className={COMPOSER_TRAY_PANEL_CLASS_NAME}>
                         <UserInputAttachments

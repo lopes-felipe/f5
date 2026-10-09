@@ -5,6 +5,7 @@ import {
   type OrchestrationThread,
   type ThreadId,
 } from "@t3tools/contracts";
+import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
 import { usageLimitFailureKey } from "@t3tools/shared/usageLimit";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { executionProviderFingerprintFor } from "../provider/providerConfigurationFingerprint.ts";
@@ -61,7 +62,7 @@ export const scheduleUsageLimitResumeFor = (input: {
       thread.session?.activeTurnId ||
       thread.session?.status === "running" ||
       thread.session?.status === "starting" ||
-      thread.pendingUserInputs?.length
+      thread.pendingUserInputs?.some(holdsAutomaticResume)
     )
       return { kind: "transient" as const, reason: "The thread is still busy." };
     const now = Date.now();

@@ -12,6 +12,8 @@
  * @module ProviderService
  */
 import type {
+  ElicitationSubmitInput,
+  McpReloadResult,
   ProjectId,
   ProviderInterruptTurnInput,
   ProviderKind,
@@ -39,6 +41,14 @@ import type {
   ProviderOneOffPromptResult,
   ProviderThreadSnapshot,
 } from "./ProviderAdapter.ts";
+
+export interface ProviderMcpReloadOutcome {
+  /** Sessions the reload reached, with their final result after retries. */
+  readonly sessions: ReadonlyArray<{
+    readonly threadId: ThreadId;
+    readonly result: McpReloadResult;
+  }>;
+}
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
@@ -79,6 +89,15 @@ export interface ProviderServiceShape {
   readonly respondToUserInput: (
     input: ProviderRespondToUserInputInput,
   ) => Effect.Effect<void, ProviderServiceError>;
+
+  /**
+   * Deliver one private elicitation answer to the live session that owns the
+   * request. Never recovers a session: an answer for an older generation is
+   * refused. Values are neither logged nor recorded.
+   */
+  readonly respondToElicitation: (
+    input: ElicitationSubmitInput,
+  ) => Effect.Effect<"submitted", ProviderServiceError>;
 
   /**
    * Stop a provider session.
@@ -151,11 +170,19 @@ export interface ProviderServiceShape {
     input: ProviderConversationCompactionInput,
   ) => Effect.Effect<ProviderConversationCompactionResult, ProviderServiceError>;
 
+  /**
+   * Reconcile live sessions of one provider in a project with the stored MCP
+   * config. Each session is retried with bounded backoff; its
+   * `mcpEffectiveConfigVersion` advances only when it converged. Per-session
+   * failures are reported in the result (and as runtime warnings), not raised.
+   */
   readonly reloadMcpConfigForProject: (input: {
     readonly provider: ProviderKind;
     readonly projectId: ProjectId;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
-  }) => Effect.Effect<void, ProviderServiceError>;
+    /** Limit the reload to these threads. */
+    readonly threadIds?: ReadonlyArray<ThreadId>;
+  }) => Effect.Effect<ProviderMcpReloadOutcome, ProviderServiceError>;
 
   /**
    * Canonical provider runtime event stream.

@@ -11,6 +11,8 @@ import type {
   ModelSelection,
   ApprovalRequestId,
   ChatAttachment,
+  ElicitationAction,
+  ElicitationContent,
   ProviderApprovalDecision,
   ProviderKind,
   ProviderStartOptions,
@@ -141,6 +143,17 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<void, TError>;
 
   /**
+   * Deliver one private elicitation answer. Values are validated against the
+   * request's descriptor, handed to the native transport and never logged,
+   * emitted or persisted. Resolves when the transport accepted the answer.
+   */
+  readonly respondToElicitation?: (
+    threadId: ThreadId,
+    requestId: ApprovalRequestId,
+    response: { readonly action: ElicitationAction; readonly content?: ElicitationContent },
+  ) => Effect.Effect<"submitted", TError>;
+
+  /**
    * Stop one provider session.
    */
   readonly stopSession: (threadId: ThreadId) => Effect.Effect<void, TError>;
@@ -196,9 +209,14 @@ export interface ProviderAdapterShape<TError> {
   ) => Effect.Effect<import("../sessionCapabilities.ts").ProviderSessionDiscovery | undefined>;
 
   /**
-   * Reload MCP configuration for one live provider session when supported.
+   * Reconcile one live session with the desired F5-owned MCP servers and
+   * report the observed result. Servers the provider loads from its own
+   * settings or plugins are never removed by omission.
    */
-  readonly reloadMcpConfig?: (threadId: ThreadId) => Effect.Effect<void, TError>;
+  readonly reloadMcpConfig?: (input: {
+    readonly threadId: ThreadId;
+    readonly mcpServers: ProviderStartOptions["mcpServers"] | undefined;
+  }) => Effect.Effect<import("@t3tools/contracts").McpReloadResult, TError>;
 
   /**
    * Stop all sessions owned by this adapter.

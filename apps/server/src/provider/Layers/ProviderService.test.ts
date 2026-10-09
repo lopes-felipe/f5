@@ -8,6 +8,7 @@ import path from "node:path";
 
 import type {
   ChatAttachment,
+  McpReloadResult,
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
   ProviderSession,
@@ -252,9 +253,14 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
   );
 
   const reloadMcpConfig = vi.fn(
-    (threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+    ({
+      threadId,
+    }: {
+      readonly threadId: ThreadId;
+      readonly mcpServers: unknown;
+    }): Effect.Effect<McpReloadResult, ProviderAdapterError> =>
       sessions.has(threadId)
-        ? Effect.void
+        ? Effect.succeed({ converged: true, restartRequired: false, servers: [], errors: [] })
         : Effect.fail(
             new ProviderAdapterSessionNotFoundError({
               provider,
@@ -2148,10 +2154,13 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
         },
       });
 
+      fanout.codex.hasSession.mockImplementationOnce(() => Effect.succeed(true));
       fanout.codex.reloadMcpConfig.mockReset();
-      fanout.codex.reloadMcpConfig.mockImplementation(() => Effect.void);
+      fanout.codex.reloadMcpConfig.mockImplementation(() =>
+        Effect.succeed({ converged: true, restartRequired: false, servers: [], errors: [] }),
+      );
 
-      yield* provider.reloadMcpConfigForProject({
+      const outcome = yield* provider.reloadMcpConfigForProject({
         provider: "codex",
         projectId,
         providerOptions: {
@@ -2163,13 +2172,67 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       });
 
       assert.equal(fanout.codex.reloadMcpConfig.mock.calls.length, 1);
-      assert.deepEqual(fanout.codex.reloadMcpConfig.mock.calls[0], [asThreadId("thread-live")]);
+      assert.deepEqual(fanout.codex.reloadMcpConfig.mock.calls[0], [
+        { threadId: asThreadId("thread-live"), mcpServers: {} },
+      ]);
+      assert.deepEqual(
+        outcome.sessions.map((session) => session.threadId),
+        [asThreadId("thread-live")],
+      );
 
       const updatedBinding = yield* directory.getBinding(asThreadId("thread-live"));
       assert.equal(Option.isSome(updatedBinding), true);
       if (Option.isSome(updatedBinding)) {
         assert.equal(updatedBinding.value.mcpEffectiveConfigVersion, "mcp-version-test");
       }
+    }),
+  );
+
+  it.effect("keeps the MCP config version stale and warns when a session needs a restart", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const projectId = ProjectId.makeUnsafe("project-reload-restart");
+      const threadId = asThreadId("thread-mcp-restart");
+
+      yield* directory.upsert({
+        provider: "codex",
+        projectId,
+        threadId,
+        status: "running",
+        runtimeMode: "full-access",
+        mcpEffectiveConfigVersion: "older-version",
+      });
+      fanout.codex.hasSession.mockImplementationOnce(() => Effect.succeed(true));
+      fanout.codex.reloadMcpConfig.mockReset();
+      fanout.codex.reloadMcpConfig.mockImplementation(() =>
+        Effect.succeed({
+          converged: false,
+          restartRequired: true,
+          servers: [],
+          errors: [{ message: "This runtime cannot change MCP servers in place." }],
+        }),
+      );
+      const warning = yield* Stream.runHead(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "runtime.warning" && event.threadId === threadId,
+        ),
+      ).pipe(Effect.forkChild);
+      yield* sleep(20);
+
+      const outcome = yield* provider.reloadMcpConfigForProject({ provider: "codex", projectId });
+
+      // A restart-required result is final: no retries.
+      assert.equal(fanout.codex.reloadMcpConfig.mock.calls.length, 1);
+      assert.equal(outcome.sessions[0]?.result.restartRequired, true);
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.getOrUndefined(binding)?.mcpEffectiveConfigVersion, "older-version");
+      const event = Option.getOrUndefined(yield* Fiber.join(warning));
+      assert.equal(
+        event?.type === "runtime.warning" && event.payload.message.includes("next idle turn"),
+        true,
+      );
     }),
   );
 });

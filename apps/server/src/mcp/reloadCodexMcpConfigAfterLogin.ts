@@ -1,7 +1,7 @@
 import { type ProjectId, type ProviderStartOptions } from "@t3tools/contracts";
 import { Duration, Effect } from "effect";
 
-import type { ProviderServiceError } from "../provider/Errors.ts";
+import { ProviderValidationError, type ProviderServiceError } from "../provider/Errors.ts";
 import type { ProviderServiceShape } from "../provider/Services/ProviderService.ts";
 
 export const CODEX_MCP_LOGIN_RELOAD_RETRY_DELAYS_MS = [1_000, 3_000, 5_000] as const;
@@ -18,11 +18,25 @@ export function reloadCodexMcpConfigAfterLogin(input: {
 }) {
   const retryDelaysMs = input.retryDelaysMs ?? CODEX_MCP_LOGIN_RELOAD_RETRY_DELAYS_MS;
   const reloadOnce = () =>
-    input.providerService.reloadMcpConfigForProject({
-      provider: "codex",
-      projectId: input.projectId,
-      ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
-    });
+    input.providerService
+      .reloadMcpConfigForProject({
+        provider: "codex",
+        projectId: input.projectId,
+        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+      })
+      .pipe(
+        Effect.flatMap((outcome) => {
+          const unconverged = outcome.sessions.filter((session) => !session.result.converged);
+          return unconverged.length === 0
+            ? Effect.void
+            : Effect.fail(
+                new ProviderValidationError({
+                  operation: "reloadMcpConfigForProject",
+                  issue: `${unconverged.length} live Codex session(s) did not converge on the MCP config.`,
+                }),
+              );
+        }),
+      );
 
   const reloadWithRetry = (attemptIndex: number): Effect.Effect<void, ProviderServiceError> =>
     reloadOnce().pipe(

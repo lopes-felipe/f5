@@ -1,4 +1,4 @@
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -28,7 +28,7 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
                 issue: "token not ready",
               }),
             )
-          : Effect.void;
+          : Effect.succeed({ sessions: [] });
       },
     );
 
@@ -66,5 +66,35 @@ describe("reloadCodexMcpConfigAfterLogin", () => {
 
     await expect(result).resolves.toBe(CODEX_MCP_LOGIN_RELOAD_FAILURE_MESSAGE);
     expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(3);
+  });
+
+  it("treats a session that did not converge as a failed reload", async () => {
+    const reloadMcpConfigForProject = vi.fn<ProviderServiceShape["reloadMcpConfigForProject"]>(() =>
+      Effect.succeed({
+        sessions: [
+          {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            result: {
+              converged: false,
+              restartRequired: false,
+              servers: [],
+              errors: [{ server: "Observability", message: "needs login" }],
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = Effect.runPromise(
+      reloadCodexMcpConfigAfterLogin({
+        providerService: { reloadMcpConfigForProject },
+        projectId,
+        serverName: "Observability",
+        retryDelaysMs: [1],
+      }),
+    );
+
+    await expect(result).resolves.toBe(CODEX_MCP_LOGIN_RELOAD_FAILURE_MESSAGE);
+    expect(reloadMcpConfigForProject).toHaveBeenCalledTimes(2);
   });
 });

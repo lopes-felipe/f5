@@ -352,3 +352,46 @@ installs, removes or edits these.
 Their decoded fields, plus the new `model/list` and `skills/list` fields, are certified
 against 0.160.1 (66 fields). The fixture was refreshed for the three new response
 schemas.
+
+## Release 3: MCP, elicitation, questions and approvals
+
+### Command approvals
+
+F5 reads `availableDecisions` and `proposedExecpolicyAmendment` from
+`item/commandExecution/requestApproval`. When an amendment is offered, the prompt shows
+**Always allow `<prefix>`** with a warning that it applies to future commands that start
+the same way. The choice is sent as `acceptWithExecpolicyAmendment` with the stored
+prefix, and only when that request offered it. A decision the request did not offer is
+refused. Network amendments are not supported.
+
+### Non-blocking questions
+
+`request_user_input` with `isBlocking: false` stays visible after the turn ends. It does
+not hold the composer, the attended watchdog, restart continuation or usage-limit
+resume. It is dropped when the session ends.
+
+### MCP elicitation
+
+Form and URL requests from `mcpServer/elicitation/request` open a form in the composer.
+Answers go through the private `elicitation.submit` RPC described in
+[claude.md](./claude.md#mcp-elicitation), never through the event-sourced answer
+command. `serverRequest/resolved` and `turn/completed` settle the request. Stopping the
+session marks an answered but unconfirmed request as indeterminate. The OpenAI form
+extension (`mcpServerOpenaiFormElicitation`) is still not advertised, because the
+private path has not been verified end-to-end against a live Codex runtime.
+
+### MCP reload
+
+Every app-server is launched with F5's MCP servers pinned by `-c mcp_servers=...`, so
+`config/mcpServer/reload` cannot change that set. When the stored config differs from
+the set the session launched with, the reload reports **restart required**. The
+session's config version stays stale, so the session restarts at its next turn with the
+resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads, reads
+`mcpServerStatus/list`, and advances the session's config version only when every F5
+server is listed and none has failed. Failures are retried up to three times with
+backoff (0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
+**Apply to live sessions**.
+
+Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
+RPC, approval presentation fields, non-blocking questions and the structured MCP apply
+result. Clients and servers must both run Release 3.

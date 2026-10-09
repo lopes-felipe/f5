@@ -11,7 +11,7 @@ import {
   antigravityQuestion,
   antigravityQuestionResponse,
 } from "./AntigravityQuestions.ts";
-import { acpElicitationForm } from "./AcpElicitationForm.ts";
+import { acpElicitationDescriptor, acpElicitationResponse } from "./AcpElicitationForm.ts";
 import type { RequestPermissionRequest } from "effect-acp/schema";
 
 describe("Antigravity isolation and native requests", () => {
@@ -84,8 +84,8 @@ describe("Antigravity isolation and native requests", () => {
       antigravityQuestion({ ...request, toolCall: { toolCallId: "ordinary-permission" } }),
     ).toBeUndefined();
   });
-  it("shows every elicitation field and never submits its hidden defaults", () => {
-    const form = acpElicitationForm({
+  it("shows every elicitation field and never submits its defaults on its own", () => {
+    const descriptor = acpElicitationDescriptor({
       mode: "form",
       sessionId: "s",
       message: "Confirm",
@@ -97,25 +97,32 @@ describe("Antigravity isolation and native requests", () => {
         },
       },
     });
-    expect(form?.questions.map((question) => question.id)).toEqual(["name", "remember"]);
-    expect(form?.respond({ remember: "No" })).toEqual({
+    expect(descriptor.ok).toBe(true);
+    if (!descriptor.ok) return;
+    expect(descriptor.value.fields?.map((field) => [field.key, field.required])).toEqual([
+      ["name", false],
+      ["remember", false],
+    ]);
+    // Defaults are visible suggestions; only submitted content reaches ACP.
+    expect(descriptor.value.fields?.[0]?.suggestedValue).toBe("hidden");
+    expect(acpElicitationResponse({ action: "accept", content: { remember: false } })).toEqual({
       action: { action: "accept", content: { remember: false } },
     });
-    expect(form?.questions.every((question) => question.optional)).toBe(true);
-    expect(form?.respond({ name: "", remember: "" })).toEqual({
+    expect(acpElicitationResponse({ action: "accept", content: {} })).toEqual({
       action: { action: "accept", content: {} },
     });
-    expect(form?.respond({})).toEqual({ action: { action: "cancel" } });
+    expect(acpElicitationResponse({ action: "cancel" })).toEqual({
+      action: { action: "cancel" },
+    });
   });
   it("refuses forms with unsupported constraints instead of silently approving", () => {
-    expect(
-      acpElicitationForm({
-        mode: "form",
-        sessionId: "s",
-        message: "Name",
-        requestedSchema: { properties: { name: { type: "string", pattern: "unsafe" } } },
-      }),
-    ).toBeUndefined();
+    const descriptor = acpElicitationDescriptor({
+      mode: "form",
+      sessionId: "s",
+      message: "Name",
+      requestedSchema: { properties: { name: { type: "string", pattern: "unsafe" } } },
+    });
+    expect(descriptor.ok).toBe(false);
   });
 });
 

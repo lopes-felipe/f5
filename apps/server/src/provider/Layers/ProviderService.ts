@@ -47,12 +47,15 @@ import {
   type ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderSession,
+  type McpReloadResult,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import { describeMcpReloadFailure, MCP_RELOAD_RETRY_DELAYS_MS } from "../mcpReconcile.ts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import {
+  Duration,
   Effect,
   Layer,
   Option,
@@ -496,7 +499,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly event: ProviderRuntimeEvent;
     }): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const event = {
+        let event: ProviderRuntimeEvent = {
           ...item.event,
           providerInstanceId: item.event.providerInstanceId ?? item.source.instanceId,
         };
@@ -527,6 +530,24 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           return;
         }
         yield* persistResumeCursorFromRuntimeEvent(event);
+        if (event.type === "user-input.requested" && event.payload.elicitation) {
+          // The owning generation is what a later private answer must match.
+          const binding = Option.getOrUndefined(
+            yield* directory
+              .getBinding(event.threadId)
+              .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+          );
+          event = {
+            ...event,
+            payload: {
+              ...event.payload,
+              elicitation: {
+                ...event.payload.elicitation,
+                generation: readPersistedSessionGeneration(binding?.runtimePayload),
+              },
+            },
+          };
+        }
         if (isProviderTerminalRuntimeEvent(event) && options?.recordTerminalEvent !== undefined) {
           // Do not fan out a terminal event until its recovery receipt is durable.
           // Retrying in place preserves provider event order while SQLite is unavailable.
@@ -1562,6 +1583,42 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const respondToElicitation: ProviderServiceShape["respondToElicitation"] = (input) =>
+      Effect.gen(function* () {
+        const operation = "ProviderService.respondToElicitation";
+        const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+        if (!binding)
+          return yield* toValidationError(operation, "This conversation has no provider session.");
+        if (readPersistedSessionGeneration(binding.runtimePayload) !== input.generation)
+          return yield* toValidationError(
+            operation,
+            "This request belongs to an earlier provider session and can no longer be answered.",
+          );
+        // Never recover: a recovered session is a new generation that does not
+        // own this request.
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation,
+          allowRecovery: false,
+          binding: Option.some(binding),
+        });
+        if (!routed.isActive || !routed.adapter.respondToElicitation)
+          return yield* toValidationError(
+            operation,
+            "The provider session that asked for this input is no longer running.",
+          );
+        yield* Effect.annotateCurrentSpan({
+          "provider.operation": "respond-to-elicitation",
+          "provider.kind": routed.adapter.provider,
+          "provider.thread_id": input.threadId,
+          "provider.request_id": input.requestId,
+        });
+        return yield* routed.adapter.respondToElicitation(routed.threadId, input.requestId, {
+          action: input.action,
+          ...(input.content !== undefined ? { content: input.content } : {}),
+        });
+      });
+
     const stopSession: ProviderServiceShape["stopSession"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -1912,12 +1969,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const adapter = yield* registry.getByProvider(input.provider);
         const reloadMcpConfig = adapter.reloadMcpConfig;
         if (!reloadMcpConfig) {
-          return;
+          return { sessions: [] };
         }
 
         const bindings = yield* directory.listBindingsByProject(input.projectId);
         const matchingBindings = bindings.filter((binding) => {
           if (binding.provider !== input.provider) {
+            return false;
+          }
+          if (input.threadIds && !input.threadIds.includes(binding.threadId)) {
             return false;
           }
           if (binding.status === "stopped") {
@@ -1939,13 +1999,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
 
         if (matchingBindings.length === 0) {
-          return;
+          return { sessions: [] };
         }
 
-        const currentProjectMcpVersion = yield* projectMcpConfigService
+        const currentProjectMcp = yield* projectMcpConfigService
           .readEffectiveStoredConfig(input.projectId)
           .pipe(
-            Effect.map((config) => config.effectiveVersion),
             Effect.mapError(
               toProjectMcpProviderError(
                 "ProviderService.reloadMcpConfigForProject",
@@ -1954,18 +2013,66 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           );
 
-        yield* Effect.forEach(matchingBindings, (binding) =>
-          reloadMcpConfig(binding.threadId).pipe(
-            Effect.andThen(
-              directory.upsert({
+        const reloadOnce = (threadId: ThreadId) =>
+          reloadMcpConfig({ threadId, mcpServers: currentProjectMcp.servers }).pipe(
+            Effect.catch((error) =>
+              Effect.succeed<McpReloadResult>({
+                converged: false,
+                restartRequired: false,
+                servers: [],
+                errors: [{ message: error.message.trim() || "The MCP reload request failed." }],
+              }),
+            ),
+          );
+        // Bounded backoff: a restart-required result is final, as is convergence.
+        const reloadWithRetry = (
+          threadId: ThreadId,
+          attempt: number,
+        ): Effect.Effect<McpReloadResult> =>
+          reloadOnce(threadId).pipe(
+            Effect.flatMap((result) => {
+              const delayMs = MCP_RELOAD_RETRY_DELAYS_MS[attempt];
+              if (result.converged || result.restartRequired || delayMs === undefined) {
+                return Effect.succeed(result);
+              }
+              return Effect.sleep(Duration.millis(delayMs)).pipe(
+                Effect.andThen(reloadWithRetry(threadId, attempt + 1)),
+              );
+            }),
+          );
+
+        const sessions = yield* Effect.forEach(matchingBindings, (binding) =>
+          Effect.gen(function* () {
+            if (!(yield* adapter.hasSession(binding.threadId))) {
+              return [];
+            }
+            const result = yield* reloadWithRetry(binding.threadId, 0);
+            if (result.converged) {
+              yield* directory.upsert({
                 threadId: binding.threadId,
                 projectId: input.projectId,
                 provider: binding.provider,
-                mcpEffectiveConfigVersion: currentProjectMcpVersion,
-              }),
-            ),
-          ),
-        ).pipe(Effect.asVoid);
+                mcpEffectiveConfigVersion: currentProjectMcp.effectiveVersion,
+              });
+            }
+            if (result.errors.length > 0) {
+              yield* publishRuntimeEvent({
+                type: "runtime.warning",
+                eventId: EventId.makeUnsafe(randomUUID()),
+                provider: binding.provider,
+                threadId: binding.threadId,
+                createdAt: new Date().toISOString(),
+                payload: {
+                  category: "provider",
+                  message: describeMcpReloadFailure(result),
+                  actionable: !result.restartRequired,
+                },
+              });
+            }
+            return [{ threadId: binding.threadId, result }];
+          }),
+        );
+        return { sessions: sessions.flat() };
       });
 
     const settingsOption = yield* Effect.serviceOption(ServerSettingsService);
@@ -2049,6 +2156,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         withProviderThreadAccess(input.threadId, respondToRequest(input)),
       respondToUserInput: (input) =>
         withProviderThreadAccess(input.threadId, respondToUserInput(input)),
+      respondToElicitation: (input) =>
+        withProviderThreadAccess(input.threadId, respondToElicitation(input)),
       stopSession,
       listSessions,
       getCapabilities,

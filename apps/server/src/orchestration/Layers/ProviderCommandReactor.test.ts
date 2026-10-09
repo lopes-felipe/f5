@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
+import type { McpReloadResult, ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   CommandId,
@@ -439,12 +439,34 @@ describe("ProviderCommandReactor", () => {
     );
 
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
+    // Defaults to a runtime that cannot reconcile in place, so MCP apply restarts.
+    const mcpReload: { result: McpReloadResult } = {
+      result: {
+        converged: false,
+        restartRequired: true,
+        servers: [],
+        errors: [{ message: "Cannot change MCP servers in place." }],
+      },
+    };
+    const reloadMcpConfigForProject = vi.fn<ProviderServiceShape["reloadMcpConfigForProject"]>(
+      (input) =>
+        Effect.succeed({
+          sessions: runtimeSessions
+            .filter(
+              (session) =>
+                session.provider === input.provider &&
+                (!input.threadIds || input.threadIds.includes(session.threadId)),
+            )
+            .map((session) => ({ threadId: session.threadId, result: mcpReload.result })),
+        }),
+    );
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
       interruptTurn: interruptTurn as ProviderServiceShape["interruptTurn"],
       respondToRequest: respondToRequest as ProviderServiceShape["respondToRequest"],
       respondToUserInput: respondToUserInput as ProviderServiceShape["respondToUserInput"],
+      respondToElicitation: () => Effect.die("unused"),
       stopSession: stopSession as ProviderServiceShape["stopSession"],
       listSessions: () => Effect.succeed(runtimeSessions),
       getSessionCapabilities: () => Effect.succeed(null),
@@ -457,7 +479,7 @@ describe("ProviderCommandReactor", () => {
       rollbackConversation: () => unsupported(),
       runOneOffPrompt: () => unsupported(),
       compactConversation: () => unsupported(),
-      reloadMcpConfigForProject: () => unsupported(),
+      reloadMcpConfigForProject,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
     const providerSessionDirectory = {
@@ -693,6 +715,8 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      mcpReload,
+      reloadMcpConfigForProject,
       stateDir,
       workspaceRoot,
       upsertBinding: (binding: ProviderRuntimeBinding) => {
@@ -2206,6 +2230,87 @@ describe("ProviderCommandReactor", () => {
     expect(result.claudeRestarted).toBe(1);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       resumeCursor: { opaque: "live-newer-cursor" },
+    });
+  });
+
+  describe("Claude MCP apply", () => {
+    const startClaudeTurn = async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-mcp-apply-initial-turn"),
+          threadId,
+          message: {
+            messageId: asMessageId("message-mcp-apply-initial-turn"),
+            role: "user",
+            text: "mcp apply",
+            attachments: [],
+          },
+          provider: "claudeAgent",
+          model: "claude-sonnet-4-6",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      await waitFor(() => harness.startSession.mock.calls.length === 1);
+      harness.upsertBinding({
+        ...harness.getBinding(threadId)!,
+        mcpEffectiveConfigVersion: "mcp-version-old",
+      });
+      return threadId;
+    };
+
+    it("reconciles in place without restarting when the session converges", async () => {
+      const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+      const threadId = await startClaudeTurn(harness);
+      harness.mcpReload.result = {
+        converged: true,
+        restartRequired: false,
+        servers: [],
+        errors: [],
+      };
+
+      const result = await Effect.runPromise(
+        harness.reactor.applyMcpConfigToLiveSessions({
+          scope: "project",
+          projectId: asProjectId("project-1"),
+        }),
+      );
+
+      expect(harness.reloadMcpConfigForProject).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "claudeAgent", threadIds: [threadId] }),
+      );
+      expect(result).toMatchObject({ claudeReconciled: 1, claudeRestarted: 0, deferred: 0 });
+      expect(harness.stopSession).not.toHaveBeenCalled();
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("never interrupts a busy session that needs a restart; it waits for the next turn", async () => {
+      const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+      const threadId = await startClaudeTurn(harness);
+      const live = harness.runtimeSessions[0]!;
+      harness.runtimeSessions[0] = {
+        ...live,
+        status: "running",
+        activeTurnId: asTurnId("turn-busy"),
+      };
+
+      const result = await Effect.runPromise(
+        harness.reactor.applyMcpConfigToLiveSessions({
+          scope: "project",
+          projectId: asProjectId("project-1"),
+        }),
+      );
+
+      expect(result).toMatchObject({ claudeRestarted: 0, deferred: 1 });
+      expect(result.failures).toEqual([
+        expect.objectContaining({ threadId, provider: "claudeAgent", restartRequired: true }),
+      ]);
+      expect(harness.stopSession).not.toHaveBeenCalled();
+      // The stale version makes the next turn start restart the session.
+      expect(harness.getBinding(threadId)?.mcpEffectiveConfigVersion).toBe("mcp-version-old");
     });
   });
 

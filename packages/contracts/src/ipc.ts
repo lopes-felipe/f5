@@ -110,6 +110,7 @@ import type {
   UsageGetSummaryInput,
   UsageSummary,
 } from "./usage";
+import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitation";
 import type {
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
@@ -822,6 +823,10 @@ export interface NativeApi {
     ) => Promise<UsageConsumeResetCreditResult>;
     getAccounts: (input: UsageGetAccountsInput) => Promise<UsageAccounts>;
     getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
+  };
+  /** Private provider form/URL answers; never go through orchestration commands. */
+  elicitation: {
+    submit: (input: ElicitationSubmitInput) => Promise<ElicitationSubmitResult>;
   };
   workflowPlatform: {
     listTemplates: () => Promise<WorkflowPlatformListTemplatesResult>;

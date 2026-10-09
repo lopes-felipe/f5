@@ -39,6 +39,8 @@ import {
 } from "@t3tools/contracts";
 import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
+import { reconcileElicitationsOnStartup } from "../elicitationSubmission.ts";
 import {
   deriveNarratedActivityDisplayHints,
   deriveSearchCommandSummary,
@@ -1396,6 +1398,7 @@ function runtimeEventToActivities(
             ...(event.payload.approvalOptions
               ? { approvalOptions: event.payload.approvalOptions }
               : {}),
+            ...(event.payload.presentation ? { presentation: event.payload.presentation } : {}),
             ...(event.payload.detail
               ? { detail: truncateApprovalDetail(event.payload.detail) }
               : {}),
@@ -1933,11 +1936,17 @@ function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "user-input.requested",
-          summary: "User input requested",
+          summary: event.payload.elicitation
+            ? event.payload.elicitation.mode === "url"
+              ? "Provider asked to open a link"
+              : "Provider asked for form input"
+            : "User input requested",
           payload: {
             ...(event.requestId ? { requestId: event.requestId } : {}),
             questions: event.payload.questions,
+            ...(event.payload.elicitation ? { elicitation: event.payload.elicitation } : {}),
             ...(event.payload.responseMode ? { responseMode: event.payload.responseMode } : {}),
+            ...(event.payload.blocking === false ? { blocking: false } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1946,17 +1955,28 @@ function runtimeEventToActivities(
     }
 
     case "user-input.resolved": {
+      const receipt = event.payload.receipt;
       return [
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "info",
+          tone: receipt === "indeterminate" ? "error" : "info",
           kind: "user-input.resolved",
-          summary: "User input submitted",
-          payload: {
-            ...(event.requestId ? { requestId: event.requestId } : {}),
-            answers: event.payload.answers,
-          },
+          summary:
+            receipt === "resolved"
+              ? "Provider received the requested input"
+              : receipt === "cancelled"
+                ? "Input request cancelled"
+                : receipt === "indeterminate"
+                  ? "Input delivery could not be confirmed"
+                  : "User input submitted",
+          // Elicitation receipts are value-free by construction: answers stay out.
+          payload: receipt
+            ? { ...(event.requestId ? { requestId: event.requestId } : {}), receipt }
+            : {
+                ...(event.requestId ? { requestId: event.requestId } : {}),
+                answers: event.payload.answers,
+              },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
         },
@@ -3647,7 +3667,7 @@ const make = Effect.gen(function* () {
       if (
         workflowExecutionProfile === "attended-readonly" &&
         event.type === "user-input.requested" &&
-        event.payload.responseMode !== "message" &&
+        isBlockingUserInput(event.payload) &&
         profiledTurnId
       ) {
         // A pending author/investigator question is intentionally unbounded by
@@ -4395,9 +4415,11 @@ const make = Effect.gen(function* () {
         if (turnId) {
           const pending = new Set<string>(
             (thread.pendingUserInputs ?? [])
-              .filter((input) => input.responseMode !== "message" && input.turnId === turnId)
+              .filter((input) => isBlockingUserInput(input) && input.turnId === turnId)
               .map((input) => input.requestId),
           );
+          // Non-blocking questions keep their native request open after the
+          // turn; they close on answer, native resolution or session end.
           for (const activity of thread.activities) {
             const payload = activity.payload as Record<string, unknown> | null;
             const requestId = payload?.requestId;
@@ -4405,7 +4427,10 @@ const make = Effect.gen(function* () {
             if (
               activity.kind === "user-input.requested" &&
               activity.turnId === turnId &&
-              payload?.responseMode !== "message"
+              isBlockingUserInput({
+                ...(payload?.responseMode === "message" ? { responseMode: "message" } : {}),
+                ...(payload?.blocking === false ? { blocking: false } : {}),
+              })
             ) {
               pending.add(requestId);
             } else if (activity.kind === "user-input.resolved") {
@@ -5193,6 +5218,13 @@ const make = Effect.gen(function* () {
     yield* reconcileProfiledTurnWatchdogsOnStartup.pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to reconcile profiled workflow turn watchdogs", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+    yield* reconcileElicitationsOnStartup(orchestrationEngine).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to settle provider input requests from before the restart", {
           cause: Cause.pretty(cause),
         }),
       ),

@@ -49,7 +49,7 @@ function makeProviderServiceStub(input?: {
     rollbackConversation: notImplemented,
     runOneOffPrompt: notImplemented,
     compactConversation: notImplemented,
-    reloadMcpConfigForProject: () => Effect.void,
+    reloadMcpConfigForProject: () => Effect.succeed({ sessions: [] }),
     streamEvents: Stream.empty,
   } as unknown as ProviderServiceShape;
 }

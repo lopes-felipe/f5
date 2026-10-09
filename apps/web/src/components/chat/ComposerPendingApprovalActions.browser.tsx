@@ -80,3 +80,29 @@ it("honors native permission choices and displays persistence warnings", async (
     await screen.unmount();
   }
 });
+
+it("focuses Decline and hides persistent choices when the provider asks", async () => {
+  const requestId = ApprovalRequestId.make("claude-guarded");
+  const respond = vi.fn(async () => {});
+  const screen = await render(
+    <ComposerPendingApprovalActions
+      requestId={requestId}
+      requestKind="command"
+      canApprove
+      isResponding={false}
+      defaultToNo
+      suppressAlwaysAllowRule
+      onRespondToApproval={respond}
+    />,
+  );
+  try {
+    await expect.element(page.getByRole("button", { name: "Decline" })).toHaveFocus();
+    await expect
+      .element(page.getByRole("button", { name: "Always allow this session" }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Approve once" }).click();
+    expect(respond).toHaveBeenCalledExactlyOnceWith(requestId, "accept");
+  } finally {
+    await screen.unmount();
+  }
+});

@@ -25,11 +25,12 @@ import { Cause, Effect, Fiber, Layer, Random, Schema, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
+import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderAdapterRequestError, ProviderAdapterValidationError } from "../Errors.ts";
 import { clearAnthropicModelContextWindowCatalogCacheForTest } from "../modelContextWindowMetadata.ts";
-import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
+import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import {
   buildClaudeAssistantInstructions,
   buildInstructionProfile,
@@ -9485,6 +9486,240 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  describe("Claude auto permission mode", () => {
+    const AUTO_MODEL = "claude-auto-supported";
+    const NO_AUTO_MODEL = "claude-auto-unsupported";
+    const makeAutoHarness = () =>
+      makeHarness({
+        reportedModelCapabilities: (model) =>
+          Effect.succeed(
+            model === AUTO_MODEL || model === NO_AUTO_MODEL
+              ? createReportedClaudeModelCapabilities({
+                  value: model,
+                  supportsAutoMode: model === AUTO_MODEL,
+                })
+              : undefined,
+          ),
+      });
+    // The adapter stream has one consumer per test: this collector owns it.
+    const collectEvents = (adapter: ClaudeAdapterShape) =>
+      Effect.gen(function* () {
+        const events: ProviderRuntimeEvent[] = [];
+        yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ).pipe(Effect.forkChild);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        return events;
+      });
+    const warningsIn = (events: ReadonlyArray<ProviderRuntimeEvent>) =>
+      events.flatMap((event) => (event.type === "runtime.warning" ? [event.payload.message] : []));
+    const settle = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+    const completeTurn = (
+      harness: ReturnType<typeof makeHarness>,
+      events: ReadonlyArray<ProviderRuntimeEvent>,
+    ) =>
+      Effect.gen(function* () {
+        const count = () => events.filter((event) => event.type === "turn.completed").length;
+        const before = count();
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: "sdk-session-auto",
+          uuid: `result-${before}`,
+        } as unknown as SDKMessage);
+        for (let attempt = 0; attempt < 100 && count() === before; attempt += 1) yield* settle;
+        assert.equal(count(), before + 1);
+      });
+
+    it.effect("launches in auto only when the model reports support", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: AUTO_MODEL,
+          runtimeMode: "auto",
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "auto");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("falls back to default with a visible warning for an unsupported model", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events = yield* collectEvents(adapter);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: NO_AUTO_MODEL,
+          runtimeMode: "auto",
+        });
+        yield* settle;
+        assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "default");
+        assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("keeps an unsupported model in a workflow in plan", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: AUTO_MODEL,
+          runtimeMode: "auto",
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.permissionMode, "plan");
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "continue",
+          model: NO_AUTO_MODEL,
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.setPermissionModeCalls, []);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("lands on default after plan when auto is unavailable", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events = yield* collectEvents(adapter);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: NO_AUTO_MODEL,
+          runtimeMode: "auto",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan",
+          interactionMode: "plan",
+          attachments: [],
+        });
+        yield* completeTurn(harness, events);
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "do it",
+          interactionMode: "default",
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["plan", "default"]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("re-checks auto support on a live model change", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events = yield* collectEvents(adapter);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: AUTO_MODEL,
+          runtimeMode: "auto",
+        });
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "switch down",
+          model: NO_AUTO_MODEL,
+          attachments: [],
+        });
+        yield* completeTurn(harness, events);
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+        assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+
+        // Changing model during a plan turn only moves the base mode.
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "plan on the supported model",
+          model: AUTO_MODEL,
+          interactionMode: "plan",
+          attachments: [],
+        });
+        yield* completeTurn(harness, events);
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "plan"]);
+        yield* adapter.sendTurn({
+          threadId: THREAD_ID,
+          input: "go",
+          interactionMode: "default",
+          attachments: [],
+        });
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["default", "plan", "auto"]);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
+
+    it.effect("fails closed when the CLI reports a mode other than auto", () => {
+      const harness = makeAutoHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events = yield* collectEvents(adapter);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          model: AUTO_MODEL,
+          runtimeMode: "auto",
+        });
+        harness.query.emit({
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-auto",
+          uuid: "init-escalated",
+          model: AUTO_MODEL,
+          permissionMode: "bypassPermissions",
+        } as unknown as SDKMessage);
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+        assert.deepEqual(harness.query.setPermissionModeCalls, ["default"]);
+        assert.deepEqual(warningsIn(events), [CLAUDE_AUTO_UNAVAILABLE_WARNING]);
+
+        // Escalations from Claude's reviewer still ask the user.
+        const canUseTool = harness.getLastCreateQueryInput()?.options.canUseTool;
+        assert.equal(typeof canUseTool, "function");
+        if (!canUseTool) return;
+        const abort = new AbortController();
+        let resolved = false;
+        const permission = canUseTool(
+          "Bash",
+          { command: "rm -rf build" },
+          { signal: abort.signal, toolUseID: "tool-auto-1", requestId: "request-auto-1" },
+        ).then((result) => {
+          resolved = true;
+          return result;
+        });
+        yield* settle;
+        assert.equal(resolved, false);
+        abort.abort();
+        assert.equal((yield* Effect.promise(() => permission))?.behavior, "deny");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    });
   });
 
   it.effect("captures ExitPlanMode as a proposed plan and denies auto-exit", () => {
