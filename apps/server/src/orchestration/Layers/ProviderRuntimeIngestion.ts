@@ -1036,6 +1036,43 @@ function runtimeErrorMessageFromEvent(event: ProviderRuntimeEvent): string | und
   return payloadMessage;
 }
 
+/** Display shape that lets the work log render one local-time usage-limit row. */
+function usageLimitActivityPayload(
+  event: ProviderRuntimeEvent,
+  windowLabel: string | null,
+  resetsAt: string | null,
+): {
+  provider: ProviderRuntimeEvent["provider"];
+  windowLabel: string | null;
+  resetsAt: string | null;
+} {
+  // Store the provider kind; the client looks up its current display name.
+  return { provider: event.provider, windowLabel, resetsAt };
+}
+
+function usageLimitFromRuntimeError(
+  event: Extract<ProviderRuntimeEvent, { type: "runtime.error" }>,
+) {
+  const limit = event.payload.usageLimit;
+  if (!limit) return undefined;
+  const window =
+    limit.windows.find((candidate) => candidate.label && candidate.resetsAt === limit.resetsAt) ??
+    limit.windows.find((candidate) => candidate.label);
+  return usageLimitActivityPayload(event, window?.label ?? null, limit.resetsAt);
+}
+
+function usageLimitFromRuntimeWarning(
+  event: Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>,
+) {
+  const detail = asRecord(event.payload.detail);
+  if (!detail || typeof detail.rateLimitType !== "string") return undefined;
+  return usageLimitActivityPayload(
+    event,
+    asString(detail.windowLabel) ?? null,
+    asString(detail.resetsAt) ?? null,
+  );
+}
+
 function orchestrationSessionStatusFromRuntimeState(
   state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
@@ -1816,6 +1853,7 @@ function runtimeEventToActivities(
       if (!message) {
         return [];
       }
+      const usageLimit = usageLimitFromRuntimeError(event);
       return [
         {
           id: event.eventId,
@@ -1825,6 +1863,7 @@ function runtimeEventToActivities(
           summary: "Runtime error",
           payload: {
             message: truncateDetail(message),
+            ...(usageLimit ? { usageLimit } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1833,6 +1872,7 @@ function runtimeEventToActivities(
     }
 
     case "runtime.warning": {
+      const usageLimit = usageLimitFromRuntimeWarning(event);
       return [
         {
           id: event.eventId,
@@ -1861,6 +1901,7 @@ function runtimeEventToActivities(
               ? { protocolMethod: event.payload.protocolMethod }
               : {}),
             ...(event.payload.protocolValue ? { protocolValue: event.payload.protocolValue } : {}),
+            ...(usageLimit ? { usageLimit } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,

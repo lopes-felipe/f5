@@ -38,6 +38,7 @@ import {
   isGenericCommandTitle,
 } from "@t3tools/shared/commandSummary";
 import { compareCommandExecutions } from "./lib/commandExecutions";
+import { formatUsageLimitActivityLabel, readUsageLimitActivityDisplay } from "./lib/usageLimits";
 import type { RuntimeWarningVisibility, WorkLogFilter, WorkLogMode } from "./appSettings";
 
 export type ProviderPickerKind = ProviderKind;
@@ -1127,9 +1128,35 @@ export function deriveWorkLogEntries(
       terminalCodexProviderItemIds.add(payload.providerItemId);
     }
   }
+  // A usage limit arrives as one warning per exhausted window and then as the
+  // turn's error; show one row per turn. The error carries the combined reset,
+  // so it wins; until it arrives, the latest warning stands in.
+  const usageLimitRowByTurn = new Map<TurnId, OrchestrationThreadActivity>();
+  for (const activity of ordered) {
+    if (
+      (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
+      !activity.turnId ||
+      !readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit)
+    ) {
+      continue;
+    }
+    if (
+      usageLimitRowByTurn.get(activity.turnId)?.kind !== "runtime.error" ||
+      activity.kind === "runtime.error"
+    ) {
+      usageLimitRowByTurn.set(activity.turnId, activity);
+    }
+  }
   const entries = ordered
     .filter((activity) =>
       shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
+    )
+    .filter(
+      (activity) =>
+        (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
+        !activity.turnId ||
+        !readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit) ||
+        usageLimitRowByTurn.get(activity.turnId)?.id === activity.id,
     )
     .filter((activity) =>
       options?.suppressCommandToolLifecycle ? !isCommandToolLifecycleActivity(activity) : true,
@@ -1150,7 +1177,8 @@ export function deriveWorkLogEntries(
         category === "guardian" ||
         category === "verification" ||
         category === "protocol" ||
-        payload?.actionable === true;
+        payload?.actionable === true ||
+        readUsageLimitActivityDisplay(payload?.usageLimit) !== null;
       return alwaysVisible || runtimeWarningVisibility !== "hidden";
     })
     .filter(
@@ -1168,10 +1196,15 @@ export function deriveWorkLogEntries(
       const payload = workLogPayload(activity);
       const diagnostic = diagnosticFromActivity(activity, payload);
       const warningCategory = asTrimmedString(payload?.category);
-      const label =
-        diagnostic?.type === "hook" &&
-        diagnostic.status === "stopped" &&
-        diagnostic.outcome === "success"
+      const usageLimit =
+        activity.kind === "runtime.warning" || activity.kind === "runtime.error"
+          ? readUsageLimitActivityDisplay(payload?.usageLimit)
+          : null;
+      const label = usageLimit
+        ? formatUsageLimitActivityLabel(usageLimit)
+        : diagnostic?.type === "hook" &&
+            diagnostic.status === "stopped" &&
+            diagnostic.outcome === "success"
           ? `${diagnostic.hookEvent ?? "postToolUse"} hook applied output replacement`
           : toolPayload?.title && isGenericToolActivitySummary(activity.summary)
             ? toolPayload.title
@@ -1189,7 +1222,7 @@ export function deriveWorkLogEntries(
         id: activity.id,
         createdAt: activity.createdAt,
         label,
-        tone: activity.tone === "approval" ? "info" : activity.tone,
+        tone: usageLimit || activity.tone === "approval" ? "info" : activity.tone,
         activityKind: activity.kind,
       };
       if (activity.turnId) {
@@ -1339,7 +1372,7 @@ export function deriveWorkLogEntries(
           entry.warningProtocolValue = warningProtocolValue;
         }
       }
-      entry.isIssue = isWorkLogIssue(entry);
+      entry.isIssue = usageLimit !== null || isWorkLogIssue(entry);
       return entry;
     });
 

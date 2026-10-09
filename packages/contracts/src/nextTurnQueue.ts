@@ -261,6 +261,8 @@ export const NextTurnQueueClearInput = Schema.Struct({
   threadId: ThreadId,
   scope: Schema.Literals(["all", "failed"]),
   expectedRevision: NonNegativeInt,
+  /** Items to leave in place, e.g. a continue the usage-limit card is showing instead. */
+  keepItemIds: Schema.optional(Schema.Array(CommandId)),
 });
 export type NextTurnQueueClearInput = typeof NextTurnQueueClearInput.Type;
 

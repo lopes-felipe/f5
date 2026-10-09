@@ -4961,10 +4961,19 @@ describe("ClaudeAdapterLive", () => {
           usage: {},
           modelUsage: {},
         } as unknown as SDKMessage);
-        const completed = yield* adapter.streamEvents.pipe(
-          Stream.filter((event) => event.type === "turn.completed"),
-          Stream.runHead,
+        const events = Array.from(
+          yield* adapter.streamEvents.pipe(
+            Stream.takeUntil((event) => event.type === "turn.completed"),
+            Stream.runCollect,
+          ),
         );
+        const completedEvent = events.find(
+          (event): event is Extract<(typeof events)[number], { type: "turn.completed" }> =>
+            event.type === "turn.completed",
+        );
+        const completed = completedEvent
+          ? { _tag: "Some" as const, value: completedEvent }
+          : { _tag: "None" as const };
         assert.equal(completed._tag, "Some");
         if (completed._tag === "Some") {
           assert.equal(
@@ -4980,6 +4989,15 @@ describe("ClaudeAdapterLive", () => {
           if (scenario === "login")
             assert.match(completed.value.payload.errorMessage ?? "", /\/login/);
           if (scenario === "blocked") {
+            const warning = events.find((event) => event.type === "runtime.warning");
+            assert.deepEqual(
+              warning?.type === "runtime.warning" ? warning.payload.detail : undefined,
+              {
+                rateLimitType: "five_hour",
+                windowLabel: "5-hour",
+                resetsAt: new Date(1790607600 * 1000).toISOString(),
+              },
+            );
             assert.match(completed.value.payload.errorMessage ?? "", /5-hour.*Resets at/);
             assert.equal(completed.value.payload.usageLimit?.evidence, "typed");
             assert.equal(completed.value.payload.usageLimit?.windows[0]?.id, "five_hour");

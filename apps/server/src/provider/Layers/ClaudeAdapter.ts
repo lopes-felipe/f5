@@ -4480,7 +4480,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               if (turn && !turn.announcedUsageLimits!.has(limit.key)) {
                 turn.announcedUsageLimits!.add(limit.key);
                 yield* emitRuntimeWarning(context, limit.message, {
-                  detail: { rateLimitType: limit.window },
+                  detail: {
+                    rateLimitType: limit.window,
+                    windowLabel: limit.structuredWindow.label,
+                    resetsAt: limit.structuredWindow.resetsAt,
+                  },
                 });
               }
             } else if (
