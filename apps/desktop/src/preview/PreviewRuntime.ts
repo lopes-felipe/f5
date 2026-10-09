@@ -34,6 +34,8 @@ export interface PreviewTabEntry {
   blockedHost?: string | null;
   /** Navigations before this time (ms) count as agent-driven, e.g. a click's page load. */
   agentNavigationUntil?: number;
+  /** An agent-driven main-frame load still in progress; its redirects stay agent-driven. */
+  agentNavigationActive?: boolean;
   /** Closes agent-opened popups that the current allowlist no longer permits. */
   enforcePopupPolicy?: () => void;
 }

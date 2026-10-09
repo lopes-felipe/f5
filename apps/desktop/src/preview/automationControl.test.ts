@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PreviewAutomationControl,
   PreviewDiagnostics,
+  PREVIEW_CONTROL_INTERRUPTED_MESSAGE,
   PREVIEW_DIAGNOSTIC_BUFFER_SIZE,
   boundSnapshotPageData,
   chunkTypedText,
@@ -72,6 +73,16 @@ describe("PreviewAutomationControl", () => {
     );
     // Actions enqueued after the take-over run normally.
     await expect(control.run("tab", async () => "fresh")).resolves.toBe("fresh");
+  });
+
+  it("interrupts a standalone checkpoint without blocking queued actions", async () => {
+    const control = new PreviewAutomationControl();
+    // A wait holds a checkpoint but not the queue, so an action can run meanwhile.
+    const wait = control.checkpoint("tab");
+    await expect(control.run("tab", async () => "click ran")).resolves.toBe("click ran");
+    expect(() => wait.check()).not.toThrow();
+    control.cancel("tab");
+    expect(() => wait.check()).toThrow(PREVIEW_CONTROL_INTERRUPTED_MESSAGE);
   });
 });
 

@@ -423,7 +423,7 @@ function PreviewBrowserWebview(props: {
   useEffect(() => {
     const webview = webviewRef.current;
     if (!webview) return;
-    // Non-loopback pages attach blank (desktop `will-attach-webview`) and load only after
+    // Every guest attaches blank (desktop `will-attach-webview`) and loads only after
     // registration, once this tab's allowlist and navigation listeners are installed.
     let initialNavigationPending = true;
     const register = () => {
@@ -543,7 +543,10 @@ function PreviewBrowserWebview(props: {
             webviewRef.current = node as PreviewWebviewElement | null;
             node?.setAttribute("allowpopups", "");
           }}
-          src={activeUrl || "about:blank"}
+          // Navigation is always explicit (registration, URL bar, agent). Binding `src` to the
+          // reported URL would restart the committed page whenever a slow load reports
+          // Loading, aborting that load.
+          src="about:blank"
           partition={tabConfig?.partition ?? props.config.partition}
           webpreferences={tabConfig?.webPreferences ?? props.config.webPreferences}
           preload={tabConfig?.preload ?? props.config.preload}
@@ -624,6 +627,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const initialSessionLoadRef = useRef<Promise<PreviewSessionSnapshot | null>>(
     Promise.resolve(null),
   );
+  // Once those tabs render, `activeSession` is authoritative; a stale fallback would point
+  // at a tab the user has since closed.
+  if (sessions.length > 0) initialSessionLoadRef.current = Promise.resolve(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const { settings: previewSettings } = useAppSettings();
   const [zoomTabs, setZoomTabs] = useState<Record<string, number>>({});
@@ -697,13 +703,17 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   }, [previewAutomation]);
   const setAgentPaused = useCallback(
     (paused: boolean) => {
+      // The paused-state effect below cancels in-flight input; the server fails queued actions.
       useAgentBrowserActivityStore.getState().setPaused(threadId, paused);
-      // Stop in-flight input locally at once; the server also fails queued actions.
-      if (paused) cancelAgentActions();
       void api.preview.automation.setPaused({ threadId, paused }).catch(() => undefined);
     },
-    [api, cancelAgentActions, threadId],
+    [api, threadId],
   );
+  // Any local pause (this overlay or the chat's live card) stops in-flight input at once,
+  // without waiting for the server's pause broadcast.
+  useEffect(() => {
+    if (agentPaused) cancelAgentActions();
+  }, [agentPaused, cancelAgentActions]);
   useEffect(() => {
     if (!desktopPreview) return;
     return api.preview.automation.onPauseChanged((event) => {
@@ -1415,6 +1425,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           } else {
             const sessionUrl = navStatusUrl(session.navStatus);
             if (sessionUrl && !createdSession) {
+              await applyNavigationPolicy(session.tabId);
               await desktopPreview.navigate(session.tabId, sessionUrl, { agent: true });
             }
           }

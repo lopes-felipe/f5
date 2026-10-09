@@ -161,14 +161,32 @@ export const ingestToolResultImage = Effect.fnUntraced(function* (input: {
   if (!finalPath) return null;
   const createdAt = new Date().toISOString();
 
-  const existing = yield* sql<{ readonly lifecycle: string }>`
-    SELECT lifecycle FROM attachments WHERE attachment_id = ${attachment.id}
+  const markReady = sql`
+    UPDATE attachments SET lifecycle = 'ready', staging_path = NULL,
+      updated_at = ${new Date().toISOString()}
+    WHERE attachment_id = ${attachment.id} AND lifecycle = 'staged'
   `;
-  if (existing.length > 0) {
+  const existing = yield* sql<{ readonly lifecycle: string; readonly stagingPath: string | null }>`
+    SELECT lifecycle, staging_path AS "stagingPath" FROM attachments
+    WHERE attachment_id = ${attachment.id}
+  `;
+  const existingRow = existing[0];
+  if (existingRow) {
     yield* sql`
       INSERT OR IGNORE INTO attachment_owners (attachment_id, owner_kind, owner_id, created_at)
       VALUES (${attachment.id}, 'activity', ${input.activityId}, ${createdAt})
     `;
+    if (existingRow.lifecycle === "staged") {
+      // An earlier promotion failed. The id is content-addressed, so these bytes are the
+      // staged ones: finish promotion now instead of returning a ref to a missing file.
+      yield* writeFileBytesAtomically({ filePath: finalPath, contents: input.image.bytes });
+      yield* markReady;
+      if (existingRow.stagingPath) {
+        yield* fileSystem
+          .remove(path.dirname(existingRow.stagingPath), { recursive: true, force: true })
+          .pipe(Effect.ignore);
+      }
+    }
     return ref;
   }
 
@@ -217,14 +235,10 @@ export const ingestToolResultImage = Effect.fnUntraced(function* (input: {
       Effect.catchCause(() => discardStaging.pipe(Effect.as(false))),
     );
   if (!registered) return null;
-  // A failure past this point leaves a staged row that startup recovery promotes.
+  // A failure past this point leaves a staged row; a replay or startup recovery promotes it.
   yield* fileSystem.makeDirectory(path.dirname(finalPath), { recursive: true });
   yield* fileSystem.rename(stagingPath, finalPath);
-  yield* sql`
-    UPDATE attachments SET lifecycle = 'ready', staging_path = NULL,
-      updated_at = ${new Date().toISOString()}
-    WHERE attachment_id = ${attachment.id} AND lifecycle = 'staged'
-  `;
+  yield* markReady;
   yield* discardStaging;
   return ref;
 });

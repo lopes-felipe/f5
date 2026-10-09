@@ -1508,7 +1508,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                 SELECT activity_id FROM projection_thread_activities
                 WHERE thread_id = ${event.payload.threadId}
               )
-          `.pipe(Effect.catchCause(() => Effect.void));
+          `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.threadReverted:deleteActivityOwners"),
+            ),
+          );
           return;
         }
 

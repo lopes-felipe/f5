@@ -188,6 +188,39 @@ describe("ingestToolResultImage", () => {
     expect(owners.map((owner) => owner.ownerId)).toEqual(["evt-completed", "evt-updated"]);
   });
 
+  it("finishes an interrupted promotion when the item is replayed", async () => {
+    const result = await run((attachmentsDir) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ingest = () =>
+          ingestToolResultImage({
+            attachmentsDir,
+            threadId: "thread-1",
+            itemKey: "item-1",
+            activityId: "activity-1",
+            image: image!,
+          });
+        const first = yield* ingest();
+        // Simulate a promotion that failed after registration: row staged, no final file.
+        const finalPath = resolveAttachmentPathById({
+          attachmentsDir,
+          attachmentId: first!.attachmentId,
+        })!;
+        fs.rmSync(finalPath);
+        yield* sql`UPDATE attachments SET lifecycle = 'staged', staging_path = '/tmp/gone/x.png'`;
+        const replay = yield* ingest();
+        const rows = yield* sql<{ lifecycle: string; stagingPath: string | null }>`
+          SELECT lifecycle, staging_path AS "stagingPath" FROM attachments
+        `;
+        return { first, replay, rows, finalPath };
+      }),
+    );
+    const { first, replay, rows, finalPath } = result.value;
+    expect(replay?.attachmentId).toBe(first?.attachmentId);
+    expect(rows).toEqual([{ lifecycle: "ready", stagingPath: null }]);
+    expect(fs.readFileSync(finalPath).equals(Buffer.from(image!.bytes))).toBe(true);
+  });
+
   it("drops images past the per-thread cap", async () => {
     const result = await run((attachmentsDir) =>
       Effect.gen(function* () {

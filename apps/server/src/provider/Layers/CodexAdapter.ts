@@ -1063,7 +1063,11 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
 }
 
 /** Record the F5 preview server installed for this session on `session.configured`. */
-function withAgentBrowserPreview(
+/**
+ * F5 configures Codex's preview server itself, with a per-session credential, so its
+ * provenance holds by construction: there is no SDK check to wait for.
+ */
+export function withAgentBrowserPreview(
   events: ReadonlyArray<ProviderRuntimeEvent>,
   previewServerName: string | undefined,
 ): ReadonlyArray<ProviderRuntimeEvent> {
@@ -1076,7 +1080,9 @@ function withAgentBrowserPreview(
             ...runtimeEvent.payload,
             config: {
               ...runtimeEvent.payload.config,
-              agentBrowser: { preview: { serverName: previewServerName, installed: true } },
+              agentBrowser: {
+                preview: { serverName: previewServerName, installed: true, verified: true },
+              },
             },
           },
         }

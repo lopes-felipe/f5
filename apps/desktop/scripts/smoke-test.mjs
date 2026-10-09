@@ -206,17 +206,33 @@ try {
     },
     { origin: backendOrigin, partition: previewConfig.partition },
   );
-  await page.evaluate(
-    ({ origin, partition }) => {
-      const guest = document.createElement("webview");
-      guest.id = "smoke-untrusted-guest";
-      guest.setAttribute("partition", partition);
-      guest.setAttribute("src", `${origin}/api/bootstrap?smoke=guest`);
-      guest.style.height = "100px";
-      document.body.append(guest);
-    },
+  const attachedUrl = await page.evaluate(
+    ({ origin, partition }) =>
+      new Promise((resolve, reject) => {
+        const target = `${origin}/api/bootstrap?smoke=guest`;
+        const guest = document.createElement("webview");
+        guest.id = "smoke-untrusted-guest";
+        guest.setAttribute("partition", partition);
+        guest.setAttribute("src", target);
+        guest.style.height = "100px";
+        const timer = setTimeout(() => reject(new Error("Guest did not attach")), 10000);
+        guest.addEventListener(
+          "dom-ready",
+          () => {
+            clearTimeout(timer);
+            // Guests attach blank; load the backend explicitly to check its authorization.
+            const url = guest.getURL();
+            void guest.loadURL(target).catch(() => undefined);
+            resolve(url);
+          },
+          { once: true },
+        );
+        document.body.append(guest);
+      }),
     { origin: backendOrigin, partition: previewConfig.partition },
   );
+  if (attachedUrl !== "about:blank")
+    throw new Error(`Guest loaded ${attachedUrl} before its tab policy was installed`);
   const guestStatus = await application.evaluate(async ({ session }, partition) => {
     try {
       return await globalThis.__smokeGuestResponse;

@@ -413,8 +413,8 @@ function hostOfUrl(url: string): string | undefined {
 }
 
 /**
- * A click or agent navigation can start its page load after the action returns, and
- * redirects follow later still; navigations in this window keep agent provenance.
+ * A click or agent navigation can start its page load after the action returns; loads
+ * that start in this window keep agent provenance until they settle, however slow.
  */
 const AGENT_NAVIGATION_GRACE_MS = 10_000;
 
@@ -426,7 +426,8 @@ function markAgentNavigation(tabId: string): void {
 /** Agent-driven navigations are blocked with `external-blocked`, never handed to the system browser. */
 function isAgentPreviewNavigation(tabId: string): boolean {
   if (previewAutomationControl.isActive(tabId)) return true;
-  return (lookupPreviewTabEntry(tabId)?.agentNavigationUntil ?? 0) > Date.now();
+  const entry = lookupPreviewTabEntry(tabId);
+  return entry?.agentNavigationActive === true || (entry?.agentNavigationUntil ?? 0) > Date.now();
 }
 
 function recordBlockedAgentNavigation(tabId: string, url: string): void {
@@ -677,6 +678,15 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   });
 
   const onState = () => emitPreviewState(tabId);
+  const onStopLoading = () => {
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (currentEntry?.agentNavigationActive) {
+      currentEntry.agentNavigationActive = false;
+      // Script redirects right after an agent load are still the agent's.
+      markAgentNavigation(tabId);
+    }
+    emitPreviewState(tabId);
+  };
   const onNavigationStart = () => {
     const currentEntry = lookupPreviewTabEntry(tabId);
     if (currentEntry?.webContentsId === webContentsId) {
@@ -747,8 +757,13 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   const onDidStartNavigation = (
     details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
   ) => {
-    // Backstop for navigations that bypass will-navigate (history, reload, renderer-initiated).
     if (!details.isMainFrame || details.isSameDocument) return;
+    // A load that starts agent-driven stays so through every redirect until it settles.
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (currentEntry && isAgentPreviewNavigation(tabId)) currentEntry.agentNavigationActive = true;
+    // F5 itself loads about:blank to leave pages the allowlist no longer permits.
+    if (details.url === "about:blank") return;
+    // Backstop for navigations that bypass will-navigate (history, reload, renderer-initiated).
     if (getSafePreviewUrl(details.url, previewTabExternalHosts(tabId))) return;
     if (isAgentPreviewNavigation(tabId)) recordBlockedAgentNavigation(tabId, details.url);
     guest.stop();
@@ -800,7 +815,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   };
 
   guest.on("did-start-loading", onNavigationStart);
-  guest.on("did-stop-loading", onState);
+  guest.on("did-stop-loading", onStopLoading);
   guest.on("did-navigate", onDidNavigate);
   guest.on("did-navigate-in-page", onState);
   guest.on("page-title-updated", onState);
@@ -813,7 +828,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   guest.on("destroyed", onDestroyed);
   entry.removeListeners.push(
     () => guest.off("did-start-loading", onNavigationStart),
-    () => guest.off("did-stop-loading", onState),
+    () => guest.off("did-stop-loading", onStopLoading),
     () => guest.off("did-navigate", onDidNavigate),
     () => guest.off("did-navigate-in-page", onState),
     () => guest.off("page-title-updated", onState),
@@ -1228,7 +1243,13 @@ function cancelPreviewAutomation(tabId: string): void {
   previewAutomationControl.cancel(tabId);
   // The user took over: their own navigations are theirs again.
   const entry = lookupPreviewTabEntry(tabId);
-  if (entry) entry.agentNavigationUntil = 0;
+  if (!entry) return;
+  entry.agentNavigationUntil = 0;
+  if (entry.agentNavigationActive) {
+    entry.agentNavigationActive = false;
+    // A slow agent load must not replace the page the user now controls.
+    getPreviewWebContents(tabId)?.stop();
+  }
 }
 
 /** A small JPEG of the visible page for the live agent card; never sent to providers. */
@@ -1686,18 +1707,18 @@ async function previewAutomationWaitFor(
     const urlMatched = ${input.urlIncludes ? `location.href.includes(${JSON.stringify(input.urlIncludes)})` : "true"};
     return selectorMatched && textMatched && urlMatched;
   })()`;
-  // Runs as an action so Take over stops the poll loop at its next checkpoint.
-  await runPreviewAutomationAction(tabId, "waitFor", async (guest, checkpoint) => {
-    const deadline = Date.now() + (input.timeoutMs ?? 15_000);
-    while (Date.now() < deadline) {
-      checkpoint.check();
-      if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
-        return;
-      }
-      await waitPreviewAutomationPoll();
+  // Waits observe, so they stay out of the action queue: a click that satisfies the wait
+  // must not queue behind it. Take over still stops the poll loop at its next checkpoint.
+  const checkpoint = previewAutomationControl.checkpoint(tabId);
+  const deadline = Date.now() + (input.timeoutMs ?? 15_000);
+  while (Date.now() < deadline) {
+    checkpoint.check();
+    if (await executePreviewJavaScript<boolean>(requirePreviewWebContents(tabId), checkScript)) {
+      return;
     }
-    throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
-  });
+    await waitPreviewAutomationPoll();
+  }
+  throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
 }
 
 function writeDesktopStreamChunk(
@@ -3228,11 +3249,16 @@ function registerIpcHandlers(): void {
         if (!guest || !url) throw new Error("Preview navigation target is invalid.");
         // Redirects from an agent's navigation are blocked, never opened externally.
         if (agent) markAgentNavigation(scopedTabId);
+        // Take over stops a pending agent load (as ERR_FAILED); tell the agent it was
+        // interrupted rather than report success or a load failure.
+        const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
           await guest.loadURL(url);
         } catch (error) {
+          takeover?.check();
           if (!isPreviewNavigationAbortError(error)) throw error;
         }
+        takeover?.check();
       },
       goBack: (tabId) => {
         const guest = getPreviewWebContents(scopeTabId(tabId));
@@ -3364,13 +3390,10 @@ function createWindow(
       event.preventDefault();
       return;
     }
-    const src = typeof params.src === "string" ? params.src : "";
-    // The attaching guest's tab is unknown here, so only loopback may load directly.
-    // Anything else attaches blank; the renderer navigates once the guest registers and
-    // that tab's own allowlist and navigation listeners are in place.
-    if (src.length > 0 && src !== "about:blank" && !getSafePreviewUrl(src)) {
-      params.src = "about:blank";
-    }
+    // Every guest attaches blank, even loopback: a local page could redirect elsewhere
+    // before this tab's allowlist and navigation listeners exist. The renderer navigates
+    // once the guest registers and those are in place.
+    params.src = "about:blank";
     // Agent-driven previews may be hidden or headless; keep timers and rendering running.
     webPreferences.backgroundThrottling = false;
     webPreferences.sandbox = true;

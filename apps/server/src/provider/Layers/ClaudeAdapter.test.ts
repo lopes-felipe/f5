@@ -842,7 +842,7 @@ describe("ClaudeAdapter agent browser", () => {
         );
       for (const tool of ["preview_status", "preview_snapshot", "preview_screenshot"]) {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
-        assert.equal(response.behavior, "allow", tool);
+        assert.equal(response?.behavior, "allow", tool);
       }
       for (const tool of [
         "preview_open",
@@ -851,17 +851,17 @@ describe("ClaudeAdapter agent browser", () => {
         "preview_evaluate",
       ]) {
         const response = yield* decide(`mcp__f5_preview__${tool}`);
-        assert.equal(response.behavior, "deny", tool);
+        assert.equal(response?.behavior, "deny", tool);
       }
       // Saving writes an artifact file, which a read-only stage may not do.
       const saved = yield* decide("mcp__f5_preview__preview_screenshot", { save: true });
-      assert.equal(saved.behavior, "deny");
+      assert.equal(saved?.behavior, "deny");
       const impostor = yield* decide(
         "mcp__f5_preview__preview_status",
         {},
         { name: "f5_preview", source: "project" },
       );
-      assert.equal(impostor.behavior, "deny");
+      assert.equal(impostor?.behavior, "deny");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

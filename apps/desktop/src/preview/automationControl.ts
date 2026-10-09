@@ -53,14 +53,12 @@ export class PreviewAutomationControl {
     this.tails.delete(tabId);
   }
 
-  run<T>(
-    tabId: string,
-    action: (checkpoint: PreviewAutomationCheckpoint) => Promise<T>,
-  ): Promise<T> {
-    const enqueuedGeneration = this.generation(tabId);
-    const checkpoint: PreviewAutomationCheckpoint = {
+  /** Interruptible by a takeover from now on, without joining the tab's action queue. */
+  checkpoint(tabId: string): PreviewAutomationCheckpoint {
+    const startGeneration = this.generation(tabId);
+    return {
       check: () => {
-        if (this.generation(tabId) !== enqueuedGeneration) {
+        if (this.generation(tabId) !== startGeneration) {
           throw taggedAutomationError(
             "PreviewAutomationControlInterruptedError",
             PREVIEW_CONTROL_INTERRUPTED_MESSAGE,
@@ -68,6 +66,13 @@ export class PreviewAutomationControl {
         }
       },
     };
+  }
+
+  run<T>(
+    tabId: string,
+    action: (checkpoint: PreviewAutomationCheckpoint) => Promise<T>,
+  ): Promise<T> {
+    const checkpoint = this.checkpoint(tabId);
     const previous = this.tails.get(tabId) ?? Promise.resolve();
     const result = previous.then(async () => {
       checkpoint.check();
