@@ -53,13 +53,31 @@ export const PreviewArtifact = Schema.Struct({
 });
 export type PreviewArtifact = typeof PreviewArtifact.Type;
 
+/** Why automation is not currently usable for a thread. */
+export const PreviewAutomationUnavailableReason = Schema.Literals([
+  "disabled",
+  "no-host",
+  "no-owner",
+  "no-tab",
+  "paused",
+  "capacity-exceeded",
+  "external-blocked",
+]);
+export type PreviewAutomationUnavailableReason = typeof PreviewAutomationUnavailableReason.Type;
+
 export const PreviewAutomationStatus = Schema.Struct({
+  /** Current-tab readiness. */
   available: Schema.Boolean,
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
   url: Schema.NullOr(Schema.String),
   title: Schema.NullOr(Schema.String),
   loading: Schema.Boolean,
+  /** The user took control of the browser; mutating tools fail until they resume. */
+  paused: Schema.optional(Schema.Boolean),
+  reason: Schema.optional(PreviewAutomationUnavailableReason),
+  /** A sign-in or other popup window is open and must be completed by the user. */
+  popupOpen: Schema.optional(Schema.Boolean),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -218,7 +236,7 @@ export type PreviewAutomationNetworkEntry = typeof PreviewAutomationNetworkEntry
 export const PreviewAutomationActionEvent = Schema.Struct({
   id: Schema.String,
   action: Schema.String,
-  status: Schema.Literals(["running", "succeeded", "failed", "interrupted"]),
+  status: Schema.Literals(["queued", "running", "succeeded", "failed", "interrupted"]),
   startedAt: Schema.String,
   completedAt: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
@@ -236,8 +254,9 @@ export const PreviewAutomationSnapshot = Schema.Struct({
   consoleEntries: Schema.Array(PreviewAutomationConsoleEntry),
   networkEntries: Schema.Array(PreviewAutomationNetworkEntry),
   actionTimeline: Schema.Array(PreviewAutomationActionEvent),
+  popupOpen: Schema.optional(Schema.Boolean),
   screenshot: Schema.Struct({
-    mimeType: Schema.Literal("image/png"),
+    mimeType: Schema.Literals(["image/png", "image/jpeg"]),
     data: Schema.String,
     width: Schema.Int,
     height: Schema.Int,
@@ -300,7 +319,7 @@ export type PreviewAutomationClearOwnerInput = typeof PreviewAutomationClearOwne
 
 export class PreviewAutomationUnavailableError extends Schema.TaggedErrorClass<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",
-  { message: Schema.String },
+  { message: Schema.String, reason: Schema.optional(PreviewAutomationUnavailableReason) },
 ) {}
 
 export class PreviewAutomationNoFocusedOwnerError extends Schema.TaggedErrorClass<PreviewAutomationNoFocusedOwnerError>()(
@@ -328,6 +347,24 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
   { message: Schema.String },
 ) {}
 
+/** Too many automation requests are queued for one thread. */
+export class PreviewAutomationBusyError extends Schema.TaggedErrorClass<PreviewAutomationBusyError>()(
+  "PreviewAutomationBusyError",
+  { message: Schema.String },
+) {}
+
+/** Every agent-controlled preview slot is pinned by another thread. */
+export class PreviewAutomationCapacityExceededError extends Schema.TaggedErrorClass<PreviewAutomationCapacityExceededError>()(
+  "PreviewAutomationCapacityExceededError",
+  { message: Schema.String },
+) {}
+
+/** Navigation left the allowed sites list during an automation action. */
+export class PreviewAutomationNavigationBlockedError extends Schema.TaggedErrorClass<PreviewAutomationNavigationBlockedError>()(
+  "PreviewAutomationNavigationBlockedError",
+  { message: Schema.String, host: Schema.optional(Schema.String) },
+) {}
+
 export class PreviewAutomationExecutionError extends Schema.TaggedErrorClass<PreviewAutomationExecutionError>()(
   "PreviewAutomationExecutionError",
   { message: Schema.String, detail: Schema.optional(Schema.Unknown) },
@@ -350,8 +387,50 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationBusyError,
+  PreviewAutomationCapacityExceededError,
+  PreviewAutomationNavigationBlockedError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationResultTooLargeError,
 ]);
 export type PreviewAutomationError = typeof PreviewAutomationError.Type;
+
+export const PreviewAutomationSetPausedInput = Schema.Struct({
+  threadId: ThreadId,
+  paused: Schema.Boolean,
+});
+export type PreviewAutomationSetPausedInput = typeof PreviewAutomationSetPausedInput.Type;
+
+/** Server asks the most recently active desktop client to host automation for a thread. */
+export const PreviewAutomationOwnerRequested = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  threadId: ThreadId,
+});
+export type PreviewAutomationOwnerRequested = typeof PreviewAutomationOwnerRequested.Type;
+
+/** The agent session that pinned a headless preview for this thread has ended. */
+export const PreviewAutomationOwnerReleased = Schema.Struct({
+  threadId: ThreadId,
+});
+export type PreviewAutomationOwnerReleased = typeof PreviewAutomationOwnerReleased.Type;
+
+export const PreviewAutomationPauseChanged = Schema.Struct({
+  threadId: ThreadId,
+  paused: Schema.Boolean,
+});
+export type PreviewAutomationPauseChanged = typeof PreviewAutomationPauseChanged.Type;
+
+/** Per-click/type geometry in guest CSS pixels for the live agent overlay. */
+export const PreviewAutomationActionGeometry = Schema.Struct({
+  point: Schema.optional(Schema.Struct({ x: Schema.Number, y: Schema.Number })),
+  rect: Schema.optional(
+    Schema.Struct({
+      x: Schema.Number,
+      y: Schema.Number,
+      width: Schema.Number,
+      height: Schema.Number,
+    }),
+  ),
+});
+export type PreviewAutomationActionGeometry = typeof PreviewAutomationActionGeometry.Type;

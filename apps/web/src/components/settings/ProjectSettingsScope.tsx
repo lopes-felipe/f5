@@ -29,6 +29,7 @@ import {
 import { projectSettingsQueryOptions } from "../../lib/projectSettingsQuery";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
 
 export function SettingsScopePicker({
   projectId,
@@ -288,6 +289,44 @@ export function ProjectSettingsScope({ projectId }: { projectId: ProjectId }) {
               />
             }
           />
+          <ProjectSettingRow
+            title="Allowed external sites"
+            source={badge("previewExternalHosts")}
+            control={
+              <PreviewExternalHostsEditor
+                value={settings.previewExternalHosts}
+                disabled={saving || !settings.enableAgentBrowserAccess}
+                onSave={(hosts) => set("previewExternalHosts", hosts)}
+              />
+            }
+          />
+          {/* Not certified yet (docs/agent-browser.md): they can only be switched off. */}
+          <ProjectSettingRow
+            title="Claude in Chrome"
+            source={badge("enableClaudeInChrome")}
+            description={UNCERTIFIED_CAPABILITY_DESCRIPTION}
+            control={
+              <Switch
+                aria-label="Claude in Chrome"
+                disabled={saving || !settings.enableClaudeInChrome}
+                checked={settings.enableClaudeInChrome}
+                onCheckedChange={(checked) => set("enableClaudeInChrome", checked)}
+              />
+            }
+          />
+          <ProjectSettingRow
+            title="Computer use"
+            source={badge("enableAgentComputerUse")}
+            description={UNCERTIFIED_CAPABILITY_DESCRIPTION}
+            control={
+              <Switch
+                aria-label="Computer use"
+                disabled={saving || !settings.enableAgentComputerUse}
+                checked={settings.enableAgentComputerUse}
+                onCheckedChange={(checked) => set("enableAgentComputerUse", checked)}
+              />
+            }
+          />
         </SettingsCard>
         <SettingsCard title="Git and worktrees">
           <ProjectSettingRow
@@ -513,6 +552,8 @@ const NATIVE_CONTROL_CLASS =
   "h-8 rounded-md border border-input bg-background px-2.5 text-sm font-normal text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60";
 
 /** A settings row with the setting's source (global or project override) beside its title. */
+const UNCERTIFIED_CAPABILITY_DESCRIPTION = "Not available in F5 yet.";
+
 function ProjectSettingRow({
   title,
   source,

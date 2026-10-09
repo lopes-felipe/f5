@@ -11,6 +11,30 @@ describe("rightPanelStore", () => {
     useRightPanelStore.setState({ byThreadId: {} });
   });
 
+  it("adds agent surfaces without opening the panel or stealing the active tab", () => {
+    useRightPanelStore.getState().addSurface(THREAD_A, "preview");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_A)).toEqual(
+      { isOpen: false, activeSurfaceId: "preview", surfaces: [{ id: "preview", kind: "preview" }] },
+    );
+    useRightPanelStore.getState().open(THREAD_B, "diff");
+    useRightPanelStore.getState().addSurface(THREAD_B, "preview");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_B)).toEqual(
+      {
+        isOpen: true,
+        activeSurfaceId: "diff",
+        surfaces: [
+          { id: "diff", kind: "diff" },
+          { id: "preview", kind: "preview" },
+        ],
+      },
+    );
+    useRightPanelStore.getState().addSurface(THREAD_B, "preview", { activate: true });
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_B)
+        .activeSurfaceId,
+    ).toBe("preview");
+  });
+
   it("opens singleton surfaces and focuses the last opened surface", () => {
     useRightPanelStore.getState().open(THREAD_A, "diff");
     useRightPanelStore.getState().open(THREAD_A, "plan");

@@ -5,6 +5,17 @@ import type {
   DesktopBrowserImportProgress,
 } from "@t3tools/contracts";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { Switch } from "../ui/switch";
+import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
+import { SettingsCard, SettingsRow } from "./SettingsCard";
+
+const LINK_TARGET_LABELS = { system: "System browser", preview: "F5 preview" } as const;
+const COLOR_SCHEME_LABELS = { system: "System", light: "Light", dark: "Dark" } as const;
+
 export function BrowserSettings() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -69,245 +80,405 @@ export function BrowserSettings() {
   };
   const chosen = sources.find((s) => s.id === source);
   return (
-    <section className="space-y-3 rounded border p-4">
-      <h3>Browser and capture</h3>
-      <label>
-        Open links in{" "}
-        <select
-          value={settings.linkOpenTarget}
-          onChange={(event) =>
-            updateSettings({ linkOpenTarget: event.target.value as "system" | "preview" })
-          }
+    <>
+      {error ? (
+        <p
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
         >
-          <option value="system">System browser</option>
-          <option value="preview" disabled={!preview}>
-            F5 preview
-          </option>
-        </select>
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={settings.enableAgentBrowserAccess}
-          onChange={(event) => updateSettings({ enableAgentBrowserAccess: event.target.checked })}
+          {error}
+        </p>
+      ) : null}
+      <SettingsCard
+        title="Browser"
+        searchTarget="integrations.browser"
+        description="Where links open, and what agents may do in the F5 preview."
+      >
+        <SettingsRow
+          title="Open links in"
+          control={
+            <Select
+              value={settings.linkOpenTarget}
+              onValueChange={(value) => {
+                if (value === "system" || value === "preview")
+                  updateSettings({ linkOpenTarget: value });
+              }}
+            >
+              <SelectTrigger className="w-56" aria-label="Open links in">
+                <SelectValue>{LINK_TARGET_LABELS[settings.linkOpenTarget]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                <SelectItem value="system">{LINK_TARGET_LABELS.system}</SelectItem>
+                <SelectItem value="preview" disabled={!preview}>
+                  {LINK_TARGET_LABELS.preview}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
+          }
         />
-        Enable agent browser access
-      </label>
+        <SettingsRow
+          title="Agent browser access"
+          description="Let agents open, read, and drive pages in the F5 preview."
+          control={
+            <Switch
+              aria-label="Enable agent browser access"
+              checked={settings.enableAgentBrowserAccess}
+              onCheckedChange={(checked) => updateSettings({ enableAgentBrowserAccess: checked })}
+            />
+          }
+        />
+        <div className="space-y-2 border-b border-border py-3 last:border-b-0">
+          <div>
+            <p className="text-sm font-medium text-foreground">Allowed external sites</p>
+            <p className="text-ui text-muted-foreground">
+              Sites besides local servers that the preview, and agents using it, may load.
+            </p>
+          </div>
+          <PreviewExternalHostsEditor
+            value={settings.previewExternalHosts ?? []}
+            disabled={!settings.enableAgentBrowserAccess}
+            onSave={(hosts) => updateSettings({ previewExternalHosts: hosts })}
+          />
+        </div>
+        {/* Not certified yet (docs/agent-browser.md): they can only be switched off. */}
+        <SettingsRow
+          title="Claude in Chrome"
+          description="Let Claude use Google Chrome through its extension. Not available in F5 yet."
+          control={
+            <Switch
+              aria-label="Let Claude use Google Chrome"
+              checked={settings.enableClaudeInChrome ?? false}
+              disabled={!settings.enableClaudeInChrome}
+              onCheckedChange={(checked) => updateSettings({ enableClaudeInChrome: checked })}
+            />
+          }
+        />
+        <SettingsRow
+          title="Computer use"
+          description="Let agents control this computer. Not available in F5 yet."
+          control={
+            <Switch
+              aria-label="Let agents control this computer"
+              checked={settings.enableAgentComputerUse ?? false}
+              disabled={!settings.enableAgentComputerUse}
+              onCheckedChange={(checked) => updateSettings({ enableAgentComputerUse: checked })}
+            />
+          }
+        />
+      </SettingsCard>
+
       {preview?.profiles ? (
-        <>
-          <p>Choose a profile for new tabs. Existing tabs keep their profile.</p>
+        <SettingsCard
+          title="Browser profiles"
+          description="Choose a profile for new preview tabs. Existing tabs keep their profile."
+        >
           {profiles.map((profile) => (
-            <div key={profile.id}>
-              {profile.name}
-              {profile.selected ? " (selected)" : ""}
-              {!profile.persistent ? " (incognito)" : ""}{" "}
-              <button
-                onClick={() =>
-                  run(async () => {
-                    await preview.profiles!.select(profile.id);
-                    await refresh();
-                  })
-                }
-              >
-                Use for new tabs
-              </button>
-              {profile.id !== "default" ? (
-                <button
+            <SettingsRow
+              key={profile.id}
+              title={
+                <span className="flex items-center gap-2">
+                  {profile.name}
+                  {!profile.persistent ? <Badge variant="outline">Incognito</Badge> : null}
+                  {profile.selected ? <Badge variant="secondary">Used for new tabs</Badge> : null}
+                </span>
+              }
+              control={
+                <div className="flex items-center gap-2">
+                  {!profile.selected ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() =>
+                        run(async () => {
+                          await preview.profiles!.select(profile.id);
+                          await refresh();
+                        })
+                      }
+                    >
+                      Use for new tabs
+                    </Button>
+                  ) : null}
+                  {profile.id !== "default" ? (
+                    <Button
+                      size="xs"
+                      variant="destructive-outline"
+                      onClick={() =>
+                        run(async () => {
+                          await preview.profiles!.delete(profile.id);
+                          await refresh();
+                        })
+                      }
+                    >
+                      Delete profile and storage
+                    </Button>
+                  ) : null}
+                </div>
+              }
+            />
+          ))}
+          <SettingsRow
+            title="New profile"
+            description="Also names profiles created by a cookie import."
+            control={
+              <div className="flex items-center gap-2">
+                <Input
+                  size="sm"
+                  className="w-40"
+                  aria-label="Profile name"
+                  value={name}
+                  maxLength={100}
+                  onChange={(event) => setName(event.target.value)}
+                />
+                <Button
+                  size="xs"
+                  variant="outline"
                   onClick={() =>
                     run(async () => {
-                      await preview.profiles!.delete(profile.id);
+                      await preview.profiles!.create(name, true);
                       await refresh();
                     })
                   }
                 >
-                  Delete profile and storage
-                </button>
-              ) : null}
-            </div>
-          ))}
-          <label>
-            Profile name{" "}
-            <input value={name} maxLength={100} onChange={(event) => setName(event.target.value)} />
-          </label>
-          <button
-            onClick={() =>
-              run(async () => {
-                await preview.profiles!.create(name, true);
-                await refresh();
-              })
+                  Create profile
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() =>
+                    run(async () => {
+                      await preview.profiles!.create(name, false);
+                      await refresh();
+                    })
+                  }
+                >
+                  Create incognito profile
+                </Button>
+              </div>
             }
-          >
-            Create profile
-          </button>
-          <button
-            onClick={() =>
-              run(async () => {
-                await preview.profiles!.create(name, false);
-                await refresh();
-              })
+          />
+          <SettingsRow
+            title="Default zoom"
+            description="Zoom for new tabs, from 0.25 to 3."
+            control={
+              <Input
+                size="sm"
+                className="w-24"
+                aria-label="Default zoom"
+                type="number"
+                min={0.25}
+                max={3}
+                step={0.1}
+                value={settings.previewDefaults.zoomFactor}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (value >= 0.25 && value <= 3)
+                    updateSettings({
+                      previewDefaults: { ...settings.previewDefaults, zoomFactor: value },
+                    });
+                }}
+              />
             }
-          >
-            Create incognito profile
-          </button>
-          <label>
-            Default zoom{" "}
-            <input
-              type="number"
-              min={0.25}
-              max={3}
-              step={0.1}
-              value={settings.previewDefaults.zoomFactor}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (value >= 0.25 && value <= 3)
+          />
+          <SettingsRow
+            title="Mute new tabs"
+            control={
+              <Switch
+                aria-label="Mute new tabs"
+                checked={settings.previewDefaults.muted}
+                onCheckedChange={(checked) =>
                   updateSettings({
-                    previewDefaults: { ...settings.previewDefaults, zoomFactor: value },
-                  });
-              }}
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.previewDefaults.muted}
-              onChange={(event) =>
-                updateSettings({
-                  previewDefaults: { ...settings.previewDefaults, muted: event.target.checked },
-                })
-              }
-            />
-            Mute new tabs
-          </label>
-          <label>
-            Default color scheme{" "}
-            <select
-              value={settings.previewDefaults.colorScheme}
-              onChange={(event) =>
-                updateSettings({
-                  previewDefaults: {
-                    ...settings.previewDefaults,
-                    colorScheme: event.target.value as "system" | "light" | "dark",
-                  },
+                    previewDefaults: { ...settings.previewDefaults, muted: checked },
+                  })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="Default color scheme"
+            control={
+              <Select
+                value={settings.previewDefaults.colorScheme}
+                onValueChange={(value) => {
+                  if (value === "system" || value === "light" || value === "dark")
+                    updateSettings({
+                      previewDefaults: { ...settings.previewDefaults, colorScheme: value },
+                    });
+                }}
+              >
+                <SelectTrigger className="w-56" aria-label="Default color scheme">
+                  <SelectValue>
+                    {COLOR_SCHEME_LABELS[settings.previewDefaults.colorScheme]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  {(["system", "light", "dark"] as const).map((scheme) => (
+                    <SelectItem key={scheme} value={scheme}>
+                      {COLOR_SCHEME_LABELS[scheme]}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </SettingsCard>
+      ) : null}
+
+      {preview?.browserImport ? (
+        <SettingsCard
+          title="Import browser cookies"
+          description="Close the source browser first. Import creates a new profile; existing profiles are untouched."
+          actions={
+            <Button size="xs" variant="ghost" onClick={() => run(refresh)}>
+              Recheck prerequisites / retry
+            </Button>
+          }
+        >
+          <SettingsRow
+            title="Source"
+            description={chosen?.remediation}
+            control={
+              <div className="flex items-center gap-2">
+                <Select
+                  value={source}
+                  disabled={Boolean(job)}
+                  onValueChange={(value) => {
+                    setSource(String(value ?? ""));
+                    setSourceProfile("");
+                  }}
+                >
+                  <SelectTrigger className="w-44" aria-label="Import source">
+                    <SelectValue>{chosen?.name ?? "Choose browser"}</SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end">
+                    {sources.map((candidate) => (
+                      <SelectItem
+                        key={candidate.id}
+                        value={candidate.id}
+                        disabled={!candidate.available}
+                      >
+                        {candidate.name}
+                        {!candidate.available ? " (not installed)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+                <Select
+                  value={sourceProfile}
+                  disabled={Boolean(job) || !chosen}
+                  onValueChange={(value) => setSourceProfile(String(value ?? ""))}
+                >
+                  <SelectTrigger className="w-44" aria-label="Source profile">
+                    <SelectValue>
+                      {chosen?.profiles.find((profile) => profile.id === sourceProfile)?.name ??
+                        "Choose profile"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end">
+                    {chosen?.profiles.map((profile) => (
+                      <SelectItem key={profile.id} value={profile.id}>
+                        {profile.name}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              </div>
+            }
+          />
+          <div className="flex flex-wrap items-center gap-2 pt-3">
+            {chosen?.id === "safari" && preview.browserImport.openPermissions ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => run(() => preview.browserImport!.openPermissions!())}
+              >
+                Open Full Disk Access settings
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              disabled={!source || !sourceProfile || Boolean(job)}
+              onClick={() =>
+                run(async () => {
+                  setProgress(undefined);
+                  setJob(await preview.browserImport!.start(source, sourceProfile, name));
                 })
               }
             >
-              <option>system</option>
-              <option>light</option>
-              <option>dark</option>
-            </select>
-          </label>
-        </>
-      ) : null}
-      {preview?.browserImport ? (
-        <>
-          <h4>Import browser cookies</h4>
-          <p>
-            Close the source browser. Import creates a new profile; existing profiles are untouched.
-          </p>
-          <select
-            aria-label="Import source"
-            value={source}
-            disabled={Boolean(job)}
-            onChange={(event) => {
-              setSource(event.target.value);
-              setSourceProfile("");
-            }}
-          >
-            <option value="">Choose browser</option>
-            {sources.map((source) => (
-              <option key={source.id} value={source.id} disabled={!source.available}>
-                {source.name}
-                {!source.available ? " (not installed)" : ""}
-              </option>
-            ))}
-          </select>
-          <select
-            aria-label="Source profile"
-            value={sourceProfile}
-            disabled={Boolean(job)}
-            onChange={(event) => setSourceProfile(event.target.value)}
-          >
-            <option value="">Choose source profile</option>
-            {chosen?.profiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name}
-              </option>
-            ))}
-          </select>
-          <p>{chosen?.remediation}</p>
-          {chosen?.id === "safari" && preview.browserImport.openPermissions ? (
-            <button onClick={() => run(() => preview.browserImport!.openPermissions!())}>
-              Open Full Disk Access settings
-            </button>
-          ) : null}
-          <button
-            disabled={!source || !sourceProfile || Boolean(job)}
-            onClick={() =>
-              run(async () => {
-                setProgress(undefined);
-                setJob(await preview.browserImport!.start(source, sourceProfile, name));
-              })
-            }
-          >
-            Import into new profile
-          </button>
-          {job ? (
-            <button onClick={() => run(() => preview.browserImport!.cancel(job))}>
-              Cancel import
-            </button>
-          ) : null}
+              Import into new profile
+            </Button>
+            {job ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => run(() => preview.browserImport!.cancel(job))}
+              >
+                Cancel import
+              </Button>
+            ) : null}
+          </div>
           {progress ? (
-            <p role="status">
+            <p role="status" className="pt-2 text-xs text-muted-foreground">
               {progress.status}: {progress.imported} imported, {progress.skipped} skipped,{" "}
               {progress.failed} failed. {progress.error}
             </p>
           ) : null}
-          <button onClick={() => run(refresh)}>Recheck prerequisites / retry</button>
-        </>
+        </SettingsCard>
       ) : null}
+
       {snapShot && permissions?.supported ? (
-        <>
-          <h4>SnapShot</h4>
-          <p>
-            Capture the frontmost other window and its accessibility text into your current
-            composer.
-          </p>
-          <p>
-            Screen Recording: {permissions.screen ? "granted" : "required"}. Accessibility:{" "}
-            {permissions.accessibility ? "granted" : "optional for text"}.
-          </p>
-          <button onClick={() => run(() => snapShot.openPermissions())}>
-            Open capture permissions
-          </button>
-          <label>
-            Capture shortcut{" "}
-            <input
-              value={shortcut}
-              onChange={(event) => setShortcut(event.target.value)}
-              onBlur={() =>
-                run(async () => {
-                  await snapShot.configure(shortcut, settings.snapShotEnabled);
-                  updateSettings({ snapShotShortcut: shortcut });
-                })
-              }
-            />
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={settings.snapShotEnabled}
-              onChange={(event) =>
-                run(async () => {
-                  await snapShot.configure(settings.snapShotShortcut, event.target.checked);
-                  updateSettings({ snapShotEnabled: event.target.checked });
-                })
-              }
-            />
-            Enable global capture shortcut
-          </label>
-        </>
+        <SettingsCard
+          title="SnapShot"
+          description="Capture the frontmost other window and its accessibility text into your current composer."
+        >
+          <SettingsRow
+            title="Capture permissions"
+            description={`Screen Recording: ${permissions.screen ? "granted" : "required"}. Accessibility: ${permissions.accessibility ? "granted" : "optional for text"}.`}
+            control={
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => run(() => snapShot.openPermissions())}
+              >
+                Open capture permissions
+              </Button>
+            }
+          />
+          <SettingsRow
+            title="Capture shortcut"
+            control={
+              <Input
+                size="sm"
+                className="w-56 font-mono"
+                aria-label="Capture shortcut"
+                value={shortcut}
+                onChange={(event) => setShortcut(event.target.value)}
+                onBlur={() =>
+                  run(async () => {
+                    await snapShot.configure(shortcut, settings.snapShotEnabled);
+                    updateSettings({ snapShotShortcut: shortcut });
+                  })
+                }
+              />
+            }
+          />
+          <SettingsRow
+            title="Global capture shortcut"
+            description="Capture from anywhere, even when F5 is not focused."
+            control={
+              <Switch
+                aria-label="Enable global capture shortcut"
+                checked={settings.snapShotEnabled}
+                onCheckedChange={(checked) =>
+                  run(async () => {
+                    await snapShot.configure(settings.snapShotShortcut, checked);
+                    updateSettings({ snapShotEnabled: checked });
+                  })
+                }
+              />
+            }
+          />
+        </SettingsCard>
       ) : null}
-      {error ? <p role="alert">{error}</p> : null}
-    </section>
+    </>
   );
 }

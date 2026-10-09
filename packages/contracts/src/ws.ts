@@ -152,8 +152,12 @@ import {
 import {
   PreviewAutomationClearOwnerInput,
   PreviewAutomationOwner,
+  PreviewAutomationOwnerReleased,
+  PreviewAutomationOwnerRequested,
+  PreviewAutomationPauseChanged,
   PreviewAutomationRequest,
   PreviewAutomationResponse,
+  PreviewAutomationSetPausedInput,
 } from "./previewAutomation";
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
@@ -342,6 +346,7 @@ export const WS_METHODS = {
   previewAutomationRespond: "preview.automation.respond",
   previewAutomationReportOwner: "preview.automation.reportOwner",
   previewAutomationClearOwner: "preview.automation.clearOwner",
+  previewAutomationSetPaused: "preview.automation.setPaused",
 
   // Server meta
   serverProbe: "server.probe",
@@ -434,6 +439,10 @@ export const WS_CHANNELS = {
   previewEvent: "preview.event",
   previewLocalServersUpdated: "preview.localServersUpdated",
   previewAutomationRequest: "preview.automation.request",
+  previewAutomationOwnerRequested: "preview.automation.ownerRequested",
+  previewAutomationOwnerReleased: "preview.automation.ownerReleased",
+  previewAutomationPauseChanged: "preview.automation.pauseChanged",
+  agentComputerUseChanged: "agent.computerUseChanged",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
@@ -655,6 +664,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.previewAutomationRespond, PreviewAutomationResponse),
   tagRequestBody(WS_METHODS.previewAutomationReportOwner, PreviewAutomationOwner),
   tagRequestBody(WS_METHODS.previewAutomationClearOwner, PreviewAutomationClearOwnerInput),
+  tagRequestBody(WS_METHODS.previewAutomationSetPaused, PreviewAutomationSetPausedInput),
 
   // Server meta
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
@@ -859,6 +869,10 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.previewEvent]: PreviewEvent;
   readonly [WS_CHANNELS.previewLocalServersUpdated]: DiscoveredLocalServerList;
   readonly [WS_CHANNELS.previewAutomationRequest]: typeof PreviewAutomationRequest.Type;
+  readonly [WS_CHANNELS.previewAutomationOwnerRequested]: typeof PreviewAutomationOwnerRequested.Type;
+  readonly [WS_CHANNELS.previewAutomationOwnerReleased]: typeof PreviewAutomationOwnerReleased.Type;
+  readonly [WS_CHANNELS.previewAutomationPauseChanged]: typeof PreviewAutomationPauseChanged.Type;
+  readonly [WS_CHANNELS.agentComputerUseChanged]: typeof AgentComputerUseChanged.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
@@ -924,6 +938,26 @@ export const WsPushPreviewAutomationRequest = makeWsPushSchema(
   WS_CHANNELS.previewAutomationRequest,
   PreviewAutomationRequest,
 );
+export const WsPushPreviewAutomationOwnerRequested = makeWsPushSchema(
+  WS_CHANNELS.previewAutomationOwnerRequested,
+  PreviewAutomationOwnerRequested,
+);
+export const WsPushPreviewAutomationOwnerReleased = makeWsPushSchema(
+  WS_CHANNELS.previewAutomationOwnerReleased,
+  PreviewAutomationOwnerReleased,
+);
+export const WsPushPreviewAutomationPauseChanged = makeWsPushSchema(
+  WS_CHANNELS.previewAutomationPauseChanged,
+  PreviewAutomationPauseChanged,
+);
+/** Which thread, if any, currently controls this computer's screen, mouse, and keyboard. */
+export const AgentComputerUseChanged = Schema.Struct({
+  threadId: Schema.NullOr(ThreadId),
+});
+export const WsPushAgentComputerUseChanged = makeWsPushSchema(
+  WS_CHANNELS.agentComputerUseChanged,
+  AgentComputerUseChanged,
+);
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
   McpStatusUpdatedPayload,
@@ -975,6 +1009,10 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.previewEvent,
   WS_CHANNELS.previewLocalServersUpdated,
   WS_CHANNELS.previewAutomationRequest,
+  WS_CHANNELS.previewAutomationOwnerRequested,
+  WS_CHANNELS.previewAutomationOwnerReleased,
+  WS_CHANNELS.previewAutomationPauseChanged,
+  WS_CHANNELS.agentComputerUseChanged,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
@@ -1001,6 +1039,10 @@ export const WsPush = Schema.Union([
   WsPushPreviewEvent,
   WsPushPreviewLocalServersUpdated,
   WsPushPreviewAutomationRequest,
+  WsPushPreviewAutomationOwnerRequested,
+  WsPushPreviewAutomationOwnerReleased,
+  WsPushPreviewAutomationPauseChanged,
+  WsPushAgentComputerUseChanged,
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,

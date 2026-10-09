@@ -643,26 +643,34 @@ it("registers every declared push channel in both transport schemas", () => {
               quarantinedCount: 0,
             },
           })
-        : channel === ORCHESTRATION_WS_CHANNELS.domainEvent
+        : // Settings arbitraries can emit untrimmed strings their refinements then reject.
+          channel === WS_CHANNELS.serverConfigUpdated
           ? Schema.decodeUnknownSync(member)({
               type: "push",
               sequence: 0,
               channel,
-              data: {
-                type: "project.deleted",
-                sequence: 0,
-                eventId: "event",
-                aggregateKind: "project",
-                aggregateId: "project",
-                occurredAt: "2026-01-01T00:00:00.000Z",
-                commandId: null,
-                causationEventId: null,
-                correlationId: null,
-                metadata: {},
-                payload: { projectId: "project", deletedAt: "2026-01-01T00:00:00.000Z" },
-              },
+              data: { issues: [], providers: [] },
             })
-          : FastCheck.sample(Schema.toArbitrary(member), { seed: 42, numRuns: 1 })[0];
+          : channel === ORCHESTRATION_WS_CHANNELS.domainEvent
+            ? Schema.decodeUnknownSync(member)({
+                type: "push",
+                sequence: 0,
+                channel,
+                data: {
+                  type: "project.deleted",
+                  sequence: 0,
+                  eventId: "event",
+                  aggregateKind: "project",
+                  aggregateId: "project",
+                  occurredAt: "2026-01-01T00:00:00.000Z",
+                  commandId: null,
+                  causationEventId: null,
+                  correlationId: null,
+                  metadata: {},
+                  payload: { projectId: "project", deletedAt: "2026-01-01T00:00:00.000Z" },
+                },
+              })
+            : FastCheck.sample(Schema.toArbitrary(member), { seed: 42, numRuns: 1 })[0];
     const encoded = Schema.encodeSync(WsPush)(message!);
     assert.equal(Schema.decodeUnknownSync(WsPush)(encoded).channel, channel);
   }

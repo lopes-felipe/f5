@@ -31,6 +31,9 @@ export const PREVIEW_IPC_CHANNELS = {
   automationScroll: "desktop-preview:automation-scroll",
   automationEvaluate: "desktop-preview:automation-evaluate",
   automationWaitFor: "desktop-preview:automation-wait-for",
+  automationCancel: "desktop-preview:automation-cancel",
+  setNavigationPolicy: "desktop-preview:set-navigation-policy",
+  captureThumbnail: "desktop-preview:capture-thumbnail",
   setViewport: "desktop-preview:set-viewport",
   setColorScheme: "desktop-preview:set-color-scheme",
   captureScreenshot: "desktop-preview:capture-screenshot",
@@ -46,7 +49,8 @@ export interface PreviewIpcOperations {
   readonly createTab: (tabId: string, defaults?: { zoomFactor: number; muted: boolean }) => unknown;
   readonly closeTab: (tabId: string) => unknown;
   readonly registerWebview: (tabId: string, webContentsId: number) => unknown;
-  readonly navigate: (tabId: string, url: string) => unknown;
+  /** `agent` marks the navigation as agent-driven for the allowlist's redirect handling. */
+  readonly navigate: (tabId: string, url: string, agent: boolean) => unknown;
   readonly goBack: (tabId: string) => unknown;
   readonly goForward: (tabId: string) => unknown;
   readonly refresh: (tabId: string) => unknown;
@@ -62,6 +66,9 @@ export interface PreviewIpcOperations {
   readonly automationScroll: (tabId: string, input: PreviewAutomationScrollInput) => unknown;
   readonly automationEvaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => unknown;
   readonly automationWaitFor: (tabId: string, input: PreviewAutomationWaitForInput) => unknown;
+  readonly automationCancel: (tabId: string) => unknown;
+  readonly setNavigationPolicy: (tabId: string, externalHosts: ReadonlyArray<string>) => unknown;
+  readonly captureThumbnail: (tabId: string) => unknown;
   readonly setViewport: (tabId: string, viewport: PreviewViewportSize | null) => unknown;
   readonly setColorScheme: (tabId: string, colorScheme: DesktopPreviewColorScheme) => unknown;
   readonly captureScreenshot: (tabId: string) => unknown;
@@ -143,11 +150,18 @@ export function registerPreviewIpc(
       return operations.registerWebview(nonEmptyString(tabId, "Preview tab id"), webContentsId);
     },
   );
-  replaceHandler(ipcMain, channels.navigate, operationsForSender, (operations, tabId, url) =>
-    operations.navigate(
-      nonEmptyString(tabId, "Preview tab id"),
-      nonEmptyString(url, "Preview URL"),
-    ),
+  replaceHandler(
+    ipcMain,
+    channels.navigate,
+    operationsForSender,
+    (operations, tabId, url, options) =>
+      operations.navigate(
+        nonEmptyString(tabId, "Preview tab id"),
+        nonEmptyString(url, "Preview URL"),
+        typeof options === "object" &&
+          options !== null &&
+          (options as { agent?: unknown }).agent === true,
+      ),
   );
   for (const [channel, operationName] of [
     [channels.goBack, "goBack"],
@@ -158,6 +172,8 @@ export function registerPreviewIpc(
     [channels.pickElement, "pickElement"],
     [channels.cancelPickElement, "cancelPickElement"],
     [channels.automationStatus, "automationStatus"],
+    [channels.automationCancel, "automationCancel"],
+    [channels.captureThumbnail, "captureThumbnail"],
     [channels.captureScreenshot, "captureScreenshot"],
     [channels.recordingStart, "recordingStart"],
   ] as const) {
@@ -165,6 +181,24 @@ export function registerPreviewIpc(
       operations[operationName](nonEmptyString(tabId, "Preview tab id")),
     );
   }
+  replaceHandler(
+    ipcMain,
+    channels.setNavigationPolicy,
+    operationsForSender,
+    (operations, tabId, externalHosts) => {
+      if (
+        !Array.isArray(externalHosts) ||
+        externalHosts.length > 200 ||
+        !externalHosts.every((host) => typeof host === "string" && host.length <= 260)
+      ) {
+        return false;
+      }
+      return operations.setNavigationPolicy(
+        nonEmptyString(tabId, "Preview tab id"),
+        externalHosts as string[],
+      );
+    },
+  );
   replaceHandler(
     ipcMain,
     channels.setArtifactRetention,

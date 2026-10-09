@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
 import { Effect } from "effect";
 
+import { DISABLED_AGENT_BROWSER_POLICY } from "./browserAccess.ts";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
 import { makePreviewMcpHttpServer } from "./PreviewMcpHttpServer.ts";
 
@@ -192,6 +193,46 @@ it.effect("reports no-owner status as unavailable without a tool error", () =>
 
       assert.notEqual(response.result?.isError, true);
       assert.equal(response.result?.structuredContent?.available, false);
+      session.dispose();
+    }),
+  ),
+);
+
+it.effect("sets an explicit tool timeout above the longest broker deadline", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const session = server.createSessionConfig({ threadId: ThreadId.makeUnsafe("t") });
+      const definition = session.serverDefinition as { toolTimeoutSec?: number };
+      // 60 s executor cap + 2 s broker grace must fit inside the transport timeout.
+      assert.equal(definition.toolTimeoutSec, 70);
+      assert.ok((definition.toolTimeoutSec ?? 0) * 1000 > 60_000 + 2_000);
+      session.dispose();
+    }),
+  ),
+);
+
+it.effect("returns disabled status when live policy turns browser access off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker({
+        resolvePolicy: () => Effect.succeed(DISABLED_AGENT_BROWSER_POLICY),
+      });
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const session = server.createSessionConfig({ threadId: ThreadId.makeUnsafe("t") });
+      const token = Object.values(session.env)[0]!;
+      const response = (yield* postMcp(server.getUrl(), token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "preview_status", arguments: {} },
+      })) as { result?: { structuredContent?: { reason?: string } } };
+      assert.equal(response.result?.structuredContent?.reason, "disabled");
       session.dispose();
     }),
   ),
