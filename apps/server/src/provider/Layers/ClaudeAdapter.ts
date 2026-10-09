@@ -6899,7 +6899,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const context: ClaudeSessionContext = {
           startInput: input,
-          nativeCompactionEnabled: providerOptions?.nativeCompaction === true,
+          nativeCompactionEnabled: providerOptions?.nativeCompaction !== false,
           ...(existingResumeSessionId && nativeResumeMetadata.providerTitle
             ? { lastProviderTitle: nativeResumeMetadata.providerTitle }
             : !existingResumeSessionId && input.threadTitle

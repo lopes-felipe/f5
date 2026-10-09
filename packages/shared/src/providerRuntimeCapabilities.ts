@@ -12,10 +12,19 @@ export function supportsCodexAsyncQuestions(version: string | null | undefined):
   return !!match && (Number(match[1]) > 0 || Number(match[2]) >= 153);
 }
 
-/** Native operations are enabled only on the runtime certified by the live spike. */
-export function supportsCodexNativeOperations(version: string | null | undefined): boolean {
+function codexVersionAtLeast(version: string | null | undefined, minimum: string): boolean {
   const parsed = version ? parseCodexCliVersion(version) : null;
-  return parsed !== null && compareCodexCliVersions(parsed, "0.162.0") >= 0;
+  return parsed !== null && compareCodexCliVersions(parsed, minimum) >= 0;
+}
+
+/** Compaction and two post-compaction resumes were certified separately on 0.159.2. */
+export function supportsCodexNativeCompaction(version: string | null | undefined): boolean {
+  return codexVersionAtLeast(version, "0.159.2");
+}
+
+/** Other native operations require the runtime certified by the full live spike. */
+export function supportsCodexNativeOperations(version: string | null | undefined): boolean {
+  return codexVersionAtLeast(version, "0.162.0");
 }
 
 export function providerRuntimeCapabilities(
@@ -26,7 +35,8 @@ export function providerRuntimeCapabilities(
   const codexNative = driver === "codex" && supportsCodexNativeOperations(version);
   return {
     nativeReview: codexNative,
-    nativeCompaction: driver === "claudeAgent" || codexNative,
+    nativeCompaction:
+      driver === "claudeAgent" || (driver === "codex" && supportsCodexNativeCompaction(version)),
     nativeFork: driver === "claudeAgent" || codexNative,
     nativeGoals: codexNative,
     nativeAttachments: codexNative,

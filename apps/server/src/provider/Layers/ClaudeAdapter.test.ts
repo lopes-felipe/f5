@@ -11500,6 +11500,27 @@ describe("ClaudeAdapterLive", () => {
 });
 
 describe("Claude Release 4 launch and file checkpoint controls", () => {
+  it.effect("enables native compaction by default and honors the session opt-out", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      for (const enabled of [undefined, false, true]) {
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+          ...(enabled !== undefined
+            ? { providerOptions: { claudeAgent: { nativeCompaction: enabled } } }
+            : {}),
+        });
+        assert.equal(
+          (yield* adapter.getSessionDiscovery!(THREAD_ID))?.nativeCompaction,
+          enabled !== false,
+        );
+        yield* adapter.stopSession(THREAD_ID);
+      }
+    }).pipe(Effect.provide(h.layer));
+  });
   it.effect("defaults suggestions off, enables checkpoints, and names only new sessions", () => {
     const h = makeHarness();
     return Effect.gen(function* () {

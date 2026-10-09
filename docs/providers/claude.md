@@ -780,8 +780,11 @@ failed its credential checks. Consequently live `/compact` transcript behavior,
 fork creation, rename visibility, checkpoint coverage of Edit versus Bash, and
 checkpoint behavior after resume/compaction are **unverified here**. Adapter and
 transport tests cover launch options, UUID mapping, preview versus mutation,
-refusal behavior and generation fencing. Claude native compaction stays off pending
-an authenticated acceptance run. This does not certify Linux/Windows lifecycle
+refusal behavior and generation fencing. The compaction acceptance test is
+`F5_CLAUDE_LIVE_TEST=1 bun run --cwd apps/server test:file integration/claudeCompaction.live.test.ts`;
+it requires a compact boundary and retention of a pre-compaction fact through two
+resumes. The 2026-10-10 run also failed with `Not logged in`, so this remains
+**unverified**, not a passing certification. This does not certify Linux/Windows lifecycle
 behavior; those release environments must run the documented live suites.
 
 ### Native-operation recovery
@@ -820,6 +823,11 @@ generation is checked again after preparation and before dispatch.
 Native compaction waits for settlement or provider exit rather than timing out a healthy
 control turn at two minutes. Pre-send native refusals can use the F5 summary path;
 an active or uncertain native reservation prevents fallback.
+
+Native whole-conversation compaction is enabled by default. Set the Claude instance's
+`nativeCompaction` option to `false` (or disable it in Settings) to use F5 summaries
+instead. The setting applies on the next safe session start; it does not interrupt
+an active turn. Partial ranges and pivot compactions continue using F5 summaries.
 
 File restore still requires a workspace isolated from other live conversations,
 including native restore in non-Git projects: Claude's edit-tool backups can overlap
