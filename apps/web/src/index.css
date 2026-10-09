@@ -834,24 +834,34 @@ label:has(> select#reasoning-effort) select {
 }
 /* Collapse restyles the same DOM: controls keep their identity and width, and
    no control is measured. The editor contracts to one line through a CSS height
-   transition (snapping under reduced motion or without interpolate-size). The
-   collapsed editor sets no max-height: one would snap and cancel the transition. */
-[data-composer-redesign] [data-chat-composer-form] {
-  interpolate-size: allow-keywords;
+   transition (snapping under reduced motion or without calc-size). Its expanded
+   height is the editor's 200px cap, so a long draft animates over the whole
+   transition instead of jumping to the cap; the collapsed editor sets no
+   max-height, which would snap and cancel the transition. */
+[data-composer-redesign] [data-testid="composer-editor"] {
+  height: calc-size(auto, min(size, 200px));
 }
+/* Clipped in both directions: while expanding, the tray grows from zero under
+   contents already at full size. The margin keeps focus rings visible. */
 [data-composer-redesign] [data-composer-attachment-tray] {
   display: flow-root;
-}
-[data-composer-redesign] [data-composer-placeholder] {
-  overflow: hidden;
+  height: calc-size(auto, size);
+  overflow: clip;
+  overflow-clip-margin: 0.25rem;
 }
 [data-composer-redesign] [data-composer-collapsed="true"] [data-testid="composer-editor"] {
   height: 1.625rem;
   min-height: 1.625rem;
   overflow: hidden;
 }
-[data-composer-redesign] [data-composer-collapsed="true"] .composer-editor-surface {
+/* useComposerScrollCollapse marks the form while the editor height animates. Content stays
+   clipped until it settles: no transient scrollbar, no placeholder overflow. */
+[data-composer-redesign] [data-composer-collapsed="true"] .composer-editor-surface,
+[data-composer-redesign] [data-composer-resizing] .composer-editor-surface {
   overflow: hidden;
+}
+[data-composer-redesign] [data-composer-resizing] [data-testid="composer-editor"] {
+  overflow-y: hidden;
 }
 /* Hidden rather than display: none, so it can animate; visibility still removes
    it from tab order and the accessibility tree. */
@@ -859,7 +869,6 @@ label:has(> select#reasoning-effort) select {
   height: 0;
   opacity: 0;
   visibility: hidden;
-  overflow: hidden;
 }
 [data-composer-redesign] [data-composer-collapsed="true"] [data-composer-editor-area] {
   padding-top: 0.625rem;

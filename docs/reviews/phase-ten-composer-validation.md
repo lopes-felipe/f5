@@ -41,7 +41,9 @@ readable regardless of the capability.
   its existing responsive form-width breakpoints, without measuring its own child
   contents or relocating controls. The editor height, its padding and the
   attachment tray change through a short CSS transition (instant under reduced
-  motion); the dock re-pins a timeline at its end on every animated frame.
+  motion or without `calc-size()`). The editor animates toward its 200px cap,
+  and its content and the tray stay clipped while it moves. The dock re-pins a
+  timeline at its end on every animated frame.
 - Queue next/end, Send now, pause/resume, steering, Plan mode, workflow actions,
   model fan-out, runtime/effort controls and display-profile presentation continue
   to use their existing components and dispatch paths. Auxiliary state panels

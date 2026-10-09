@@ -89,7 +89,8 @@ export default mergeConfig(
       ],
       browser: {
         enabled: true,
-        provider: playwright(),
+        // Composer tests assert CSS transitions; don't inherit a host reduce setting.
+        provider: playwright({ contextOptions: { reducedMotion: "no-preference" } }),
         instances: [{ browser: "chromium" }],
         headless: true,
       },
