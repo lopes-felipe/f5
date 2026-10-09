@@ -198,6 +198,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(providerEventLoggersLayer),
       Layer.provide(OpenCodeRuntimeLive),
       Layer.provide(previewMcpHttpServerLayer),
+      Layer.provide(previewAutomationBrokerLayer),
     );
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(providerInstanceRegistryLayer),
@@ -229,6 +230,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(previewAutomationBrokerLayer),
     );
     const harnessValidationLayer = HarnessValidationLive.pipe(
       Layer.provide(adapterRegistryLayer),

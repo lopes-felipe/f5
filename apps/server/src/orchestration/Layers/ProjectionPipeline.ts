@@ -1469,6 +1469,18 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* Effect.forEach(keptRows, projectionThreadActivityRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          // Screenshots of reverted activities lose their owner; storage cleanup reclaims them.
+          yield* sql`
+            DELETE FROM attachment_owners
+            WHERE owner_kind = 'activity'
+              AND attachment_id IN (
+                SELECT attachment_id FROM attachments WHERE thread_id = ${event.payload.threadId}
+              )
+              AND owner_id NOT IN (
+                SELECT activity_id FROM projection_thread_activities
+                WHERE thread_id = ${event.payload.threadId}
+              )
+          `.pipe(Effect.catchCause(() => Effect.void));
           return;
         }
 

@@ -112,6 +112,7 @@ import {
 import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import {
   isProviderTerminalRuntimeEvent,
   type ProviderTerminalEventRepositoryError,
@@ -309,6 +310,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const directory = yield* ProviderSessionDirectory;
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
+    const previewAutomationBroker = yield* Effect.serviceOption(PreviewAutomationBroker);
     // Terminal receipts are persisted in order within each thread. Bound the
     // queue so a prolonged SQLite outage applies backpressure to provider
     // streams instead of allowing process memory to grow without limit.
@@ -1481,6 +1483,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           });
           if (routed.isActive) {
             yield* routed.adapter.stopSession(routed.threadId);
+          }
+          // Unpin any hidden agent-controlled preview this session was using.
+          if (Option.isSome(previewAutomationBroker)) {
+            yield* previewAutomationBroker.value.releaseThread(input.threadId);
           }
           yield* directory.upsert({
             threadId: input.threadId,

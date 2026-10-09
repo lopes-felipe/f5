@@ -24,6 +24,7 @@ import type { InlineExactFileChangeDiffProps } from "./InlineExactFileChangeDiff
 import type { InlineFileChangeDiffProps } from "./InlineFileChangeDiff";
 import { LegendList, type LegendListRef, type OnViewableItemsChanged } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatDuration, formatElapsed } from "../../session-logic";
+import { attachmentPreviewUrlForId } from "../../orchestrationState";
 import { type TurnDiffSummary } from "../../types";
 import { changedLineCount, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -3197,6 +3198,28 @@ const McpToolCallRow = memo(function McpToolCallRow(props: {
           </p>
         </div>
       </CollapsibleTrigger>
+      {workEntry.mcpImages && workEntry.mcpImages.length > 0 ? (
+        <div className="flex flex-wrap gap-2 px-3 pb-2.5 pl-13" data-testid="mcp-tool-images">
+          {workEntry.mcpImages.map((image) => {
+            const url = attachmentPreviewUrlForId(image.attachmentId);
+            return (
+              <a key={image.attachmentId} href={url} target="_blank" rel="noreferrer">
+                <img
+                  src={url}
+                  alt="Tool result screenshot"
+                  loading="lazy"
+                  className="h-24 max-w-64 rounded-md border border-border object-cover object-top"
+                />
+              </a>
+            );
+          })}
+          {workEntry.mcpImagesOmitted ? (
+            <span className="self-end text-2xs text-muted-foreground">
+              +{workEntry.mcpImagesOmitted} not shown
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       {hasNestedContent && (
         <CollapsiblePanel>
           <div className="border-t border-border px-3 py-3">

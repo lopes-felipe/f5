@@ -233,8 +233,10 @@ try {
   await page.getByRole("button", { name: "Add your first project", exact: true }).click();
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").fill(workspace);
   await page.getByRole("button", { name: "Add (Enter)", exact: true }).click();
+  // The chat header breadcrumb reuses this label; wait for the sidebar entry.
   await page
-    .getByRole("button", { name: "Project actions for workspace", exact: true })
+    .locator('[data-sidebar="menu-action"]')
+    .and(page.getByRole("button", { name: "Project actions for workspace", exact: true }))
     .waitFor({ timeout: 60_000 });
   await page.locator('[contenteditable="true"]').fill("**a****b**\n# Title **bold**");
   await page.reload();

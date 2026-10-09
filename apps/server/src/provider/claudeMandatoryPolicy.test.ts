@@ -71,6 +71,18 @@ describe("mandatory Claude policy before native permissions", () => {
       ),
     ).toContain("conservative default");
   });
+  it("lets the read-only predicate see the tool input", () => {
+    const policy = {
+      workflowExecutionProfile: "unattended-readonly" as const,
+      allowReadOnlyMcpTool: (_name: string, _server?: unknown, input?: unknown) =>
+        (input as { save?: boolean } | undefined)?.save !== true,
+    };
+    const snapshot = "mcp__f5_preview__preview_snapshot";
+    expect(evaluateClaudeMandatoryPolicy(policy, snapshot, undefined, {})).toBeUndefined();
+    expect(evaluateClaudeMandatoryPolicy(policy, snapshot, undefined, { save: true })).toContain(
+      "read-only",
+    );
+  });
   it.each([
     "TodoWrite",
     "ToolSearch",

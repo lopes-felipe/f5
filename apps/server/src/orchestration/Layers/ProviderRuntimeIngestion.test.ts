@@ -244,6 +244,7 @@ describe("ProviderRuntimeIngestion", () => {
     readonly startIngestion?: boolean;
     readonly refreshAccount?: UsageServiceShape["refreshAccount"];
     readonly settings?: Partial<import("@t3tools/contracts").ServerSettings>;
+    readonly stateDir?: string;
   }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
@@ -289,7 +290,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(UsageFactRepositoryLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), options?.stateDir ?? process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
@@ -2347,6 +2348,77 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(message?.text).toBe("hello world");
     expect(message?.streaming).toBe(false);
+  });
+
+  it("stores tool-result screenshots before compaction for Claude and Codex shapes", async () => {
+    const stateDir = path.join(makeTempDir("t3-provider-images-"), "userdata");
+    const harness = await createHarness({ stateDir });
+    const now = new Date().toISOString();
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    const claudeData = {
+      toolName: "mcp__f5_preview__preview_screenshot",
+      input: {},
+      result: {
+        type: "tool_result",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
+        ],
+      },
+    };
+    const codexData = {
+      item: { result: { content: [{ type: "image", mimeType: "image/png", data: png }] } },
+    };
+    const emitTool = (id: string, data: unknown) =>
+      harness.emit({
+        type: "item.completed",
+        eventId: asEventId(`evt-${id}`),
+        provider: "codex",
+        createdAt: now,
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-images"),
+        itemId: asItemId(id),
+        payload: { itemType: "mcp_tool_call", status: "completed", title: "Screenshot", data },
+      });
+    emitTool("claude-shot", claudeData);
+    emitTool("codex-shot", codexData);
+    // A replayed lifecycle event must not create a second attachment.
+    emitTool("codex-shot", codexData);
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.activities.filter(
+          (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.completed",
+        ).length >= 2,
+    );
+    await harness.drain();
+    const tools = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.completed",
+    );
+    for (const activity of tools) {
+      const payload = activity.payload as { mcpImages?: unknown[]; mcpResult?: string };
+      expect(payload.mcpImages).toHaveLength(1);
+      expect(JSON.stringify(activity.payload)).not.toContain(png);
+    }
+    const rows = await Effect.runPromise(
+      harness.sql<{ attachmentId: string; lifecycle: string; finalPath: string }>`
+        SELECT attachment_id AS "attachmentId", lifecycle, final_path AS "finalPath"
+        FROM attachments ORDER BY attachment_id
+      `,
+    );
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.lifecycle).toBe("ready");
+      expect(fs.existsSync(row.finalPath)).toBe(true);
+    }
+    const staging = path.join(stateDir, "attachments", ".staging");
+    const stagedFiles = fs.existsSync(staging)
+      ? fs
+          .readdirSync(staging, { recursive: true, withFileTypes: true })
+          .filter((entry) => entry.isFile())
+      : [];
+    expect(stagedFiles).toEqual([]);
   });
 
   it("uses assistant item completion detail when no assistant deltas were streamed", async () => {

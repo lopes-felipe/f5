@@ -764,6 +764,90 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       }),
   );
 
+  it.effect("keeps screenshots of retained activities and releases reverted ones", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.makeUnsafe("thread-revert-images");
+      const now = "2026-04-10T12:00:00.000Z";
+      const common = {
+        aggregateKind: "thread" as const,
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId: CommandId.makeUnsafe("cmd-revert-images"),
+        causationEventId: null,
+        correlationId: CorrelationId.makeUnsafe("cmd-revert-images"),
+        metadata: {},
+      };
+      yield* eventStore.append({
+        ...common,
+        type: "thread.created",
+        eventId: EventId.makeUnsafe("evt-revert-images-created"),
+        payload: {
+          threadId,
+          projectId: ProjectId.makeUnsafe("project-revert-images"),
+          title: "Images",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      for (const [id, turnId] of [
+        ["activity-kept", null],
+        ["activity-reverted", TurnId.makeUnsafe("turn-reverted")],
+      ] as const) {
+        yield* eventStore.append({
+          ...common,
+          type: "thread.activity-appended",
+          eventId: EventId.makeUnsafe(`evt-${id}`),
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.makeUnsafe(id),
+              kind: "tool.completed",
+              tone: "tool",
+              summary: "Screenshot",
+              turnId,
+              createdAt: now,
+              payload: { itemType: "mcp_tool_call" },
+            },
+          },
+        });
+      }
+      yield* projectionPipeline.bootstrap;
+      for (const [index, owner] of ["activity-kept", "activity-reverted"].entries()) {
+        const attachmentId = `thread-revert-images-00000000-0000-4000-8000-00000000000${index}`;
+        yield* sql`
+          INSERT INTO attachments (attachment_id, thread_id, type, name, mime_type, size_bytes,
+            content_hash, staging_path, final_path, lifecycle, created_at, updated_at)
+          VALUES (${attachmentId}, ${threadId}, 'image', 'x', 'image/png', 1, 'h', NULL,
+            ${`/tmp/${attachmentId}`}, 'ready', ${now}, ${now})
+        `;
+        yield* sql`
+          INSERT INTO attachment_owners (attachment_id, owner_kind, owner_id, created_at)
+          VALUES (${attachmentId}, 'activity', ${owner}, ${now})
+        `;
+      }
+
+      yield* eventStore.append({
+        ...common,
+        type: "thread.reverted",
+        eventId: EventId.makeUnsafe("evt-revert-images-reverted"),
+        payload: { threadId, turnCount: 0 },
+      });
+      yield* projectionPipeline.bootstrap;
+
+      const owners = yield* sql<{ readonly ownerId: string }>`
+        SELECT owner_id AS "ownerId" FROM attachment_owners WHERE owner_kind = 'activity'
+      `;
+      assert.deepEqual(owners, [{ ownerId: "activity-kept" }]);
+    }),
+  );
+
   it.effect("estimates token usage locally on thread.message-sent and persists the source", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

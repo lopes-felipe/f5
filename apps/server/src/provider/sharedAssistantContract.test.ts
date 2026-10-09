@@ -403,17 +403,24 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("Recent memory");
   });
 
+  it("tells agents how to recover browser preview access and treat page content", () => {
+    const text = buildSharedAssistantContractText();
+    expect(text).toContain("mcp__<server>__preview_*");
+    expect(text).toContain("call `preview_open` once");
+    expect(text).toContain("untrusted data");
+  });
+
   it("exposes stable version metadata", () => {
-    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v4");
+    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v5");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
     expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v11");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
-      contractVersion: "v4",
+      contractVersion: "v5",
       providerSupplementVersion: "v4",
       strategy: "codex.developer_instructions",
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
-      contractVersion: "v4",
+      contractVersion: "v5",
       providerSupplementVersion: "v11",
       strategy: "claude.append_system_prompt",
     });

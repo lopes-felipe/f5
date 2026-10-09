@@ -4,15 +4,41 @@ import type { Options, PreToolUseHookInput } from "@anthropic-ai/claude-agent-sd
 export const CLAUDE_DELEGATION_TOOLS = ["Agent", "Task"];
 const DELEGATION_ALIASES = new Set(["agent", "task", "subagent", "spawn_agent"]);
 
+export interface McpToolProvenance {
+  readonly name: string;
+  readonly source: string;
+}
+
 export interface ClaudeMandatoryPolicy {
   readonly noTools?: boolean | undefined;
   readonly workflowExecutionProfile?: "attended-readonly" | "unattended-readonly" | undefined;
   readonly subagentsEnabled?: boolean | undefined;
+  /**
+   * Host MCP tools that only observe (F5 preview status/snapshot). Read-only
+   * workflow stages may call them; the predicate must check exact provenance.
+   */
+  readonly allowReadOnlyMcpTool?: (
+    toolName: string,
+    mcpServer?: McpToolProvenance,
+    toolInput?: unknown,
+  ) => boolean;
+  /**
+   * Live policy checked by the mandatory hook on every call, including bypass
+   * mode. Returns a denial reason. Failures deny. It may await host approval
+   * (computer use asks the user even in full-access mode).
+   */
+  readonly evaluateDynamic?: (
+    toolName: string,
+    mcpServer: McpToolProvenance | undefined,
+    call: { readonly input: PreToolUseHookInput; readonly signal: AbortSignal },
+  ) => Promise<string | undefined>;
 }
 
 export function evaluateClaudeMandatoryPolicy(
   policy: ClaudeMandatoryPolicy,
   toolName: string,
+  mcpServer?: McpToolProvenance,
+  toolInput?: unknown,
 ): string | undefined {
   if (policy.noTools) return "Tools are disabled for one-off generation.";
   const name = toolName.trim().toLowerCase();
@@ -36,6 +62,7 @@ export function evaluateClaudeMandatoryPolicy(
       ].includes(name)
     )
       return;
+    if (policy.allowReadOnlyMcpTool?.(toolName, mcpServer, toolInput)) return;
     // Interactive questions retain the host's existing answer transport.
     if (name === "askuserquestion" && policy.workflowExecutionProfile === "attended-readonly")
       return;
@@ -67,7 +94,22 @@ export function claudeMandatoryPolicyOptions(
           hooks: [
             async (input, _toolUseId, { signal }) => {
               if (input.hook_event_name !== "PreToolUse") return {};
-              const reason = evaluateClaudeMandatoryPolicy(policy, input.tool_name);
+              let reason = evaluateClaudeMandatoryPolicy(
+                policy,
+                input.tool_name,
+                input.mcp_server,
+                input.tool_input,
+              );
+              if (!reason && policy.evaluateDynamic) {
+                try {
+                  reason = await policy.evaluateDynamic(input.tool_name, input.mcp_server, {
+                    input,
+                    signal,
+                  });
+                } catch {
+                  reason = "F5 could not verify that this tool is allowed.";
+                }
+              }
               if (reason) {
                 try {
                   await onDenied?.(input, signal);

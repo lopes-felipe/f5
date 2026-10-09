@@ -36,6 +36,7 @@ import * as NodeReadline from "node:readline";
 
 import {
   type CanUseTool,
+  type McpServerStatus,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -164,6 +165,22 @@ import {
 } from "./claudeTurnLifecycle.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
+import type { PreviewAutomationBrokerShape } from "../../mcp/PreviewAutomationBroker.ts";
+import { type AgentBrowserPolicy, DISABLED_AGENT_BROWSER_POLICY } from "../../mcp/browserAccess.ts";
+import {
+  agentBrowserConfigPayload,
+  CLAUDE_IN_CHROME_CERTIFIED,
+  CLAUDE_IN_CHROME_SERVER_NAME,
+  CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL,
+  type ClaudeAgentBrowserState,
+  classifyF5PreviewTool,
+  COMPUTER_USE_UNAVAILABLE_DETAIL,
+  forceClaudeChromeFlag,
+  isClaudeComputerUseTool,
+  isClaudeInChromeTool,
+  isVerifiedSdkServer,
+  makeClaudePreviewMcpServer,
+} from "./claudeAgentBrowser.ts";
 import { resolveClaudeSdkExecutableOptions } from "../claudeSdkExecutable.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import {
@@ -370,6 +387,8 @@ interface ClaudeSessionContext {
   modelContextWindowTokens: number;
   stopped: boolean;
   retiring: boolean;
+  /** Agent browser/computer capabilities installed for this session generation. */
+  agentBrowser: ClaudeAgentBrowserState | undefined;
 }
 
 // Streaming-input results carry a running total. Resumes may restore transcript
@@ -403,6 +422,8 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly applyFlagSettings: (settings: ClaudeRuntimeFlagSettings) => Promise<void>;
   readonly initializationResult?: () => Promise<unknown>;
+  readonly mcpServerStatus?: () => Promise<ReadonlyArray<McpServerStatus>>;
+  readonly toggleMcpServer?: (serverName: string, enabled: boolean) => Promise<void>;
   readonly supportedModels?: () => Promise<ReadonlyArray<unknown>>;
   readonly supportedCommands?: () => Promise<
     ReadonlyArray<{
@@ -434,6 +455,11 @@ export interface ClaudeAdapterLiveOptions {
    * saved conversation. Zero skips the wait.
    */
   readonly resumeConfirmationTimeoutMs?: number;
+  /**
+   * Hosts F5's in-process preview tools in interactive desktop sessions and
+   * supplies live agent browser policy. Absent outside desktop mode.
+   */
+  readonly previewAutomationBroker?: PreviewAutomationBrokerShape;
 }
 
 export interface ClaudeSessionProbeInput {
@@ -646,6 +672,8 @@ type ClaudeResumeSettlement =
 // Bounds how long the first turn after a resume waits for the CLI to confirm
 // the saved conversation. On timeout the send is reported as before.
 const DEFAULT_CLAUDE_RESUME_CONFIRMATION_TIMEOUT_MS = 20_000;
+/** One status read per second for up to 15 s after init. */
+const AGENT_BROWSER_STATUS_POLL_ATTEMPTS = 15;
 
 const CLAUDE_MISSING_SESSION_PATTERNS = [
   "no conversation found",
@@ -2033,6 +2061,42 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       0,
       options?.resumeConfirmationTimeoutMs ?? DEFAULT_CLAUDE_RESUME_CONFIRMATION_TIMEOUT_MS,
     );
+    const agentBrowserBroker =
+      serverConfig.mode === "desktop" ? options?.previewAutomationBroker : undefined;
+    const resolveSessionBrowserPolicy = (threadId: ThreadId): Effect.Effect<AgentBrowserPolicy> =>
+      agentBrowserBroker
+        ? agentBrowserBroker.resolvePolicy(threadId)
+        : Effect.succeed(DISABLED_AGENT_BROWSER_POLICY);
+    /**
+     * Live checks for capabilities that ride on CLI launch flags. Turning one off
+     * denies the next call even though the CLI still exposes the tools.
+     */
+    const evaluateAgentBrowserToolPolicy = (
+      threadId: ThreadId,
+      toolName: string,
+    ): Effect.Effect<string | undefined> =>
+      Effect.gen(function* () {
+        if (isClaudeInChromeTool(toolName)) {
+          const policy = yield* resolveSessionBrowserPolicy(threadId);
+          if (!policy.claudeInChrome) {
+            return "Claude in Chrome is turned off for this project in F5 settings.";
+          }
+          return CLAUDE_IN_CHROME_CERTIFIED ? undefined : CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL;
+        }
+        if (isClaudeComputerUseTool(toolName)) {
+          const policy = yield* resolveSessionBrowserPolicy(threadId);
+          if (!policy.computerUse) {
+            return "Computer use is turned off for this project in F5 settings.";
+          }
+          // No certified backend exists, so a server under this name (for example one
+          // the user configured) can never execute computer control in F5.
+          return (
+            sessions.get(threadId)?.agentBrowser?.computerUse?.detail ??
+            COMPUTER_USE_UNAVAILABLE_DETAIL
+          );
+        }
+        return undefined;
+      });
     const createQuery =
       options?.createQuery ??
       ((input: {
@@ -2155,6 +2219,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...(context.slashCommandsLoaded
                 ? { slashCommands: [...context.availableSlashCommands] }
                 : {}),
+              ...(agentBrowserConfigPayload(context.agentBrowser)
+                ? { agentBrowser: agentBrowserConfigPayload(context.agentBrowser) }
+                : {}),
             },
           },
           providerRefs: nativeProviderRefs(context),
@@ -2189,6 +2256,79 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.modelContextWindowTokens = reportedTokens;
         yield* emitSessionConfigured(context, context.configuredBase);
+      });
+
+    /**
+     * After init: verify the preview server's `sdk` provenance once, then poll
+     * Claude in Chrome's connection (1 s, up to 15 s) until nothing is pending.
+     * Re-emits `session.configured` only when the reported state changes.
+     */
+    const watchAgentBrowserStatus = (context: ClaudeSessionContext): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const state = context.agentBrowser;
+        const readStatus = context.query.mcpServerStatus;
+        if (!state || !readStatus) return;
+        const isCurrent = () =>
+          !context.stopped && sessions.get(context.session.threadId) === context;
+        if (context.query.initializationResult) {
+          yield* Effect.tryPromise(() => context.query.initializationResult!()).pipe(Effect.ignore);
+        }
+        // Provenance is checked on the first successful status read, not the first attempt.
+        let previewChecked = false;
+        for (let attempt = 0; attempt <= AGENT_BROWSER_STATUS_POLL_ATTEMPTS; attempt += 1) {
+          if (!isCurrent()) return;
+          const statuses = yield* Effect.tryPromise(() => readStatus()).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (!isCurrent()) return;
+          if (statuses) {
+            const before = JSON.stringify(agentBrowserConfigPayload(state));
+            if (!previewChecked && state.preview) {
+              previewChecked = true;
+              state.preview.verified = isVerifiedSdkServer(statuses, state.preview.serverName);
+              if (!state.preview.verified) {
+                yield* emitRuntimeWarning(
+                  context,
+                  "F5 could not verify its browser preview tools in this Claude session; they will be treated like any other MCP server.",
+                  { category: "provider", actionable: false },
+                );
+              }
+            }
+            if (
+              state.chrome &&
+              state.chrome.state !== "off" &&
+              state.chrome.state !== "unavailable"
+            ) {
+              const chrome = statuses.find((entry) => entry.name === CLAUDE_IN_CHROME_SERVER_NAME);
+              state.chrome =
+                chrome?.status === "connected"
+                  ? { state: "connected" }
+                  : chrome?.status === "pending"
+                    ? { state: "pending" }
+                    : chrome
+                      ? {
+                          state: "failed",
+                          detail:
+                            chrome.error ??
+                            (chrome.status === "needs-auth"
+                              ? "Claude in Chrome needs you to sign in to claude.ai."
+                              : `Claude in Chrome is ${chrome.status}.`),
+                        }
+                      : {
+                          state: "failed",
+                          detail:
+                            "Claude in Chrome did not start. Install the Claude in Chrome extension and sign in with a claude.ai account.",
+                        };
+            }
+            if (JSON.stringify(agentBrowserConfigPayload(state)) !== before) {
+              yield* emitSessionConfigured(context, context.configuredBase);
+            }
+            if (!statuses.some((entry) => entry.status === "pending")) {
+              return;
+            }
+          }
+          yield* Effect.sleep(Duration.seconds(1));
+        }
       });
 
     const refreshSupportedCommands = (context: ClaudeSessionContext): Effect.Effect<void> =>
@@ -5484,6 +5624,38 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
               if (mandatoryDenial)
                 return { behavior: "deny", message: mandatoryDenial } satisfies PermissionResult;
+              const dynamicDenial = yield* evaluateAgentBrowserToolPolicy(threadId, toolName);
+              if (dynamicDenial)
+                return { behavior: "deny", message: dynamicDenial } satisfies PermissionResult;
+
+              // F5's own preview tools, identified by exact server name and
+              // `sdk` provenance. Observing never prompts; mutating follows the
+              // runtime mode with one session-wide grant for the whole family.
+              const previewToolClass = classifyF5PreviewTool(
+                toolName,
+                context.agentBrowser,
+                callbackOptions.mcpServer,
+              );
+              if (previewToolClass === "observe") {
+                return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
+              }
+              if (
+                previewToolClass === "mutate" &&
+                !input.workflowExecutionProfile &&
+                ((input.runtimeMode ?? DEFAULT_RUNTIME_MODE) === "full-access" ||
+                  context.agentBrowser?.mutatingPreviewGranted)
+              ) {
+                return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
+              }
+              // Defense in depth behind the mandatory hook: computer control has no
+              // certified backend, so it is never approved here either.
+              if (isClaudeComputerUseTool(toolName)) {
+                return {
+                  behavior: "deny",
+                  message:
+                    context.agentBrowser?.computerUse?.detail ?? COMPUTER_USE_UNAVAILABLE_DETAIL,
+                } satisfies PermissionResult;
+              }
 
               // Handle AskUserQuestion: surface clarifying questions to the
               // user via the user-input runtime event channel, regardless of
@@ -5772,6 +5944,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               }
 
               if (decision === "accept" || decision === "acceptForSession") {
+                if (
+                  decision === "acceptForSession" &&
+                  previewToolClass === "mutate" &&
+                  context.agentBrowser
+                ) {
+                  context.agentBrowser.mutatingPreviewGranted = true;
+                }
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,
@@ -5826,6 +6005,40 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
+        // Preview tools are installed in every interactive desktop session; each
+        // call checks live policy. Launch-flag capabilities read policy here.
+        const previewServer = agentBrowserBroker
+          ? makeClaudePreviewMcpServer({
+              broker: agentBrowserBroker,
+              threadId,
+              existingServerNames: new Set(Object.keys(translatedMcpServers ?? {})),
+            })
+          : undefined;
+        const startBrowserPolicy = yield* resolveSessionBrowserPolicy(threadId);
+        // Computer use and Claude in Chrome stay uncertified (see claudeAgentBrowser.ts):
+        // enabling them reports "unavailable" and their tools are denied.
+        const chromeAllowed = startBrowserPolicy.claudeInChrome && CLAUDE_IN_CHROME_CERTIFIED;
+        const agentBrowserState: ClaudeAgentBrowserState | undefined = agentBrowserBroker
+          ? {
+              ...(previewServer
+                ? {
+                    preview: {
+                      serverName: previewServer.serverName,
+                      installed: true,
+                    },
+                  }
+                : {}),
+              chrome: !startBrowserPolicy.claudeInChrome
+                ? { state: "off" }
+                : chromeAllowed
+                  ? { state: "pending" }
+                  : { state: "unavailable", detail: CLAUDE_IN_CHROME_UNAVAILABLE_DETAIL },
+              computerUse: !startBrowserPolicy.computerUse
+                ? { state: "off" }
+                : { state: "unavailable", detail: COMPUTER_USE_UNAVAILABLE_DETAIL },
+              mutatingPreviewGranted: false,
+            }
+          : undefined;
         const settings = {
           cleanupPeriodDays: yield* transcriptRetention(queryEnvironment, input.cwd),
           ...(providerOptions?.autoCompactWindow
@@ -5934,10 +6147,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           // are free-form; safe only because the SDK spawns claude via
           // spawn(command, args) with an argv array and no shell (verify this on
           // each SDK bump).
-          ...(() => {
-            const filtered = filterReservedClaudeLaunchArgs(providerOptions?.launchArgs);
-            return filtered ? { extraArgs: filtered } : {};
-          })(),
+          // F5 settings decide Claude in Chrome; any user chrome flag is replaced.
+          extraArgs: forceClaudeChromeFlag(
+            filterReservedClaudeLaunchArgs(providerOptions?.launchArgs),
+            chromeAllowed,
+          ),
           ...(Object.keys(settings).length > 0 ? { settings } : {}),
           ...(existingResumeSessionId
             ? {
@@ -5955,6 +6169,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             {
               workflowExecutionProfile: input.workflowExecutionProfile,
               subagentsEnabled: providerOptions?.subagentsEnabled,
+              allowReadOnlyMcpTool: (toolName, mcpServer, toolInput) =>
+                classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
+                // `save: true` writes an artifact file, which a read-only stage may not do.
+                asUnknownRecord(toolInput)?.save !== true,
+              evaluateDynamic: (toolName) =>
+                Effect.runPromise(evaluateAgentBrowserToolPolicy(threadId, toolName)),
             },
             undefined,
             async (hook, signal) => {
@@ -5974,10 +6194,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           systemPrompt,
         } satisfies ClaudeQueryOptions;
-        if (translatedMcpServers) {
-          queryOptions.mcpServers = translatedMcpServers as NonNullable<
-            ClaudeQueryOptions["mcpServers"]
-          >;
+        if (translatedMcpServers || previewServer) {
+          queryOptions.mcpServers = {
+            ...(translatedMcpServers as NonNullable<ClaudeQueryOptions["mcpServers"]> | undefined),
+            ...(previewServer ? { [previewServer.serverName]: previewServer.config } : {}),
+          };
         }
 
         const existingContext = sessions.get(threadId);
@@ -6105,6 +6326,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             estimateModelContextWindowTokens(selectedModel, "claudeAgent"),
           stopped: false,
           retiring: false,
+          agentBrowser: agentBrowserState,
         };
         yield* Ref.set(contextRef, context);
         sessions.set(threadId, context);
@@ -6190,6 +6412,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         );
         context.streamFiber = streamFiber;
         yield* refreshSupportedCommands(context);
+        Effect.runFork(watchAgentBrowserStatus(context));
         streamFiber.addObserver(() => {
           if (context.streamFiber === streamFiber) {
             context.streamFiber = undefined;

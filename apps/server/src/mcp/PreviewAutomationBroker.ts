@@ -1,9 +1,13 @@
-import { browserAccessAllowed } from "./browserAccess";
+import { type AgentBrowserPolicy, resolveAgentBrowserPolicy } from "./browserAccess";
 import { randomUUID } from "node:crypto";
 
 import {
+  PreviewAutomationBusyError,
+  PreviewAutomationCapacityExceededError,
+  PreviewAutomationControlInterruptedError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
+  PreviewAutomationNavigationBlockedError,
   PreviewAutomationNoFocusedOwnerError,
   type PreviewAutomationOperation,
   type PreviewAutomationOwner,
@@ -27,15 +31,34 @@ export interface PreviewAutomationInvokeInput {
   readonly input: unknown;
   readonly tabId?: PreviewTabId;
   readonly timeoutMs?: number;
+  /** Policy the caller already resolved for this call; skips the broker's own lookup. */
+  readonly policy?: AgentBrowserPolicy;
 }
 
 export interface PreviewAutomationClient {
   readonly clientId: string;
   readonly rendererClientId?: string;
+  /** The renderer connection that hosts this owner; used to route owner requests. */
+  readonly hostId?: string;
   readonly send: (request: PreviewAutomationRequest) => Effect.Effect<boolean>;
 }
 
+export type PreviewAutomationHostEvent =
+  | { readonly type: "ownerRequested"; readonly requestId: string; readonly threadId: ThreadId }
+  | { readonly type: "ownerReleased"; readonly threadId: ThreadId }
+  | { readonly type: "pauseChanged"; readonly threadId: ThreadId; readonly paused: boolean };
+
+/** A renderer connection that can be asked to create preview owners. */
+export interface PreviewAutomationHost {
+  readonly hostId: string;
+  readonly push: (event: PreviewAutomationHostEvent) => Effect.Effect<boolean>;
+}
+
 export interface PreviewAutomationBrokerShape {
+  /** Live server-owned policy for a thread. Transports resolve it once per tool call. */
+  readonly resolvePolicy: (threadId: ThreadId) => Effect.Effect<AgentBrowserPolicy>;
+  readonly registerHost: (host: PreviewAutomationHost) => Effect.Effect<void>;
+  readonly unregisterHost: (hostId: string) => Effect.Effect<void>;
   readonly reportOwner: (
     owner: PreviewAutomationOwner,
     client: PreviewAutomationClient,
@@ -45,10 +68,16 @@ export interface PreviewAutomationBrokerShape {
   readonly respond: (
     response: PreviewAutomationResponse,
     authorizedClientIds: ReadonlySet<string>,
+    hostId?: string,
   ) => Effect.Effect<void>;
   readonly invoke: <A = unknown>(
     request: PreviewAutomationInvokeInput,
   ) => Effect.Effect<A, PreviewAutomationBrokerError>;
+  readonly setPaused: (threadId: ThreadId, paused: boolean) => Effect.Effect<void>;
+  readonly isPaused: (threadId: ThreadId) => Effect.Effect<boolean>;
+  /** The agent session for this thread ended: drop bindings and unpin hidden previews. */
+  readonly releaseThread: (threadId: ThreadId) => Effect.Effect<void>;
+  readonly shutdown: Effect.Effect<void>;
 }
 
 export class PreviewAutomationBroker extends ServiceMap.Service<
@@ -57,8 +86,12 @@ export class PreviewAutomationBroker extends ServiceMap.Service<
 >()("t3/mcp/PreviewAutomationBroker") {}
 
 export type PreviewAutomationBrokerError =
+  | PreviewAutomationBusyError
+  | PreviewAutomationCapacityExceededError
+  | PreviewAutomationControlInterruptedError
   | PreviewAutomationExecutionError
   | PreviewAutomationInvalidSelectorError
+  | PreviewAutomationNavigationBlockedError
   | PreviewAutomationNoFocusedOwnerError
   | PreviewAutomationResultTooLargeError
   | PreviewAutomationTabNotFoundError
@@ -82,8 +115,57 @@ interface LeasedOwner {
   readonly leaseExpiresAtMs: number;
 }
 
+interface RegisteredHost {
+  readonly host: PreviewAutomationHost;
+  /** Last time this host reported an automation-capable owner; 0 when never. */
+  lastOwnerReportAt: number;
+}
+
+interface OwnerRequest {
+  readonly requestId: string;
+  readonly hostIds: ReadonlySet<string>;
+  readonly waiters: Set<OwnerWaiter>;
+}
+
+interface OwnerWaiter {
+  readonly resolve: () => void;
+  readonly reject: (error: PreviewAutomationBrokerError) => void;
+}
+
+interface ThreadQueue {
+  running: boolean;
+  readonly waiting: Array<{
+    readonly start: () => void;
+    readonly reject: (error: PreviewAutomationBrokerError) => void;
+  }>;
+}
+
 const PREVIEW_OWNER_LEASE_MS = 30_000;
 const PREVIEW_OWNER_SWEEP_MS = 5_000;
+const DEFAULT_TIMEOUT_MS = 15_000;
+const BROKER_GRACE_MS = 2_000;
+export const OWNER_REQUEST_MAX_WAIT_MS = 10_000;
+export const MAX_QUEUED_MUTATIONS_PER_THREAD = 32;
+
+const MUTATING_OPERATIONS: ReadonlySet<PreviewAutomationOperation> = new Set([
+  "open",
+  "navigate",
+  "click",
+  "type",
+  "press",
+  "scroll",
+  "evaluate",
+  "viewport",
+  "recordingStart",
+  "recordingStop",
+]);
+
+export function isMutatingPreviewOperation(operation: PreviewAutomationOperation): boolean {
+  return MUTATING_OPERATIONS.has(operation);
+}
+
+export const PREVIEW_CONTROL_INTERRUPTED_MESSAGE =
+  "The user took control of the browser preview. Ask the user before continuing, then take a fresh preview_snapshot.";
 
 function requiredCapability(operation: PreviewAutomationOperation): PreviewHostCapability {
   switch (operation) {
@@ -99,59 +181,64 @@ function requiredCapability(operation: PreviewAutomationOperation): PreviewHostC
   }
 }
 
+const brokerErrorGuards = [
+  Schema.is(PreviewAutomationBusyError),
+  Schema.is(PreviewAutomationCapacityExceededError),
+  Schema.is(PreviewAutomationControlInterruptedError),
+  Schema.is(PreviewAutomationExecutionError),
+  Schema.is(PreviewAutomationInvalidSelectorError),
+  Schema.is(PreviewAutomationNavigationBlockedError),
+  Schema.is(PreviewAutomationNoFocusedOwnerError),
+  Schema.is(PreviewAutomationResultTooLargeError),
+  Schema.is(PreviewAutomationTabNotFoundError),
+  Schema.is(PreviewAutomationTimeoutError),
+  Schema.is(PreviewAutomationUnavailableError),
+];
+
 function isPreviewAutomationError(cause: unknown): cause is PreviewAutomationBrokerError {
-  const isExecutionError = Schema.is(PreviewAutomationExecutionError);
-  const isInvalidSelectorError = Schema.is(PreviewAutomationInvalidSelectorError);
-  const isNoFocusedOwnerError = Schema.is(PreviewAutomationNoFocusedOwnerError);
-  const isResultTooLargeError = Schema.is(PreviewAutomationResultTooLargeError);
-  const isTabNotFoundError = Schema.is(PreviewAutomationTabNotFoundError);
-  const isTimeoutError = Schema.is(PreviewAutomationTimeoutError);
-  const isUnavailableError = Schema.is(PreviewAutomationUnavailableError);
-  return (
-    isExecutionError(cause) ||
-    isInvalidSelectorError(cause) ||
-    isNoFocusedOwnerError(cause) ||
-    isResultTooLargeError(cause) ||
-    isTabNotFoundError(cause) ||
-    isTimeoutError(cause) ||
-    isUnavailableError(cause)
-  );
+  return brokerErrorGuards.some((guard) => guard(cause));
 }
 
-function responseErrorToPreviewError(
+function detailRecord(detail: unknown): Record<string, unknown> | undefined {
+  return typeof detail === "object" && detail !== null
+    ? (detail as Record<string, unknown>)
+    : undefined;
+}
+
+export function responseErrorToPreviewError(
   error: NonNullable<PreviewAutomationResponse["error"]>,
 ): PreviewAutomationBrokerError {
+  const detail = detailRecord(error.detail);
   switch (error._tag) {
-    case "PreviewAutomationInvalidSelectorError": {
-      const detail =
-        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+    case "PreviewAutomationInvalidSelectorError":
       return new PreviewAutomationInvalidSelectorError({
         message: error.message,
-        selector:
-          detail && "selector" in detail && typeof detail.selector === "string"
-            ? detail.selector
-            : "",
+        selector: typeof detail?.selector === "string" ? detail.selector : "",
       });
-    }
     case "PreviewAutomationNoFocusedOwnerError":
       return new PreviewAutomationNoFocusedOwnerError({ message: error.message });
-    case "PreviewAutomationResultTooLargeError": {
-      const detail =
-        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+    case "PreviewAutomationResultTooLargeError":
       return new PreviewAutomationResultTooLargeError({
         message: error.message,
-        maximumBytes:
-          detail && "maximumBytes" in detail && typeof detail.maximumBytes === "number"
-            ? detail.maximumBytes
-            : 64_000,
+        maximumBytes: typeof detail?.maximumBytes === "number" ? detail.maximumBytes : 64_000,
       });
-    }
     case "PreviewAutomationTabNotFoundError":
       return new PreviewAutomationTabNotFoundError({ message: error.message });
     case "PreviewAutomationTimeoutError":
       return new PreviewAutomationTimeoutError({ message: error.message });
     case "PreviewAutomationUnavailableError":
       return new PreviewAutomationUnavailableError({ message: error.message });
+    case "PreviewAutomationControlInterruptedError":
+      return new PreviewAutomationControlInterruptedError({ message: error.message });
+    case "PreviewAutomationBusyError":
+      return new PreviewAutomationBusyError({ message: error.message });
+    case "PreviewAutomationCapacityExceededError":
+      return new PreviewAutomationCapacityExceededError({ message: error.message });
+    case "PreviewAutomationNavigationBlockedError":
+      return new PreviewAutomationNavigationBlockedError({
+        message: error.message,
+        ...(typeof detail?.host === "string" ? { host: detail.host } : {}),
+      });
     default:
       return new PreviewAutomationExecutionError({
         message: error.message,
@@ -160,12 +247,32 @@ function responseErrorToPreviewError(
   }
 }
 
+/** Used only when no resolver is configured (unit tests and bare brokers). */
+const UNRESTRICTED_POLICY: AgentBrowserPolicy = {
+  previewAutomation: true,
+  externalHosts: [],
+  claudeInChrome: false,
+  computerUse: false,
+};
+
+export interface PreviewAutomationBrokerOptions {
+  /** Live policy lookup used when a caller does not pass one, and after owner waits. */
+  readonly resolvePolicy?: (threadId: ThreadId) => Effect.Effect<AgentBrowserPolicy>;
+}
+
 export function makePreviewAutomationBroker(
-  authorize?: (threadId: ThreadId) => Effect.Effect<boolean>,
+  options: PreviewAutomationBrokerOptions = {},
 ): PreviewAutomationBrokerShape {
   const owners = new Map<string, LeasedOwner>();
   const pending = new Map<string, PendingRequest>();
   const sessionTargets = new Map<string, { tabId: PreviewTabId; connectionId: string }>();
+  /** First owner that served an automation session; never reranked mid-session. */
+  const sessionOwners = new Map<string, { clientId: string; connectionId: string }>();
+  const hosts = new Map<string, RegisteredHost>();
+  const ownerRequests = new Map<ThreadId, OwnerRequest>();
+  const threadQueues = new Map<ThreadId, ThreadQueue>();
+  const pausedThreads = new Set<ThreadId>();
+  let shutDown = false;
 
   const removePending = (requestId: string): PendingRequest | undefined => {
     const entry = pending.get(requestId);
@@ -213,7 +320,348 @@ export function makePreviewAutomationBroker(
   const sweepTimer = setInterval(sweepExpiredOwners, PREVIEW_OWNER_SWEEP_MS);
   sweepTimer.unref?.();
 
+  const pushToHost = (hostId: string, event: PreviewAutomationHostEvent): void => {
+    const registered = hosts.get(hostId);
+    if (!registered) return;
+    void Effect.runPromise(registered.host.push(event)).catch(() => undefined);
+  };
+
+  const pushToAllHosts = (event: PreviewAutomationHostEvent): void => {
+    for (const hostId of hosts.keys()) pushToHost(hostId, event);
+  };
+
+  const settleOwnerRequest = (
+    threadId: ThreadId,
+    outcome: { readonly error?: PreviewAutomationBrokerError },
+  ): void => {
+    const request = ownerRequests.get(threadId);
+    if (!request) return;
+    ownerRequests.delete(threadId);
+    for (const waiter of request.waiters) {
+      if (outcome.error) waiter.reject(outcome.error);
+      else waiter.resolve();
+    }
+  };
+
+  /**
+   * Ask a desktop renderer to create an owner for `threadId`. Goes to the most
+   * recently active desktop host, or to every host when none has reported an
+   * owner since server start. Concurrent requests for a thread share one push.
+   */
+  const awaitOwner = (threadId: ThreadId, waitMs: number): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      if (shutDown) {
+        reject(new PreviewAutomationUnavailableError({ message: "F5 is shutting down." }));
+        return;
+      }
+      let request = ownerRequests.get(threadId);
+      if (!request) {
+        const active = [...hosts.values()]
+          .filter((entry) => entry.lastOwnerReportAt > 0)
+          .sort((left, right) => right.lastOwnerReportAt - left.lastOwnerReportAt)[0];
+        const hostIds = new Set(active ? [active.host.hostId] : hosts.keys());
+        if (hostIds.size === 0) {
+          reject(
+            new PreviewAutomationNoFocusedOwnerError({
+              message: "No F5 desktop window is connected to host the browser preview.",
+            }),
+          );
+          return;
+        }
+        request = { requestId: `preview-owner-${randomUUID()}`, hostIds, waiters: new Set() };
+        ownerRequests.set(threadId, request);
+        for (const hostId of hostIds) {
+          pushToHost(hostId, { type: "ownerRequested", requestId: request.requestId, threadId });
+        }
+      }
+      const activeRequest = request;
+      const waiter: OwnerWaiter = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      const timer = setTimeout(() => {
+        activeRequest.waiters.delete(waiter);
+        if (activeRequest.waiters.size === 0 && ownerRequests.get(threadId) === activeRequest) {
+          ownerRequests.delete(threadId);
+        }
+        reject(
+          new PreviewAutomationNoFocusedOwnerError({
+            message: `The desktop app did not open a browser preview within ${waitMs}ms.`,
+          }),
+        );
+      }, waitMs);
+      activeRequest.waiters.add(waiter);
+    });
+
+  const selectOwner = (
+    input: PreviewAutomationInvokeInput,
+    sessionKey: string | null,
+  ): LeasedOwner | PreviewAutomationBrokerError => {
+    sweepExpiredOwners();
+    const capability = requiredCapability(input.operation);
+    const supports = (leased: LeasedOwner) =>
+      leased.owner.threadId === input.threadId &&
+      leased.owner.supportsAutomation &&
+      (leased.owner.capabilities ?? ["automation"]).includes(capability);
+    const bound = sessionKey ? sessionOwners.get(sessionKey) : undefined;
+    if (bound) {
+      const leased = owners.get(bound.clientId);
+      if (leased && leased.connectionId === bound.connectionId && supports(leased)) return leased;
+      if (leased && leased.connectionId === bound.connectionId) {
+        return new PreviewAutomationUnavailableError({
+          message: `The browser preview controlled by this session does not support ${capability}.`,
+        });
+      }
+      // The bound owner is gone. Only preview_open may re-request a new one.
+      if (input.operation !== "open") {
+        return new PreviewAutomationNoFocusedOwnerError({
+          message:
+            "The browser preview this agent session was using closed. Call preview_open to reopen it.",
+        });
+      }
+      sessionOwners.delete(sessionKey!);
+    }
+    const candidates = Array.from(owners.values())
+      .filter(supports)
+      .sort(
+        (left, right) =>
+          Number(right.owner.visible) - Number(left.owner.visible) ||
+          right.owner.focusedAt.localeCompare(left.owner.focusedAt),
+      );
+    return (
+      candidates[0] ??
+      new PreviewAutomationNoFocusedOwnerError({
+        message: "No desktop browser preview is available for this thread.",
+      })
+    );
+  };
+
+  /**
+   * Waits for the thread's mutation slot. A request still queued at its deadline expires
+   * without ever dispatching; `waited` tells the caller to revalidate live authorization.
+   */
+  const acquireThreadSlot = (
+    threadId: ThreadId,
+    signal: AbortSignal,
+    deadlineMs: number,
+  ): Promise<{ readonly release: () => void; readonly waited: boolean }> =>
+    new Promise((resolve, reject) => {
+      let queue = threadQueues.get(threadId);
+      if (!queue) {
+        queue = { running: false, waiting: [] };
+        threadQueues.set(threadId, queue);
+      }
+      const activeQueue = queue;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        const next = activeQueue.waiting.shift();
+        if (next) {
+          next.start();
+          return;
+        }
+        activeQueue.running = false;
+        if (threadQueues.get(threadId) === activeQueue) threadQueues.delete(threadId);
+      };
+      if (!activeQueue.running) {
+        activeQueue.running = true;
+        resolve({ release, waited: false });
+        return;
+      }
+      if (activeQueue.waiting.length >= MAX_QUEUED_MUTATIONS_PER_THREAD) {
+        reject(
+          new PreviewAutomationBusyError({
+            message: `More than ${MAX_QUEUED_MUTATIONS_PER_THREAD} browser actions are queued for this thread. Wait for them to finish.`,
+          }),
+        );
+        return;
+      }
+      const settle = () => {
+        signal.removeEventListener("abort", onAbort);
+        clearTimeout(deadline);
+      };
+      const entry = {
+        start: () => {
+          settle();
+          resolve({ release, waited: true });
+        },
+        reject: (error: PreviewAutomationBrokerError) => {
+          settle();
+          reject(error);
+        },
+      };
+      const leaveQueue = (error: PreviewAutomationBrokerError) => {
+        const index = activeQueue.waiting.indexOf(entry);
+        if (index < 0) return;
+        activeQueue.waiting.splice(index, 1);
+        entry.reject(error);
+      };
+      const onAbort = () =>
+        leaveQueue(
+          new PreviewAutomationTimeoutError({ message: "Preview request was cancelled." }),
+        );
+      const deadline = setTimeout(
+        () =>
+          leaveQueue(
+            new PreviewAutomationTimeoutError({
+              message:
+                "Preview request timed out waiting for earlier browser actions; it was not run.",
+            }),
+          ),
+        Math.max(0, deadlineMs),
+      );
+      signal.addEventListener("abort", onAbort, { once: true });
+      activeQueue.waiting.push(entry);
+    });
+
+  const failQueuedMutations = (threadId: ThreadId, error: PreviewAutomationBrokerError): void => {
+    const queue = threadQueues.get(threadId);
+    if (!queue) return;
+    for (const entry of queue.waiting.splice(0)) entry.reject(error);
+  };
+
+  const resolveThreadPolicy = (threadId: ThreadId): Effect.Effect<AgentBrowserPolicy> =>
+    options.resolvePolicy ? options.resolvePolicy(threadId) : Effect.succeed(UNRESTRICTED_POLICY);
+
+  const resolvePolicy = (input: PreviewAutomationInvokeInput) =>
+    input.policy ? Effect.succeed(input.policy) : resolveThreadPolicy(input.threadId);
+
+  const dispatch = <A>(
+    input: PreviewAutomationInvokeInput,
+    leased: LeasedOwner,
+    sessionKey: string | null,
+    timeoutMs: number,
+  ): Promise<A> =>
+    new Promise<A>((resolve, reject) => {
+      const { owner, client } = leased;
+      if (sessionKey && !sessionOwners.has(sessionKey)) {
+        sessionOwners.set(sessionKey, {
+          clientId: client.clientId,
+          connectionId: leased.connectionId,
+        });
+      }
+      const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
+      const mappedTabId =
+        mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
+      const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
+      if (sessionKey && input.tabId) {
+        sessionTargets.set(sessionKey, { tabId: input.tabId, connectionId: leased.connectionId });
+      }
+
+      if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
+        reject(
+          new PreviewAutomationTabNotFoundError({
+            message: "The browser preview does not have an active tab.",
+          }),
+        );
+        return;
+      }
+
+      const brokerTimeoutMs = timeoutMs + BROKER_GRACE_MS;
+      const requestId = `preview-${randomUUID()}`;
+      const timeout = setTimeout(() => {
+        const entry = removePending(requestId);
+        entry?.reject(
+          new PreviewAutomationTimeoutError({
+            message: `Preview automation response timed out after ${brokerTimeoutMs}ms.`,
+          }),
+        );
+      }, brokerTimeoutMs);
+
+      pending.set(requestId, {
+        clientId: client.clientId,
+        rendererClientId: leased.rendererClientId,
+        connectionId: leased.connectionId,
+        timeout,
+        resolve: (value) => {
+          if (
+            sessionKey &&
+            value &&
+            typeof value === "object" &&
+            "tabId" in value &&
+            typeof value.tabId === "string" &&
+            value.tabId.length > 0
+          ) {
+            sessionTargets.set(sessionKey, {
+              tabId: value.tabId as PreviewTabId,
+              connectionId: leased.connectionId,
+            });
+          }
+          resolve(value as A);
+        },
+        reject,
+      });
+
+      void Effect.runPromise(
+        client.send({
+          requestId,
+          clientId: leased.rendererClientId,
+          connectionId: leased.connectionId,
+          threadId: input.threadId,
+          ...(targetTabId ? { tabId: targetTabId } : {}),
+          operation: input.operation,
+          input: input.input,
+          timeoutMs,
+        }),
+      ).then(
+        (delivered) => {
+          if (delivered) return;
+          const entry = removePending(requestId);
+          entry?.reject(
+            new PreviewAutomationUnavailableError({
+              message: "The preview automation client is no longer connected.",
+            }),
+          );
+        },
+        (cause) => {
+          const entry = removePending(requestId);
+          entry?.reject(
+            new PreviewAutomationUnavailableError({
+              message:
+                cause instanceof Error
+                  ? cause.message
+                  : "Failed to send preview automation request.",
+            }),
+          );
+        },
+      );
+    });
+
+  const withPausedFlag = (threadId: ThreadId, value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    return pausedThreads.has(threadId) ? { ...value, paused: true, reason: "paused" } : value;
+  };
+
+  const disabledError = () =>
+    new PreviewAutomationUnavailableError({
+      message: "Agent browser access is disabled for this project.",
+      reason: "disabled",
+    });
+
+  const interruptedError = () =>
+    new PreviewAutomationControlInterruptedError({ message: PREVIEW_CONTROL_INTERRUPTED_MESSAGE });
+
   return {
+    resolvePolicy: resolveThreadPolicy,
+
+    registerHost: (host) =>
+      Effect.sync(() => {
+        const existing = hosts.get(host.hostId);
+        hosts.set(host.hostId, { host, lastOwnerReportAt: existing?.lastOwnerReportAt ?? 0 });
+      }),
+
+    unregisterHost: (hostId) =>
+      Effect.sync(() => {
+        hosts.delete(hostId);
+      }),
+
     reportOwner: (owner, client) =>
       Effect.sync(() => {
         sweepExpiredOwners();
@@ -241,6 +689,11 @@ export function makePreviewAutomationBroker(
           connectionId,
           leaseExpiresAtMs,
         });
+        if (client.hostId) {
+          const registered = hosts.get(client.hostId);
+          if (registered) registered.lastOwnerReportAt = Date.now();
+        }
+        if (owner.supportsAutomation) settleOwnerRequest(owner.threadId, {});
         return {
           clientId: rendererClientId,
           connectionId,
@@ -263,8 +716,21 @@ export function makePreviewAutomationBroker(
         }
       }),
 
-    respond: (response, authorizedClientIds) =>
+    respond: (response, authorizedClientIds, hostId) =>
       Effect.sync(() => {
+        // A renderer that cannot satisfy an owner request answers with its request id.
+        for (const [threadId, request] of ownerRequests) {
+          if (request.requestId !== response.requestId) continue;
+          if (!hostId || !request.hostIds.has(hostId) || response.ok) return;
+          settleOwnerRequest(threadId, {
+            error: response.error
+              ? responseErrorToPreviewError(response.error)
+              : new PreviewAutomationNoFocusedOwnerError({
+                  message: "The desktop app could not open a browser preview.",
+                }),
+          });
+          return;
+        }
         const pendingEntry = pending.get(response.requestId);
         if (
           !pendingEntry ||
@@ -291,131 +757,58 @@ export function makePreviewAutomationBroker(
 
     invoke: <A = unknown>(input: PreviewAutomationInvokeInput) =>
       Effect.gen(function* () {
-        if (authorize && !(yield* authorize(input.threadId)))
-          return yield* new PreviewAutomationUnavailableError({
-            message: "Agent browser access is disabled for this project.",
-          });
-        return yield* Effect.tryPromise({
-          try: () =>
-            new Promise<A>((resolve, reject) => {
-              sweepExpiredOwners();
-              const capability = requiredCapability(input.operation);
-              const candidates = Array.from(owners.values())
-                .filter(
-                  (leased) =>
-                    leased.owner.threadId === input.threadId &&
-                    leased.owner.supportsAutomation &&
-                    (leased.owner.capabilities ?? ["automation"]).includes(capability),
-                )
-                .sort(
-                  (left, right) =>
-                    Number(right.owner.visible) - Number(left.owner.visible) ||
-                    right.owner.focusedAt.localeCompare(left.owner.focusedAt),
-                );
-              const leased = candidates[0];
-              if (!leased) {
-                reject(
-                  new PreviewAutomationNoFocusedOwnerError({
-                    message: "No desktop browser preview is available for this thread.",
-                  }),
-                );
-                return;
-              }
+        const policy = yield* resolvePolicy(input);
+        if (!policy.previewAutomation) return yield* disabledError();
+        const mutating = isMutatingPreviewOperation(input.operation);
+        if (mutating && pausedThreads.has(input.threadId)) return yield* interruptedError();
+        const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+        const sessionKey = input.automationSessionId
+          ? `${input.threadId}\u0000${input.automationSessionId}`
+          : null;
+        const startedAt = Date.now();
 
-              const { owner, client } = leased;
-              const sessionKey = input.automationSessionId
-                ? `${input.threadId}\u0000${input.automationSessionId}`
-                : null;
-              const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
-              const mappedTabId =
-                mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
-              const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
-              if (sessionKey && input.tabId) {
-                sessionTargets.set(sessionKey, {
-                  tabId: input.tabId,
-                  connectionId: leased.connectionId,
+        const result = yield* Effect.tryPromise({
+          try: async (signal) => {
+            const slot = mutating
+              ? await acquireThreadSlot(input.threadId, signal, timeoutMs)
+              : { release: () => undefined, waited: false };
+            const release = slot.release;
+            try {
+              if (mutating && pausedThreads.has(input.threadId)) throw interruptedError();
+              if (slot.waited) {
+                // Access may have been turned off while this action waited its turn.
+                const refreshed = await Effect.runPromise(resolveThreadPolicy(input.threadId));
+                if (!refreshed.previewAutomation) throw disabledError();
+              }
+              let selected = selectOwner(input, sessionKey);
+              if (
+                input.operation === "open" &&
+                Schema.is(PreviewAutomationNoFocusedOwnerError)(selected)
+              ) {
+                const remaining = timeoutMs - (Date.now() - startedAt);
+                await awaitOwner(
+                  input.threadId,
+                  Math.max(0, Math.min(OWNER_REQUEST_MAX_WAIT_MS, remaining)),
+                );
+                // Settings may have changed while the desktop app opened the preview.
+                const refreshed = await Effect.runPromise(resolveThreadPolicy(input.threadId));
+                if (!refreshed.previewAutomation) throw disabledError();
+                if (pausedThreads.has(input.threadId)) throw interruptedError();
+                selected = selectOwner(input, sessionKey);
+              }
+              if (isPreviewAutomationError(selected)) throw selected;
+              const remaining = timeoutMs - (Date.now() - startedAt);
+              if (remaining <= 0) {
+                // The caller has already given up; never start an action past its deadline.
+                throw new PreviewAutomationTimeoutError({
+                  message: "Preview request timed out before it could run; it was not run.",
                 });
               }
-
-              if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
-                reject(
-                  new PreviewAutomationTabNotFoundError({
-                    message: "The browser preview does not have an active tab.",
-                  }),
-                );
-                return;
-              }
-
-              const timeoutMs = input.timeoutMs ?? 15_000;
-              const brokerTimeoutMs = timeoutMs + 2_000;
-              const requestId = `preview-${randomUUID()}`;
-              const timeout = setTimeout(() => {
-                const entry = removePending(requestId);
-                entry?.reject(
-                  new PreviewAutomationTimeoutError({
-                    message: `Preview automation response timed out after ${brokerTimeoutMs}ms.`,
-                  }),
-                );
-              }, brokerTimeoutMs);
-
-              pending.set(requestId, {
-                clientId: client.clientId,
-                rendererClientId: leased.rendererClientId,
-                connectionId: leased.connectionId,
-                timeout,
-                resolve: (value) => {
-                  if (
-                    sessionKey &&
-                    value &&
-                    typeof value === "object" &&
-                    "tabId" in value &&
-                    typeof value.tabId === "string" &&
-                    value.tabId.length > 0
-                  ) {
-                    sessionTargets.set(sessionKey, {
-                      tabId: value.tabId as PreviewTabId,
-                      connectionId: leased.connectionId,
-                    });
-                  }
-                  resolve(value as A);
-                },
-                reject,
-              });
-
-              void Effect.runPromise(
-                client.send({
-                  requestId,
-                  clientId: leased.rendererClientId,
-                  connectionId: leased.connectionId,
-                  threadId: input.threadId,
-                  ...(targetTabId ? { tabId: targetTabId } : {}),
-                  operation: input.operation,
-                  input: input.input,
-                  timeoutMs,
-                }),
-              ).then(
-                (delivered) => {
-                  if (delivered) return;
-                  const entry = removePending(requestId);
-                  entry?.reject(
-                    new PreviewAutomationUnavailableError({
-                      message: "The preview automation client is no longer connected.",
-                    }),
-                  );
-                },
-                (cause) => {
-                  const entry = removePending(requestId);
-                  entry?.reject(
-                    new PreviewAutomationUnavailableError({
-                      message:
-                        cause instanceof Error
-                          ? cause.message
-                          : "Failed to send preview automation request.",
-                    }),
-                  );
-                },
-              );
-            }),
+              return await dispatch<A>(input, selected, sessionKey, remaining);
+            } finally {
+              release();
+            }
+          },
           catch: (cause) =>
             isPreviewAutomationError(cause)
               ? cause
@@ -423,8 +816,48 @@ export function makePreviewAutomationBroker(
                   message: cause instanceof Error ? cause.message : String(cause),
                   detail: cause,
                 }),
-        }) as Effect.Effect<A, PreviewAutomationBrokerError>;
+        });
+        return (input.operation === "status"
+          ? withPausedFlag(input.threadId, result)
+          : result) as unknown as A;
+      }) as Effect.Effect<A, PreviewAutomationBrokerError>,
+
+    setPaused: (threadId, paused) =>
+      Effect.sync(() => {
+        const wasPaused = pausedThreads.has(threadId);
+        if (paused) pausedThreads.add(threadId);
+        else pausedThreads.delete(threadId);
+        if (paused) failQueuedMutations(threadId, interruptedError());
+        if (wasPaused !== paused) pushToAllHosts({ type: "pauseChanged", threadId, paused });
       }),
+
+    isPaused: (threadId) => Effect.sync(() => pausedThreads.has(threadId)),
+
+    releaseThread: (threadId) =>
+      Effect.sync(() => {
+        const prefix = `${threadId}\u0000`;
+        // Deleting the current key while iterating a Map is safe.
+        for (const key of sessionOwners.keys()) {
+          if (key.startsWith(prefix)) sessionOwners.delete(key);
+        }
+        for (const key of sessionTargets.keys()) {
+          if (key.startsWith(prefix)) sessionTargets.delete(key);
+        }
+        settleOwnerRequest(threadId, {
+          error: new PreviewAutomationUnavailableError({
+            message: "The agent session for this thread ended.",
+          }),
+        });
+        pushToAllHosts({ type: "ownerReleased", threadId });
+      }),
+
+    shutdown: Effect.sync(() => {
+      shutDown = true;
+      clearInterval(sweepTimer);
+      const error = new PreviewAutomationUnavailableError({ message: "F5 is shutting down." });
+      for (const threadId of ownerRequests.keys()) settleOwnerRequest(threadId, { error });
+      for (const threadId of threadQueues.keys()) failQueuedMutations(threadId, error);
+    }),
   };
 }
 
@@ -432,8 +865,10 @@ export const PreviewAutomationBrokerLive = Layer.effect(
   PreviewAutomationBroker,
   Effect.gen(function* () {
     const services = yield* Effect.services<never>();
-    return makePreviewAutomationBroker((thread) =>
-      browserAccessAllowed(thread).pipe(Effect.provide(services)),
-    );
+    const broker = makePreviewAutomationBroker({
+      resolvePolicy: (thread) => resolveAgentBrowserPolicy(thread).pipe(Effect.provide(services)),
+    });
+    yield* Effect.addFinalizer(() => broker.shutdown);
+    return broker;
   }),
 );

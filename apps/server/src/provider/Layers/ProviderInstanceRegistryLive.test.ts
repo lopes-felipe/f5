@@ -45,6 +45,10 @@ import {
   PreviewMcpHttpServer,
   type PreviewMcpHttpServerShape,
 } from "../../mcp/PreviewMcpHttpServer.ts";
+import {
+  makePreviewAutomationBroker,
+  PreviewAutomationBroker,
+} from "../../mcp/PreviewAutomationBroker.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
@@ -117,6 +121,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(Layer.succeed(PreviewMcpHttpServer, NoOpPreviewMcpHttpServer)),
+    Layer.provideMerge(Layer.succeed(PreviewAutomationBroker, makePreviewAutomationBroker())),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -259,6 +264,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
     Layer.provideMerge(infraLayer),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
     Layer.provideMerge(Layer.succeed(PreviewMcpHttpServer, NoOpPreviewMcpHttpServer)),
+    Layer.provideMerge(Layer.succeed(PreviewAutomationBroker, makePreviewAutomationBroker())),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>

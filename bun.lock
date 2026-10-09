@@ -63,6 +63,7 @@
         "ws": "^8.18.0",
         "yaml": "^2.8.2",
         "yauzl": "^3.4.0",
+        "zod": "^4.3.6",
       },
       "devDependencies": {
         "@effect/language-service": "catalog:",

@@ -16,6 +16,7 @@ import {
 import {
   newPreviewTabId,
   normalizePreviewUrl,
+  type PreviewNavigationPolicy,
   PreviewUrlNormalizationError,
 } from "@t3tools/shared/preview";
 import { DateTime, Effect } from "effect";
@@ -45,9 +46,12 @@ const compositeKey = (threadId: string, tabId: string): string => `${threadId}\u
 
 const currentIsoTimestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
-const normalizeUrl = (rawUrl: string): Effect.Effect<string, PreviewInvalidUrlError> =>
+const normalizeUrl = (
+  rawUrl: string,
+  policy: PreviewNavigationPolicy | undefined,
+): Effect.Effect<string, PreviewInvalidUrlError> =>
   Effect.try({
-    try: () => normalizePreviewUrl(rawUrl),
+    try: () => normalizePreviewUrl(rawUrl, policy),
     catch: (cause) =>
       new PreviewInvalidUrlError({
         rawUrl,
@@ -99,7 +103,18 @@ const buildLoadingSnapshot = (input: {
   updatedAt: input.updatedAt,
 });
 
-export function makePreviewManager(): PreviewManager {
+const LOOPBACK_ONLY_POLICY: PreviewNavigationPolicy = { externalHosts: [] };
+
+export interface PreviewManagerOptions {
+  /** Live allowed-sites policy for a thread; loopback-only when absent. */
+  readonly resolveNavigationPolicy?: (threadId: string) => Effect.Effect<PreviewNavigationPolicy>;
+}
+
+export function makePreviewManager(options: PreviewManagerOptions = {}): PreviewManager {
+  const navigationPolicy = (threadId: string): Effect.Effect<PreviewNavigationPolicy> =>
+    options.resolveNavigationPolicy
+      ? options.resolveNavigationPolicy(threadId)
+      : Effect.succeed(LOOPBACK_ONLY_POLICY);
   const sessions = new Map<string, PreviewSessionState>();
   const recentLocationsByThreadId = new Map<string, PreviewRecentLocation[]>();
   const listeners = new Set<(event: PreviewEvent) => void>();
@@ -157,7 +172,7 @@ export function makePreviewManager(): PreviewManager {
           ? buildLoadingSnapshot({
               threadId: input.threadId,
               tabId,
-              url: yield* normalizeUrl(input.url),
+              url: yield* normalizeUrl(input.url, yield* navigationPolicy(input.threadId)),
               title: "",
               updatedAt,
             })
@@ -185,7 +200,7 @@ export function makePreviewManager(): PreviewManager {
         const snapshot = buildLoadingSnapshot({
           threadId: session.threadId,
           tabId: session.tabId,
-          url: yield* normalizeUrl(input.url),
+          url: yield* normalizeUrl(input.url, yield* navigationPolicy(input.threadId)),
           title: input.resolvedTitle ?? previousTitle,
           canGoBack: session.snapshot.canGoBack,
           canGoForward: session.snapshot.canGoForward,

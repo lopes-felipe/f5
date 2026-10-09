@@ -3,9 +3,23 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import { DEFAULT_SERVER_SETTINGS, ProjectId, ServerSettings } from "@t3tools/contracts";
 import { parseCheckedInProjectFile } from "./checkedInProjectFile";
-import { resolveProjectSettings } from "./projectSettings";
+import { agentBrowserPolicyFromSettings, resolveProjectSettings } from "./projectSettings";
 import { applyServerSettingsPatch } from "./serverSettings";
 const id = ProjectId.makeUnsafe("project-test");
+describe("agent browser policy", () => {
+  it("drops saved host patterns that fail validation", () => {
+    const policy = agentBrowserPolicyFromSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        enableAgentBrowserAccess: true,
+        previewExternalHosts: ["example.com", "https://evil.test:8443/path", "*.docs.test", "a*b"],
+      },
+      undefined,
+    );
+    expect(policy.externalHosts).toEqual(["example.com", "*.docs.test"]);
+  });
+});
+
 describe("project settings", () => {
   it("ignores checked-in values for storage automation keys", () => {
     const result = resolveProjectSettings({
@@ -22,6 +36,21 @@ describe("project settings", () => {
     expect(result.settings.autoPullDefaultBranch).toBe(false);
     expect(result.settings.worktreeCleanup).toBeNull();
     expect(result.sources.autoPullDefaultBranch).toBe("default");
+  });
+  it("never lets a checked-in file widen agent browser or computer reach", () => {
+    const result = resolveProjectSettings({
+      projectId: id,
+      checkedIn: {
+        previewExternalHosts: ["*"],
+        enableClaudeInChrome: true,
+        enableAgentComputerUse: true,
+      },
+      sourceFile: "f5.json",
+    });
+    expect(result.settings.previewExternalHosts).toEqual([]);
+    expect(result.settings.enableClaudeInChrome).toBe(false);
+    expect(result.settings.enableAgentComputerUse).toBe(false);
+    expect(result.sources.previewExternalHosts).toBe("default");
   });
   it("resolves override, legacy, file, global and built-in defaults in order", () => {
     const global = { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" as const };

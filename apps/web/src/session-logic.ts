@@ -106,6 +106,8 @@ export interface WorkLogEntry {
   mcpToolName?: string;
   mcpInput?: string;
   mcpResult?: string;
+  mcpImages?: ReadonlyArray<{ attachmentId: string; mimeType: string; sizeBytes: number }>;
+  mcpImagesOmitted?: number;
   activityKind?: string;
   category?: "tool" | "hook" | "review" | "issue" | "other";
   isIssue?: boolean;
@@ -741,6 +743,8 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     mcpToolName: entry.mcpToolName,
     mcpInput: entry.mcpInput,
     mcpResult: entry.mcpResult,
+    mcpImages: entry.mcpImages?.map((image) => image.attachmentId) ?? [],
+    mcpImagesOmitted: entry.mcpImagesOmitted,
   });
 }
 
@@ -1302,6 +1306,12 @@ export function deriveWorkLogEntries(
       }
       if (toolPayload?.mcpResult) {
         entry.mcpResult = toolPayload.mcpResult;
+      }
+      if (toolPayload?.mcpImages) {
+        entry.mcpImages = toolPayload.mcpImages;
+      }
+      if (toolPayload?.mcpImagesOmitted) {
+        entry.mcpImagesOmitted = toolPayload.mcpImagesOmitted;
       }
       if (diagnostic) {
         entry.diagnostic = diagnostic;

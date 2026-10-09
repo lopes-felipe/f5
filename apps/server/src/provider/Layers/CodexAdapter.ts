@@ -82,10 +82,11 @@ export interface CodexAdapterLiveOptions {
   readonly makeManager?: (services?: ServiceMap.ServiceMap<never>) => CodexAppServerManager;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  /**
+   * Installed in every interactive desktop session; the broker checks live
+   * browser policy on each tool call, so settings apply without a restart.
+   */
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
-  readonly canAccessBrowser?: (
-    threadId: import("@t3tools/contracts").ThreadId,
-  ) => Effect.Effect<boolean>;
   readonly defaultProviderOptions?: ProviderStartOptions;
   readonly processEnvironment?: NodeJS.ProcessEnv;
 }
@@ -1059,6 +1060,28 @@ function describePatchApproval(payload: Record<string, unknown> | undefined): st
     return lines.join("\n");
   }
   return asString(payload?.grantRoot)?.trim() || undefined;
+}
+
+/** Record the F5 preview server installed for this session on `session.configured`. */
+function withAgentBrowserPreview(
+  events: ReadonlyArray<ProviderRuntimeEvent>,
+  previewServerName: string | undefined,
+): ReadonlyArray<ProviderRuntimeEvent> {
+  if (!previewServerName) return events;
+  return events.map((runtimeEvent) =>
+    runtimeEvent.type === "session.configured"
+      ? {
+          ...runtimeEvent,
+          payload: {
+            ...runtimeEvent.payload,
+            config: {
+              ...runtimeEvent.payload.config,
+              agentBrowser: { preview: { serverName: previewServerName, installed: true } },
+            },
+          },
+        }
+      : runtimeEvent,
+  );
 }
 
 function mapToRuntimeEvents(
@@ -2299,8 +2322,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
-          serverConfig.mode === "desktop" &&
-          (!options?.canAccessBrowser || (yield* options.canAccessBrowser(input.threadId)))
+          serverConfig.mode === "desktop" && !isSyntheticOneOffThreadId(input.threadId)
             ? options?.previewMcpHttpServer?.createSessionConfig({
                 threadId: input.threadId,
                 ...(input.providerInstanceId
@@ -2309,6 +2331,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 existingServerNames: new Set(Object.keys(baseProviderMcpServers ?? {})),
               })
             : undefined;
+        // Registered before launch so `session/configured` can report the installed server.
+        if (previewMcpSession) previewMcpSessions.set(input.threadId, previewMcpSession);
         const providerMcpServers = previewMcpSession
           ? {
               ...baseProviderMcpServers,
@@ -2383,15 +2407,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               detail: toMessage(cause, "Failed to start Codex adapter session."),
               cause,
             }),
-        }).pipe(
-          Effect.tap(() =>
-            Effect.sync(() => {
-              if (previewMcpSession) {
-                previewMcpSessions.set(input.threadId, previewMcpSession);
-              }
-            }),
-          ),
-        );
+        });
       }).pipe(Effect.tapError(() => Effect.sync(disposePreviewMcpSession)));
     };
 
@@ -2643,12 +2659,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 limitsByThread.set(event.threadId, buckets);
               }
             }
-            const runtimeEvents = mapToRuntimeEvents(
-              event,
-              event.threadId,
-              limitsByThread.get(event.threadId)?.get("codex")?.snapshot,
-              [...(limitsByThread.get(event.threadId)?.values() ?? [])],
-              turnStartedAtByThread.get(event.threadId),
+            const previewServerName = previewMcpSessions.get(event.threadId)?.serverName;
+            const runtimeEvents = withAgentBrowserPreview(
+              mapToRuntimeEvents(
+                event,
+                event.threadId,
+                limitsByThread.get(event.threadId)?.get("codex")?.snapshot,
+                [...(limitsByThread.get(event.threadId)?.values() ?? [])],
+                turnStartedAtByThread.get(event.threadId),
+              ),
+              previewServerName,
             );
             if (event.method === "session/exited" || event.method === "session/closed") {
               limitsByThread.delete(event.threadId);

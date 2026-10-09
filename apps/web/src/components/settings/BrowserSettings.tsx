@@ -5,6 +5,7 @@ import type {
   DesktopBrowserImportProgress,
 } from "@t3tools/contracts";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
 export function BrowserSettings() {
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
@@ -92,6 +93,33 @@ export function BrowserSettings() {
           onChange={(event) => updateSettings({ enableAgentBrowserAccess: event.target.checked })}
         />
         Enable agent browser access
+      </label>
+      <div className="space-y-1">
+        <p>Allowed external sites</p>
+        <PreviewExternalHostsEditor
+          value={settings.previewExternalHosts ?? []}
+          disabled={!settings.enableAgentBrowserAccess}
+          onSave={(hosts) => updateSettings({ previewExternalHosts: hosts })}
+        />
+      </div>
+      {/* Not certified yet (docs/agent-browser.md): they can only be switched off. */}
+      <label>
+        <input
+          type="checkbox"
+          checked={settings.enableClaudeInChrome ?? false}
+          disabled={!settings.enableClaudeInChrome}
+          onChange={(event) => updateSettings({ enableClaudeInChrome: event.target.checked })}
+        />
+        Let Claude use Google Chrome (Claude in Chrome extension) — not available in F5 yet
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={settings.enableAgentComputerUse ?? false}
+          disabled={!settings.enableAgentComputerUse}
+          onChange={(event) => updateSettings({ enableAgentComputerUse: event.target.checked })}
+        />
+        Let agents control this computer (computer use) — not available in F5 yet
       </label>
       {preview?.profiles ? (
         <>

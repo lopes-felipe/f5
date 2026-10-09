@@ -28,6 +28,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
 import { checkClaudeProviderStatus, makePendingClaudeProvider } from "../Layers/ClaudeProvider.ts";
@@ -63,6 +64,7 @@ export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | Path.Path
+  | PreviewAutomationBroker
   | ProviderEventLoggers
   | ServerConfig;
 
@@ -142,8 +144,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig.launchArgs,
         instanceId,
       );
+      const previewAutomationBroker = yield* PreviewAutomationBroker;
       const adapter = yield* makeClaudeAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        previewAutomationBroker,
         oneOffProviderOptions: {
           autoCompactWindow: effectiveConfig.autoCompactWindow,
           resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,

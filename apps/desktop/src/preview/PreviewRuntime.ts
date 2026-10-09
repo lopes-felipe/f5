@@ -26,6 +26,16 @@ export interface PreviewTabEntry {
   faviconRequestGeneration: number;
   faviconAbortController: AbortController | null;
   removeListeners: Array<() => void>;
+  /** User-configured external sites this tab may load besides loopback. */
+  externalHosts?: ReadonlyArray<string>;
+  /** Open sign-in or other popup windows spawned by this tab. */
+  popupCount?: number;
+  /** Host of the last navigation the allowlist blocked while automation was running. */
+  blockedHost?: string | null;
+  /** Navigations before this time (ms) count as agent-driven, e.g. a click's page load. */
+  agentNavigationUntil?: number;
+  /** Closes agent-opened popups that the current allowlist no longer permits. */
+  enforcePopupPolicy?: () => void;
 }
 
 interface ActiveRecording {

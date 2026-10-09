@@ -340,3 +340,8 @@ function toAttachmentPreviewUrl(rawUrl: string): string {
 function attachmentPreviewRoutePath(attachmentId: string): string {
   return `/attachments/${encodeURIComponent(attachmentId)}`;
 }
+
+/** Served URL for an attachment in the registry, e.g. a tool-result screenshot. */
+export function attachmentPreviewUrlForId(attachmentId: string): string {
+  return toAttachmentPreviewUrl(attachmentPreviewRoutePath(attachmentId));
+}

@@ -97,6 +97,8 @@ import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
+import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
+import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
 import { FileNavigationProvider } from "../fileNavigationContext";
@@ -6866,6 +6868,20 @@ export default function ChatView({
             entries={providerRuntimeInfoEntries}
           />
         ) : null}
+        {latestConfiguredRuntimeActivity?.agentBrowser ? (
+          <div className="flex justify-end px-3 pt-1">
+            <BrowserCapabilityChip
+              agentBrowser={latestConfiguredRuntimeActivity.agentBrowser}
+              access={{
+                previewEnabled: agentBrowserPolicyFromSettings(projectSettings, undefined)
+                  .previewAutomation,
+                // Only the desktop app can host the preview agents drive.
+                previewHostAvailable: isElectron && Boolean(window.desktopBridge?.preview),
+              }}
+            />
+          </div>
+        ) : null}
+        <AgentBrowserLiveCard threadId={activeThread.id} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}

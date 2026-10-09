@@ -5,6 +5,7 @@ import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  type McpServerStatus,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
@@ -45,6 +46,8 @@ import {
   type ClaudeSessionStoreFs,
 } from "./ClaudeAdapter.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
+import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
+import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 
 type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
   readonly effort?: string;
@@ -171,6 +174,22 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly initializationResult = async (): Promise<unknown> => this.initializationResultValue;
 
+  public mcpServerStatusValue: Array<McpServerStatus> = [];
+  public mcpServerStatusCalls = 0;
+  readonly mcpServerStatus = async (): Promise<ReadonlyArray<McpServerStatus>> => {
+    this.mcpServerStatusCalls += 1;
+    return this.mcpServerStatusValue;
+  };
+
+  public readonly toggleMcpServerCalls: Array<{ name: string; enabled: boolean }> = [];
+  public toggleMcpServerFailure: unknown;
+  readonly toggleMcpServer = async (name: string, enabled: boolean): Promise<void> => {
+    this.toggleMcpServerCalls.push({ name, enabled });
+    if (this.toggleMcpServerFailure !== undefined) throw this.toggleMcpServerFailure;
+    const entry = this.mcpServerStatusValue.find((candidate) => candidate.name === name);
+    if (entry) entry.status = enabled ? "connected" : "disabled";
+  };
+
   readonly supportedModels = async (): Promise<ReadonlyArray<unknown>> =>
     this.supportedModelsPromise ?? this.supportedModelsValue;
 
@@ -225,6 +244,8 @@ function makeHarness(config?: {
   readonly readResumeTranscript?: ClaudeAdapterLiveOptions["readResumeTranscript"];
   readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
   readonly resumeConfirmationTimeoutMs?: number;
+  /** Runs the adapter in desktop mode with F5's preview broker. */
+  readonly previewAutomationBroker?: ClaudeAdapterLiveOptions["previewAutomationBroker"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -275,6 +296,9 @@ function makeHarness(config?: {
           nativeEventLogPath: config.nativeEventLogPath,
         }
       : {}),
+    ...(config?.previewAutomationBroker
+      ? { previewAutomationBroker: config.previewAutomationBroker }
+      : {}),
   };
 
   return {
@@ -283,6 +307,7 @@ function makeHarness(config?: {
         ServerConfig.layerTest(
           config?.cwd ?? "/tmp/claude-adapter-test",
           config?.stateDir ?? "/tmp",
+          config?.previewAutomationBroker ? { mode: "desktop" } : undefined,
         ),
       ),
       Layer.provideMerge(NodeServices.layer),
@@ -546,6 +571,412 @@ function emitClaudeSuccessResult(
     uuid: input?.uuid ?? "result-background-task",
   } as unknown as SDKMessage);
 }
+
+describe("ClaudeAdapter agent browser", () => {
+  const PREVIEW_SDK_STATUS: McpServerStatus = {
+    name: "f5_preview",
+    status: "connected",
+    source: "sdk",
+  };
+
+  function makeBrowserHarness(initial?: Partial<AgentBrowserPolicy>) {
+    const policy: { current: AgentBrowserPolicy } = {
+      current: {
+        previewAutomation: true,
+        externalHosts: [],
+        claudeInChrome: false,
+        computerUse: false,
+        ...initial,
+      },
+    };
+    const broker = makePreviewAutomationBroker({
+      resolvePolicy: () => Effect.sync(() => policy.current),
+    });
+    const harness = makeHarness({ previewAutomationBroker: broker });
+    return { harness, policy, broker };
+  }
+
+  const permissionOptions = (toolUseID: string, mcpServer?: { name: string; source: string }) => ({
+    signal: new AbortController().signal,
+    toolUseID,
+    requestId: `request-${toolUseID}`,
+    ...(mcpServer ? { mcpServer } : {}),
+  });
+
+  const preToolUse = (toolName: string, mcpServer?: { name: string; source: string }) => ({
+    hook_event_name: "PreToolUse" as const,
+    session_id: "native",
+    cwd: "/tmp",
+    transcript_path: "/tmp/transcript",
+    tool_name: toolName,
+    tool_input: {},
+    tool_use_id: `hook-${toolName}`,
+    ...(mcpServer ? { mcp_server: mcpServer } : {}),
+  });
+
+  it.effect("installs an in-process preview server without any F5 credential", () => {
+    const { harness } = makeBrowserHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        providerOptions: {
+          mcpServers: {
+            f5_preview: { type: "stdio", command: "user-preview", enabled: true },
+          },
+        },
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      const servers = options.mcpServers as Record<string, { type?: string; timeout?: number }>;
+      // A user server already uses the base name, so F5's server is suffixed.
+      assert.equal(servers.f5_preview_2?.type, "sdk");
+      assert.equal(servers.f5_preview_2?.timeout, 70_000);
+      assert.notEqual(servers.f5_preview?.type, "sdk");
+      const serialized = JSON.stringify({
+        env: options.env,
+        extraArgs: options.extraArgs,
+        servers: Object.fromEntries(
+          Object.entries(servers).map(([name, server]) => [name, { ...server, instance: null }]),
+        ),
+      });
+      assert.equal(serialized.includes("F5_PREVIEW_MCP_TOKEN"), false);
+      assert.equal(serialized.toLowerCase().includes("bearer"), false);
+      assert.deepEqual(options.extraArgs, { "no-chrome": null });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not install preview tools outside desktop mode", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()!.options;
+      assert.equal(options.mcpServers, undefined);
+      assert.deepEqual(options.extraArgs, { "no-chrome": null });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "auto-allows observation and grants mutation once per session after verification",
+    () => {
+      const { harness } = makeBrowserHarness();
+      harness.query.mcpServerStatusValue = [{ ...PREVIEW_SDK_STATUS }];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.ok(harness.query.mcpServerStatusCalls > 0)),
+        );
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+        const sdk = { name: "f5_preview", source: "sdk" };
+
+        const status = yield* Effect.promise(() =>
+          canUseTool("mcp__f5_preview__preview_snapshot", {}, permissionOptions("snap", sdk)),
+        );
+        assert.equal(status?.behavior, "allow");
+
+        const click = canUseTool(
+          "mcp__f5_preview__preview_click",
+          { selector: "#login" },
+          permissionOptions("click", sdk),
+        );
+        const opened = yield* Stream.runHead(
+          adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
+        );
+        assert.equal(opened._tag, "Some");
+        if (opened._tag !== "Some" || opened.value.type !== "request.opened") return;
+        yield* adapter.respondToRequest(
+          THREAD_ID,
+          ApprovalRequestId.makeUnsafe(opened.value.requestId!),
+          "acceptForSession",
+        );
+        assert.equal((yield* Effect.promise(() => click))?.behavior, "allow");
+
+        // The whole mutating preview family is now granted without another prompt.
+        const typed = yield* Effect.promise(() =>
+          canUseTool(
+            "mcp__f5_preview__preview_type",
+            { text: "hi" },
+            permissionOptions("type", sdk),
+          ),
+        );
+        assert.equal(typed?.behavior, "allow");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("never extends F5 exemptions to look-alike or unverified servers", () => {
+    const { harness } = makeBrowserHarness();
+    // The CLI reports the name as a configured server, not an in-process one.
+    harness.query.mcpServerStatusValue = [{ ...PREVIEW_SDK_STATUS, source: "project" }];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) =>
+                event.type === "runtime.warning" &&
+                event.payload.message.includes("could not verify its browser preview"),
+            ),
+          ),
+        ),
+      );
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const abort = new AbortController();
+      let settled = false;
+      const pending = canUseTool(
+        "mcp__f5_preview__preview_status",
+        {},
+        { ...permissionOptions("status"), signal: abort.signal },
+      ).then((result) => {
+        settled = true;
+        return result;
+      });
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      assert.equal(settled, false);
+      abort.abort();
+      assert.equal((yield* Effect.promise(() => pending))?.behavior, "deny");
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("lets read-only workflows observe but not drive the preview", () => {
+    const { harness } = makeBrowserHarness();
+    harness.query.mcpServerStatusValue = [{ ...PREVIEW_SDK_STATUS }];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() => assert.ok(harness.query.mcpServerStatusCalls > 0)),
+      );
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+      const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const sdk = { name: "f5_preview", source: "sdk" };
+      const decide = (toolName: string, mcpServer = sdk) =>
+        Effect.promise(() =>
+          hook(preToolUse(toolName, mcpServer), undefined, {
+            signal: new AbortController().signal,
+          }),
+        );
+      for (const tool of ["preview_status", "preview_snapshot", "preview_screenshot"]) {
+        const response = yield* decide(`mcp__f5_preview__${tool}`);
+        assert.equal("hookSpecificOutput" in response, false, tool);
+      }
+      for (const tool of [
+        "preview_open",
+        "preview_navigate",
+        "preview_click",
+        "preview_evaluate",
+      ]) {
+        const response = yield* decide(`mcp__f5_preview__${tool}`);
+        assert.equal(
+          "hookSpecificOutput" in response &&
+            response.hookSpecificOutput?.hookEventName === "PreToolUse" &&
+            response.hookSpecificOutput.permissionDecision,
+          "deny",
+          tool,
+        );
+      }
+      const impostor = yield* decide("mcp__f5_preview__preview_status", {
+        name: "f5_preview",
+        source: "project",
+      });
+      assert.equal("hookSpecificOutput" in impostor, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps uncertified Claude in Chrome off at launch and denies its tools", () => {
+    const { harness } = makeBrowserHarness({ claudeInChrome: true });
+    harness.query.mcpServerStatusValue = [
+      { ...PREVIEW_SDK_STATUS },
+      { name: "claude-in-chrome", status: "connected", source: "dynamic" },
+    ];
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        // A user launch flag cannot turn it on either.
+        providerOptions: { claudeAgent: { launchArgs: { chrome: null, verbose: null } } },
+      });
+      assert.deepEqual(harness.getLastCreateQueryInput()!.options.extraArgs, {
+        verbose: null,
+        "no-chrome": null,
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) =>
+                event.type === "session.configured" &&
+                JSON.stringify(event.payload.config.agentBrowser).includes(
+                  '"chrome":{"state":"unavailable"',
+                ),
+            ),
+          ),
+        ),
+      );
+      const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      const denied = yield* Effect.promise(() =>
+        hook(preToolUse("mcp__claude-in-chrome__navigate"), undefined, {
+          signal: new AbortController().signal,
+        }),
+      );
+      assert.equal(hookDecision(denied), "deny");
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies browser access changes to the next tool call without a restart", () => {
+    const { harness, policy } = makeBrowserHarness({ previewAutomation: false });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const servers = harness.getLastCreateQueryInput()!.options.mcpServers as unknown as Record<
+        string,
+        { instance: { _registeredTools: Record<string, { handler: Function }> } }
+      >;
+      const tools = servers.f5_preview!.instance._registeredTools;
+      const callStatus = () =>
+        Effect.promise(
+          () =>
+            tools.preview_status!.handler({}, {}) as Promise<{
+              structuredContent?: { reason?: string };
+            }>,
+        );
+      assert.equal((yield* callStatus()).structuredContent?.reason, "disabled");
+      policy.current = { ...policy.current, previewAutomation: true };
+      // Enabled now: the broker answers (no owner yet) instead of "disabled".
+      assert.equal((yield* callStatus()).structuredContent?.reason, "no-owner");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  const hookDecision = (response: unknown) => {
+    const output = (response as { hookSpecificOutput?: { permissionDecision?: string } })
+      .hookSpecificOutput;
+    return output?.permissionDecision ?? "pass";
+  };
+
+  it.effect(
+    "keeps uncertified computer use unavailable and denies its tools even when a server connects",
+    () => {
+      const { harness } = makeBrowserHarness({ computerUse: true });
+      // A server under the reserved name (for example one the user configured) is connected.
+      harness.query.mcpServerStatusValue = [
+        { ...PREVIEW_SDK_STATUS },
+        { name: "computer-use", status: "connected", source: "dynamic" },
+      ];
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+          Effect.sync(() => events.push(event)),
+        ).pipe(Effect.forkChild);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        const options = harness.getLastCreateQueryInput()!.options;
+        // F5 never launches `claude --computer-use-mcp` itself.
+        assert.equal(Object.keys(options.mcpServers ?? {}).includes("computer-use"), false);
+        yield* Effect.promise(() =>
+          vi.waitFor(() =>
+            assert.ok(
+              events.some(
+                (event) =>
+                  event.type === "session.configured" &&
+                  JSON.stringify(event.payload.config.agentBrowser).includes(
+                    '"computerUse":{"state":"unavailable"',
+                  ),
+              ),
+            ),
+          ),
+        );
+        const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+        for (const toolName of [
+          "mcp__computer-use__request_access",
+          "mcp__computer-use__screenshot",
+          "mcp__computer-use__left_click",
+        ]) {
+          const response = yield* Effect.promise(() =>
+            hook(preToolUse(toolName), undefined, { signal: new AbortController().signal }),
+          );
+          assert.equal(hookDecision(response), "deny", toolName);
+          const native = yield* Effect.promise(() =>
+            options.canUseTool!(toolName, {}, {
+              signal: new AbortController().signal,
+              toolUseID: `tool-${toolName}`,
+            } as Parameters<NonNullable<typeof options.canUseTool>>[2]),
+          );
+          assert.equal(native?.behavior, "deny", toolName);
+        }
+        // Nothing reached the user: there is no approval path to an uncertified backend.
+        assert.equal(events.filter((event) => event.type === "request.opened").length, 0);
+        yield* Fiber.interrupt(listener);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+});
 
 describe("ClaudeAdapterLive", () => {
   for (const sessionSignals of [false, true]) {

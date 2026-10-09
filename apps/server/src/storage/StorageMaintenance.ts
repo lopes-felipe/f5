@@ -1875,6 +1875,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 yield* eventStore.collectCommandIdsForThread(thread.threadId);
               yield* sql`DELETE FROM checkpoint_diff_blobs WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_thread_messages WHERE thread_id = ${thread.threadId}`;
+              yield* sql`DELETE FROM attachment_owners WHERE owner_kind = 'activity' AND attachment_id IN (SELECT attachment_id FROM attachments WHERE thread_id = ${thread.threadId})`;
               yield* sql`DELETE FROM projection_thread_activities WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_thread_command_executions WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_thread_file_changes WHERE thread_id = ${thread.threadId}`;
