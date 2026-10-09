@@ -2737,6 +2737,34 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("keeps checkout conflict details in ordinary failures from other Git routes", async () => {
+    const checkoutConflict = { cwd: "/repo", branch: "main", files: ["index.css"] };
+    server = await createTestServer({
+      gitCore: {
+        listBranches: () => Effect.die("unused"),
+        initRepo: () => Effect.die("unused"),
+        pullCurrentBranch: () =>
+          Effect.fail(
+            new GitCommandError({
+              cwd: "/repo",
+              operation: "checkout during pull",
+              command: "git checkout main --",
+              detail: "Local changes in index.css would be overwritten",
+              checkoutConflict,
+            }),
+          ),
+      },
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const response = await sendRequest(ws, WS_METHODS.gitPull, { cwd: "/repo" });
+    expect(response.error?.code).toBeUndefined();
+    expect(response.error?.checkoutConflict).toBeUndefined();
+    expect(response.error?.message).toContain("index.css");
+  });
+
   it("returns error for unknown methods", async () => {
     server = await createTestServer({ cwd: "/test" });
     const addr = server.address();

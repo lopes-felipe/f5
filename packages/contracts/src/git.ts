@@ -1,5 +1,5 @@
 import { Option, Schema } from "effect";
-import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
 import { ChangeRequest, SourceControlProviderIdentity } from "./sourceControl";
 
@@ -101,6 +101,15 @@ export const GitCreateWorktreeInput = Schema.Struct({
   path: Schema.NullOr(TrimmedNonEmptyStringSchema),
 });
 export type GitCreateWorktreeInput = typeof GitCreateWorktreeInput.Type;
+
+export const GitPrepareWorktreeInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  branch: TrimmedNonEmptyStringSchema,
+  newBranch: TrimmedNonEmptyStringSchema,
+  threadId: ThreadId,
+  projectCwd: TrimmedNonEmptyStringSchema,
+});
+export type GitPrepareWorktreeInput = typeof GitPrepareWorktreeInput.Type;
 
 export const GitPullRequestRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,

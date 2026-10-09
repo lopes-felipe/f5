@@ -16,7 +16,13 @@ export interface ProjectSetupScriptRunnerResultStarted {
 
 export type ProjectSetupScriptRunnerResult =
   | ProjectSetupScriptRunnerResultNoScript
-  | ProjectSetupScriptRunnerResultStarted;
+  | ProjectSetupScriptRunnerResultStarted
+  | {
+      readonly status: "completed";
+      readonly scriptId: string;
+      readonly scriptName: string;
+      readonly cwd: string;
+    };
 
 export interface ProjectSetupScriptRunnerInput {
   readonly threadId: ThreadId;

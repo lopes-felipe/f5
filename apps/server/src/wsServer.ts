@@ -223,6 +223,7 @@ import {
   type BootstrapThreadDisposition,
   dispatchBootstrapTurnStart,
 } from "./wsServer/bootstrapTurnStart.ts";
+import { makeWorktreePreparation } from "./project/worktreePreparation.ts";
 import { WorktreeSetup, type WorktreeSetupShape } from "./project/Services/WorktreeSetup.ts";
 import { withWorktreeLifecycleLock } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
@@ -753,13 +754,20 @@ function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
   return Cause.pretty(cause);
 }
 
-function formatRouteFailure(cause: Cause.Cause<unknown>): {
+function formatRouteFailure(
+  cause: Cause.Cause<unknown>,
+  method: string,
+): {
   readonly message: string;
   readonly code?: string;
   readonly checkoutConflict?: GitCheckoutConflict;
 } {
   const squashed = Cause.squash(cause);
-  if (Schema.is(GitCommandError)(squashed) && squashed.checkoutConflict) {
+  if (
+    method === WS_METHODS.gitCheckout &&
+    Schema.is(GitCommandError)(squashed) &&
+    squashed.checkoutConflict
+  ) {
     return {
       code: "GitCheckoutConflict",
       message: `Local changes in ${squashed.checkoutConflict.cwd} would be overwritten by switching to '${squashed.checkoutConflict.branch}'.`,
@@ -2797,6 +2805,31 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     };
   };
 
+  const prepareWorktree = yield* makeWorktreePreparation({
+    scope: subscriptionsScope,
+    createWorktree: (input) =>
+      Effect.gen(function* () {
+        const commit = yield* git.resolveCommit(input.cwd, input.branch);
+        if (!commit)
+          return yield* Effect.fail(new Error(`Cannot resolve worktree base '${input.branch}'.`));
+        return yield* createConfiguredWorktree({
+          ...input,
+          baseRefName: commit,
+          path: resolveDefaultWorktreePath({
+            worktreesDir: serverConfig.worktreesDir,
+            cwd: input.cwd,
+            branch: input.newBranch,
+          }),
+        });
+      }),
+    runSetup: (input) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ projectSetupScriptRunner }) =>
+          projectSetupScriptRunner.runForThread(input),
+        ),
+      ),
+  });
+
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
       case WS_METHODS.githubLoginStart:
@@ -3968,6 +4001,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               branch: targetBranch,
             }),
         });
+      }
+
+      case WS_METHODS.gitPrepareWorktree: {
+        return yield* prepareWorktree(stripRequestTag(request.body));
       }
 
       case WS_METHODS.gitRemoveWorktree: {
@@ -5673,7 +5710,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse({
         id: request.success.id,
-        error: formatRouteFailure(result.cause),
+        error: formatRouteFailure(result.cause, method),
       });
     }
 

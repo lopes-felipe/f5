@@ -1802,6 +1802,33 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── Full flow: checkout conflict ──
 
   describe("full flow: checkout conflict", () => {
+    it.effect("prepares a temporary recovery branch from origin/x without an upstream", () =>
+      Effect.gen(function* () {
+        const repo = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        const recovery = path.join(yield* makeTmpDir(), "recovery");
+        const core = yield* GitCore;
+        yield* initRepoWithCommit(repo);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(repo, ["remote", "add", "origin", remote]);
+        yield* git(repo, ["push", "origin", "HEAD:refs/heads/x"]);
+        yield* git(repo, ["fetch", "origin"]);
+        const commit = yield* core.resolveCommit(repo, "origin/x");
+        expect(commit).not.toBeNull();
+        yield* core.createWorktree({
+          cwd: repo,
+          branch: "origin/x",
+          baseRefName: commit!,
+          newBranch: "t3code/12345678",
+          path: recovery,
+        });
+        expect(yield* git(recovery, ["rev-parse", "HEAD"])).toBe(commit);
+        expect(yield* git(recovery, ["branch", "--show-current"])).toBe("t3code/12345678");
+        expect(yield* core.readConfigValue(recovery, "branch.t3code/12345678.remote")).toBeNull();
+        expect(yield* core.readConfigValue(recovery, "branch.t3code/12345678.merge")).toBeNull();
+      }),
+    );
+
     it.effect(
       "returns the conflicting files and preserves staged, unstaged and untracked work",
       () =>
