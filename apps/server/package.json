@@ -30,7 +30,8 @@
     "test:git-manager": "node node_modules/vitest/vitest.mjs run integration/git/extended/GitManager.extended.test.ts --no-file-parallelism",
     "test:integration": "node node_modules/vitest/vitest.mjs run integration --exclude 'integration/git/**' --testTimeout=60000",
     "test:file": "node node_modules/vitest/vitest.mjs run",
-    "test:claude:live": "F5_CLAUDE_LIVE_TEST=1 node node_modules/vitest/vitest.mjs run integration/claudeRuntime.live.test.ts integration/claudeReleaseZero.live.test.ts integration/claudePreviewMcp.live.test.ts --no-file-parallelism",
+    "test:claude:live": "F5_CLAUDE_LIVE_TEST=1 node node_modules/vitest/vitest.mjs run integration/claudeRuntime.live.test.ts integration/claudeReleaseZero.live.test.ts integration/claudePreviewMcp.live.test.ts integration/claudeCompaction.live.test.ts --no-file-parallelism",
+    "test:codex:compaction:live": "F5_CODEX_LIVE_TEST=1 bun scripts/certify-native-compaction.ts",
     "test:unit:shard": "node node_modules/vitest/vitest.mjs run src",
     "test:codex:live": "F5_CODEX_LIVE_TEST=1 bun scripts/certify-codex-rewind.ts"
   },

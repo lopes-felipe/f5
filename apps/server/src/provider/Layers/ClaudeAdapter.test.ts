@@ -11500,6 +11500,83 @@ describe("ClaudeAdapterLive", () => {
 });
 
 describe("Claude Release 4 launch and file checkpoint controls", () => {
+  for (const boundary of [false, true]) {
+    it.effect(`requires both compact boundary and successful result (boundary=${boundary})`, () => {
+      const h = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        const sessionId = (session.resumeCursor as { resume: string }).resume;
+        let settled = false;
+        const operation = yield* adapter.executeNativeOperation!({
+          threadId: THREAD_ID,
+          generation: 1,
+          operationId: "compact-correlation",
+          command: { kind: "compact" },
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              settled = true;
+            }),
+          ),
+          Effect.result,
+          Effect.forkChild,
+        );
+        assert.equal(
+          yield* Effect.promise(() => readFirstPromptText(h.getLastCreateQueryInput())),
+          "/compact",
+        );
+        if (boundary) {
+          h.query.emit({
+            type: "system",
+            subtype: "compact_boundary",
+            session_id: sessionId,
+            uuid: "123e4567-e89b-42d3-a456-426614174015",
+            compact_metadata: { trigger: "manual", pre_tokens: 1000 },
+          } as SDKMessage);
+          yield* Effect.promise(() =>
+            vi.waitFor(async () => {
+              const sessions = await Effect.runPromise(adapter.listSessions());
+              assert.equal(
+                (sessions[0]!.resumeCursor as { resumeLatest?: boolean }).resumeLatest,
+                true,
+              );
+            }),
+          );
+          assert.equal(settled, false);
+        }
+        emitClaudeSuccessResult(h.query, { sessionId });
+        const result = yield* Fiber.join(operation);
+        assert.equal(result._tag, boundary ? "Success" : "Failure");
+        yield* adapter.stopSession(THREAD_ID);
+      }).pipe(Effect.provide(h.layer));
+    });
+  }
+  it.effect("enables native compaction by default and honors the session opt-out", () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      for (const enabled of [undefined, false, true]) {
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+          ...(enabled !== undefined
+            ? { providerOptions: { claudeAgent: { nativeCompaction: enabled } } }
+            : {}),
+        });
+        assert.equal(
+          (yield* adapter.getSessionDiscovery!(THREAD_ID))?.nativeCompaction,
+          enabled !== false,
+        );
+        yield* adapter.stopSession(THREAD_ID);
+      }
+    }).pipe(Effect.provide(h.layer));
+  });
   it.effect("defaults suggestions off, enables checkpoints, and names only new sessions", () => {
     const h = makeHarness();
     return Effect.gen(function* () {

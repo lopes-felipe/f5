@@ -16,6 +16,7 @@ import {
   type ServerSettings,
   type ThreadTurnStartBootstrap,
   type CompactRuntimeConfiguredActivityPayload,
+  type OrchestrationThreadActivity,
   ProviderKind,
   type ModelSelection,
   type UserMessageSkillCall,
@@ -41,6 +42,7 @@ import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "..
 import { setupProjectScript } from "~/projectScripts";
 import { type ComposerCommandItem } from "./chat/ComposerCommandMenu";
 import type { ModelPickerModelOption } from "./chat/providerIconUtils";
+import { resolveRuntimeModelReport } from "./chat/runtimePresentation";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 
@@ -826,6 +828,7 @@ export function deriveProviderRuntimeInfoEntries(input: {
   threadModel: string | null;
   configuredRuntime: CompactRuntimeConfiguredActivityPayload | null;
   rerouteActivity: Record<string, unknown> | null;
+  activities?: readonly OrchestrationThreadActivity[];
   cliVersion: string | null;
   mcpSummary: string | null;
 }): ProviderRuntimeInfoEntry[] {
@@ -865,19 +868,24 @@ export function deriveProviderRuntimeInfoEntries(input: {
   }
 
   if (input.provider === "codex") {
+    const { model: reportedModel, reroute } = resolveRuntimeModelReport(input);
     return [
-      input.threadModel ? { label: "Actual model", value: input.threadModel } : null,
+      reportedModel
+        ? { label: "Actual model", value: reportedModel }
+        : input.threadModel
+          ? { label: "Requested model", value: input.threadModel }
+          : null,
       input.configuredRuntime?.instructionContractVersion
         ? { label: "Contract", value: input.configuredRuntime.instructionContractVersion }
         : null,
       input.configuredRuntime?.instructionStrategy
         ? { label: "Instructions", value: input.configuredRuntime.instructionStrategy }
         : null,
-      readRerouteString(input.rerouteActivity, "fromModel")
-        ? { label: "Rerouted from", value: readRerouteString(input.rerouteActivity, "fromModel")! }
+      readRerouteString(reroute, "fromModel")
+        ? { label: "Rerouted from", value: readRerouteString(reroute, "fromModel")! }
         : null,
-      readRerouteString(input.rerouteActivity, "reason")
-        ? { label: "Reason", value: readRerouteString(input.rerouteActivity, "reason")! }
+      readRerouteString(reroute, "reason")
+        ? { label: "Reason", value: readRerouteString(reroute, "reason")! }
         : null,
       input.mcpSummary ? { label: "MCP", value: input.mcpSummary } : null,
       input.cliVersion ? { label: "CLI", value: input.cliVersion } : null,

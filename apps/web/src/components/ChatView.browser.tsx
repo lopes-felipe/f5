@@ -6,6 +6,7 @@ import "../index.css";
 
 import {
   AGENTS_WS_METHODS,
+  NATIVE_OPERATION_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   EventId,
@@ -1228,6 +1229,7 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === AGENTS_WS_METHODS.getSnapshot) {
     return { entries: [], generatedAt: NOW_ISO };
   }
+  if (tag === NATIVE_OPERATION_WS_METHODS.list) return [];
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }

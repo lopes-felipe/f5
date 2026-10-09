@@ -724,10 +724,11 @@ helper, so the adapter checks its presence and reports unavailability when absen
 
 ### Native compaction and forks
 
-Native compaction is **off by default** for Claude. The instance setting enables an
+Native compaction is **on by default** for Claude, with an instance opt-out. It uses an
 exclusive hidden `/compact` control turn. Completion requires both its correlated
 `compact_boundary` and successful result; a timeout cannot start a competing F5
-summary operation. Whole-conversation requests use it when enabled. Partial ranges
+summary operation. Whole-conversation requests, including automatic requests from
+F5's compaction recommendations, use it when enabled. Partial ranges
 and pivots continue using F5 summaries. Native records have `kind: native` and are
 never passed to `buildThreadResumeContext` as `priorWorkSummary`. If the cursor is
 lost, F5 generates a summary from its stored conversation before starting fresh.
@@ -780,8 +781,15 @@ failed its credential checks. Consequently live `/compact` transcript behavior,
 fork creation, rename visibility, checkpoint coverage of Edit versus Bash, and
 checkpoint behavior after resume/compaction are **unverified here**. Adapter and
 transport tests cover launch options, UUID mapping, preview versus mutation,
-refusal behavior and generation fencing. Claude native compaction stays off pending
-an authenticated acceptance run. This does not certify Linux/Windows lifecycle
+refusal behavior and generation fencing. The compaction acceptance test is
+`F5_CLAUDE_LIVE_TEST=1 bun run --cwd apps/server test:file integration/claudeCompaction.live.test.ts`;
+it runs the real Claude adapter through the native-operation coordinator, checks
+a SQL completion receipt and a compact boundary in the isolated transcript, and
+checks conversation access through two resumes. Generation fencing is also covered
+by the coordinator unit tests. The 2026-10-10 run in a neutral child environment
+retaining this instance's configured home also failed with an invalid-provider-login
+error (the SDK reports `Not logged in`), so this remains
+**unverified**, not a passing certification. This does not certify Linux/Windows lifecycle
 behavior; those release environments must run the documented live suites.
 
 ### Native-operation recovery
@@ -820,6 +828,11 @@ generation is checked again after preparation and before dispatch.
 Native compaction waits for settlement or provider exit rather than timing out a healthy
 control turn at two minutes. Pre-send native refusals can use the F5 summary path;
 an active or uncertain native reservation prevents fallback.
+
+Native whole-conversation compaction is enabled by default. Set the Claude instance's
+`nativeCompaction` option to `false` (or disable it in Settings) to use F5 summaries
+instead. The setting applies on the next safe session start; it does not interrupt
+an active turn. Partial ranges and pivot compactions continue using F5 summaries.
 
 File restore still requires a workspace isolated from other live conversations,
 including native restore in non-Git projects: Claude's edit-tool backups can overlap

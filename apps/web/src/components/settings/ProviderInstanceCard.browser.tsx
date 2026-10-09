@@ -9,6 +9,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS } from "./providerDriverMeta";
@@ -68,6 +69,7 @@ function renderCard(
     readonly onDismissProviderUpdateAdvisory?: (latestVersion: string) => void;
   } = {},
 ) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <ProviderInstanceCard
       instanceId={CODEX_INSTANCE_ID}
@@ -86,10 +88,35 @@ function renderCard(
       onFavoriteModelsChange={noop}
       onModelOrderChange={noop}
     />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    },
   );
 }
 
 describe("ProviderInstanceCard advisory", () => {
+  it("defaults Claude native compaction on and persists an explicit opt-out", async () => {
+    const onUpdate = vi.fn();
+    const screen = await renderCard({
+      instance: makeInstance({ driver: ProviderDriverKind.make("claudeAgent") }),
+      isExpanded: true,
+      onUpdate,
+    });
+    try {
+      const toggle = page.getByRole("switch", {
+        name: "Native conversation compaction (applies at next session start)",
+      });
+      await expect.element(toggle).toBeChecked();
+      await toggle.click();
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ config: { nativeCompaction: false } }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+  });
   beforeEach(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

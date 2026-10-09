@@ -23,6 +23,15 @@ const base = {
 };
 
 describe("buildProviderSessionCapabilities", () => {
+  it("allows compaction on older certified Codex sessions without advertising review", () => {
+    const capabilities = buildProviderSessionCapabilities({
+      ...base,
+      driver: "codex",
+      executableVersion: "0.159.2",
+    });
+    expect(sessionActionSupport(capabilities, "nativeCompaction")?.supported).toBe(true);
+    expect(sessionActionSupport(capabilities, "nativeReview")?.supported).toBe(false);
+  });
   it("records generation, instance, version and discovery", () => {
     const capabilities = buildProviderSessionCapabilities({
       ...base,
