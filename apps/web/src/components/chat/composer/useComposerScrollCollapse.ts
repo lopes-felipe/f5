@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { shouldScrollTimeline } from "../timelineScrollTarget";
 
+const EDITOR_SELECTOR = '[data-testid="composer-editor"]';
 const THRESHOLD_PX = 24;
 const GESTURE_IDLE_MS = 120;
 const POPUP_SELECTOR =
@@ -47,6 +48,49 @@ export function useComposerScrollCollapse({
   useEffect(() => {
     if (blocked && collapsedRef.current) expand();
   }, [blocked, expand]);
+
+  // Marks the form while the editor height animates, so index.css can clip the
+  // editor until it settles. Reading animations flushes style, so the marker is
+  // in place before the transition's first frame paints.
+  const syncResizing = useCallback(() => {
+    const form = formRef.current;
+    const editor = form?.querySelector(EDITOR_SELECTOR);
+    form?.toggleAttribute(
+      "data-composer-resizing",
+      !!editor
+        ?.getAnimations()
+        .some(
+          (animation) =>
+            animation instanceof CSSTransition &&
+            animation.transitionProperty === "height" &&
+            animation.playState === "running",
+        ),
+    );
+  }, [formRef]);
+
+  useLayoutEffect(syncResizing, [collapsed, syncResizing]);
+
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form) return;
+    const transition = (event: TransitionEvent) => {
+      if (
+        event.propertyName === "height" &&
+        event.target instanceof Element &&
+        event.target.matches(EDITOR_SELECTOR)
+      )
+        syncResizing();
+    };
+    form.addEventListener("transitionrun", transition);
+    form.addEventListener("transitionend", transition);
+    form.addEventListener("transitioncancel", transition);
+    return () => {
+      form.removeEventListener("transitionrun", transition);
+      form.removeEventListener("transitionend", transition);
+      form.removeEventListener("transitioncancel", transition);
+      form.removeAttribute("data-composer-resizing");
+    };
+  }, [formRef, syncResizing]);
 
   useEffect(() => {
     if (!enabled) return;
