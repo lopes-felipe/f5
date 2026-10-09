@@ -430,9 +430,11 @@ result. Clients and servers must both run Release 3.
 ## Release 4: native operations
 
 Release 4 uses wire protocol **19**, the increment after this repository's Release 3
-protocol 18. Native actions require both the session capability and an audited
-codex-cli version at least **0.162.0**. Older executable paths remain supported with
-these new actions hidden. F5 continues owning queues, projects and worktree history.
+protocol 18. Native actions require a session capability. Compaction is separately
+certified on
+codex-cli **0.159.2 and later**; review, goals, attachments and user forks require
+**0.162.0**. Older executable paths retain F5 summaries and conversation rewind.
+F5 continues owning queues, projects and worktree history.
 
 The shared durable operation coordinator persists admission, dispatch, native
 identity and outcomes. Direct/queued turn delivery waits while native work owns the
@@ -457,7 +459,9 @@ summary; lost-cursor recovery generates an F5 summary before a fresh session.
 Compaction is certified separately from the other native operations and is enabled
 on CLI **0.159.2 and later**. On 2026-10-10, authenticated checks on 0.159.2 and
 0.160.0 verified a correlated `contextCompaction` receipt, persisted history, and
-retention of a pre-compaction fact through two stop/resume cycles. Older or unknown
+access to a token in a retained user message through two stop/resume cycles. This
+checks conversation continuity; it does not prove the generated summary retained
+information that native compaction discarded. Older or unknown
 versions retain F5's summary path. Review, goals, attachments and user forks keep
 their 0.162.0 certification gate.
 
@@ -547,7 +551,7 @@ Codex remains an external executable. Updating F5 or this baseline does not repl
 an operator's installation or custom executable path. For an npm installation,
 `npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
 `codex --version`, or select the upgraded executable in Settings > Providers & Models.
-Native capability gates require the certified 0.162.0 runtime; older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is omitted from resume requests below 0.162.0.
+Compaction requires 0.159.2; the other native capability gates require the certified 0.162.0 runtime. Older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is omitted from resume requests below 0.162.0.
 
 ### Review targets and recovery
 

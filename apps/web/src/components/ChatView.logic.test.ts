@@ -1,6 +1,7 @@
 import {
   defaultInstanceIdForDriver,
   MessageId,
+  EventId,
   ProjectId,
   ProviderDriverKind,
   ThreadId,
@@ -1125,6 +1126,39 @@ describe("buildFirstSendBootstrap", () => {
 });
 
 describe("deriveProviderRuntimeInfoEntries", () => {
+  it("shows a newer rerouted model in the Codex banner", () => {
+    const base = { tone: "info" as const, turnId: null, createdAt: "2026-10-10T00:00:00Z" };
+    expect(
+      deriveProviderRuntimeInfoEntries({
+        provider: "codex",
+        threadModel: "B",
+        configuredRuntime: { model: "A" },
+        rerouteActivity: { fromModel: "A", toModel: "B", reason: "capacity" },
+        activities: [
+          {
+            ...base,
+            id: EventId.makeUnsafe("config"),
+            kind: "runtime.configured",
+            summary: "Configured",
+            payload: { config: { model: "A" } },
+          },
+          {
+            ...base,
+            id: EventId.makeUnsafe("reroute"),
+            kind: "runtime.model-rerouted",
+            summary: "Rerouted",
+            payload: { fromModel: "A", toModel: "B", reason: "capacity" },
+          },
+        ],
+        cliVersion: null,
+        mcpSummary: null,
+      }),
+    ).toEqual([
+      { label: "Actual model", value: "B" },
+      { label: "Rerouted from", value: "A" },
+      { label: "Reason", value: "capacity" },
+    ]);
+  });
   it("builds the runtime banner entries from compact configured payloads", () => {
     expect(
       deriveProviderRuntimeInfoEntries({

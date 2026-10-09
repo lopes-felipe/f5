@@ -24,6 +24,7 @@ import type {
   ThreadBackgroundWorkEntry,
 } from "@t3tools/contracts";
 import { readNativeApi } from "../../nativeApi";
+import { recentRuntimeNotices, resolveRuntimeModelReport } from "./runtimePresentation";
 
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -61,17 +62,14 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
   const [budget, setBudget] = useState(10000);
   const [reviewTarget, setReviewTarget] = useState("");
   const [usedSuggestion, setUsedSuggestion] = useState<string | null>(null);
+  const mutationVersion = useRef(0);
   const promptBefore = useRef(prompt);
   const suggestion = activities.findLast((entry) => entry.kind === "prompt.suggestion");
   useEffect(() => {
     if (promptBefore.current !== prompt && suggestion) setUsedSuggestion(suggestion.id);
     promptBefore.current = prompt;
   }, [prompt, suggestion]);
-  const hasPendingOperation = records.some((record) =>
-    ["requested", "dispatched", "running", "indeterminate"].includes(record.state),
-  );
   useEffect(() => {
-    if (!open && !hasPendingOperation) return;
     let alive = true;
     let refreshing = false;
     const refresh = async () => {
@@ -83,19 +81,15 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
         return;
       }
       try {
+        const version = mutationVersion.current;
         const [next, snapshot] = await Promise.all([
           api.nativeOperations.list({ threadId }),
           open ? api.agents.getSnapshot() : Promise.resolve({ entries: [] }),
         ]);
         if (alive) {
-          setRecords((current) => [
-            ...next,
-            ...current.filter(
-              (record) =>
-                ["requested", "dispatched", "running", "indeterminate"].includes(record.state) &&
-                !next.some((entry) => entry.operationId === record.operationId),
-            ),
-          ]);
+          // Ignore a poll started before a local receipt arrived. The next poll
+          // replaces the snapshot authoritatively, including missing records.
+          if (version === mutationVersion.current) setRecords(next);
           setTasks(snapshot.entries.filter((entry) => entry.threadId === threadId));
         }
       } catch {
@@ -110,7 +104,7 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [threadId, capabilities?.generation, open, hasPendingOperation]);
+  }, [threadId, capabilities?.generation, open]);
   const supported = (action: string) =>
     capabilities?.actions.some((entry) => entry.action === action && entry.supported) === true;
   const execute = async (command: NativeOperationCommand) => {
@@ -125,6 +119,7 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
         generation: capabilities.generation,
         command,
       });
+      mutationVersion.current++;
       setRecords((current) => [
         record,
         ...current.filter((entry) => entry.operationId !== record.operationId),
@@ -162,6 +157,7 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
         generation: capabilities.generation,
         action,
       });
+      mutationVersion.current++;
       setRecords((current) =>
         current.map((entry) => (entry.operationId === next.operationId ? next : entry)),
       );
@@ -206,31 +202,8 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
   const normalized = info?.runtimeInfo;
   const effective = normalized?.effective;
   const requested = normalized?.requested;
-  const warnings = [
-    ...new Map(
-      activities
-        .filter((entry) =>
-          [
-            "runtime.warning",
-            "runtime.error",
-            "model.rerouted",
-            "config.warning",
-            "deprecation.notice",
-            "mcp.status",
-          ].includes(entry.kind),
-        )
-        .map((entry) => {
-          const payload = object(entry.payload);
-          const message =
-            typeof payload.message === "string"
-              ? payload.message
-              : typeof payload.detail === "string"
-                ? payload.detail
-                : entry.summary;
-          return [`${entry.kind}:${message}`, { ...entry, message }] as const;
-        }),
-    ).values(),
-  ].slice(-4);
+  const warnings = recentRuntimeNotices(activities);
+  const modelReport = resolveRuntimeModelReport({ configuredRuntime: info, activities });
   const goal = object(
     activities.findLast(
       (entry) => entry.kind === "native.metadata" && "nativeGoal" in object(entry.payload),
@@ -252,23 +225,23 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
   return (
     <div
       data-slot="native-runtime-controls"
-      className="flex h-7 shrink-0 items-center gap-2 px-2 text-xs text-muted-foreground"
+      className="flex h-7 min-w-0 max-w-full items-center gap-2 px-2 text-xs text-muted-foreground"
     >
       {visibleSuggestion && (
         <Button
           variant="ghost"
           size="xs"
-          className="max-w-64 truncate"
+          className="min-w-0 max-w-64 shrink"
           onClick={() => {
             setUsedSuggestion(suggestion.id);
             props.onSuggestion(suggestion.summary);
           }}
         >
-          Suggested prompt: {suggestion.summary}
+          <span className="truncate">Suggested prompt: {suggestion.summary}</span>
         </Button>
       )}
       {goal != null && (
-        <span className="max-w-48 truncate" title={String(object(goal).objective ?? "")}>
+        <span className="min-w-0 max-w-48 truncate" title={String(object(goal).objective ?? "")}>
           Goal · {String(object(goal).status ?? "unknown")}
         </span>
       )}
@@ -286,9 +259,13 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
           <DialogPanel className="space-y-5 text-sm">
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 [&_dt]:text-muted-foreground [&_dd]:break-words">
               <dt>Requested model</dt>
-              <dd>{requested?.model ?? props.requestedModel}</dd>
+              <dd>
+                {requested?.model ??
+                  (modelReport.reroute ? info?.model : undefined) ??
+                  props.requestedModel}
+              </dd>
               <dt>Effective model</dt>
-              <dd>{effective?.model ?? info?.model ?? "Not reported by provider"}</dd>
+              <dd>{modelReport.model ?? "Not reported by provider"}</dd>
               {(effective?.effort ?? info?.effort ?? info?.reasoning) && (
                 <>
                   <dt>Effort</dt>
@@ -319,12 +296,17 @@ function NativeRuntimePanelContent(props: NativeRuntimePanelProps) {
               <section aria-label="Provider notices" className="space-y-2">
                 <h3 className="font-medium">Provider notices</h3>
                 {warnings.map((warning) => (
-                  <p
+                  <div
                     key={warning.id}
                     className="break-words rounded-lg border border-border bg-muted/40 p-3 text-muted-foreground"
                   >
-                    {warning.message}
-                  </p>
+                    <p className="font-medium text-foreground">{warning.title}</p>
+                    {warning.details.map((detail) => (
+                      <p key={detail} className="mt-1">
+                        {detail}
+                      </p>
+                    ))}
+                  </div>
                 ))}
               </section>
             )}

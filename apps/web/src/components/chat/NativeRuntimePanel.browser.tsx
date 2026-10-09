@@ -112,7 +112,8 @@ describe("NativeRuntimePanel", () => {
           .querySelector('[data-slot="composer-dock"]')
           ?.contains(document.querySelector('[data-slot="native-runtime-controls"]')),
       ).toBe(false);
-      expect(mocks.list).not.toHaveBeenCalled();
+      expect(mocks.list).toHaveBeenCalled();
+      expect(mocks.snapshot).not.toHaveBeenCalled();
       await expect
         .element(page.getByText("requested-model", { exact: true }))
         .not.toBeInTheDocument();
@@ -126,9 +127,11 @@ describe("NativeRuntimePanel", () => {
           }),
         )
         .toBeVisible();
-      await expect
-        .element(page.getByText("Protocol warning", { exact: true }))
-        .not.toBeInTheDocument();
+      await expect.element(page.getByText("Protocol warning", { exact: true })).toBeVisible();
+      expect(
+        document.querySelector('[aria-label="Provider notices"]')?.querySelectorAll(":scope > div")
+          .length,
+      ).toBe(1);
       await expect
         .element(page.getByRole("region", { name: "Operation history" }))
         .toBeInTheDocument();
@@ -147,6 +150,102 @@ describe("NativeRuntimePanel", () => {
     }
   });
 
+  it("discovers uncertain operations without opening the dialog and drops missing server records", async () => {
+    const props = fixture();
+    mocks.list.mockResolvedValue([
+      {
+        operationId: "restored",
+        threadId: props.threadId,
+        generation: 1,
+        state: "indeterminate",
+        command: { kind: "compact" },
+        createdAt: at,
+        updatedAt: at,
+      },
+    ]);
+    const screen = await render(<NativeRuntimePanel {...props} />);
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Runtime details · pending" }))
+        .toBeVisible();
+      expect(mocks.snapshot).not.toHaveBeenCalled();
+      expect(page.getByRole("dialog").query()).toBeNull();
+      mocks.list.mockResolvedValue([]);
+      await screen.rerender(
+        <NativeRuntimePanel {...props} capabilities={{ ...props.capabilities!, generation: 2 }} />,
+      );
+      await expect
+        .element(page.getByRole("button", { name: "Runtime details", exact: true }))
+        .toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not overwrite a newly admitted operation with an older poll", async () => {
+    let finish!: (records: readonly NativeOperationRecord[]) => void;
+    const oldPoll = new Promise<readonly NativeOperationRecord[]>((resolve) => {
+      finish = resolve;
+    });
+    mocks.list.mockReturnValue(oldPoll);
+    const props = fixture();
+    mocks.execute.mockResolvedValue({
+      operationId: "new",
+      threadId: props.threadId,
+      generation: 1,
+      state: "running",
+      command: { kind: "review", target: { type: "uncommittedChanges" } },
+      createdAt: at,
+      updatedAt: at,
+    });
+    const screen = await render(<NativeRuntimePanel {...props} />);
+    try {
+      await page.getByRole("button", { name: "Runtime details" }).click();
+      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await expect.element(page.getByText("review · running", { exact: true })).toBeVisible();
+      finish([]);
+      await oldPoll;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await expect.element(page.getByText("review · running", { exact: true })).toBeVisible();
+    } finally {
+      finish([]);
+      mocks.list.mockResolvedValue([]);
+      await screen.unmount();
+    }
+  });
+
+  it("keeps runtime details reachable in a narrow pane with a long suggestion and goal", async () => {
+    await page.viewport(320, 650);
+    const suggestion = {
+      ...warnings()[0]!,
+      kind: "prompt.suggestion",
+      summary: "A long suggested prompt ".repeat(30),
+    };
+    const goal = {
+      ...warnings()[0]!,
+      id: EventId.makeUnsafe("goal"),
+      kind: "native.metadata",
+      payload: { nativeGoal: { status: "running", objective: "A long objective" } },
+    };
+    const screen = await render(
+      <div className="flex w-full overflow-hidden">
+        <div className="min-w-0 flex-1" />
+        <NativeRuntimePanel {...fixture({ activities: [suggestion, goal] })} />
+      </div>,
+    );
+    try {
+      const button = page.getByRole("button", { name: "Runtime details" });
+      await expect.element(button).toBeVisible();
+      const bounds = button.element().getBoundingClientRect();
+      expect(bounds.left).toBeGreaterThanOrEqual(0);
+      expect(bounds.right).toBeLessThanOrEqual(320);
+      await button.click();
+      await expect.element(page.getByRole("dialog")).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps reported runtime information available without native session capabilities", async () => {
     const screen = await render(<NativeRuntimePanel {...fixture({ capabilities: null })} />);
     try {
@@ -155,6 +254,42 @@ describe("NativeRuntimePanel", () => {
       await expect
         .element(page.getByRole("button", { name: "Start goal" }))
         .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a newer reroute as effective without relabeling it as the original request", async () => {
+    const config = {
+      ...warnings()[0]!,
+      kind: "runtime.configured",
+      payload: { config: { model: "A" } },
+    };
+    const reroute = {
+      ...warnings()[1]!,
+      kind: "runtime.model-rerouted",
+      payload: { fromModel: "A", toModel: "B", reason: "capacity" },
+    };
+    const screen = await render(
+      <NativeRuntimePanel
+        {...fixture({
+          requestedModel: "B",
+          runtime: { model: "A" },
+          activities: [config, reroute],
+        })}
+      />,
+    );
+    try {
+      await page.getByRole("button", { name: "Runtime details" }).click();
+      const terms = [...document.querySelectorAll("dt")];
+      expect(
+        terms.find((term) => term.textContent === "Requested model")?.nextElementSibling
+          ?.textContent,
+      ).toBe("A");
+      expect(
+        terms.find((term) => term.textContent === "Effective model")?.nextElementSibling
+          ?.textContent,
+      ).toBe("B");
     } finally {
       await screen.unmount();
     }

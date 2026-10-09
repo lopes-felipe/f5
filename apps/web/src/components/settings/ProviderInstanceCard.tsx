@@ -850,7 +850,7 @@ export function ProviderInstanceCard({
                       ? "Prompt suggestions (applies after current turn)"
                       : key === "enableFileCheckpointing"
                         ? "Keep native file checkpoints (uses profile disk space)"
-                        : "Native conversation compaction (applies after current turn)"}
+                        : "Native conversation compaction (applies at next session start)"}
                     <Switch
                       checked={
                         key === "enableFileCheckpointing" || key === "nativeCompaction"

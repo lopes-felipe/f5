@@ -106,7 +106,7 @@ describe("ProviderInstanceCard advisory", () => {
     });
     try {
       const toggle = page.getByRole("switch", {
-        name: "Native conversation compaction (applies after current turn)",
+        name: "Native conversation compaction (applies at next session start)",
       });
       await expect.element(toggle).toBeChecked();
       await toggle.click();
