@@ -101,9 +101,14 @@ processes cannot deliver lifecycle or tool events into their replacement session
 The built-in certification registry is empty. The read-only availability probe identifies
 installed ChatGPT plugin version/manifest hashes without enabling or importing a global
 provider home. The currently installed app ships a disabled `cua_repl` placeholder that
-needs ChatGPT's dynamic launch configuration. Codex's supported hooks include
-[PreToolUse denial](https://learn.chatgpt.com/docs/hooks), but its computer runtime's veto
-coverage and profile isolation still require a recorded integration run.
+needs ChatGPT's dynamic launch configuration. The bundled Chrome plugin has no
+standalone MCP launch definition; its skill expects a host-provided `node_repl` runtime.
+The readiness probe distinguishes these installed, host-managed plugins from missing or
+unreadable installations and records both versions and manifest hashes in the preflight.
+Codex's [hook documentation](https://learn.chatgpt.com/docs/hooks) supports explicit
+PreToolUse denial but specifies fail-open behavior for callback failures and specialized
+paths that can omit the gate. A hook alone cannot supply F5's fail-closed veto. Supported
+runtime launch, complete veto coverage and profile isolation remain integration gates.
 
 Claude's [computer-use documentation](https://code.claude.com/docs/en/computer-use)
 requires the interactive CLI and excludes non-interactive `-p` mode used by the Agent
@@ -381,3 +386,32 @@ and verifies signatures, starts the helper suspended and observes permissions on
 It refuses to overwrite a report and leaves every machine-test item pending with
 `certified: false`. It records repository and installed-build commits separately; a
 preflight never proves TCC identity, real capture isolation or input-stop latency.
+
+The unsigned macOS rehearsal controls a temporary AppKit test app containing only
+synthetic data. It grants no existing user app, starts a fresh permit, stops on physical
+input without resuming automatically, and closes its own app/helper at exit:
+
+```sh
+bun apps/desktop/src/computer/rehearseHelperMacos.ts --helper apps/desktop/dist-native/mac-universal/f5-computer-helper --output /tmp/f5-native-rehearsal.json
+```
+
+It exercises real app activation, accessibility inspection, semantic pressing, secure
+field refusal, grant revocation, display-space clicking, Unicode typing, protected chords
+and permit expiry. The report keeps outcome codes and timings; no typed values,
+accessibility content or screenshots are saved. A protected target or physical-input
+interruption ends the rehearsal; failed or skipped checks are not certification evidence.
+Signing is deferred for this development work. Capture masking, physical kill-chord
+latency, both-provider turns, renderer/backend failures, multiple profiles, overlays,
+Windows runtime and installed-build TCC attribution still need recorded machine tests.
+
+The first real run exposed a macOS transport defect: `FileHandle.read(upToCount:)` waited
+for a full pipe buffer, preventing short requests and suspend messages from executing.
+The helper now uses an interruptible POSIX read; XCTest verifies a short command arrives
+while stdin remains open. The build protocol check requires a correlated suspend
+acknowledgement rather than accepting an unsolicited status heartbeat.
+
+The [2026-10-10 unsigned evidence](computer-certification/2026-10-10-macos-unsigned.json)
+records six passed real-app checks after the pipe fix, protected-system-UI refusals during
+pointer checks, and a physical-input interruption in a separate run. It also records the
+installed plugin versions/hashes and unsupported launch reasons. These results establish
+only the listed development observations; the rest of the release matrix remains pending.

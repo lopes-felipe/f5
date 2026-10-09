@@ -1118,7 +1118,7 @@ heartbeat.setEventHandler {
 heartbeat.resume()
 DispatchQueue.global(qos: .userInteractive).async {
   var buffer = Data()
-  while let chunk = try? FileHandle.standardInput.read(upToCount: 65536), !chunk.isEmpty {
+  while let chunk = try? readComputerInputChunk(FileHandle.standardInput.fileDescriptor) {
     buffer.append(chunk)
     while let end = buffer.firstIndex(of: 10) {
       guard buffer.distance(from: buffer.startIndex, to: end) <= 12 * 1024 * 1024 else {

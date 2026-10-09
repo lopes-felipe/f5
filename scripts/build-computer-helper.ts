@@ -72,6 +72,8 @@ async function main(): Promise<void> {
       const child = spawn(binary, [], { stdio: ["pipe", "pipe", "pipe"] });
       let buffer = "";
       let hello = false;
+      let permissions = false;
+      let suspended = false;
       const timer = setTimeout(() => {
         child.kill();
         reject(new Error("Helper protocol check timed out."));
@@ -92,9 +94,17 @@ async function main(): Promise<void> {
               return;
             }
             hello = true;
-            child.stdin.write('{"type":"permissions"}\n');
+            child.stdin.write(
+              '{"type":"request","request":{"op":"status","requestId":"protocol-permissions"}}\n',
+            );
+            child.stdin.write('{"type":"suspend","requestId":"protocol-check"}\n');
           }
-          if (hello && message.type === "status") {
+          if (hello && message.type === "response" && !message.error) {
+            if (message.requestId === "protocol-permissions")
+              permissions = typeof message.result?.available === "boolean";
+            if (message.requestId === "protocol-check") suspended = true;
+          }
+          if (permissions && suspended) {
             clearTimeout(timer);
             child.stdin.end();
             child.kill();

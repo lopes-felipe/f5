@@ -102,8 +102,20 @@ async function probePermissions(path: string): Promise<unknown> {
             finish({ available: false, reason: "protocol-mismatch" });
             return;
           }
-          child.stdin.write(JSON.stringify({ type: "permissions" }) + "\n");
-        } else if (message.type === "status") finish(message.status);
+          child.stdin.write(
+            JSON.stringify({
+              type: "request",
+              request: { op: "status", requestId: "preflight-status" },
+            }) + "\n",
+          );
+        } else if (message.type === "response" && message.requestId === "preflight-status") {
+          finish(message.result ?? { available: false, reason: "invalid-protocol" });
+        } else if (
+          message.type === "status" &&
+          (message.status as { available?: boolean })?.available === false
+        ) {
+          finish(message.status);
+        }
       }
     });
   });
@@ -114,7 +126,7 @@ const hash = await readFile(helper).then(
   (bytes) => createHash("sha256").update(bytes).digest("hex"),
   () => null,
 );
-const [helperSignature, appSignature, permissions] = await Promise.all([
+const [helperSignature, appSignature, permissions, providerReadiness] = await Promise.all([
   verifySignature(helper),
   appPath
     ? verifySignature(resolve(appPath))
@@ -123,6 +135,12 @@ const [helperSignature, appSignature, permissions] = await Promise.all([
         detail: "Development helper; no installed app supplied.",
       }),
   probePermissions(helper),
+  exec("bun", [resolve(import.meta.dirname, "../apps/server/scripts/probe-computer-builtins.ts")], {
+    timeout: 10000,
+  }).then(
+    (result) => JSON.parse(result.stdout) as unknown,
+    () => ({ state: "probe-failed" }),
+  ),
 ]);
 const repositoryCommit = await exec("git", ["rev-parse", "HEAD"]).then(
   (result) => result.stdout.trim(),
@@ -165,6 +183,7 @@ await writeFile(
       helperSignature,
       appSignature,
       permissionProbe: permissions,
+      providerReadiness,
       certified: false,
       checks: checks.map((name) => ({ name, state: "pending", evidence: null })),
       note: "Read-only preflight. Signature/permission observations do not certify attribution, capture isolation, consent, or interruption latency. Release gates must be reviewed and changed separately after recorded machine tests.",
