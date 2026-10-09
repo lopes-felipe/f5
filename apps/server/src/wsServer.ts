@@ -3063,9 +3063,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               newBranch: branch,
               path: cwd,
             }).pipe(Effect.asVoid, Effect.mapError(validation)),
+            { background: true },
           )
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
+      case NATIVE_OPERATION_WS_METHODS.resolve:
       case NATIVE_OPERATION_WS_METHODS.execute:
       case NATIVE_OPERATION_WS_METHODS.list:
       case NATIVE_OPERATION_WS_METHODS.inspect: {
@@ -3079,11 +3081,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           return yield* new RouteRequestError({
             message: "Native operations are unavailable for this conversation.",
           });
+        if (request.body._tag === NATIVE_OPERATION_WS_METHODS.resolve) {
+          if (!providerService.nativeOperations.resolve)
+            return yield* new RouteRequestError({
+              message: "Native outcome resolution is unavailable.",
+            });
+          return yield* providerService.nativeOperations
+            .resolve(stripRequestTag(request.body))
+            .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        }
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.execute) {
           const operation = stripRequestTag(request.body);
-          if (operation.command.kind === "fork" || operation.command.kind === "revertFiles")
+          if (["fork", "revertFiles", "compact"].includes(operation.command.kind))
             return yield* new RouteRequestError({
-              message: "Use the conversation fork or checkpoint action for this operation.",
+              message:
+                "Use the conversation fork, checkpoint or compaction action for this operation.",
             });
           return yield* providerService.nativeOperations
             .execute(operation)

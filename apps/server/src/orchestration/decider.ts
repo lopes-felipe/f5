@@ -1021,6 +1021,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.title !== undefined
             ? {
                 title: command.title,
+                titleOrigin: command.titleOrigin ?? "host",
                 titleSource: "manual" as const,
                 titleState: null,
                 titleRevision: (thread.titleRevision ?? 0) + 1,

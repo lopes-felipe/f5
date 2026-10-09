@@ -12,11 +12,16 @@ export function NativeFilePreview(props: {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const load = async () => {
+    const api = readNativeApi()?.nativeOperations;
+    if (!api?.inspect) {
+      setError("Native file preview API is unavailable.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       setPreview(
-        (await readNativeApi()?.nativeOperations?.inspect({
+        (await api.inspect({
           threadId: props.threadId,
           generation: props.generation,
           kind: "filePreview",
@@ -30,16 +35,21 @@ export function NativeFilePreview(props: {
     }
   };
   const fork = async () => {
+    const api = readNativeApi()?.nativeOperations;
+    if (!api?.fork) {
+      setError("Native fork API is unavailable.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const record = await readNativeApi()?.nativeOperations?.fork({
+      const record = await api.fork({
         threadId: props.threadId,
         generation: props.generation,
         operationId: crypto.randomUUID(),
         beforeTurnId: props.turnId,
       });
-      if (record?.state !== "completed")
+      if (!["requested", "dispatched", "running", "completed"].includes(record.state))
         setError(record?.error ?? "Fork outcome needs reconciliation.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Fork could not start.");
@@ -51,7 +61,7 @@ export function NativeFilePreview(props: {
     <span>
       {props.nativeFork && (
         <button type="button" disabled={loading} onClick={() => void fork()}>
-          Fork from here
+          Fork from here (branch-tip workspace)
         </button>
       )}
       {props.filePreview && (

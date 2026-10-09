@@ -1,3 +1,4 @@
+import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { NativeRuntimePanel } from "./chat/NativeRuntimePanel";
 import { TranscriptRepairAction } from "./TranscriptRepairAction";
 import { isSessionActionSupported } from "@t3tools/shared/providerRuntimeCapabilities";
@@ -4581,6 +4582,18 @@ export default function ChatView({
     ) {
       return;
     }
+    if (pendingComposerImageImportCount > 0) {
+      toastManager.add({
+        type: "info",
+        title: "Still preparing an image.",
+        description: "Send once its thumbnail appears.",
+      });
+      return;
+    }
+    if (activePendingProgress) {
+      onAdvanceActivePendingUserInput();
+      return;
+    }
     if (
       /^\/review(?:\s|$)/.test(promptRef.current.trim()) &&
       activeThread.session?.provider === "codex" &&
@@ -4598,14 +4611,10 @@ export default function ChatView({
           generation: activeThread.session.capabilities.generation,
           command: {
             kind: "review",
-            target: !argument
-              ? { type: "uncommittedChanges" }
-              : /^[0-9a-f]{7,40}$/i.test(argument)
-                ? { type: "commit", sha: argument }
-                : { type: "baseBranch", branch: argument },
+            target: parseNativeReviewTarget(argument),
           },
         });
-        if (record.state === "completed") {
+        if (["requested", "dispatched", "running", "completed"].includes(record.state)) {
           setPrompt("");
           promptRef.current = "";
           onAdmitted?.();
@@ -4625,18 +4634,6 @@ export default function ChatView({
       } finally {
         sendInFlightRef.current = false;
       }
-      return;
-    }
-    if (pendingComposerImageImportCount > 0) {
-      toastManager.add({
-        type: "info",
-        title: "Still preparing an image.",
-        description: "Send once its thumbnail appears.",
-      });
-      return;
-    }
-    if (activePendingProgress) {
-      onAdvanceActivePendingUserInput();
       return;
     }
     const promptForSend = promptRef.current;

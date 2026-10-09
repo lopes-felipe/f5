@@ -4814,7 +4814,7 @@ const make = Effect.gen(function* () {
           commandId: providerCommandId(event, "native-metadata"),
           threadId: thread.id,
           activity: {
-            id: event.eventId,
+            id: EventId.makeUnsafe(`${event.eventId}:native-metadata`),
             kind: "native.metadata",
             tone: "info",
             summary: "Provider metadata updated",
@@ -4838,7 +4838,7 @@ const make = Effect.gen(function* () {
             commandId: providerCommandId(event, "prompt-suggestion"),
             threadId: thread.id,
             activity: {
-              id: event.eventId,
+              id: EventId.makeUnsafe(`${event.eventId}:prompt-suggestion`),
               kind: "prompt.suggestion",
               tone: "info",
               summary: suggestion.text.slice(0, 4000),
@@ -4855,6 +4855,7 @@ const make = Effect.gen(function* () {
           commandId: providerCommandId(event, "thread-meta-update"),
           threadId: thread.id,
           title: event.payload.name,
+          titleOrigin: "provider",
         });
       }
 

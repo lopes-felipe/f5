@@ -746,6 +746,7 @@ export function createWsNativeApi(): NativeApi {
       getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
     },
     nativeOperations: {
+      resolve: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.resolve, input),
       fork: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.fork, input),
       execute: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.execute, input),
       list: (input) => transport.request(NATIVE_OPERATION_WS_METHODS.list, input),

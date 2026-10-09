@@ -139,6 +139,22 @@ export const makeConversationRewind = Effect.gen(function* () {
         )
       )
         return yield* fail("Native file checkpointing is unavailable for this session.");
+      const nativeFilesMayHaveChanged = () =>
+        Effect.gen(function* () {
+          if (!nativeFiles) return false;
+          if (!provider.nativeOperations) return true;
+          const record = (yield* provider.nativeOperations.list(thread.id)).find(
+            (entry) => entry.operationId === `native-files:${request.operationId}`,
+          );
+          if (!record) return false;
+          const result = record.result as { canRewind?: boolean; error?: string } | undefined;
+          return (
+            result?.canRewind === true ||
+            ["dispatched", "running", "indeterminate", "completed", "cancelled"].includes(
+              record.state,
+            )
+          );
+        });
       const requiresWorkspace = request.restoreFiles || caps.rollbackAffectsFiles;
       if (requiresWorkspace && !workspace) return yield* fail("This rewind needs a workspace.");
       if (requiresWorkspace) {
@@ -309,6 +325,10 @@ export const makeConversationRewind = Effect.gen(function* () {
           (state === "provider-pending" || state === "reconciliation-required") &&
           untouched(currentIds)
         ) {
+          if (yield* nativeFilesMayHaveChanged())
+            return yield* fail(
+              "Files may already have been restored; conversation rewind is unconfirmed. Inspect and acknowledge the native outcome before cancelling; file rewind will not be repeated.",
+            );
           // The read-back taken at the start of this run proves the rollback never
           // took effect, so the operation is as safe to retry as a prepared one.
           if (!options.userInitiated) {
@@ -385,7 +405,7 @@ export const makeConversationRewind = Effect.gen(function* () {
                   if (record.state !== "completed" || record.staleGeneration)
                     return yield* fail(
                       record.error ??
-                        "Native file rewind needs reconciliation; the conversation was left untouched.",
+                        "Native file rewind needs reconciliation; files or conversation may already have changed.",
                     );
                   const result = record.result as { skippedLinks?: number } | undefined;
                   if (result?.skippedLinks)
@@ -415,7 +435,8 @@ export const makeConversationRewind = Effect.gen(function* () {
             const readback = yield* Effect.exit(provider.readThread(thread.id));
             if (
               Exit.isSuccess(readback) &&
-              untouched(readback.value.turns.map((turn) => turn.id as string))
+              untouched(readback.value.turns.map((turn) => turn.id as string)) &&
+              !(yield* nativeFilesMayHaveChanged())
             )
               yield* update(op.operation_id, "prepared");
             return yield* Effect.failCause(attempt.cause);

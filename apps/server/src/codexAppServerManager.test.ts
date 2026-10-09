@@ -3869,6 +3869,40 @@ describe("Release 4 native operations", () => {
     });
     expect(manager.listenerCount("event")).toBe(0);
   });
+  it("clears goal ownership and listeners on dispatch refusal and abort", async () => {
+    const { manager, context, sendRequest } = createThreadControlHarness();
+    const command = {
+      ...input("compact"),
+      command: { kind: "goalSet" as const, objective: "Goal", tokenBudget: 100 },
+    };
+    sendRequest.mockRejectedValueOnce(new Error("Rejected"));
+    await expect(manager.executeNativeOperation(command)).rejects.toThrow("Rejected");
+    expect((context as typeof context & { nativeGoalActive?: boolean }).nativeGoalActive).toBe(
+      false,
+    );
+    expect(manager.listenerCount("event")).toBe(0);
+    sendRequest.mockResolvedValue({});
+    const abort = new AbortController();
+    const pending = manager.executeNativeOperation(command, undefined, abort.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    abort.abort();
+    await expect(pending).rejects.toThrow();
+    expect((context as typeof context & { nativeGoalActive?: boolean }).nativeGoalActive).toBe(
+      false,
+    );
+    expect(manager.listenerCount("event")).toBe(0);
+  });
+  it("marks a local unsupported operation as not sent", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    await expect(
+      manager.executeNativeOperation({
+        ...input("compact"),
+        command: { kind: "stopTask", taskId: "task" },
+      }),
+    ).rejects.toMatchObject({ deliveryCertainty: "not_sent" });
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
   it("keeps native attachment contents out of inspection", async () => {
     const { manager, sendRequest } = createThreadControlHarness();
     sendRequest.mockResolvedValue({

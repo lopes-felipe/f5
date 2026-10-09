@@ -2757,3 +2757,56 @@ it.effect("does not mark an accepted running usage recovery for another restart 
     );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.effect(
+  "returns durable admission before native settlement and keeps list polling read-only",
+  () => {
+    const claude = makeFakeCodexAdapter("claudeAgent");
+    let settle!: (result: unknown) => void;
+    const dispatch = vi.fn(() =>
+      Effect.promise(
+        () =>
+          new Promise((resolve) => {
+            settle = resolve;
+          }),
+      ),
+    );
+    const adapter = { ...claude.adapter, executeNativeOperation: dispatch };
+    const layer = makeProviderServiceLayerForAdapters(new Map([["claudeAgent", adapter]])).pipe(
+      Layer.provideMerge(SqlitePersistenceMemory),
+    );
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("native-async-readonly-poll");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+      });
+      const capabilities = yield* provider.getSessionCapabilities(threadId);
+      const record = yield* provider.nativeOperations!.execute({
+        threadId,
+        operationId: "async-fork",
+        generation: capabilities!.generation,
+        command: {
+          kind: "fork",
+          targetThreadId: asThreadId("native-async-target"),
+          cwd: "/tmp/native-async-target",
+        },
+      });
+      assert.equal(record.state, "requested");
+      yield* Effect.promise(() => vi.waitFor(() => assert.equal(dispatch.mock.calls.length, 1)));
+      const before = claude.startSession.mock.calls.length;
+      yield* provider.stopSession({ threadId });
+      for (let index = 0; index < 3; index++) yield* provider.nativeOperations!.list(threadId);
+      assert.equal(claude.startSession.mock.calls.length, before);
+      settle({ resumeCursor: { resume: "fork-session" } });
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const records = await Effect.runPromise(provider.nativeOperations!.list(threadId));
+          assert.equal(records[0]?.state, "completed");
+        }),
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);

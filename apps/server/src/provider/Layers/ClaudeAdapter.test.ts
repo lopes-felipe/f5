@@ -11750,3 +11750,178 @@ it.effect("renames through the isolated child and persists the provider title lo
     yield* adapter.stopSession(THREAD_ID);
   }).pipe(Effect.provide(h.layer));
 });
+
+it.effect(
+  "tracks opaque task run IDs by accepted starts and persists superseded identities",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          nativeTaskRuns: [["shell-task", "run-9"]],
+        },
+      });
+      h.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-task",
+        run_id: "run-10",
+        task_type: "local_bash",
+        description: "new run",
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174011",
+      } as unknown as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          assert.deepEqual(
+            (sessions[0]!.resumeCursor as { nativeTaskRuns: unknown }).nativeTaskRuns,
+            [["shell-task", "run-10"]],
+          );
+        }),
+      );
+      h.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "shell-task",
+        run_id: "run-9",
+        task_type: "local_bash",
+        description: "late old run",
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174012",
+      } as unknown as SDKMessage);
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+        nativeTaskRuns: unknown;
+        supersededTaskRuns: unknown;
+      };
+      assert.deepEqual(cursor.nativeTaskRuns, [["shell-task", "run-10"]]);
+      assert.deepEqual(cursor.supersededTaskRuns, [["shell-task", ["run-9"]]]);
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: cursor,
+      });
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect(
+  "resumes the compacted transcript tip without reusing a pre-compaction assistant pin",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: {
+          resume: "123e4567-e89b-42d3-a456-426614174000",
+          resumeSessionAt: "123e4567-e89b-42d3-a456-426614174001",
+          turnBoundaries: [
+            {
+              turnId: "old-turn",
+              assistantUuid: "123e4567-e89b-42d3-a456-426614174001",
+              userMessageUuid: "123e4567-e89b-42d3-a456-426614174002",
+              fileCheckpointing: true,
+            },
+          ],
+        },
+      });
+      h.query.emit({
+        type: "system",
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "manual", pre_tokens: 1000 },
+        session_id: "123e4567-e89b-42d3-a456-426614174000",
+        uuid: "123e4567-e89b-42d3-a456-426614174013",
+      } as SDKMessage);
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          assert.equal(
+            (sessions[0]!.resumeCursor as { resumeLatest?: boolean }).resumeLatest,
+            true,
+          );
+        }),
+      );
+      const cursor = (yield* adapter.listSessions())[0]!.resumeCursor as {
+        resumeSessionAt?: string;
+        turnBoundaries: unknown[];
+      };
+      assert.equal(cursor.resumeSessionAt, undefined);
+      assert.equal(cursor.turnBoundaries.length, 1);
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: cursor,
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.resumeSessionAt, undefined);
+      const resumedCursor = (yield* adapter.listSessions())[0]!.resumeCursor;
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "approval-required",
+        resumeCursor: resumedCursor,
+      });
+      assert.equal(h.getLastCreateQueryInput()?.options.resumeSessionAt, undefined);
+      yield* adapter.stopSession(THREAD_ID);
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect("cleans up the temporary fork query and fork flag when receipt persistence fails", () => {
+  const h = makeHarness();
+  return Effect.gen(function* () {
+    const adapter = yield* ClaudeAdapter;
+    yield* adapter.startSession({
+      threadId: THREAD_ID,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: {
+        resume: "123e4567-e89b-42d3-a456-426614174000",
+        turnBoundaries: [
+          { turnId: "source-turn", assistantUuid: "123e4567-e89b-42d3-a456-426614174001" },
+        ],
+      },
+    });
+    const target = ThreadId.makeUnsafe("failed-native-fork-target");
+    const result = yield* Effect.result(
+      adapter.executeNativeOperation!(
+        {
+          threadId: THREAD_ID,
+          generation: 1,
+          operationId: "failed-fork",
+          command: { kind: "fork", targetThreadId: target, cwd: "/tmp/failed-native-fork-target" },
+        },
+        async () => {
+          throw new Error("Receipt persistence failed");
+        },
+      ),
+    );
+    assert.equal(result._tag, "Failure");
+    assert.equal(yield* adapter.hasSession(target), false);
+    assert.equal(h.queries[1]?.closeCalls, 1);
+    yield* adapter.startSession({
+      threadId: target,
+      provider: "claudeAgent",
+      runtimeMode: "approval-required",
+      resumeCursor: { resume: "123e4567-e89b-42d3-a456-426614174000" },
+    });
+    assert.equal(h.getLastCreateQueryInput()?.options.forkSession, undefined);
+    yield* adapter.stopSession(target);
+    yield* adapter.stopSession(THREAD_ID);
+  }).pipe(Effect.provide(h.layer));
+});

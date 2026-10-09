@@ -783,3 +783,29 @@ transport tests cover launch options, UUID mapping, preview versus mutation,
 refusal behavior and generation fencing. Claude native compaction stays off pending
 an authenticated acceptance run. This does not certify Linux/Windows lifecycle
 behavior; those release environments must run the documented live suites.
+
+### Native-operation recovery
+
+Listing operation receipts is read-only. Reconciliation runs separately with bounded
+provider reads and never starts a stopped session just to poll it. An uncertain
+outcome stays reserved until it is verified or the user chooses **Stop provider and
+acknowledge**. Acknowledgement stops the provider and releases the reservation; it
+never repeats file rewind or fork creation. Files or conversation may already have
+changed, so inspect the workspace before continuing. A failed conversation rewind
+after native file restoration remains `reconciliation-required`, even if conversation
+history still looks unchanged.
+
+A compact boundary clears the old assistant resume pin while retaining user UUIDs
+for file previews. Subsequent starts resume the compacted transcript tip. A missing
+transcript gets an on-demand F5 summary only when the latest compaction was native;
+an empty or failed summary is logged without blocking session startup.
+
+Fork operations close temporary child queries on every exit path. Their worktree
+paths remain in durable operation records, including failures and stale results.
+The workspace starts at the source branch tip; historical conversation boundaries
+do not restore historical files. F5 preserves failed fork worktrees and branches
+for inspection instead of deleting them automatically.
+
+The child environment strips inherited `F5_PREVIEW_MCP_TOKEN*` values before
+launch. F5's preview broker supplies only the token belonging to the current
+session, preventing a child from inheriting another session's preview credential.

@@ -915,6 +915,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       nowIso,
       revertTurnCountByUserMessageId,
       canRestoreFiles,
+      nativeSessionCapabilities,
       effectiveRevertDisabledReason,
       revertPopover,
       revertImpact,
@@ -928,6 +929,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
     [
       canRestoreFiles,
+      nativeSessionCapabilities,
       effectiveRevertDisabledReason,
       revertPopover,
       revertImpact,

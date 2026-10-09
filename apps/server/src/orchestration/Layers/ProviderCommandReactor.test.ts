@@ -182,7 +182,11 @@ describe("ProviderCommandReactor", () => {
     readonly createThread?: boolean;
     readonly tracePath?: string;
     readonly orphanedTitleRegenerationBeforeStart?: boolean;
+    readonly nativeFallback?: boolean;
+    readonly recoverySummary?: string;
   }) {
+    const simulateNativeFallback = input?.nativeFallback;
+    const recoverySummary = input?.recoverySummary;
     const now = new Date().toISOString();
     const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
     const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-project-"));
@@ -283,7 +287,10 @@ describe("ProviderCommandReactor", () => {
           : {}),
         ...(model !== undefined ? { model } : {}),
         threadId,
-        resumeCursor: resumeCursor ?? { opaque: `cursor-${sessionIndex}` },
+        resumeCursor:
+          simulateNativeFallback && sessionIndex === 1
+            ? { threadId: "replacement-native" }
+            : (resumeCursor ?? { opaque: `cursor-${sessionIndex}` }),
         createdAt: now,
         updatedAt: now,
       };
@@ -460,6 +467,9 @@ describe("ProviderCommandReactor", () => {
             .map((session) => ({ threadId: session.threadId, result: mcpReload.result })),
         }),
     );
+    const runOneOffPrompt = vi.fn(() =>
+      recoverySummary === undefined ? unsupported() : Effect.succeed({ text: recoverySummary }),
+    );
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
       sendTurn: sendTurn as ProviderServiceShape["sendTurn"],
@@ -477,7 +487,7 @@ describe("ProviderCommandReactor", () => {
         }),
       readThread: () => unsupported(),
       rollbackConversation: () => unsupported(),
-      runOneOffPrompt: () => unsupported(),
+      runOneOffPrompt,
       compactConversation: () => unsupported(),
       reloadMcpConfigForProject,
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
@@ -704,6 +714,7 @@ describe("ProviderCommandReactor", () => {
     return {
       engine,
       reactor,
+      runOneOffPrompt,
       startSession,
       sendTurn,
       interruptTurn,
@@ -730,6 +741,74 @@ describe("ProviderCommandReactor", () => {
       drain,
     };
   }
+
+  it.each(["native", "summary"] as const)(
+    "recovers missing native history only when the latest compaction is %s",
+    async (kind) => {
+      const harness = await createHarness({
+        nativeFallback: true,
+        recoverySummary: "Recovered details from F5 transcript",
+      });
+      const threadId = ThreadId.makeUnsafe("thread-1");
+      const now = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.compacted.record",
+          commandId: CommandId.makeUnsafe("record-native-compaction"),
+          threadId,
+          compaction: {
+            kind,
+            summary: kind === "native" ? "Provider compacted context" : "Existing F5 summary",
+            trigger: "manual",
+            estimatedTokens: 100,
+            modelContextWindowTokens: 200000,
+            createdAt: now,
+            direction: null,
+            pivotMessageId: null,
+            fromTurnCount: null,
+            toTurnCount: null,
+          },
+          createdAt: now,
+        }),
+      );
+      harness.upsertBinding({
+        threadId,
+        provider: "codex",
+        projectId: asProjectId("project-1"),
+        status: "stopped",
+        resumeCursor: { threadId: "missing-native" },
+        runtimePayload: { cwd: harness.workspaceRoot },
+      });
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("turn-after-missing-native"),
+          threadId,
+          message: {
+            messageId: asMessageId("resume-message"),
+            role: "user",
+            text: "Continue",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      expect(harness.runOneOffPrompt.mock.calls.length).toBe(kind === "native" ? 1 : 0);
+      expect(harness.startSession.mock.calls.length).toBe(kind === "native" ? 2 : 1);
+      if (kind === "native")
+        expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+          priorWorkSummary: "Recovered details from F5 transcript",
+          resumeCursor: { threadId: "replacement-native" },
+        });
+      else
+        expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+          priorWorkSummary: "Existing F5 summary",
+        });
+    },
+  );
 
   it("reuses a read-only document merge session for a profile-less refinement", async () => {
     const harness = await createHarness();

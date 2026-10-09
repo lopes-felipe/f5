@@ -62,6 +62,7 @@ export function nativeOperationSqlRepository(sql: SqlClient.SqlClient): NativeOp
  * questions and Stop can still use the dispatch lock and settle the operation.
  */
 export function makeNativeOperationCoordinator(repository: NativeOperationRepository) {
+  const executing = new Set<string>();
   const persist = (record: NativeOperationRecord) =>
     repository.save(record).pipe(
       Effect.tap(() =>
@@ -75,6 +76,7 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
     input: NativeOperationInput,
     callbacks: {
       readonly validate: Effect.Effect<void, E, R>;
+      readonly onAdmitted?: (record: NativeOperationRecord) => Effect.Effect<void>;
       readonly prepare?: Effect.Effect<void, E, R>;
       readonly generation: Effect.Effect<number, E, R>;
       readonly dispatch: Effect.Effect<unknown, E, R>;
@@ -92,12 +94,12 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
           const existing = yield* repository.get(input.operationId);
           if (existing) {
             if (
-              JSON.stringify({
+              stableJson({
                 threadId: existing.threadId,
                 generation: existing.generation,
                 command: existing.command,
               }) !==
-              JSON.stringify({
+              stableJson({
                 threadId: input.threadId,
                 generation: input.generation,
                 command: input.command,
@@ -130,9 +132,11 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
             updatedAt: now,
           };
           yield* persist(record);
+          executing.add(record.operationId);
           return { record, dispatch: true };
         }),
       );
+      if (callbacks.onAdmitted) yield* callbacks.onAdmitted(admission.record);
       if (!admission.dispatch) return admission.record;
       let record = admission.record;
       const receiptLock = yield* Semaphore.make(1);
@@ -157,7 +161,20 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
         const result = yield* callbacks.dispatchWithReceipt
           ? callbacks.dispatchWithReceipt((receipt) =>
               receiptLock.withPermit(
-                Effect.suspend(() => transition("running", { receipt: bounded(receipt) })),
+                Effect.suspend(() =>
+                  transition("running", {
+                    receipt: bounded(
+                      receipt && typeof receipt === "object" && !Array.isArray(receipt)
+                        ? {
+                            ...(record.receipt && typeof record.receipt === "object"
+                              ? record.receipt
+                              : {}),
+                            ...receipt,
+                          }
+                        : receipt,
+                    ),
+                  }),
+                ),
               ),
             )
           : callbacks.dispatch;
@@ -196,93 +213,136 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
         Effect.onExit((exit) => {
           if (Exit.isSuccess(exit)) return Effect.void;
           // A lost response, timeout or shutdown never implies the provider did nothing.
-          return transition(dispatched ? "indeterminate" : "failed", {
+          const error = Cause.squash(exit.cause);
+          const notSent =
+            record.result === undefined &&
+            error !== null &&
+            typeof error === "object" &&
+            (("deliveryCertainty" in error && error.deliveryCertainty === "not_sent") ||
+              ("_tag" in error &&
+                [
+                  "ProviderAdapterSessionNotFoundError",
+                  "ProviderAdapterSessionClosedError",
+                  "ProviderAdapterValidationError",
+                ].includes(String(error._tag))));
+          return transition(dispatched && !notSent ? "indeterminate" : "failed", {
             error: Cause.hasInterruptsOnly(exit.cause)
               ? "Server shutdown cancelled the waiter; provider outcome requires reconciliation."
               : String(Cause.squash(exit.cause)).slice(0, 400),
           });
         }),
         Effect.catchCause(() => Effect.void),
+        Effect.ensuring(Effect.sync(() => executing.delete(input.operationId))),
       );
       return record;
     });
-  const reconcile = <E, R>(
-    check: (record: NativeOperationRecord) => Effect.Effect<
-      {
-        state: "completed" | "failed" | "cancelled" | "indeterminate";
-        result?: unknown;
-      },
-      E,
-      R
-    >,
+  type Outcome = {
+    state: "completed" | "failed" | "cancelled" | "indeterminate";
+    result?: unknown;
+    staleGeneration?: boolean;
+  };
+  const settleRecord = <E, R>(
+    record: NativeOperationRecord,
+    check: (record: NativeOperationRecord) => Effect.Effect<Outcome, E, R>,
   ) =>
-    Effect.gen(function* () {
-      const records = yield* repository.list();
-      for (const record of records) {
-        if (!active(record.state)) continue;
-        reservations.add(record.threadId);
+    withProviderThreadAccess(
+      record.threadId,
+      Effect.gen(function* () {
+        const current = yield* repository.get(record.operationId);
+        if (!current || !active(current.state) || executing.has(current.operationId)) return;
         const outcome =
-          record.state === "requested"
+          current.state === "requested"
             ? { state: "cancelled" as const }
-            : yield* check(record).pipe(
+            : yield* check(current).pipe(
+                Effect.timeout("10 seconds"),
                 Effect.catchCause(() => Effect.succeed({ state: "indeterminate" as const })),
               );
         yield* persist({
-          ...record,
+          ...current,
           ...outcome,
           ...(outcome.state === "completed" &&
-          record.applicationRequired &&
-          !record.applicationApplied &&
-          !record.staleGeneration &&
+          current.applicationRequired &&
+          !current.applicationApplied &&
+          !current.staleGeneration &&
           !("staleGeneration" in outcome && outcome.staleGeneration)
             ? {
                 state: "indeterminate" as const,
                 error:
-                  "The provider settled, but application of the result requires reconciliation.",
+                  "The provider settled, but F5 application is unconfirmed. Reconcile or acknowledge the outcome; the provider mutation will not be repeated.",
               }
             : {}),
           updatedAt: new Date().toISOString(),
         });
-      }
+      }),
+    );
+  const restoreReservations = repository.list().pipe(
+    Effect.tap((records) =>
+      Effect.sync(() => {
+        for (const record of records) if (active(record.state)) reservations.add(record.threadId);
+      }),
+    ),
+    Effect.asVoid,
+  );
+  const reconcile = <E, R>(
+    check: (record: NativeOperationRecord) => Effect.Effect<Outcome, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      for (const record of yield* repository.list()) yield* settleRecord(record, check);
     });
   const reconcileThread = <E, R>(
     threadId: ThreadId,
-    check: (record: NativeOperationRecord) => Effect.Effect<
-      {
-        state: "completed" | "failed" | "cancelled" | "indeterminate";
-        result?: unknown;
-        staleGeneration?: boolean;
-      },
-      E,
-      R
-    >,
+    check: (record: NativeOperationRecord) => Effect.Effect<Outcome, E, R>,
   ) =>
+    Effect.gen(function* () {
+      for (const record of yield* repository.list(threadId)) yield* settleRecord(record, check);
+    });
+  const abandon = (threadId: ThreadId, operationId: string) =>
     withProviderThreadAccess(
       threadId,
       Effect.gen(function* () {
-        for (const record of yield* repository.list(threadId)) {
-          if (record.state !== "indeterminate") continue;
-          const outcome = yield* check(record).pipe(
-            Effect.catchCause(() => Effect.succeed({ state: "indeterminate" as const })),
+        const record = yield* repository.get(operationId);
+        if (!record || record.threadId !== threadId)
+          return yield* Effect.fail(
+            new NativeOperationError("This operation does not belong to the conversation."),
           );
-          yield* persist({
-            ...record,
-            ...outcome,
-            ...(outcome.state === "completed" &&
-            record.applicationRequired &&
-            !record.applicationApplied &&
-            !record.staleGeneration &&
-            !("staleGeneration" in outcome && outcome.staleGeneration)
-              ? {
-                  state: "indeterminate" as const,
-                  error:
-                    "The provider settled, but application of the result requires reconciliation.",
-                }
-              : {}),
-            updatedAt: new Date().toISOString(),
-          });
-        }
+        if (executing.has(operationId))
+          return yield* Effect.fail(
+            new NativeOperationError(
+              "The operation waiter is still settling. Retry after it settles.",
+            ),
+          );
+        if (record.state !== "indeterminate")
+          return yield* Effect.fail(
+            new NativeOperationError("Only an indeterminate outcome can be acknowledged."),
+          );
+        const resolved = {
+          ...record,
+          state: "cancelled" as const,
+          error:
+            "User acknowledged the uncertain outcome after stopping the provider. Files or forks may already have changed; no mutation was retried.",
+          updatedAt: new Date().toISOString(),
+        };
+        yield* persist(resolved);
+        return resolved;
       }),
     );
-  return { execute, reconcile, reconcileThread, list: repository.list };
+  return {
+    execute,
+    reconcile,
+    reconcileThread,
+    restoreReservations,
+    abandon,
+    list: repository.list,
+  };
+}
+
+/** Canonical JSON prevents object key order from changing operation identity. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.entries(entry).sort(([left], [right]) => left.localeCompare(right)),
+        )
+      : entry,
+  );
 }

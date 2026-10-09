@@ -1,6 +1,7 @@
 import {
   NATIVE_OPERATION_WS_METHODS,
   NativeOperationInput,
+  NativeOperationResolutionInput,
   NativeOperationListInput,
   NativeOperationInspectInput,
   NativeForkInput,
@@ -523,6 +524,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
+  tagRequestBody(NATIVE_OPERATION_WS_METHODS.resolve, NativeOperationResolutionInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.fork, NativeForkInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.execute, NativeOperationInput),
   tagRequestBody(NATIVE_OPERATION_WS_METHODS.list, NativeOperationListInput),

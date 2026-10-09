@@ -428,15 +428,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 if (savedEvent.type === "thread.rewind-draft-resolved") {
                   const { operationId, threadId } = savedEvent.payload;
                   if (savedEvent.payload.intent === "cancel") {
-                    // Cancel a rewind the provider never applied (`prepared` is only kept
-                    // when that is proven). Give the prompt's attachments back to its
+                    // Cancel an untouched rewind, or an uncertain native file rewind explicitly acknowledged after stopping the provider.
+                    // Prepared rewinds have not changed provider history. Give the prompt's attachments back to its
                     // message, restore the queue, and unblock the thread. Deleting the
                     // request row also stops a Retry still queued behind the rewind
                     // gate, and a run that already loaded the operation loses its
                     // conditional claim of `provider-pending` against this delete.
                     const pending = (yield* sql<{
                       target_message_id: string;
-                    }>`SELECT target_message_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'prepared'`)[0];
+                    }>`SELECT target_message_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND (state = 'prepared' OR (mode = 'conversation-and-files' AND state = 'reconciliation-required' AND EXISTS (SELECT 1 FROM native_operations WHERE operation_id = ${`native-files:${operationId}`} AND thread_id = ${threadId} AND state = 'cancelled')))`)[0];
                     if (!pending)
                       return yield* new OrchestrationCommandInvariantError({
                         commandType: envelope.command.type,
@@ -459,7 +459,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                     // checkpoint revert) must survive the cancel.
                     yield* sql`UPDATE next_turn_queue_state SET paused = ${prior.paused}, pause_reason_code = ${prior.pause_reason_code}, pause_detail = ${prior.pause_detail}, revision = revision + 1 WHERE thread_id = ${threadId} AND pause_reason_code IN ('rewind_in_progress', 'reconciliation_required')`;
                     yield* sql`DELETE FROM rewind_requests WHERE operation_id = ${operationId}`;
-                    yield* sql`DELETE FROM rewind_operations WHERE operation_id = ${operationId} AND state = 'prepared'`;
+                    yield* sql`DELETE FROM rewind_operations WHERE operation_id = ${operationId}`;
                   } else {
                     const draft =
                       yield* sql`SELECT operation_id FROM rewind_operations WHERE operation_id = ${operationId} AND thread_id = ${threadId} AND state = 'completed'`;

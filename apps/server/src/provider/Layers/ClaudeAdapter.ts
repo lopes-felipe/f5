@@ -355,6 +355,7 @@ interface ClaudeSessionContext {
   readonly nativeReceipts: Map<string, { state: "completed" | "failed"; result?: unknown }>;
   readonly nativeTaskIds: Set<string>;
   readonly nativeTaskRuns: Map<string, string>;
+  readonly supersededTaskRuns: Map<string, Set<string>>;
   readonly nativeTaskStops: Map<
     string,
     { operationId: string; settlement?: Deferred.Deferred<unknown, ProviderAdapterRequestError> }
@@ -406,6 +407,7 @@ interface ClaudeSessionContext {
   settlementWatchdog: { resultId: string; cancel: Deferred.Deferred<void> } | undefined;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
+  resumeLatest: boolean;
   lastThreadStartedId: string | undefined;
   configuredBase: Record<string, unknown>;
   /**
@@ -2591,6 +2593,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...context.recoveryMetadata,
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
+          ...(context.resumeLatest ? { resumeLatest: true } : {}),
           turnCount: context.turns.length,
           turnBoundaries: context.turnBoundaries.slice(-200),
           ...(context.taskStates.size
@@ -2609,6 +2612,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.lastProviderTitle ? { nativeProviderTitle: context.lastProviderTitle } : {}),
           nativeTaskIds: [...context.nativeTaskIds].slice(-512),
           nativeTaskRuns: [...context.nativeTaskRuns.entries()].slice(-512),
+          supersededTaskRuns: [...context.supersededTaskRuns.entries()]
+            .slice(-512)
+            .map(([id, runs]) => [id, [...runs].slice(-8)]),
           nativeTaskStops: [...context.nativeTaskStops.entries()]
             .slice(-32)
             .map(([taskId, stop]) => [taskId, stop.operationId]),
@@ -4215,6 +4221,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         context.lastAssistantUuid = message.uuid;
+        context.resumeLatest = false;
         resumeFailures.delete(context.session.threadId);
         context.pendingPrompts.length = 0;
         // Once new work is streamed, the old interruption must not be appended
@@ -4553,6 +4560,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             context.approximateConversationChars = 0;
             context.latestUsage = undefined;
             context.compactionRecommendationEmitted = false;
+            context.lastAssistantUuid = undefined;
+            context.resumeLatest = true;
+            delete context.queryOptions.resumeSessionAt;
             if (context.nativeControl) context.nativeControl.compacted = true;
             yield* updateResumeCursor(context);
             yield* offerRuntimeEvent({
@@ -4604,9 +4614,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "task_started":
             {
               const runId = normalizeOptionalString(asUnknownRecord(message)?.run_id);
-              const currentRun = context.nativeTaskRuns.get(message.task_id);
-              if (runId && currentRun && runId < currentRun) return;
-              if (runId) context.nativeTaskRuns.set(message.task_id, runId);
+
+              if (runId) {
+                if (context.supersededTaskRuns.get(message.task_id)?.has(runId)) return;
+                const previous = context.nativeTaskRuns.get(message.task_id);
+                if (previous && previous !== runId) {
+                  const superseded =
+                    context.supersededTaskRuns.get(message.task_id) ?? new Set<string>();
+                  superseded.add(previous);
+                  if (superseded.size > 8) superseded.delete(superseded.values().next().value!);
+                  context.supersededTaskRuns.set(message.task_id, superseded);
+                  if (context.supersededTaskRuns.size > 512)
+                    context.supersededTaskRuns.delete(
+                      context.supersededTaskRuns.keys().next().value!,
+                    );
+                }
+                context.nativeTaskRuns.set(message.task_id, runId);
+              }
               if (context.nativeTaskRuns.size > 512)
                 context.nativeTaskRuns.delete(context.nativeTaskRuns.keys().next().value!);
 
@@ -4654,7 +4678,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (
               typeof asUnknownRecord(message)?.run_id === "string" &&
               context.nativeTaskRuns.get(message.task_id) &&
-              String(asUnknownRecord(message)!.run_id) <
+              String(asUnknownRecord(message)!.run_id) !==
                 context.nativeTaskRuns.get(message.task_id)!
             )
               return;
@@ -4680,7 +4704,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             if (
               typeof asUnknownRecord(message)?.run_id === "string" &&
               context.nativeTaskRuns.get(message.task_id) &&
-              String(asUnknownRecord(message)!.run_id) <
+              String(asUnknownRecord(message)!.run_id) !==
                 context.nativeTaskRuns.get(message.task_id)!
             )
               return;
@@ -5803,8 +5827,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (Option.isSome(indexed)) {
             input = { ...input, resumeCursor: indexed.value.cursor };
             resumeState = readClaudeResumeState(indexed.value.cursor)!;
-            const requested =
-              resumeState.resumeSessionAt ?? resumeState.turnBoundaries?.at(-1)?.assistantUuid;
+            const requested = resumeState.resumeLatest
+              ? undefined
+              : (resumeState.resumeSessionAt ?? resumeState.turnBoundaries?.at(-1)?.assistantUuid);
             if (requested && isUuid(requested)) {
               const selected = selectClaudeResumePoint(
                 indexed.value.entries,
@@ -6845,6 +6870,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(resumeState?.resumeSessionAt
               ? { resumeSessionAt: resumeState.resumeSessionAt }
               : {}),
+            ...(resumeState?.resumeLatest ? { resumeLatest: true } : {}),
+            ...(nativeResumeMetadata.taskRuns.length
+              ? { nativeTaskRuns: nativeResumeMetadata.taskRuns }
+              : {}),
+            ...(nativeResumeMetadata.supersededTaskRuns.length
+              ? { supersededTaskRuns: nativeResumeMetadata.supersededTaskRuns }
+              : {}),
+            ...(nativeResumeMetadata.taskIds.length
+              ? { nativeTaskIds: nativeResumeMetadata.taskIds }
+              : {}),
+            ...(nativeResumeMetadata.tasks.length
+              ? { backgroundTasks: nativeResumeMetadata.tasks }
+              : {}),
+            ...(nativeResumeMetadata.taskStops.length
+              ? { nativeTaskStops: nativeResumeMetadata.taskStops }
+              : {}),
+            ...(nativeResumeMetadata.receipts.length
+              ? { nativeReceipts: nativeResumeMetadata.receipts }
+              : {}),
             turnCount: resumeState?.turnCount ?? 0,
             ...(resumeState?.turnBoundaries ? { turnBoundaries: resumeState.turnBoundaries } : {}),
             ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
@@ -6864,6 +6908,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           nativeReceipts: new Map(nativeResumeMetadata.receipts),
           nativeTaskIds: new Set(nativeResumeMetadata.taskIds),
           nativeTaskRuns: new Map(nativeResumeMetadata.taskRuns),
+          supersededTaskRuns: new Map(
+            nativeResumeMetadata.supersededTaskRuns.map(([id, runs]) => [id, new Set(runs)]),
+          ),
           nativeTaskStops: new Map(
             nativeResumeMetadata.taskStops.map(([taskId, operationId]) => [
               taskId,
@@ -6911,7 +6958,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           lifecycle: createClaudeTurnLifecycle(),
           settlementWatchdog: undefined,
           turnState: undefined,
-          lastAssistantUuid: resumeState?.resumeSessionAt,
+          lastAssistantUuid: resumeState?.resumeLatest ? undefined : resumeState?.resumeSessionAt,
+          resumeLatest: resumeState?.resumeLatest ?? false,
           lastThreadStartedId: undefined,
           configuredBase,
           interruptedTurnIds: new Set<TurnId>(),
@@ -7476,6 +7524,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ...(context.session.resumeCursor as Record<string, unknown>),
                   resume: context.resumeSessionId,
                   resumeSessionAt: boundary.assistantUuid,
+                  resumeLatest: false,
                   turnBoundaries: boundaries,
                   turnCount: nextLength,
                 }
@@ -7645,6 +7694,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "rewindFiles",
+            deliveryCertainty: "not_sent",
             detail:
               "This turn has no native file checkpoint. Sessions started before checkpointing cannot rewind files.",
           });
@@ -7675,6 +7725,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "stopTask",
+            deliveryCertainty: "not_sent",
             detail: "This running task is no longer owned by this session.",
           });
         yield* Effect.tryPromise({
@@ -7702,6 +7753,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "stopTask",
+              deliveryCertainty: "not_sent",
               detail: "This task is not running in this session.",
             });
           if (
@@ -7711,6 +7763,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "stopTask",
+              deliveryCertainty: "not_sent",
               detail: "This task has a newer native run. Refresh before stopping it.",
             });
           const settlement = yield* Deferred.make<unknown, ProviderAdapterRequestError>();
@@ -7726,6 +7779,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "stopTask",
+                  deliveryCertainty: "not_sent",
                   detail: toMessage(cause, "Task-stop receipt persistence failed."),
                 }),
             }).pipe(
@@ -7774,12 +7828,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "forkSession",
+              deliveryCertainty: "not_sent",
               detail: "Claude needs a retained assistant boundary to fork this session.",
             });
           const retained = context.turnBoundaries.slice(0, boundary);
           pendingForks.add(command.targetThreadId);
-          try {
-            const session = yield* startSession({
+          return yield* Effect.gen(function* () {
+            yield* startSession({
               ...context.startInput,
               threadId: command.targetThreadId,
               cwd: command.cwd,
@@ -7793,6 +7848,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                         "nativeReceipts",
                         "nativeTaskIds",
                         "nativeTaskRuns",
+                        "supersededTaskRuns",
                         "nativeTaskStops",
                       ].includes(key),
                   ),
@@ -7800,6 +7856,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 threadId: command.targetThreadId,
                 resume: context.resumeSessionId,
                 resumeSessionAt: retained.at(-1)!.assistantUuid,
+                resumeLatest: false,
                 turnBoundaries: retained,
                 turnCount: retained.length,
               },
@@ -7836,24 +7893,32 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   }),
               });
             return {
-              resumeCursor: session.resumeCursor,
+              resumeCursor: target.session.resumeCursor,
               targetThreadId: command.targetThreadId,
               cwd: command.cwd,
             };
-          } finally {
-            pendingForks.delete(command.targetThreadId);
-          }
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                pendingForks.delete(command.targetThreadId);
+                const target = sessions.get(command.targetThreadId);
+                if (target) yield* stopSessionInternal(target, { emitExitEvent: false });
+              }),
+            ),
+          );
         }
         if (input.command.kind !== "compact")
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: input.command.kind,
+            deliveryCertainty: "not_sent",
             detail: "This native operation is unavailable for Claude.",
           });
         if (context.nativeControl)
           return yield* new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "/compact",
+            deliveryCertainty: "not_sent",
             detail: "A control turn is already running.",
           });
         const settlement = yield* Deferred.make<unknown, ProviderAdapterRequestError>();
@@ -7869,9 +7934,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               new ProviderAdapterRequestError({
                 provider: PROVIDER,
                 method: "/compact",
+                deliveryCertainty: "not_sent",
                 detail: toMessage(cause, "Native receipt persistence failed."),
               }),
-          });
+          }).pipe(
+            Effect.onExit((exit) =>
+              Exit.isFailure(exit)
+                ? Effect.sync(() => {
+                    context.nativeControl = undefined;
+                  })
+                : Effect.void,
+            ),
+          );
         const message = buildUserMessage({ sdkContent: [{ type: "text", text: "/compact" }] });
         yield* Queue.offer(context.promptQueue, { type: "message", message });
         return yield* Deferred.await(settlement).pipe(

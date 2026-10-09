@@ -272,6 +272,10 @@
       "types": "./src/claudeSdkManifest.ts",
       "import": "./src/claudeSdkManifest.ts"
     },
+    "./nativeReviewTarget": {
+      "types": "./src/nativeReviewTarget.ts",
+      "import": "./src/nativeReviewTarget.ts"
+    },
     "./nativeTaskIdentity": {
       "types": "./src/nativeTaskIdentity.ts",
       "import": "./src/nativeTaskIdentity.ts"

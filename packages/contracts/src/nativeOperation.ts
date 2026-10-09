@@ -86,7 +86,15 @@ export const NativeFileRewindPreview = Schema.Struct({
   skippedLinks: Schema.optional(NonNegativeInt),
 });
 export type NativeFileRewindPreview = typeof NativeFileRewindPreview.Type;
+export const NativeOperationResolutionInput = Schema.Struct({
+  threadId: ThreadId,
+  operationId: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  generation: NonNegativeInt,
+  action: Schema.Literals(["reconcile", "acknowledge"]),
+});
+export type NativeOperationResolutionInput = typeof NativeOperationResolutionInput.Type;
 export const NATIVE_OPERATION_WS_METHODS = {
+  resolve: "nativeOperation.resolve",
   fork: "nativeOperation.fork",
   execute: "nativeOperation.execute",
   list: "nativeOperation.list",

@@ -535,3 +535,23 @@ an operator's installation or custom executable path. For an npm installation,
 `npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
 `codex --version`, or select the upgraded executable in Settings > Providers & Models.
 Existing 0.160.1 native capability gates remain compatible.
+
+### Review targets and recovery
+
+`/review` reviews uncommitted changes. `/review branch:<name>` selects a base branch;
+`/review commit:<sha>` selects a 7–40 character commit SHA. A bare argument always
+means a branch, including hexadecimal names such as `deadbeef`. The runtime panel
+uses the same parser.
+
+Review, goal and fork requests return a durable admission receipt promptly; the
+runtime panel follows completion separately. Goals hold the thread reservation,
+not an account lease for their whole lifetime. Operation polling is read-only and
+never resumes a stopped provider. Reconciliation checks are bounded and skip live
+waiters. Lost fork responses without a known fork identity remain uncertain; absence
+of an ID does not prove that the provider created nothing. Fork reconciliation
+validates the persisted retained turn IDs before reporting provider completion.
+
+**Stop provider and acknowledge** releases an uncertain reservation without repeating
+the mutation. Inspect files, conversation and any preserved fork workspace first.
+Fork workspaces start at the source branch tip, and their paths remain in operation
+records after failure; F5 does not delete those worktrees or branches automatically.

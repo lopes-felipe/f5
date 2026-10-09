@@ -45,13 +45,18 @@ manager.on("event", (event) => {
 const record = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" ? (v as Record<string, unknown>) : {};
 const outcomes: Record<string, unknown> = {};
+const requestOutcomes: Record<string, string[]> = {};
+const rememberRequest = (method: string, outcome: string) => {
+  (requestOutcomes[method] ??= []).push(outcome);
+  outcomes[method] = requestOutcomes[method];
+};
 async function request(method: string, params: Record<string, unknown>) {
   try {
     const result = await native.sendRequest(native.requireSession(id), method, params);
-    outcomes[method] = "accepted";
+    rememberRequest(method, "accepted");
     return record(result);
   } catch (error) {
-    outcomes[method] = error instanceof Error ? error.message.slice(0, 250) : "failed";
+    rememberRequest(method, error instanceof Error ? error.message.slice(0, 250) : "failed");
     return {};
   }
 }
@@ -195,8 +200,11 @@ try {
     "thread/goal/get",
     "thread/goal/clear",
     "thread/compact/start",
-  ])
-    assert.equal(outcomes[method], "accepted", `${method} failed`);
+  ]) {
+    assert.ok(requestOutcomes[method]?.length, `${method} was not exercised`);
+    for (const [index, outcome] of requestOutcomes[method]!.entries())
+      assert.equal(outcome, "accepted", `${method} attempt ${index + 1} failed`);
+  }
   assert.equal(outcomes.activeGoalSettlement, "turn/completed");
   assert.equal(outcomes.compactionSettlement, "turn/completed");
   assert.equal(outcomes.reviewSettlement, "completed");

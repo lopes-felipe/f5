@@ -661,6 +661,7 @@ const make = Effect.gen(function* () {
           ? { workflowExecutionProfile: options.workflowExecutionProfile }
           : {}),
       };
+      let recoveredPriorWorkSummary: string | undefined;
       const currentProvider = providerFromSessionName(thread.session?.providerName);
       const currentInstanceId =
         thread.session?.providerInstanceId ??
@@ -779,14 +780,11 @@ const make = Effect.gen(function* () {
             ...(desiredModel ? { "provider.model": desiredModel } : {}),
             "provider.has_resume_cursor": input?.resumeCursor !== undefined,
           });
-          let recoverySummary: string | undefined;
-          if (input?.resumeCursor === undefined && providerService.nativeOperations) {
-            const records = yield* providerService.nativeOperations.list(threadId);
-            if (
-              records.some(
-                (record) => record.command.kind === "compact" && record.state === "completed",
-              )
-            ) {
+          const needsNativeRecovery =
+            thread.compaction?.kind === "native" &&
+            instructionContext.priorWorkSummary === undefined;
+          const recoverSummary = () =>
+            Effect.gen(function* () {
               const transcript = buildThreadCompactionTranscript({
                 thread,
                 direction: null,
@@ -804,14 +802,40 @@ const make = Effect.gen(function* () {
                 ...(instructionContext.cwd ? { cwd: instructionContext.cwd } : {}),
                 runtimeMode: desiredRuntimeMode,
               });
-              recoverySummary = formatCompactSummary(result.text);
-              if (!recoverySummary)
-                return yield* Effect.fail(
-                  new Error("Native compaction recovery returned an empty summary."),
-                );
-            }
-          }
-          return yield* providerService.startSession(threadId, {
+              const summary = formatCompactSummary(result.text);
+              if (!summary)
+                yield* Effect.logWarning("Native compaction recovery returned an empty summary", {
+                  threadId,
+                });
+              if (summary && thread.compaction) {
+                recoveredPriorWorkSummary = summary;
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.compacted.record",
+                  commandId: serverCommandId("native-compaction-recovery"),
+                  threadId,
+                  compaction: {
+                    ...thread.compaction,
+                    kind: "summary",
+                    summary,
+                    createdAt: new Date().toISOString(),
+                  },
+                  createdAt: new Date().toISOString(),
+                });
+              }
+              return summary || undefined;
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Native compaction recovery summary failed", {
+                  threadId,
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
+          let recoverySummary =
+            needsNativeRecovery && input?.resumeCursor === undefined
+              ? yield* recoverSummary()
+              : undefined;
+          const startInput = {
             threadId,
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
@@ -836,7 +860,32 @@ const make = Effect.gen(function* () {
                 : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
             runtimeMode: desiredRuntimeMode,
-          });
+          };
+          const started = yield* providerService.startSession(threadId, startInput);
+          const nativeIdentity = (cursor: unknown) => {
+            if (!cursor || typeof cursor !== "object") return undefined;
+            const value = cursor as Record<string, unknown>;
+            return value.resume ?? value.sessionId ?? value.threadId;
+          };
+          const expectedIdentity = nativeIdentity(input?.resumeCursor);
+          if (
+            needsNativeRecovery &&
+            expectedIdentity !== undefined &&
+            nativeIdentity(started.resumeCursor) !== expectedIdentity
+          ) {
+            // A valid-looking cursor can still be missing from the isolated provider store.
+            // Summarize only after the adapter actually falls back, then install it before dispatch.
+            recoverySummary = yield* recoverSummary();
+            if (recoverySummary) {
+              yield* providerService.stopSession({ threadId });
+              return yield* providerService.startSession(threadId, {
+                ...startInput,
+                resumeCursor: started.resumeCursor,
+                priorWorkSummary: recoverySummary,
+              });
+            }
+          }
+          return started;
         }).pipe(Effect.withSpan("provider.start-session"));
       };
 
@@ -847,7 +896,10 @@ const make = Effect.gen(function* () {
           createdAt,
           desiredRuntimeMode,
           ...(desiredModel ? { desiredModel } : {}),
-          instructionContext,
+          instructionContext: {
+            ...instructionContext,
+            ...(recoveredPriorWorkSummary ? { priorWorkSummary: recoveredPriorWorkSummary } : {}),
+          },
         });
 
       const activeSession = yield* resolveActiveSession(threadId);
@@ -2201,6 +2253,19 @@ const make = Effect.gen(function* () {
         } satisfies McpApplyToLiveSessionsResult;
       });
 
+  // Title synchronization has its own bounded worker so a slow provider cannot stall turns.
+  const providerTitleWorker = yield* makeDrainableWorker(
+    (input: { threadId: ThreadId; title: string }) =>
+      providerService.renameThread
+        ? providerService.renameThread(input.threadId, input.title).pipe(
+            Effect.timeout("5 seconds"),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Provider title sync failed", { threadId: input.threadId, cause }),
+            ),
+          )
+        : Effect.void,
+  );
+
   const processDomainEvent = (event: ProviderIntentEvent) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({
@@ -2210,8 +2275,8 @@ const make = Effect.gen(function* () {
         case "thread.title-regenerated":
         case "thread.turn-processing-quiesced": {
           const thread = yield* resolveThread(event.payload.threadId);
-          if (event.type === "thread.title-regenerated" && thread && providerService.renameThread)
-            yield* providerService.renameThread(thread.id, thread.title);
+          if (event.type === "thread.title-regenerated" && thread)
+            yield* providerTitleWorker.enqueue({ threadId: thread.id, title: thread.title });
           const completedAt =
             event.type === "thread.turn-processing-quiesced"
               ? event.payload.processingQuiescedAt
@@ -2258,12 +2323,11 @@ const make = Effect.gen(function* () {
           break;
         }
         case "thread.meta-updated": {
-          if (
-            event.payload.title &&
-            !String(event.commandId).includes("thread-meta-update") &&
-            providerService.renameThread
-          )
-            yield* providerService.renameThread(event.payload.threadId, event.payload.title);
+          if (event.payload.title && event.payload.titleOrigin !== "provider")
+            yield* providerTitleWorker.enqueue({
+              threadId: event.payload.threadId,
+              title: event.payload.title,
+            });
           // Titles and observed checkout branches do not change the provider
           // launch context. Re-reading its stale session would erase turn errors.
           if (
@@ -2393,7 +2457,7 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: Effect.all([worker.drain, titleRegenerationWorker.drain], {
+    drain: Effect.all([worker.drain, titleRegenerationWorker.drain, providerTitleWorker.drain], {
       discard: true,
       concurrency: 2,
     }),

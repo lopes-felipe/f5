@@ -1,3 +1,4 @@
+import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { readNativeTaskIdentity } from "@t3tools/shared/nativeTaskIdentity";
 import { useEffect, useRef, useState } from "react";
 import { CommandId } from "@t3tools/contracts";
@@ -91,6 +92,55 @@ export function NativeRuntimePanel(props: {
       if (record.error) setError(record.error);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The native operation failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const review = async () => {
+    try {
+      await execute({ kind: "review", target: parseNativeReviewTarget(reviewTarget) });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Review target is invalid.");
+    }
+  };
+  const resolve = async (record: NativeOperationRecord, action: "reconcile" | "acknowledge") => {
+    const api = readNativeApi()?.nativeOperations;
+    if (!api?.resolve || !capabilities || busy) return;
+    if (
+      action === "acknowledge" &&
+      !window.confirm(
+        "Stop the provider and accept this uncertain outcome? Files, conversation or forks may already have changed. F5 will release the reservation without repeating the operation. Inspect any affected workspace before continuing.",
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.resolve({
+        threadId,
+        operationId: record.operationId,
+        generation: capabilities.generation,
+        action,
+      });
+      if (
+        action === "acknowledge" &&
+        record.command.kind === "revertFiles" &&
+        record.operationId.startsWith("native-files:")
+      ) {
+        await readNativeApi()?.orchestration.dispatchCommand({
+          type: "thread.rewind-draft.resolve",
+          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+          threadId,
+          operationId: CommandId.makeUnsafe(record.operationId.slice("native-files:".length)),
+          intent: "cancel",
+          createdAt: new Date().toISOString(),
+        });
+      }
+      setRecords((current) =>
+        current.map((entry) => (entry.operationId === next.operationId ? next : entry)),
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Outcome resolution failed.");
     } finally {
       setBusy(false);
     }
@@ -225,24 +275,11 @@ export function NativeRuntimePanel(props: {
             <>
               <input
                 aria-label="Review base branch or commit"
-                placeholder="Base branch, commit SHA, or blank for changes"
+                placeholder="Branch, commit:<SHA>, or blank for changes"
                 value={reviewTarget}
                 onChange={(event) => setReviewTarget(event.target.value)}
               />
-              <button
-                type="button"
-                disabled={running}
-                onClick={() =>
-                  void execute({
-                    kind: "review",
-                    target: !reviewTarget
-                      ? { type: "uncommittedChanges" }
-                      : /^[0-9a-f]{7,40}$/i.test(reviewTarget)
-                        ? { type: "commit", sha: reviewTarget }
-                        : { type: "baseBranch", branch: reviewTarget },
-                  })
-                }
-              >
+              <button type="button" disabled={running} onClick={() => void review()}>
                 Review
               </button>
             </>
@@ -282,7 +319,7 @@ export function NativeRuntimePanel(props: {
           )}
           {running && (
             <button type="button" onClick={() => void props.onStop()}>
-              Stop native work
+              Interrupt conversation turn
             </button>
           )}
         </div>
@@ -324,6 +361,27 @@ export function NativeRuntimePanel(props: {
             {record.command.kind} · {record.state}
             {record.staleGeneration ? " · result belongs to an older session" : ""}
             {record.error ? ` · ${record.error}` : ""}
+            {record.command.kind === "fork" && (
+              <span> · Preserved workspace: {record.command.cwd}</span>
+            )}
+            {record.state === "indeterminate" && (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void resolve(record, "reconcile")}
+                >
+                  Recheck outcome
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void resolve(record, "acknowledge")}
+                >
+                  Stop provider and acknowledge
+                </button>
+              </>
+            )}
           </div>
         ))}
         {detail !== null && (

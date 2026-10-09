@@ -1,5 +1,6 @@
 import type {
   NativeOperationInput,
+  NativeOperationResolutionInput,
   NativeOperationInspectInput,
   NativeOperationRecord,
   NativeForkInput,
@@ -864,6 +865,7 @@ export interface NativeApi {
   };
   /** Private provider form/URL answers; never go through orchestration commands. */
   nativeOperations?: {
+    resolve: (input: NativeOperationResolutionInput) => Promise<NativeOperationRecord>;
     fork: (input: NativeForkInput) => Promise<NativeOperationRecord>;
     execute: (input: NativeOperationInput) => Promise<NativeOperationRecord>;
     list: (input: { threadId: ThreadId }) => Promise<readonly NativeOperationRecord[]>;

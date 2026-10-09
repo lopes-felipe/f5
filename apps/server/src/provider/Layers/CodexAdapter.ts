@@ -2845,7 +2845,24 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       executeNativeOperation: (input, onReceipt) =>
         Effect.tryPromise({
           try: (signal) => manager.executeNativeOperation(input, onReceipt, signal),
-          catch: (cause) => toRequestError(input.threadId, input.command.kind, cause),
+          catch: (cause) => {
+            const error = toRequestError(input.threadId, input.command.kind, cause);
+            if (
+              cause &&
+              typeof cause === "object" &&
+              "deliveryCertainty" in cause &&
+              cause.deliveryCertainty === "not_sent" &&
+              Schema.is(ProviderAdapterRequestError)(error)
+            )
+              return new ProviderAdapterRequestError({
+                provider: PROVIDER,
+                method: input.command.kind,
+                detail: error.message,
+                deliveryCertainty: "not_sent",
+                cause,
+              });
+            return error;
+          },
         }),
       inspectNativeOperation: (input) =>
         Effect.tryPromise({

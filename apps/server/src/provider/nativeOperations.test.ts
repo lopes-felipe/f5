@@ -337,3 +337,115 @@ it("restores running SQL receipts and enforces the durable per-thread reservatio
     }).pipe(Effect.provide(SqlitePersistenceMemory)),
   );
 });
+
+it("releases a reservation after a proven local pre-send refusal", async () => {
+  const h = harness();
+  const refused = Object.assign(new Error("Checkpoint unavailable"), {
+    deliveryCertainty: "not_sent",
+  });
+  const result = await Effect.runPromise(
+    h.coordinator.execute(h.input, { ...callbacks, dispatch: Effect.fail(refused) }),
+  );
+  expect(result.state).toBe("failed");
+  expect(hasNativeOperationReservation(h.input.threadId)).toBe(false);
+  expect(
+    (
+      await Effect.runPromise(
+        h.coordinator.execute({ ...h.input, operationId: crypto.randomUUID() }, callbacks),
+      )
+    ).state,
+  ).toBe("completed");
+});
+
+it("acknowledges an application failure without dispatching or applying the mutation again", async () => {
+  const h = harness();
+  let mutations = 0;
+  const result = await Effect.runPromise(
+    h.coordinator.execute(h.input, {
+      ...callbacks,
+      dispatch: Effect.sync(() => {
+        mutations++;
+        return { canRewind: true };
+      }),
+      apply: () => Effect.fail(new Error("Conversation transport lost")),
+    }),
+  );
+  expect(result.state).toBe("indeterminate");
+  await Effect.runPromise(
+    h.coordinator.reconcileThread(h.input.threadId, () => Effect.succeed({ state: "completed" })),
+  );
+  expect(h.records.get(h.input.operationId)?.state).toBe("indeterminate");
+  const acknowledged = await Effect.runPromise(
+    h.coordinator.abandon(h.input.threadId, h.input.operationId),
+  );
+  expect(acknowledged.state).toBe("cancelled");
+  expect(hasNativeOperationReservation(h.input.threadId)).toBe(false);
+  expect((await Effect.runPromise(h.coordinator.execute(h.input, callbacks))).state).toBe(
+    "cancelled",
+  );
+  expect(mutations).toBe(1);
+});
+
+it("never reconciles a live waiter and merges native receipt identities in order", async () => {
+  const h = harness();
+  let settle!: (value: unknown) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pending = Effect.runPromise(
+    h.coordinator.execute(h.input, {
+      ...callbacks,
+      dispatchWithReceipt: (receipt) =>
+        Effect.gen(function* () {
+          yield* receipt({ nativeThreadId: "source", expectedRemainingTurnIds: ["one"] });
+          yield* receipt({ nativeThreadId: "fork", sourceNativeThreadId: "source" });
+          yield* Effect.promise(() => {
+            entered();
+            return new Promise((resolve) => {
+              settle = resolve;
+            });
+          });
+          return {};
+        }),
+    }),
+  );
+  await started;
+  let checked = false;
+  await Effect.runPromise(
+    h.coordinator.reconcile(() =>
+      Effect.sync(() => {
+        checked = true;
+        return { state: "completed" };
+      }),
+    ),
+  );
+  expect(checked).toBe(false);
+  expect(h.records.get(h.input.operationId)?.receipt).toEqual({
+    nativeThreadId: "fork",
+    sourceNativeThreadId: "source",
+    expectedRemainingTurnIds: ["one"],
+  });
+  settle({});
+  await pending;
+});
+
+it("treats reordered command keys as the same idempotent request", async () => {
+  const h = harness();
+  const first = {
+    ...h.input,
+    command: { kind: "review" as const, target: { type: "baseBranch" as const, branch: "main" } },
+  };
+  await Effect.runPromise(h.coordinator.execute(first, callbacks));
+  const second = {
+    ...h.input,
+    command: { target: { branch: "main", type: "baseBranch" as const }, kind: "review" as const },
+  };
+  expect(
+    (
+      await Effect.runPromise(
+        h.coordinator.execute(second, { ...callbacks, dispatch: Effect.die("must not dispatch") }),
+      )
+    ).state,
+  ).toBe("completed");
+});

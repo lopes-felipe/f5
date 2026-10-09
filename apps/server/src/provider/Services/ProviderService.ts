@@ -55,6 +55,9 @@ export interface ProviderMcpReloadOutcome {
  */
 export interface ProviderServiceShape {
   readonly nativeOperations?: {
+    readonly resolve?: (
+      input: import("@t3tools/contracts").NativeOperationResolutionInput,
+    ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
     readonly execute: (
       input: import("@t3tools/contracts").NativeOperationInput,
     ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
@@ -62,6 +65,7 @@ export interface ProviderServiceShape {
       input: import("@t3tools/contracts").NativeOperationInput,
       apply: (result: unknown) => Effect.Effect<void, ProviderServiceError>,
       prepare?: Effect.Effect<void, ProviderServiceError>,
+      options?: { readonly background?: boolean },
     ) => Effect.Effect<import("@t3tools/contracts").NativeOperationRecord, ProviderServiceError>;
     readonly list: (
       threadId: ThreadId,

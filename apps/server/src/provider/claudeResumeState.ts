@@ -13,6 +13,7 @@ export interface ClaudeResumeState {
   readonly threadId?: ThreadId;
   readonly resume?: string;
   readonly resumeSessionAt?: string;
+  readonly resumeLatest?: boolean;
   readonly turnCount?: number;
   readonly lastTotalCostUsd?: number;
   readonly baseContextChars?: number;
@@ -45,6 +46,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     turnBoundaries?: unknown;
     threadId?: unknown;
     resumeSessionAt?: unknown;
+    resumeLatest?: unknown;
     turnCount?: unknown;
     lastTotalCostUsd?: unknown;
     baseContextChars?: unknown;
@@ -59,7 +61,9 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
   const resumeCandidate = readClaudeResumeCandidate(resumeCursor);
   const resume = resumeCandidate && isUuid(resumeCandidate) ? resumeCandidate : undefined;
   const resumeSessionAt =
-    typeof cursor.resumeSessionAt === "string" ? cursor.resumeSessionAt : undefined;
+    cursor.resumeLatest !== true && typeof cursor.resumeSessionAt === "string"
+      ? cursor.resumeSessionAt
+      : undefined;
   const turnCount =
     typeof cursor.turnCount === "number" &&
     Number.isInteger(cursor.turnCount) &&
@@ -107,6 +111,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     ...(threadId ? { threadId } : {}),
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
+    ...(cursor.resumeLatest === true ? { resumeLatest: true } : {}),
     ...(turnCount !== undefined ? { turnCount } : {}),
     ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
     ...(baseContextChars !== undefined ? { baseContextChars } : {}),
@@ -201,5 +206,19 @@ export function readClaudeNativeResumeMetadata(cursor: unknown) {
     typeof record.nativeProviderTitle === "string" && record.nativeProviderTitle.length <= 4000
       ? record.nativeProviderTitle
       : undefined;
-  return { tasks, receipts, taskIds, taskRuns, taskStops, providerTitle };
+  const supersededTaskRuns = (
+    Array.isArray(record.supersededTaskRuns) ? record.supersededTaskRuns : []
+  )
+    .filter(
+      (entry): entry is [string, string[]] =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        typeof entry[0] === "string" &&
+        entry[0].length <= 200 &&
+        Array.isArray(entry[1]) &&
+        entry[1].every((run: unknown) => typeof run === "string" && run.length <= 2000),
+    )
+    .slice(-512)
+    .map(([id, runs]) => [id, runs.slice(-8)] as [string, string[]]);
+  return { tasks, receipts, taskIds, taskRuns, taskStops, providerTitle, supersededTaskRuns };
 }

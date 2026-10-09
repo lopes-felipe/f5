@@ -1452,8 +1452,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         model: nextConfiguredModel,
         catalog: context.modelContextWindowCatalog,
       });
-      const { modelContextWindowTokens: _previousLimit, ...configuredBase } =
-        context.configuredBase ?? {};
+      const {
+        modelContextWindowTokens: _previousLimit,
+        serviceTier: _previousTier,
+        effort: _previousEffort,
+        ...configuredBase
+      } = context.configuredBase ?? {};
       this.emitSessionConfigured(context, {
         ...configuredBase,
         model: nextConfiguredModel,
@@ -1803,14 +1807,38 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     onReceipt?: (receipt: unknown) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    let dispatched = false;
+    try {
+      return await this.executeNativeOperationImpl(input, onReceipt, signal, () => {
+        dispatched = true;
+      });
+    } catch (cause) {
+      if (!dispatched)
+        throw Object.assign(
+          new Error(cause instanceof Error ? cause.message : String(cause), { cause }),
+          { deliveryCertainty: "not_sent" as const },
+        );
+      throw cause;
+    }
+  }
+
+  private async executeNativeOperationImpl(
+    input: NativeOperationInput,
+    onReceipt: ((receipt: unknown) => Promise<void>) | undefined,
+    signal: AbortSignal | undefined,
+    onDispatch: () => void,
+  ): Promise<unknown> {
     const context = this.requireSession(input.threadId);
     const threadId = this.nativeThreadId(context);
     const command = input.command;
+    const request = (method: string, params: Record<string, unknown>) => {
+      if (!["thread/read", "thread/goal/get"].includes(method)) onDispatch();
+      return this.sendRequest(context, method, params);
+    };
     await onReceipt?.({ nativeThreadId: threadId });
     if (command.kind === "goalPause")
-      return this.sendRequest(context, "thread/goal/set", { threadId, status: "paused" });
-    if (command.kind === "goalClear")
-      return this.sendRequest(context, "thread/goal/clear", { threadId });
+      return request("thread/goal/set", { threadId, status: "paused" });
+    if (command.kind === "goalClear") return request("thread/goal/clear", { threadId });
     if (command.kind === "goalSet") {
       let running = false;
       let terminal: unknown;
@@ -1848,16 +1876,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       signal?.addEventListener("abort", aborted, { once: true });
       context.nativeGoalActive = true;
       context.nativeGoalBudget = command.tokenBudget;
+      let goalSettled = false;
       try {
-        await this.sendRequest(context, "thread/goal/set", {
+        await request("thread/goal/set", {
           threadId,
           objective: command.objective,
           tokenBudget: command.tokenBudget,
           status: "active",
         });
         // The operation reservation owns every continuation until the goal settles.
-        return await completion;
+        const result = await completion;
+        goalSettled = true;
+        return result;
       } finally {
+        if (!goalSettled) context.nativeGoalActive = false;
         this.off("event", listener);
         signal?.removeEventListener("abort", aborted);
       }
@@ -1869,7 +1901,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ? history.turns.length
           : history.turns.findIndex((turn) => turn.id === command.beforeTurnId);
       if (boundary < 0) throw new Error("The selected fork boundary no longer exists.");
-      const request = buildCodexThreadForkParams(
+      const forkParams = buildCodexThreadForkParams(
         {
           cwd: command.cwd,
           ...(context.session.model ? { model: context.session.model } : {}),
@@ -1878,8 +1910,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         threadId,
         command.beforeTurnId,
       );
+      await onReceipt?.({
+        sourceNativeThreadId: threadId,
+        expectedRemainingTurnIds: history.turns.slice(0, boundary).map((turn) => turn.id),
+      });
       const response = asObject(
-        await this.sendRequest(context, "thread/fork", { ...request, deferGoalContinuation: true }),
+        await request("thread/fork", { ...forkParams, deferGoalContinuation: true }),
       );
       const forkId = asObject(response?.thread)?.id;
       if (typeof forkId !== "string" || forkId === threadId)
@@ -1968,7 +2004,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         context.forkNotifications = [];
         context.forkNotificationOverflow = false;
         const response = asObject(
-          await this.sendRequest(context, "review/start", {
+          await request("review/start", {
             threadId,
             delivery: "inline",
             target:
@@ -1996,7 +2032,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             if (readNotificationProviderThreadId(notification.params) === reviewId)
               this.handleServerNotification(context, notification);
         }
-      } else await this.sendRequest(context, "thread/compact/start", { threadId });
+      } else await request("thread/compact/start", { threadId });
       const event = settled ?? (await completion);
       const turn = asObject(asObject(event.payload)?.turn);
       if (turn?.status !== "completed")
@@ -2031,6 +2067,42 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       typeof receipt?.nativeThreadId === "string"
         ? receipt.nativeThreadId
         : this.nativeThreadId(context);
+    if (record.command.kind === "fork") {
+      const forkId = receipt?.nativeThreadId;
+      const sourceId = receipt?.sourceNativeThreadId;
+      // A lost response may have created an orphan. Absence of an identity is not proof of failure.
+      if (typeof forkId !== "string" || typeof sourceId !== "string" || forkId === sourceId)
+        return { state: "indeterminate" };
+      const fork = await this.readPaginatedThread(context, forkId);
+      const expected = receipt?.expectedRemainingTurnIds;
+      if (!Array.isArray(expected)) return { state: "indeterminate" };
+      if (JSON.stringify(fork.turns.map((turn) => turn.id)) !== JSON.stringify(expected))
+        return {
+          state: "failed",
+          result: { reason: "Fork history does not match the retained boundary." },
+        };
+      return {
+        state: "completed",
+        result: {
+          resumeCursor: { threadId: forkId },
+          targetThreadId: record.command.targetThreadId,
+          cwd: record.command.cwd,
+        },
+      };
+    }
+    if (record.command.kind === "goalPause" || record.command.kind === "goalClear") {
+      const response = asObject(await this.sendRequest(context, "thread/goal/get", { threadId }));
+      const goal = asObject(response?.goal);
+      const matches =
+        record.command.kind === "goalClear" ? !goal : !goal || goal.status === "paused";
+      if (!matches) return { state: "indeterminate" };
+      const read = asObject(
+        await this.sendRequest(context, "thread/read", { threadId, includeTurns: false }),
+      );
+      if (asObject(asObject(read?.thread)?.status)?.type === "active")
+        return { state: "indeterminate" };
+      return { state: "completed", result: { goal } };
+    }
     if (record.command.kind === "goalSet") {
       const response = asObject(await this.sendRequest(context, "thread/goal/get", { threadId }));
       const goal = asObject(response?.goal);
@@ -2312,7 +2384,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
 
     const config = context.configuredBase;
-    const request = buildCodexThreadForkParams(
+    const forkParams = buildCodexThreadForkParams(
       {
         ...(context.session.cwd ? { cwd: context.session.cwd } : {}),
         ...(context.session.model ? { model: context.session.model } : {}),
@@ -2333,7 +2405,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       let response: unknown;
       try {
-        response = await this.sendRequest(context, "thread/fork", request);
+        response = await this.sendRequest(context, "thread/fork", forkParams);
       } catch (error) {
         if (!(error instanceof CodexJsonRpcError)) {
           context.unsettledFork = true;
