@@ -31,7 +31,7 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   return (
     <div
       data-slot="provider-runtime-info"
-      className="flex h-7 shrink-0 items-center gap-3 overflow-x-auto border-b border-border px-4 text-2xs text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="flex h-7 shrink-0 items-center gap-3 overflow-x-auto px-4 text-2xs text-muted-foreground [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <span className="shrink-0 font-medium text-foreground">{providerLabel} runtime</span>
       {entries.map((entry) => (

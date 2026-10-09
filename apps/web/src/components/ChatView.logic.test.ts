@@ -1158,6 +1158,22 @@ describe("deriveProviderRuntimeInfoEntries", () => {
     ]);
   });
 
+  it("uses Codex's reported model rather than labeling the requested model as actual", () => {
+    const input = {
+      provider: "codex" as const,
+      threadModel: "requested",
+      configuredRuntime: { model: "reported" },
+      rerouteActivity: null,
+      cliVersion: null,
+      mcpSummary: null,
+    };
+    expect(deriveProviderRuntimeInfoEntries(input)).toEqual([
+      { label: "Actual model", value: "reported" },
+    ]);
+    expect(deriveProviderRuntimeInfoEntries({ ...input, configuredRuntime: null })).toEqual([
+      { label: "Requested model", value: "requested" },
+    ]);
+  });
   it("builds Cursor runtime banner entries from configured model options", () => {
     expect(
       deriveProviderRuntimeInfoEntries({

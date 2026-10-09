@@ -865,8 +865,14 @@ export function deriveProviderRuntimeInfoEntries(input: {
   }
 
   if (input.provider === "codex") {
+    const reportedModel =
+      input.configuredRuntime?.runtimeInfo?.effective.model ?? input.configuredRuntime?.model;
     return [
-      input.threadModel ? { label: "Actual model", value: input.threadModel } : null,
+      reportedModel
+        ? { label: "Actual model", value: reportedModel }
+        : input.threadModel
+          ? { label: "Requested model", value: input.threadModel }
+          : null,
       input.configuredRuntime?.instructionContractVersion
         ? { label: "Contract", value: input.configuredRuntime.instructionContractVersion }
         : null,

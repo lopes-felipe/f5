@@ -7015,12 +7015,28 @@ export default function ChatView({
           />
         </AppTitlebar>
 
-        {settings.showProviderRuntimeMetadata ? (
-          <ProviderRuntimeInfoBanner
-            provider={sessionProvider ?? selectedProviderByThreadId ?? null}
-            entries={providerRuntimeInfoEntries}
+        <div className="flex shrink-0 items-center border-b border-border">
+          <div className="min-w-0 flex-1">
+            {settings.showProviderRuntimeMetadata ? (
+              <ProviderRuntimeInfoBanner
+                provider={sessionProvider ?? selectedProviderByThreadId ?? null}
+                entries={providerRuntimeInfoEntries}
+              />
+            ) : null}
+          </div>
+          <NativeRuntimePanel
+            threadId={activeThread.id}
+            capabilities={activeThread.session?.capabilities}
+            activities={activeThread.activities}
+            runtime={latestConfiguredRuntimeActivity}
+            requestedModel={activeThread.model}
+            outcome={activeThread.latestTurn?.state}
+            prompt={prompt}
+            latestMessageAt={activeThread.messages.at(-1)?.createdAt}
+            onSuggestion={setPrompt}
+            onStop={onInterrupt}
           />
-        ) : null}
+        </div>
         {latestConfiguredRuntimeActivity?.agentBrowser ? (
           <div className="flex justify-end px-3 pt-1">
             <BrowserCapabilityChip
@@ -7256,17 +7272,6 @@ export default function ChatView({
                         ))
                       : null}
                   </ComposerTray>
-                  <NativeRuntimePanel
-                    threadId={activeThread.id}
-                    capabilities={activeThread.session?.capabilities}
-                    activities={activeThread.activities}
-                    requestedModel={activeThread.model}
-                    outcome={activeThread.latestTurn?.state}
-                    prompt={prompt}
-                    latestMessageAt={activeThread.messages.at(-1)?.createdAt}
-                    onSuggestion={setPrompt}
-                    onStop={onInterrupt}
-                  />
                   <ChatComposer
                     redesignEnabled={composerRedesign}
                     getTimeline={getComposerTimeline}
