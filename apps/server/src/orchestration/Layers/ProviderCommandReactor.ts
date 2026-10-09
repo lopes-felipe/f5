@@ -880,7 +880,10 @@ const make = Effect.gen(function* () {
               yield* providerService.stopSession({ threadId });
               return yield* providerService.startSession(threadId, {
                 ...startInput,
-                resumeCursor: started.resumeCursor,
+                resumeCursor: {
+                  ...(started.resumeCursor as Record<string, unknown>),
+                  f5ResumedContextPending: true,
+                },
                 priorWorkSummary: recoverySummary,
               });
             }

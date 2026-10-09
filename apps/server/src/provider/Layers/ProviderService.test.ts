@@ -2797,6 +2797,15 @@ it.effect(
       assert.equal(record.state, "requested");
       yield* Effect.promise(() => vi.waitFor(() => assert.equal(dispatch.mock.calls.length, 1)));
       const before = claude.startSession.mock.calls.length;
+      const restart = yield* Effect.exit(
+        provider.startSession(threadId, {
+          threadId,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        }),
+      );
+      assert.equal(restart._tag, "Failure");
+      assert.equal(claude.startSession.mock.calls.length, before);
       yield* provider.stopSession({ threadId });
       for (let index = 0; index < 3; index++) yield* provider.nativeOperations!.list(threadId);
       assert.equal(claude.startSession.mock.calls.length, before);

@@ -810,6 +810,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             return { adapter, session: adopted, orphanedTurnId: undefined } as const;
           }
         } else if (hasActiveSession) {
+          if (hasNativeOperationReservation(input.binding.threadId))
+            return yield* toValidationError(
+              input.operation,
+              "A native operation is pending; session replacement is unavailable.",
+            );
           yield* Effect.logWarning("provider launch identity changed; replacing active session", {
             operation: input.operation,
             threadId: input.binding.threadId,
@@ -859,6 +864,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           resumedGeneration,
           adapter,
           Effect.gen(function* () {
+            if (hasNativeOperationReservation(input.binding.threadId))
+              return yield* toValidationError(
+                input.operation,
+                "A native operation is pending; session recovery is unavailable.",
+              );
             const resumed = yield* adapter.startSession({
               threadId: input.binding.threadId,
               ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
@@ -1052,6 +1062,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const startSession: ProviderServiceShape["startSession"] = (threadId, rawInput) =>
       Effect.gen(function* () {
+        if (hasNativeOperationReservation(threadId))
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            "A native operation is pending. Settle or acknowledge it before restarting the session.",
+          );
         const parsed = yield* decodeInputOrValidationError({
           operation: "ProviderService.startSession",
           schema: ProviderSessionStartInput,
@@ -1343,10 +1358,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               const current = (yield* routed.adapter.listSessions()).find(
                 (session) => session.threadId === input.threadId,
               );
-              if (
-                current?.activeTurnId &&
-                !["goalPause", "goalClear", "stopTask"].includes(input.command.kind)
-              )
+              if (current?.activeTurnId && input.command.kind !== "stopTask")
                 return yield* nativeError(
                   "Wait for the current turn to finish before starting this operation.",
                 );
@@ -1422,6 +1434,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 (entry) => entry.operationId === input.operationId,
               )!;
             }
+            if (record.state === "cancelled") return record;
             if (record.state !== "indeterminate")
               return yield* nativeError("Only an indeterminate operation can be acknowledged.");
             // Explicit acknowledgement stops the provider before releasing admission. Never replay a mutation.

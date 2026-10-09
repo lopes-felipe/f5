@@ -2855,11 +2855,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               Schema.is(ProviderAdapterRequestError)(error)
             )
               return new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: input.command.kind,
-                detail: error.message,
+                ...error,
                 deliveryCertainty: "not_sent",
-                cause,
               });
             return error;
           },

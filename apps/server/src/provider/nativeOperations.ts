@@ -155,9 +155,20 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
       let dispatched = false;
       const work = Effect.gen(function* () {
         if (callbacks.prepare) yield* callbacks.prepare;
-        yield* transition("dispatched");
-        dispatched = true;
-        yield* transition("running");
+        yield* withProviderThreadAccess(
+          input.threadId,
+          Effect.gen(function* () {
+            if ((yield* callbacks.generation) !== input.generation)
+              return yield* Effect.fail(
+                new NativeOperationError(
+                  "The provider session restarted before dispatch; nothing was sent.",
+                ),
+              );
+            yield* transition("dispatched");
+            dispatched = true;
+            yield* transition("running");
+          }),
+        );
         const result = yield* callbacks.dispatchWithReceipt
           ? callbacks.dispatchWithReceipt((receipt) =>
               receiptLock.withPermit(
@@ -198,7 +209,16 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
           Effect.gen(function* () {
             const generation = yield* callbacks.generation;
             if (generation !== input.generation) {
-              yield* transition("completed", { result, staleGeneration: true });
+              yield* transition(callbacks.apply ? "indeterminate" : "completed", {
+                result,
+                staleGeneration: true,
+                ...(callbacks.apply
+                  ? {
+                      error:
+                        "The provider settled in an older session generation; F5 application was skipped. Acknowledge the outcome before continuing.",
+                    }
+                  : {}),
+              });
               return;
             }
             if (callbacks.apply) {
@@ -262,9 +282,7 @@ export function makeNativeOperationCoordinator(repository: NativeOperationReposi
           ...outcome,
           ...(outcome.state === "completed" &&
           current.applicationRequired &&
-          !current.applicationApplied &&
-          !current.staleGeneration &&
-          !("staleGeneration" in outcome && outcome.staleGeneration)
+          !current.applicationApplied
             ? {
                 state: "indeterminate" as const,
                 error:

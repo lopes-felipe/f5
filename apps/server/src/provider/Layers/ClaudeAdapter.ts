@@ -7949,7 +7949,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const message = buildUserMessage({ sdkContent: [{ type: "text", text: "/compact" }] });
         yield* Queue.offer(context.promptQueue, { type: "message", message });
         return yield* Deferred.await(settlement).pipe(
-          Effect.timeout("120 seconds"),
           Effect.mapError(
             (cause) =>
               new ProviderAdapterRequestError({

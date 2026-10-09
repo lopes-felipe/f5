@@ -431,7 +431,7 @@ result. Clients and servers must both run Release 3.
 
 Release 4 uses wire protocol **19**, the increment after this repository's Release 3
 protocol 18. Native actions require both the session capability and an audited
-codex-cli version at least **0.160.1**. Older executable paths remain supported with
+codex-cli version at least **0.162.0**. Older executable paths remain supported with
 these new actions hidden. F5 continues owning queues, projects and worktree history.
 
 The shared durable operation coordinator persists admission, dispatch, native
@@ -534,7 +534,7 @@ Codex remains an external executable. Updating F5 or this baseline does not repl
 an operator's installation or custom executable path. For an npm installation,
 `npm install -g @openai/codex@0.162.0` installs the pinned certified version; verify
 `codex --version`, or select the upgraded executable in Settings > Providers & Models.
-Existing 0.160.1 native capability gates remain compatible.
+Native capability gates require the certified 0.162.0 runtime; older CLIs retain their existing conversation and rewind paths. `deferGoalContinuation` is omitted from resume requests below 0.162.0.
 
 ### Review targets and recovery
 
@@ -555,3 +555,14 @@ validates the persisted retained turn IDs before reporting provider completion.
 the mutation. Inspect files, conversation and any preserved fork workspace first.
 Fork workspaces start at the source branch tip, and their paths remain in operation
 records after failure; F5 does not delete those worktrees or branches automatically.
+
+Native review and compaction waiters follow correlated settlement, provider exit or
+explicit interruption rather than a fixed two-minute deadline. Long healthy turns
+remain running and retain admission. A goal holds the same exclusive reservation;
+interrupt the conversation turn to pause a running goal, then use Clear settled goal.
+Pause/clear commands are not admitted alongside another native operation.
+
+Recovery of a missing native-compacted rollout marks the replacement cursor's context
+as pending. Its recovered summary is delivered in the first `turn/start` developer
+instructions even when the replacement thread is resumed, and the marker is cleared
+only after that request succeeds.

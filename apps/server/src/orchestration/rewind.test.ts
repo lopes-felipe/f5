@@ -36,6 +36,7 @@ const harness = (
     nativeSkippedLinks?: number;
     nativeWorkspace?: string;
     isGit?: boolean;
+    sibling?: "live" | "deleted";
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -75,6 +76,7 @@ const harness = (
         {
           id: threadId,
           projectId,
+          deletedAt: null as string | null,
           worktreePath,
           session: {
             providerName:
@@ -89,6 +91,12 @@ const harness = (
         },
       ],
     };
+    if (options.sibling)
+      model.threads.push({
+        ...model.threads[0]!,
+        id: ThreadId.makeUnsafe(`${name}:sibling`),
+        deletedAt: options.sibling === "deleted" ? at : null,
+      });
     const rewind = yield* makeConversationRewind.pipe(
       Effect.provideService(ProviderService, {
         getSessionCapabilities: () =>
@@ -665,6 +673,27 @@ layer("native file rewind in non-git Claude projects", (it) => {
       yield* h.rewind.run({ ...h.request, restoreFiles: true });
       assert(!h.fileActions.includes("native-revert"));
     }),
+  );
+});
+
+layer("native rewind workspace ownership", (it) => {
+  it.effect.each(["live", "deleted"] as const)(
+    "handles a %s sibling in a non-git workspace",
+    (sibling) =>
+      Effect.gen(function* () {
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "native-owner-"));
+        try {
+          const h = yield* harness(`native-owner:${sibling}`, null, null, {
+            nativeClaude: true,
+            nativeWorkspace: cwd,
+            sibling,
+          });
+          yield* h.rewind.run({ ...h.request, restoreFiles: true });
+          assert.deepEqual(h.fileActions, sibling === "live" ? [] : ["native-revert", "rollback"]);
+        } finally {
+          fs.rmSync(cwd, { recursive: true, force: true });
+        }
+      }),
   );
 });
 

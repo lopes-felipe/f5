@@ -724,6 +724,47 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("sends recovered context on the first real turn/start after resuming a replacement thread", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-recovery-context-"));
+    const binaryPath = path.join(directory, "codex.cjs");
+    writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+    const manager = new CodexAppServerManager();
+    vi.spyOn(
+      manager as unknown as { assertSupportedCodexCliVersion: () => string },
+      "assertSupportedCodexCliVersion",
+    ).mockReturnValue("0.162.0");
+    const requests = vi
+      .spyOn(
+        manager as unknown as { sendRequest: (...args: unknown[]) => Promise<unknown> },
+        "sendRequest",
+      )
+      .mockImplementation(async (_context, method) => {
+        if (method === "thread/resume") return { thread: { id: "replacement" } };
+        if (method === "turn/start") return { turn: { id: "turn" } };
+        return {};
+      });
+    try {
+      await manager.startSession({
+        threadId: asThreadId("recovery"),
+        cwd: directory,
+        runtimeMode: "full-access",
+        providerOptions: { codex: { binaryPath } },
+        resumeCursor: { threadId: "replacement", f5ResumedContextPending: true },
+        priorWorkSummary: "Recovered requirement: preserve the user's API",
+      });
+      await manager.sendTurn({ threadId: asThreadId("recovery"), input: "Continue" });
+      const first = requests.mock.calls.find((call) => call[1] === "turn/start")?.[2] as {
+        collaborationMode: { settings: { developer_instructions: string } };
+      };
+      expect(first.collaborationMode.settings.developer_instructions).toContain(
+        "Recovered requirement",
+      );
+    } finally {
+      manager.stopAll();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["empty", "failed"])(
     "isolates the catalog when a second session has %s model/list",
     async (response) => {
@@ -1317,6 +1358,32 @@ describe("sendTurn", () => {
     );
   });
 
+  it("delivers pending recovery context on turn/start and clears its persisted marker", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness({
+      instructionContext: { priorWorkSummary: "Recovered requirement: preserve the user's API" },
+      resumedContextSent: false,
+    });
+    Object.assign(context.session.resumeCursor, {
+      threadId: "replacement",
+      f5ResumedContextPending: true,
+    });
+    updateSession.mockImplementation((_context, updates) => {
+      Object.assign(context.session, updates);
+    });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue" });
+    const params = sendRequest.mock.calls[0]?.[2] as {
+      collaborationMode: { settings: { developer_instructions: string } };
+    };
+    expect(params.collaborationMode.settings.developer_instructions).toContain(
+      "Recovered requirement",
+    );
+    expect(context.session.resumeCursor).toEqual({ threadId: "replacement" });
+    await manager.sendTurn({ threadId: asThreadId("thread_1"), input: "Continue again" });
+    const next = sendRequest.mock.calls[1]?.[2] as typeof params;
+    expect(next.collaborationMode.settings.developer_instructions).not.toContain(
+      "Recovered requirement",
+    );
+  });
   it("omits resumed context when the provider thread was actually resumed", async () => {
     const { manager, sendRequest } = createSendTurnHarness({
       instructionContext: {
@@ -3811,6 +3878,32 @@ describe("Release 4 native operations", () => {
     });
     expect(manager.listenerCount("event")).toBe(0);
   });
+  it.each(["review", "compact"] as const)(
+    "waits beyond two minutes for a healthy %s",
+    async (kind) => {
+      vi.useFakeTimers();
+      try {
+        const { manager, sendRequest } = createThreadControlHarness();
+        sendRequest.mockResolvedValue({ turn: { id: "control" } });
+        let settled = false;
+        const pending = manager.executeNativeOperation(input(kind)).then((value) => {
+          settled = true;
+          return value;
+        });
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(settled).toBe(false);
+        if (kind === "compact")
+          emit(manager, "item/completed", {
+            item: { id: "compact-item", type: "contextCompaction" },
+          });
+        emit(manager, "turn/completed", { turn: { id: "control", status: "completed" } });
+        expect(await pending).toMatchObject({ status: "completed" });
+        expect(manager.listenerCount("event")).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
   it("removes listeners when review dispatch fails", async () => {
     const { manager, sendRequest } = createThreadControlHarness();
     sendRequest.mockRejectedValue(new Error("Lost response"));
@@ -3999,3 +4092,15 @@ it("reads one bounded native item page for an owned child thread", async () => {
   });
   expect(sendRequest).toHaveBeenCalledTimes(1);
 });
+
+it.each(["0.144.3", "0.147.0", "0.160.1", "0.162.0"])(
+  "gates goal deferral on resume for %s",
+  (cliVersion) => {
+    const params = buildCodexThreadOpenRequestParams({
+      resumeThreadId: "thread",
+      runtimeMode: "full-access",
+      cliVersion,
+    });
+    expect("deferGoalContinuation" in params.resume!).toBe(cliVersion === "0.162.0");
+  },
+);

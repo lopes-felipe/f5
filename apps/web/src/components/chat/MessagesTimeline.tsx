@@ -1297,9 +1297,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                         filePreview={nativeSessionCapabilities.actions.some(
                           (action) => action.action === "fileCheckpointing" && action.supported,
                         )}
-                        nativeFork={nativeSessionCapabilities.actions.some(
-                          (action) => action.action === "nativeFork" && action.supported,
-                        )}
+                        nativeFork={
+                          chatDiffContext.isGitRepo &&
+                          nativeSessionCapabilities.actions.some(
+                            (action) => action.action === "nativeFork" && action.supported,
+                          )
+                        }
                       />
                     )}
                   {canRevertAgentWork && (

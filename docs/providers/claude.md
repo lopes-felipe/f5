@@ -809,3 +809,20 @@ for inspection instead of deleting them automatically.
 The child environment strips inherited `F5_PREVIEW_MCP_TOKEN*` values before
 launch. F5's preview broker supplies only the token belonging to the current
 session, preventing a child from inheriting another session's preview credential.
+
+Acknowledging a native file rewind completes receipt acknowledgement and F5 rewind
+cancellation in one server request. A cancelled receipt retains a Finish acknowledgement
+action, so a restart or temporary cancellation error between durable writes can be
+retried without restoring files again. Stale results that need F5 application remain
+indeterminate and can also be acknowledged. Native admission blocks session replacement;
+generation is checked again after preparation and before dispatch.
+
+Native compaction waits for settlement or provider exit rather than timing out a healthy
+control turn at two minutes. Pre-send native refusals can use the F5 summary path;
+an active or uncertain native reservation prevents fallback.
+
+File restore still requires a workspace isolated from other live conversations,
+including native restore in non-Git projects: Claude's edit-tool backups can overlap
+another conversation's edits. Deleted threads do not claim the workspace. In Git
+projects a worktree is required for restore; native change preview remains available
+in all projects. Fork controls are hidden for non-Git projects.

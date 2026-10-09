@@ -6562,6 +6562,14 @@ export default function ChatView({
       ),
     [activeProviderStatus, activeThread],
   );
+  const rewindWorkspaceShared =
+    Boolean(workspaceRoot) &&
+    threads.some(
+      (other) =>
+        other.id !== activeThread?.id &&
+        (other.worktreePath ?? projects.find((project) => project.id === other.projectId)?.cwd) ===
+          workspaceRoot,
+    );
   const revertDisabledReason = !revertSupported
     ? `${activeProviderLabel} doesn't support revert`
     : hasPendingTurnDispatch || isSendBusy
@@ -7066,11 +7074,13 @@ export default function ChatView({
                   revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                   nativeSessionCapabilities={activeThread.session?.capabilities}
                   canRestoreFiles={
-                    Boolean(activeThread.worktreePath) ||
-                    (activeThread.session?.provider === "claudeAgent" &&
-                      activeThread.session.capabilities?.actions.some(
-                        (action) => action.action === "fileCheckpointing" && action.supported,
-                      ) === true)
+                    !rewindWorkspaceShared &&
+                    (Boolean(activeThread.worktreePath) ||
+                      (branchesQuery.data?.isRepo === false &&
+                        activeThread.session?.provider === "claudeAgent" &&
+                        activeThread.session.capabilities?.actions.some(
+                          (action) => action.action === "fileCheckpointing" && action.supported,
+                        ) === true))
                   }
                   onRevertUserMessage={onRevertUserMessageFromTimeline}
                   isRevertingCheckpoint={isRevertingCheckpoint}

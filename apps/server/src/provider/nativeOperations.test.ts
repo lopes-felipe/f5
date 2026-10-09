@@ -449,3 +449,65 @@ it("treats reordered command keys as the same idempotent request", async () => {
     ).state,
   ).toBe("completed");
 });
+
+it("fails before dispatch when the session restarts during preparation", async () => {
+  const h = harness();
+  let generation = 1;
+  let dispatched = false;
+  const result = await Effect.runPromise(
+    h.coordinator.execute(h.input, {
+      ...callbacks,
+      generation: Effect.sync(() => generation),
+      prepare: Effect.sync(() => {
+        generation = 2;
+      }),
+      dispatch: Effect.sync(() => {
+        dispatched = true;
+        return {};
+      }),
+    }),
+  );
+  expect(result.state).toBe("failed");
+  expect(dispatched).toBe(false);
+  expect(hasNativeOperationReservation(h.input.threadId)).toBe(false);
+});
+
+it.each(["compact", "fork", "revertFiles"] as const)(
+  "keeps a stale %s completion acknowledgeable without applying it",
+  async (kind) => {
+    const h = harness();
+    let generation = 1;
+    const command =
+      kind === "fork"
+        ? {
+            kind,
+            targetThreadId: ThreadId.makeUnsafe("target"),
+            cwd: "/tmp/fork",
+          }
+        : kind === "revertFiles"
+          ? { kind, userMessageId: "uuid" }
+          : { kind };
+    const result = await Effect.runPromise(
+      h.coordinator.execute(
+        { ...h.input, command },
+        {
+          ...callbacks,
+          generation: Effect.sync(() => generation),
+          dispatch: Effect.sync(() => {
+            generation = 2;
+            return { native: true };
+          }),
+          apply: () => Effect.die("stale application must be skipped"),
+        },
+      ),
+    );
+    expect(result.state).toBe("indeterminate");
+    expect(result.staleGeneration).toBe(true);
+    await Effect.runPromise(
+      h.coordinator.reconcile(() => Effect.succeed({ state: "completed", staleGeneration: true })),
+    );
+    expect(h.records.get(h.input.operationId)?.state).toBe("indeterminate");
+    await Effect.runPromise(h.coordinator.abandon(h.input.threadId, h.input.operationId));
+    expect(hasNativeOperationReservation(h.input.threadId)).toBe(false);
+  },
+);

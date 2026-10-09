@@ -1,3 +1,4 @@
+import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Layer, Stream } from "effect";
@@ -119,62 +120,88 @@ const make = Effect.gen(function* () {
             (action) => action.action === "nativeCompaction" && action.supported,
           )
         ) {
-          const completed = yield* providerService.nativeOperations.executeWithApply(
-            {
-              threadId: thread.id,
-              operationId: `compact:${event.eventId}`,
-              generation: capabilities.generation,
-              command: { kind: "compact" },
-            },
-            () => {
-              const at = new Date().toISOString();
-              return orchestrationEngine
-                .dispatch({
-                  type: "thread.compacted.record",
-                  commandId: compactionCommandId("native-record"),
-                  threadId: thread.id,
-                  compaction: {
-                    kind: "native",
-                    summary: "Native context compacted",
-                    trigger: event.payload.trigger,
-                    estimatedTokens: 0,
-                    modelContextWindowTokens: thread.modelContextWindowTokens ?? 0,
+          const completed = yield* providerService.nativeOperations
+            .executeWithApply(
+              {
+                threadId: thread.id,
+                operationId: `compact:${event.eventId}`,
+                generation: capabilities.generation,
+                command: { kind: "compact" },
+              },
+              () => {
+                const at = new Date().toISOString();
+                return orchestrationEngine
+                  .dispatch({
+                    type: "thread.compacted.record",
+                    commandId: compactionCommandId("native-record"),
+                    threadId: thread.id,
+                    compaction: {
+                      kind: "native",
+                      summary: "Native context compacted",
+                      trigger: event.payload.trigger,
+                      estimatedTokens: 0,
+                      modelContextWindowTokens: thread.modelContextWindowTokens ?? 0,
+                      createdAt: at,
+                      direction: null,
+                      pivotMessageId: null,
+                      fromTurnCount: null,
+                      toTurnCount: null,
+                    },
                     createdAt: at,
-                    direction: null,
-                    pivotMessageId: null,
-                    fromTurnCount: null,
-                    toTurnCount: null,
-                  },
-                  createdAt: at,
-                })
-                .pipe(
-                  Effect.asVoid,
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderValidationError({
-                        operation: "nativeCompaction.record",
-                        issue: cause.message,
-                      }),
-                  ),
-                );
-            },
-          );
-          yield* appendActivity({
-            threadId: thread.id,
-            tone: completed.state === "completed" ? "info" : "error",
-            kind: `thread.compaction.${completed.state}`,
-            summary:
-              completed.state === "completed"
-                ? "Conversation compacted natively"
-                : "Native compaction has not completed",
-            payload: {
-              operationId: completed.operationId,
-              state: completed.state,
-              ...(completed.error ? { detail: completed.error } : {}),
-            },
-            createdAt: new Date().toISOString(),
-          });
-          return;
+                  })
+                  .pipe(
+                    Effect.asVoid,
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderValidationError({
+                          operation: "nativeCompaction.record",
+                          issue: cause.message,
+                        }),
+                    ),
+                  );
+              },
+            )
+            .pipe(
+              Effect.catch((error) =>
+                appendActivity({
+                  threadId: thread.id,
+                  tone: "error",
+                  kind: "thread.compaction.failed",
+                  summary: "Native compaction could not start",
+                  payload: { detail: error.message },
+                  createdAt: event.occurredAt,
+                }).pipe(Effect.as(null)),
+              ),
+            );
+          if (completed)
+            yield* appendActivity({
+              threadId: thread.id,
+              tone: completed.state === "completed" ? "info" : "error",
+              kind: `thread.compaction.${completed.state}`,
+              summary:
+                completed.state === "completed"
+                  ? "Conversation compacted natively"
+                  : "Native compaction has not completed",
+              payload: {
+                operationId: completed.operationId,
+                state: completed.state,
+                ...(completed.error ? { detail: completed.error } : {}),
+              },
+              createdAt: event.occurredAt,
+            });
+          // A refused admission or proven pre-send failure can use F5 summaries.
+          // Never run a fallback while another native mutation may still be active.
+          const records = yield* providerService.nativeOperations
+            .list(thread.id)
+            .pipe(Effect.orElseSucceed(() => null));
+          const record = records?.find((entry) => entry.operationId === `compact:${event.eventId}`);
+          if (
+            hasNativeOperationReservation(thread.id) ||
+            records === null ||
+            (record && record.state !== "failed") ||
+            (completed && completed.state !== "failed")
+          )
+            return;
         }
       }
 

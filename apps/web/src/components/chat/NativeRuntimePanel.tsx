@@ -122,20 +122,6 @@ export function NativeRuntimePanel(props: {
         generation: capabilities.generation,
         action,
       });
-      if (
-        action === "acknowledge" &&
-        record.command.kind === "revertFiles" &&
-        record.operationId.startsWith("native-files:")
-      ) {
-        await readNativeApi()?.orchestration.dispatchCommand({
-          type: "thread.rewind-draft.resolve",
-          commandId: CommandId.makeUnsafe(crypto.randomUUID()),
-          threadId,
-          operationId: CommandId.makeUnsafe(record.operationId.slice("native-files:".length)),
-          intent: "cancel",
-          createdAt: new Date().toISOString(),
-        });
-      }
       setRecords((current) =>
         current.map((entry) => (entry.operationId === next.operationId ? next : entry)),
       );
@@ -313,7 +299,7 @@ export function NativeRuntimePanel(props: {
                 disabled={running}
                 onClick={() => void execute({ kind: "goalClear" })}
               >
-                Clear goal
+                Clear settled goal
               </button>
             </>
           )}
@@ -364,7 +350,8 @@ export function NativeRuntimePanel(props: {
             {record.command.kind === "fork" && (
               <span> · Preserved workspace: {record.command.cwd}</span>
             )}
-            {record.state === "indeterminate" && (
+            {(record.state === "indeterminate" ||
+              (record.state === "cancelled" && record.command.kind === "revertFiles")) && (
               <>
                 <button
                   type="button"
@@ -378,7 +365,9 @@ export function NativeRuntimePanel(props: {
                   disabled={busy}
                   onClick={() => void resolve(record, "acknowledge")}
                 >
-                  Stop provider and acknowledge
+                  {record.state === "cancelled"
+                    ? "Finish acknowledgement"
+                    : "Stop provider and acknowledge"}
                 </button>
               </>
             )}

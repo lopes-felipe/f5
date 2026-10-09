@@ -1,3 +1,4 @@
+import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
 import { NATIVE_OPERATION_WS_METHODS, ThreadId as NativeForkThreadId } from "@t3tools/contracts";
 import {
@@ -3086,9 +3087,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             return yield* new RouteRequestError({
               message: "Native outcome resolution is unavailable.",
             });
-          return yield* providerService.nativeOperations
-            .resolve(stripRequestTag(request.body))
+          const resolution = stripRequestTag(request.body);
+          const record = yield* providerService.nativeOperations
+            .resolve(resolution)
             .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+          if (resolution.action === "acknowledge")
+            yield* finishAcknowledgedNativeRewind(record, sql, orchestrationEngine).pipe(
+              Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+            );
+          return record;
         }
         if (request.body._tag === NATIVE_OPERATION_WS_METHODS.execute) {
           const operation = stripRequestTag(request.body);
@@ -3219,7 +3226,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.dispatchCommand: {
         const { orchestrationEngine, projectSetupScriptRunner } =
           yield* awaitOrchestrationRuntimeForRoute;
-        const { command } = request.body;
+        const rawCommand = request.body.command;
+        const command =
+          rawCommand.type === "thread.meta.update"
+            ? { ...rawCommand, titleOrigin: "host" as const }
+            : rawCommand;
         if (command.type === "thread.turn.start" && command.bootstrap) {
           const dispatched = yield* runBootstrapTurnStart({
             command,

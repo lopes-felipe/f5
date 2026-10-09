@@ -1,3 +1,4 @@
+import { supportsCodexNativeOperations } from "@t3tools/shared/providerRuntimeCapabilities";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import type {
   NativeOperationInput,
@@ -168,6 +169,7 @@ interface CodexSessionContext {
   initialSkillsRetryTimeout: ReturnType<typeof setTimeout> | undefined;
   initialSkillsRetryAttempted: boolean;
   resumedContextSent: boolean;
+  cliVersion?: string | null;
   protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
@@ -592,6 +594,7 @@ export function buildCodexThreadOpenRequestParams(input: {
   readonly cwd?: string;
   readonly model?: string;
   readonly resumeThreadId?: string;
+  readonly cliVersion?: string | null;
   readonly runtimeMode: RuntimeMode;
   readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   readonly serviceTier?: string;
@@ -619,7 +622,9 @@ export function buildCodexThreadOpenRequestParams(input: {
             ...overrides,
             threadId: input.resumeThreadId,
             excludeTurns: true,
-            deferGoalContinuation: true,
+            ...(supportsCodexNativeOperations(input.cliVersion)
+              ? { deferGoalContinuation: true }
+              : {}),
           },
         }
       : {}),
@@ -1126,7 +1131,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
       const processCwd = input.processCwd ?? resolvedCwd;
-      this.assertSupportedCodexCliVersion({
+      const cliVersion = this.assertSupportedCodexCliVersion({
         processEnvironment: input.processEnvironment ?? process.env,
         binaryPath: codexBinaryPath,
         cwd: processCwd,
@@ -1199,6 +1204,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         initialSkillsRetryTimeout: undefined,
         initialSkillsRetryAttempted: false,
         resumedContextSent: false,
+        cliVersion,
         protocolDecodeFailureCount: 0,
         nextRequestId: 1,
         stopping: false,
@@ -1235,6 +1241,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       const threadOpenParams = buildCodexThreadOpenRequestParams({
+        cliVersion,
         ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
         ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -1326,7 +1333,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       // Only skip replaying restored context when Codex actually reopened the
       // original provider thread. Fallback thread/start still needs that
       // context on the first follow-up turn.
-      context.resumedContextSent = threadOpenMethod === "thread/resume";
+      context.resumedContextSent =
+        threadOpenMethod === "thread/resume" &&
+        asObject(input.resumeCursor)?.f5ResumedContextPending !== true;
       const modelContextWindowTokens =
         normalizedModel !== null && normalizedModel !== undefined
           ? lookupModelContextWindowTokens({
@@ -1467,6 +1476,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
     }
     context.resumedContextSent = true;
+    if (asObject(context.session.resumeCursor)?.f5ResumedContextPending === true) {
+      const { f5ResumedContextPending: _pending, ...cursor } = asObject(
+        context.session.resumeCursor,
+      )!;
+      this.updateSession(context, { resumeCursor: cursor });
+    }
 
     return {
       threadId: context.session.threadId,
@@ -1994,10 +2009,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const aborted = () =>
       reject(new Error("Native operation waiter was cancelled; reconcile the provider outcome."));
     signal?.addEventListener("abort", aborted, { once: true });
-    const timer = setTimeout(
-      () => reject(new Error("Native operation timed out; its outcome requires reconciliation.")),
-      120_000,
-    );
+    // Browser admission has already returned. Keep the correlated waiter until
+    // settlement, process exit or explicit cancellation, including slow healthy turns.
     try {
       if (command.kind === "review") {
         context.reviewOperationActive = true;
@@ -2046,7 +2059,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         status: "completed",
       };
     } finally {
-      clearTimeout(timer);
       this.off("event", listener);
       context.reviewOperationActive = false;
       if (settled && String(settled.turnId) === nativeTurnId) delete context.nativeReviewTurnId;
@@ -3735,8 +3747,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly binaryPath: string;
     readonly cwd: string;
     readonly homePath?: string;
-  }): void {
-    assertSupportedCodexCliVersion(input);
+  }): string | null {
+    return assertSupportedCodexCliVersion(input);
   }
 
   private updateSession(context: CodexSessionContext, updates: Partial<ProviderSession>): void {
@@ -3949,7 +3961,7 @@ export function assertSupportedCodexCliVersion(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
-}): void {
+}): string | null {
   const codexHomePath = resolveCodexHome(input);
   const environment = buildProviderChildProcessEnv(
     input.processEnvironment,
@@ -3997,6 +4009,7 @@ export function assertSupportedCodexCliVersion(input: {
   if (parsedVersion && !isCodexCliVersionSupported(parsedVersion)) {
     throw new Error(formatCodexCliUpgradeMessage(parsedVersion));
   }
+  return parsedVersion;
 }
 
 function readResumeCursorThreadId(resumeCursor: unknown): string | undefined {

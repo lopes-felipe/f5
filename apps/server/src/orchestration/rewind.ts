@@ -162,7 +162,7 @@ export const makeConversationRewind = Effect.gen(function* () {
           return yield* fail("File rollback requires an isolated worktree.");
         const cwd = yield* Effect.tryPromise(() => realpath(workspace!));
         const owners = model.threads
-          .filter((other) => other.id !== thread.id)
+          .filter((other) => other.id !== thread.id && !other.deletedAt)
           .map(
             (other) =>
               other.worktreePath ??

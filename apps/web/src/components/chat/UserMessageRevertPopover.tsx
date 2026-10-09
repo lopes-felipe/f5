@@ -215,7 +215,9 @@ export const UserMessageRevertPopover = memo(function UserMessageRevertPopover({
               {nativeFileRevert && effectiveRestoreFiles
                 ? "Restores only files Claude changed through its edit tools. Bash and manual changes are not restored."
                 : describeRevertFiles(impact, effectiveRestoreFiles)}
-              {canRestoreFiles ? null : " Restoring files needs an isolated worktree."}
+              {canRestoreFiles
+                ? null
+                : " Restoring files needs an isolated workspace (a worktree in Git projects)."}
             </p>
           </div>
           {nativeFileRevert && effectiveRestoreFiles && (

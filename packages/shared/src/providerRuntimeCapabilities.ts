@@ -12,16 +12,18 @@ export function supportsCodexAsyncQuestions(version: string | null | undefined):
   return !!match && (Number(match[1]) > 0 || Number(match[2]) >= 153);
 }
 
+/** Native operations are enabled only on the runtime certified by the live spike. */
+export function supportsCodexNativeOperations(version: string | null | undefined): boolean {
+  const parsed = version ? parseCodexCliVersion(version) : null;
+  return parsed !== null && compareCodexCliVersions(parsed, "0.162.0") >= 0;
+}
+
 export function providerRuntimeCapabilities(
   driver: string,
   version?: string | null,
 ): ProviderRuntimeCapabilities {
   const rollback = driver === "codex" || driver === "claudeAgent" || driver === "opencode";
-  const nativeVersion = version ? parseCodexCliVersion(version) : null;
-  const codexNative =
-    driver === "codex" &&
-    nativeVersion !== null &&
-    compareCodexCliVersions(nativeVersion, "0.160.1") >= 0;
+  const codexNative = driver === "codex" && supportsCodexNativeOperations(version);
   return {
     nativeReview: codexNative,
     nativeCompaction: driver === "claudeAgent" || codexNative,
