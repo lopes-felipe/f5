@@ -593,8 +593,13 @@ Answers are private:
 - When F5 restarts, pending requests are cancelled and submitted ones become
   indeterminate.
 
-`system/elicitation_complete` and turn completion settle requests. Unattended
-read-only workflows cancel elicitations instead of asking.
+`system/elicitation_complete` and turn completion settle requests. Form requests send
+no `elicitation_complete`, so they settle when the turn ends. Unattended read-only
+workflows cancel elicitations instead of asking.
+
+Live check, Claude Code 2.1.292, 2026-10-09: an MCP tool's form request reached
+`onElicitation` with its schema. F5's descriptor builder accepted it unchanged, and the
+private answer reached the tool.
 
 ### Auto permission mode
 
@@ -606,13 +611,22 @@ reviewer decides routine approvals and escalates the rest. It fails closed:
   unavailable here; F5 will ask before actions".
 - If the CLI then reports any effective mode other than `auto` (outside plan), F5
   switches to `default` and shows the same warning.
-- Escalations reach `canUseTool`, which asks the user as in approval-required mode.
+- When the reviewer cannot decide, the call reaches `canUseTool`, which asks the user
+  as in approval-required mode. Calls the reviewer denies arrive as
+  `permission_denied` and are shown as a thread warning.
 - A live model change re-checks support. In plan turns, only the base mode changes,
   and workflow sessions never call `setPermissionMode`, so they stay in plan.
 - One-off prompts cannot verify the effective mode, so they never use `auto`.
 
-This has not been checked against a live Claude runtime yet. The behavior above is
-covered by adapter tests with a fake query.
+Live check, Claude Code 2.1.292 on a claude.ai account, 2026-10-09:
+
+- Every model reports `supportsAutoMode` except Haiku 4.5. Asked for `auto`, Haiku
+  starts in `default` and reports that in `init`.
+- With Opus 5.5 in `auto`, `init` reported `auto`. In five tool calls the reviewer
+  decided every one itself, and none reached `canUseTool`. It denied a force push and
+  an `rm -rf` under the home directory (as `permission_denied`). It approved and ran
+  `rm -rf` in the working directory and `curl … | sh` from an external URL.
+  Choose `auto` only where those approvals are acceptable.
 
 ### MCP reconciliation
 
@@ -627,6 +641,12 @@ failed. If the runtime cannot change servers in place, an idle session restarts 
 the existing restart path with its resume cursor kept. A busy session keeps its stale
 version and restarts at its next turn. Remaining failures appear as a thread warning
 and in the settings panel.
+
+Servers passed when the session launched can be replaced by name but are never
+removed by `setMcpServers` (verified live on Claude Code 2.1.292). Removing one F5
+server therefore reports **restart required**, and keeps reporting it until the
+session restarts. Servers added or replaced by a later reconcile can be removed in
+place.
 
 Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
 RPC, approval presentation fields, non-blocking questions and the structured MCP apply

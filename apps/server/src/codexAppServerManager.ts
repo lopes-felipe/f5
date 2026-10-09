@@ -842,9 +842,10 @@ export function buildCodexInitializeParams() {
       requestAttestation: false,
       // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
       // `openai/form` in `capabilities.extensions`. Standard MCP `form`/`url`
-      // requests already use the private elicitation path (Release 3); the
-      // OpenAI form extension stays off until that path is verified end-to-end
-      // against a live Codex runtime and the supported minimum is past 0.147.
+      // requests already use the private elicitation path (Release 3), which
+      // was verified end-to-end against codex-cli 0.160.1. The OpenAI form
+      // extension stays off: no live `openai/form` request has been exercised,
+      // and the supported minimum is not yet past 0.147.
       mcpServerOpenaiFormElicitation: false,
       // Current servers suppress this high-volume diagnostic. The adapter and
       // UI still accept starts from older servers and persisted worklogs.

@@ -376,9 +376,24 @@ Form and URL requests from `mcpServer/elicitation/request` open a form in the co
 Answers go through the private `elicitation.submit` RPC described in
 [claude.md](./claude.md#mcp-elicitation), never through the event-sourced answer
 command. `serverRequest/resolved` and `turn/completed` settle the request. Stopping the
-session marks an answered but unconfirmed request as indeterminate. The OpenAI form
-extension (`mcpServerOpenaiFormElicitation`) is still not advertised, because the
-private path has not been verified end-to-end against a live Codex runtime.
+session marks an answered but unconfirmed request as indeterminate.
+
+Codex also uses `mcpServer/elicitation/request` to ask before an MCP tool call. Those
+requests have an empty schema and `_meta.codex_approval_kind` (for example
+`mcp_tool_call`). They go to the approval UI with **Approve once**, **Always allow this
+session** and **Always allow**, as advertised in `_meta.persist`, not to the private
+form path.
+
+Live check, codex-cli 0.160.1, 2026-10-09, in approval-required mode: the tool-call
+consent arrived as an approval. The tool's form then arrived through the private path,
+with only the value-free descriptor in F5's events. The answer was delivered,
+`serverRequest/resolved` produced a **resolved** receipt, and the tool received the
+values. In full-access mode, Codex declines elicitations itself and never sends them
+to F5, so MCP forms only appear in modes that ask for approval.
+
+The OpenAI form extension (`mcpServerOpenaiFormElicitation`) is still not advertised,
+because no live `openai/form` request has been exercised. codex-cli 0.147.0 could not
+be checked live: this account's current models all require a newer CLI.
 
 ### MCP reload
 
@@ -388,7 +403,8 @@ the set the session launched with, the reload reports **restart required**. The
 session's config version stays stale, so the session restarts at its next turn with the
 resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads, reads
 `mcpServerStatus/list`, and advances the session's config version only when every F5
-server is listed and none has failed. Failures are retried up to three times with
+server is listed and none has failed. 0.160.1 lists servers without `startupStatus`,
+so a server that reports tools counts as connected. Failures are retried up to three times with
 backoff (0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
 **Apply to live sessions**.
 

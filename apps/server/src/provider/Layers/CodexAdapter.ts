@@ -2678,6 +2678,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                       : {}),
                     ...(text(status.authStatus) ? { authStatus: text(status.authStatus)! } : {}),
                     ...(error ? { error } : {}),
+                    hasTools:
+                      status.tools !== null &&
+                      typeof status.tools === "object" &&
+                      Object.keys(status.tools).length > 0,
                   }),
                   ...(error ? { error } : {}),
                 },

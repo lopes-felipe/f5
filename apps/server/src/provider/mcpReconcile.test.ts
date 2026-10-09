@@ -9,11 +9,20 @@ import {
 
 type Status = { name: string; status: string; error?: string; source?: string };
 
-function fakeQuery(initial: Status[], connect: (name: string) => Status) {
+/**
+ * Mirrors Claude CLI 2.1.292 as observed live: servers passed at launch
+ * (`launch`) report as dynamic but survive omission; naming one replaces it,
+ * after which it can be removed like any `setMcpServers` server.
+ */
+function fakeQuery(initial: Status[], connect: (name: string) => Status, launch: string[] = []) {
   let statuses = [...initial];
+  const pinned = new Set(launch);
   const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => {
+    for (const name of Object.keys(servers)) pinned.delete(name);
     const dynamic = statuses.filter((status) => status.source === "dynamic");
-    const removed = dynamic.filter((status) => !(status.name in servers)).map((s) => s.name);
+    const removed = dynamic
+      .filter((status) => !(status.name in servers) && !pinned.has(status.name))
+      .map((s) => s.name);
     const added = Object.keys(servers).filter((name) => !dynamic.some((s) => s.name === name));
     statuses = statuses.filter((status) => !removed.includes(status.name));
     const errors: Record<string, string> = {};
@@ -103,6 +112,38 @@ describe("reconcileClaudeMcpServers", () => {
     expect(second.result.converged).toBe(true);
   });
 
+  it("requires a restart to drop a server F5 passed at launch, until the session restarts", async () => {
+    const fake = fakeQuery(
+      [
+        { name: "keep", status: "connected", source: "dynamic" },
+        { name: "drop", status: "connected", source: "dynamic" },
+      ],
+      (name) => ({ name, status: "connected", source: "dynamic" }),
+      ["keep", "drop"],
+    );
+
+    const first = await reconcileClaudeMcpServers({
+      query: fake.query,
+      desired: { keep: { v: 2 } },
+      owned: new Set(["keep", "drop"]),
+    });
+    expect(first.result).toMatchObject({ converged: false, restartRequired: true });
+    expect(first.result.errors).toEqual([
+      { server: "drop", message: "Claude keeps this server until the session restarts." },
+    ]);
+    expect([...first.owned].toSorted()).toEqual(["drop", "keep"]);
+    // In-process recovery relaunches with only the desired servers.
+    expect(first.applied).toEqual({ keep: { v: 2 } });
+
+    // A later reconcile still reports the pending restart.
+    const second = await reconcileClaudeMcpServers({
+      query: fake.query,
+      desired: { keep: { v: 2 } },
+      owned: first.owned,
+    });
+    expect(second.result.restartRequired).toBe(true);
+  });
+
   it("requires a restart when the runtime cannot change servers in place", async () => {
     const unsupported = await reconcileClaudeMcpServers({
       query: { mcpServerStatus: async () => [] },
@@ -160,5 +201,7 @@ describe("summarizeMcpReload", () => {
     expect(codexObservedMcpStatus({ authStatus: "notLoggedIn" })).toBe("needs-auth");
     expect(codexObservedMcpStatus({ error: "boom" })).toBe("failed");
     expect(codexObservedMcpStatus({})).toBe("unknown");
+    // Live 0.160.1 lists servers without startupStatus; tools prove the connection.
+    expect(codexObservedMcpStatus({ authStatus: "unsupported", hasTools: true })).toBe("connected");
   });
 });

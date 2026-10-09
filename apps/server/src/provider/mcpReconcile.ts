@@ -36,6 +36,8 @@ export function codexObservedMcpStatus(input: {
   readonly startupStatus?: string;
   readonly authStatus?: string;
   readonly error?: string;
+  /** Codex 0.160.1 omits `startupStatus` from the list; reported tools mean it connected. */
+  readonly hasTools?: boolean;
 }): McpObservedServerStatus {
   switch (input.startupStatus) {
     case "ready":
@@ -48,7 +50,8 @@ export function codexObservedMcpStatus(input: {
       return "disabled";
   }
   if (input.authStatus === "notLoggedIn") return "needs-auth";
-  return trimmed(input.error) ? "failed" : "unknown";
+  if (trimmed(input.error)) return "failed";
+  return input.hasTools ? "connected" : "unknown";
 }
 
 /**
@@ -188,8 +191,17 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
   }
 
   const after = await query.mcpServerStatus().catch(() => undefined);
+  // Claude keeps servers passed at launch when a payload omits them (verified
+  // live on CLI 2.1.292); only a restart drops them. They stay owned so every
+  // later reconcile keeps reporting the pending restart.
+  const lingering = after
+    ? [...input.owned].filter(
+        (name) => !(name in payload) && after.some((server) => server.name === name),
+      )
+    : [];
+  for (const name of lingering) owned.add(name);
   const result = summarizeMcpReload({
-    desired: [...owned],
+    desired: Object.keys(payload),
     observed: after?.map((server) => ({
       name: server.name,
       status: claudeObservedMcpStatus(server.status),
@@ -201,7 +213,23 @@ export async function reconcileClaudeMcpServers<TConfig>(input: {
     })),
     notices,
   });
-  return { result, owned, applied: payload };
+  if (lingering.length === 0) return { result, owned, applied: payload };
+  return {
+    result: {
+      ...result,
+      converged: false,
+      restartRequired: true,
+      errors: [
+        ...result.errors,
+        ...lingering.map((server) => ({
+          server,
+          message: "Claude keeps this server until the session restarts.",
+        })),
+      ],
+    },
+    owned,
+    applied: payload,
+  };
 }
 
 /** Order-independent key for comparing two translated MCP server configs. */

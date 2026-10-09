@@ -62,6 +62,42 @@ describe("MCP app approval", () => {
       ).toEqual(["cancel", "decline"]);
     }
   });
+  it("treats a Codex 0.160.1 MCP tool-call consent prompt as an approval", () => {
+    // Captured live from codex-cli 0.160.1 in approval-required mode.
+    const toolCall = {
+      serverName: "f5probe",
+      mode: "form",
+      _meta: {
+        codex_approval_kind: "mcp_tool_call",
+        persist: ["session", "always"],
+        tool_description: "Asks the user for a token.",
+        tool_params: {},
+        tool_params_display: [],
+      },
+      message: 'Allow the f5probe MCP server to run tool "ask_token"?',
+      requestedSchema: { type: "object", properties: {} },
+    };
+    expect(describeMcpElicitation(toolCall)).toMatchObject({
+      appName: "f5probe",
+      approvalOptions: [
+        { decision: "cancel" },
+        { decision: "decline" },
+        { decision: "acceptForSession" },
+        { decision: "acceptAlways" },
+        { decision: "accept" },
+      ],
+    });
+    expect(mcpElicitationResponse(toolCall, "accept")).toEqual({ action: "accept", content: {} });
+    expect(mcpElicitationResponse(toolCall, "acceptForSession")).toEqual({
+      action: "accept",
+      content: {},
+      _meta: { persist: "session" },
+    });
+    // Without the consent marker an empty form is still not an approval.
+    const { _meta: _ignored, ...unmarked } = toolCall;
+    expect(mcpElicitationResponse(unmarked, "accept")).toEqual({ action: "decline" });
+  });
+
   it("accept once never inherits a persistent default", () => {
     const payload = {
       ...request,
