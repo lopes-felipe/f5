@@ -32,6 +32,45 @@ function writeNativeAcpLog(input: {
   });
 }
 
+const REDACTED = "[redacted elicitation answer]";
+
+/**
+ * Elicitation answers (`{ action: "accept", content }`, nested under the ACP
+ * response's `action`) must never reach native logs; everything else is kept.
+ */
+export function redactElicitationAnswers(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value !== "object") return value;
+  // Too deep to inspect means it cannot be shown to be answer-free.
+  if (depth > 8) return REDACTED;
+  if (Array.isArray(value)) return value.map((entry) => redactElicitationAnswers(entry, depth + 1));
+  const record = value as Record<string, unknown>;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record))
+    redacted[key] =
+      key === "content" && record.action === "accept"
+        ? REDACTED
+        : redactElicitationAnswers(entry, depth + 1);
+  return redacted;
+}
+
+function redactProtocolEvent(
+  event: EffectAcpProtocol.AcpProtocolLogEvent,
+): EffectAcpProtocol.AcpProtocolLogEvent {
+  if (event.direction !== "outgoing") return event;
+  if (typeof event.payload === "string") {
+    if (!event.payload.includes('"content"')) return event;
+    try {
+      return {
+        ...event,
+        payload: JSON.stringify(redactElicitationAnswers(JSON.parse(event.payload))),
+      };
+    } catch {
+      return { ...event, payload: REDACTED };
+    }
+  }
+  return { ...event, payload: redactElicitationAnswers(event.payload) };
+}
+
 function formatRequestLogPayload(event: AcpSessionRequestLogEvent) {
   return {
     method: event.method,
@@ -67,7 +106,7 @@ export function makeAcpNativeLoggers(input: {
                 provider: input.provider,
                 threadId: input.threadId,
                 kind: "protocol",
-                payload: event,
+                payload: redactProtocolEvent(event),
               }),
           } satisfies NonNullable<AcpSessionRuntimeOptions["protocolLogging"]>,
         }

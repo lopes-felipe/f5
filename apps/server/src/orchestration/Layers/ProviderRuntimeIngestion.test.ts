@@ -111,6 +111,8 @@ function createProviderServiceHarness() {
   const interruptedTurns: Array<Parameters<ProviderServiceShape["interruptTurn"]>[0]> = [];
   const requestResponses: Array<Parameters<ProviderServiceShape["respondToRequest"]>[0]> = [];
   const userInputResponses: Array<Parameters<ProviderServiceShape["respondToUserInput"]>[0]> = [];
+  const elicitationResponses: Array<Parameters<ProviderServiceShape["respondToElicitation"]>[0]> =
+    [];
   const threadSnapshots = new Map<
     ThreadId,
     {
@@ -130,6 +132,11 @@ function createProviderServiceHarness() {
     interruptTurn: (input) => Effect.sync(() => void interruptedTurns.push(input)),
     respondToRequest: (input) => Effect.sync(() => void requestResponses.push(input)),
     respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
+    respondToElicitation: (input) =>
+      Effect.sync(() => {
+        elicitationResponses.push(input);
+        return "submitted" as const;
+      }),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getSessionCapabilities: () => Effect.sync(() => sessionCapabilities),
@@ -185,6 +192,7 @@ function createProviderServiceHarness() {
     interruptedTurns,
     requestResponses,
     userInputResponses,
+    elicitationResponses,
   };
 }
 
@@ -405,6 +413,7 @@ describe("ProviderRuntimeIngestion", () => {
       interruptedTurns: provider.interruptedTurns,
       requestResponses: provider.requestResponses,
       userInputResponses: provider.userInputResponses,
+      elicitationResponses: provider.elicitationResponses,
       threadCommandExecutionQuery,
       threadFileChangeQuery,
       usageFactRepository,
@@ -3994,6 +4003,86 @@ describe("ProviderRuntimeIngestion", () => {
     expect(settled.session?.status).toBe("running");
     expect(settled.session?.lastError).toBeNull();
     expect(harness.interruptedTurns).toHaveLength(0);
+  });
+
+  it("cancels unattended workflow form requests instead of answering them", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-profiled-elicitation");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-profiled-elicitation-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+        },
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-profiled-elicitation-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-profiled-elicitation-requested"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      requestId: ApprovalRequestId.makeUnsafe("req-profiled-elicitation"),
+      payload: {
+        questions: [],
+        elicitation: {
+          mode: "form",
+          message: "Token?",
+          serverName: "probe",
+          generation: 3,
+          fields: [{ key: "token", title: "Token", required: true, type: "string" }],
+        },
+      },
+    });
+
+    const settled = await waitForThread(harness.engine, (thread) =>
+      thread.activities.some((activity) => activity.kind === "user-input.requested"),
+    );
+
+    expect(harness.elicitationResponses).toEqual([
+      {
+        threadId: "thread-1",
+        requestId: "req-profiled-elicitation",
+        generation: 3,
+        action: "cancel",
+      },
+    ]);
+    expect(harness.userInputResponses).toEqual([]);
+    expect(settled.session?.status).toBe("running");
   });
 
   it("fails the turn once an unattended stage exhausts its question allowance", async () => {

@@ -16,6 +16,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, it, vi } from "@effect/vitest";
 
 import { Effect, Fiber, Layer, Option, Stream } from "effect";
+import { holdsAutomaticResume, isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 
 import {
   CodexAppServerManager,
@@ -2478,6 +2479,10 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         throw new Error("Expected a question");
       assert.equal(result.value.eventId, "codex-async:thread-1:async-question");
       assert.equal(result.value.payload.responseMode, "message");
+      assert.equal(result.value.payload.blocking, undefined);
+      // Message questions free the composer but still hold restart/usage-limit resume.
+      assert.equal(isBlockingUserInput(result.value.payload), false);
+      assert.equal(holdsAutomaticResume(result.value.payload), true);
       assert.equal(result.value.payload.questions.length, 2);
       assert.equal(result.value.payload.questions[0]?.options[0]?.label, "A");
     }),
@@ -2501,6 +2506,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           method: "item/tool/requestUserInput",
           requestId: ApprovalRequestId.makeUnsafe("req-user-input-1"),
           payload: {
+            isBlocking: false,
             questions: [
               {
                 id: "sandbox_mode",
@@ -2538,6 +2544,8 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         if (events[0]?.type === "user-input.requested") {
           assert.equal(events[0].requestId, "req-user-input-1");
           assert.equal(events[0].payload.questions[0]?.id, "sandbox_mode");
+          assert.equal(events[0].payload.blocking, false);
+          assert.equal(events[0].payload.responseMode, undefined);
         }
 
         assert.equal(events[1]?.type, "user-input.resolved");

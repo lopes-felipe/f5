@@ -149,12 +149,64 @@ export const McpApplyToLiveSessionsRequest = Schema.Struct({
 });
 export type McpApplyToLiveSessionsRequest = typeof McpApplyToLiveSessionsRequest.Type;
 
+/** Connection state a live provider session reports for one MCP server. */
+export const McpObservedServerStatus = Schema.Literals([
+  "connected",
+  "pending",
+  "needs-auth",
+  "failed",
+  "disabled",
+  "unknown",
+]);
+export type McpObservedServerStatus = typeof McpObservedServerStatus.Type;
+
+export const McpReloadServerStatus = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  status: McpObservedServerStatus,
+  /** True for servers F5 configured; settings-file and plugin servers are observed only. */
+  owned: Schema.Boolean,
+  error: Schema.optional(TrimmedNonEmptyString),
+});
+export type McpReloadServerStatus = typeof McpReloadServerStatus.Type;
+
+export const McpReloadError = Schema.Struct({
+  server: Schema.optional(TrimmedNonEmptyString),
+  message: TrimmedNonEmptyString,
+});
+export type McpReloadError = typeof McpReloadError.Type;
+
+/**
+ * Outcome of reconciling one live session with the desired MCP config.
+ * `converged` means every F5-owned server is applied and none failed;
+ * `restartRequired` means the session cannot reconcile in place.
+ */
+export const McpReloadResult = Schema.Struct({
+  converged: Schema.Boolean,
+  restartRequired: Schema.Boolean,
+  servers: Schema.Array(McpReloadServerStatus),
+  errors: Schema.Array(McpReloadError),
+});
+export type McpReloadResult = typeof McpReloadResult.Type;
+
+export const McpLiveSessionReloadFailure = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  provider: ProviderKind,
+  restartRequired: Schema.Boolean,
+  errors: Schema.Array(McpReloadError),
+});
+export type McpLiveSessionReloadFailure = typeof McpLiveSessionReloadFailure.Type;
+
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,
   projectId: Schema.optional(ProjectId),
   codexReloaded: NonNegativeInt,
   claudeRestarted: NonNegativeInt,
+  /** Claude sessions reconciled in place without a restart. */
+  claudeReconciled: Schema.optional(NonNegativeInt),
+  /** Busy sessions whose restart waits for the next idle turn boundary. */
+  deferred: Schema.optional(NonNegativeInt),
   skipped: NonNegativeInt,
+  failures: Schema.optional(Schema.Array(McpLiveSessionReloadFailure)),
   configVersion: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpApplyToLiveSessionsResult = typeof McpApplyToLiveSessionsResult.Type;

@@ -3,6 +3,19 @@ import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { resolveClaudeCleanupPeriodDays } from "../claudeTranscriptRetention.ts";
 import { claudeThinkingConfig, type ClaudeThinkingResolution } from "../claudeProviderOptions.ts";
 import {
+  claudeApprovalPresentation,
+  effectiveClaudeApprovalDecision,
+} from "../claudeApprovalPresentation.ts";
+import { ElicitationRegistry, type ElicitationTerminalReceipt } from "../elicitationRegistry.ts";
+import { reconcileClaudeMcpServers } from "../mcpReconcile.ts";
+import {
+  CLAUDE_AUTO_UNAVAILABLE_WARNING,
+  claudeAutoModeRecheck,
+  claudeAutoModeRejected,
+  claudeRuntimePermissionMode,
+} from "../claudeAutoMode.ts";
+import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
+import {
   buildClaudeToolCompletion,
   isClaudeTaskToolName,
   storeClaudeToolCompletionArtifact,
@@ -42,10 +55,13 @@ import * as NodeReadline from "node:readline";
 
 import {
   type CanUseTool,
-  type McpServerStatus,
+  type ElicitationResult,
   query,
   type Options as ClaudeQueryOptions,
   type PermissionMode,
+  type McpServerConfig,
+  type McpServerStatus,
+  type McpSetServersResult,
   type PermissionResult,
   type PermissionUpdate,
   type SDKMessage,
@@ -63,6 +79,7 @@ import {
   type ModelSelection,
   type ProviderStartOptions,
   type ProviderApprovalDecision,
+  type ProviderApprovalPresentation,
   ProviderInstanceId,
   ProviderItemId,
   type ProviderModelOptions,
@@ -256,6 +273,7 @@ interface PendingApproval {
   readonly requestType: CanonicalRequestType;
   readonly detail?: string;
   readonly suggestions?: ReadonlyArray<PermissionUpdate>;
+  readonly presentation?: ProviderApprovalPresentation;
   readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
   /**
    * Set by `resolvePendingInteractions` when it has already emitted the
@@ -343,10 +361,17 @@ interface ClaudeSessionContext {
   readonly processEnvironment: NodeJS.ProcessEnv;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
-  readonly basePermissionMode: PermissionMode | undefined;
+  /** Mode restored after plan turns; `auto` only while the model and CLI support it. */
+  basePermissionMode: PermissionMode | undefined;
+  /** The session's runtime mode asked for Claude `auto` review. */
+  readonly autoRequested: boolean;
   resumeSessionId: string | undefined;
   readonly pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
   readonly pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
+  /** MCP form/URL requests answered through the private elicitation RPC. */
+  readonly elicitations: ElicitationRegistry;
+  /** Dynamic MCP servers F5 set on this query; the only ones reconcile may replace or remove. */
+  ownedMcpServerNames: ReadonlySet<string>;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -438,6 +463,10 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
       readonly argumentHint?: string;
     }>
   >;
+  readonly setMcpServers?: (
+    servers: Record<string, McpServerConfig>,
+  ) => Promise<McpSetServersResult>;
+  readonly reconnectMcpServer?: (serverName: string) => Promise<void>;
   readonly close: () => void;
 }
 
@@ -801,6 +830,7 @@ function toPermissionMode(value: unknown): PermissionMode | undefined {
     case "bypassPermissions":
     case "plan":
     case "dontAsk":
+    case "auto":
       return value;
     default:
       return undefined;
@@ -2856,6 +2886,63 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
       });
 
+    /** Value-free terminal receipt for a private elicitation. */
+    const emitElicitationReceipt = (
+      context: ClaudeSessionContext,
+      requestId: ApprovalRequestId,
+      receipt: ElicitationTerminalReceipt,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const stamp = yield* makeEventStamp(context.session.threadId);
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+          requestId: asRuntimeRequestId(requestId),
+          payload: { answers: {}, receipt },
+          providerRefs: nativeProviderRefs(context),
+        });
+      });
+
+    const settleElicitation = (
+      context: ClaudeSessionContext,
+      requestId: ApprovalRequestId,
+      outcome: "completed" | "aborted",
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const receipt = context.elicitations.settle(requestId, outcome);
+        if (receipt) yield* emitElicitationReceipt(context, requestId, receipt);
+      });
+
+    /**
+     * Auto review is effective only when the CLI reports `auto`. Any other
+     * reported mode (outside plan) drops the session to `default`.
+     */
+    const enforceClaudeAutoModeReport = (
+      context: ClaudeSessionContext,
+      reported: unknown,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (
+          !claudeAutoModeRejected({
+            base: context.basePermissionMode,
+            reported,
+            workflow: context.workflowExecutionProfile !== undefined,
+          })
+        )
+          return;
+        context.basePermissionMode = "default";
+        context.configuredBase = { ...context.configuredBase, permissionMode: "default" };
+        // Not awaited inside the message loop; approvals already ask in this mode.
+        void context.query.setPermissionMode("default").catch(() => undefined);
+        yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
+          category: "provider",
+        });
+      });
+
     const emitRuntimeWarning = (
       context: ClaudeSessionContext,
       message: string,
@@ -3348,6 +3435,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
         const turnCost = claudeTurnCost(context, accountedTotal, status === "failed");
         yield* updateResumeCursor(context);
+        // The turn consumed (or abandoned) every answer handed to the SDK.
+        for (const requestId of context.elicitations.forTurn(turnState.turnId))
+          yield* settleElicitation(context, requestId, "completed");
 
         const stamp = yield* makeEventStamp(context.session.threadId);
         yield* offerRuntimeEvent({
@@ -4255,8 +4345,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "local_command_output":
           case "plugin_install":
           case "memory_recall":
-          case "elicitation_complete":
             return;
+          case "elicitation_complete": {
+            const elicitationId = rawMessage.elicitation_id;
+            const requestId =
+              typeof elicitationId === "string"
+                ? context.elicitations.findByNativeId(elicitationId)
+                : undefined;
+            if (requestId) yield* settleElicitation(context, requestId, "completed");
+            return;
+          }
           case "model_refusal_no_fallback":
           case "model_refusal_fallback":
             yield* offerRuntimeEvent({
@@ -4340,9 +4438,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               if (configuredModel !== undefined) {
                 Effect.runFork(refreshModelContextWindowTokens(context));
               }
+              yield* enforceClaudeAutoModeReport(context, context.configuredBase.permissionMode);
             }
             return;
           case "status":
+            yield* enforceClaudeAutoModeReport(context, message.permissionMode);
             yield* offerRuntimeEvent({
               ...base,
               type: "session.state.changed",
@@ -5084,6 +5184,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
         context.pendingUserInputs.clear();
+
+        // Unanswered requests are cancelled; answers already handed to the
+        // SDK without a native completion become indeterminate, never resent.
+        for (const { requestId, receipt } of context.elicitations.abortAll())
+          yield* emitElicitationReceipt(context, requestId, receipt);
       });
 
     const stopSessionInternal = (
@@ -5214,7 +5319,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const providerOptions = input.modelSelection
           ? { ...options?.oneOffProviderOptions, ...input.providerOptions?.claudeAgent }
           : input.providerOptions?.claudeAgent;
-        const permissionMode = toPermissionMode(providerOptions?.permissionMode) ?? "default";
+        // One-off prompts cannot verify the CLI's effective mode, so `auto` fails closed.
+        const requestedPermissionMode = toPermissionMode(providerOptions?.permissionMode);
+        const permissionMode =
+          requestedPermissionMode === undefined || requestedPermissionMode === "auto"
+            ? "default"
+            : requestedPermissionMode;
         const queryEnvironment = buildClaudeQueryEnv(
           providerOptions,
           options?.processEnvironment ?? process.env,
@@ -5538,6 +5648,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
         const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
+        const elicitations = new ElicitationRegistry();
         const inFlightTools = new Map<number, ToolInFlight>();
         const taskStates = new Map<string, ClaudeTaskState>();
 
@@ -5693,6 +5804,91 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               },
             } satisfies PermissionResult;
           });
+
+        /**
+         * MCP form/URL requests. The descriptor (never answer values) is
+         * published; the answer arrives through `respondToElicitation` and is
+         * returned to the SDK from here without being logged or emitted.
+         */
+        const onElicitation: NonNullable<ClaudeQueryOptions["onElicitation"]> = (
+          request,
+          callbackOptions,
+        ) =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const cancelled = { action: "cancel" as const };
+              const context = yield* Ref.get(contextRef);
+              if (!context || context.stopped) return cancelled;
+              const descriptor = buildElicitationDescriptor({
+                mode: request.mode,
+                message: request.message,
+                serverName: request.serverName,
+                title: request.title ?? request.displayName,
+                nativeId: request.elicitationId,
+                requestedSchema: request.requestedSchema,
+                url: request.url,
+              });
+              const unattended = input.workflowExecutionProfile === "unattended-readonly";
+              if (!descriptor.ok || unattended) {
+                yield* emitRuntimeWarning(
+                  context,
+                  unattended
+                    ? `MCP server '${request.serverName}' asked for input during an unattended stage; it was cancelled without submitting data.`
+                    : `MCP server '${request.serverName}' asked for input F5 cannot show completely (${descriptor.ok ? "unsupported" : descriptor.reason}); it was cancelled without submitting data.`,
+                  { category: "provider" },
+                );
+                return cancelled;
+              }
+              const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
+              const answer = yield* Deferred.make<ElicitationResult>();
+              const release = (result: ElicitationResult) => {
+                Effect.runSync(Deferred.succeed(answer, result));
+              };
+              context.elicitations.open({
+                requestId,
+                descriptor: descriptor.value,
+                turnId: context.turnState?.turnId,
+                deliver: async (response) =>
+                  release(
+                    response.action === "accept" && response.content
+                      ? {
+                          action: "accept",
+                          content: Object.fromEntries(
+                            Object.entries(response.content).map(([key, value]) => [
+                              key,
+                              Array.isArray(value) ? [...value] : value,
+                            ]),
+                          ) as Record<string, string | number | boolean | string[]>,
+                        }
+                      : { action: response.action },
+                  ),
+                abort: () => release(cancelled),
+                // Resolving the deferred returns the answer from onElicitation.
+                completesOnDelivery: true,
+              });
+              const onAbort = () => {
+                Effect.runFork(settleElicitation(context, requestId, "aborted"));
+              };
+              callbackOptions.signal.addEventListener("abort", onAbort, { once: true });
+              const stamp = yield* makeEventStamp(context.session.threadId);
+              yield* offerRuntimeEvent({
+                type: "user-input.requested",
+                eventId: stamp.eventId,
+                provider: PROVIDER,
+                createdAt: stamp.createdAt,
+                threadId: context.session.threadId,
+                ...(context.turnState
+                  ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                  : {}),
+                requestId: asRuntimeRequestId(requestId),
+                payload: { questions: [], elicitation: descriptor.value },
+                providerRefs: nativeProviderRefs(context),
+              });
+              const result = yield* Deferred.await(answer);
+              callbackOptions.signal.removeEventListener("abort", onAbort);
+              return result;
+            }),
+          );
 
         const onUserDialog: NonNullable<ClaudeQueryOptions["onUserDialog"]> = (request, options) =>
           Effect.runPromise(
@@ -5976,7 +6172,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   }
                   break;
                 case "auto":
-                  throw new Error("Claude does not support AI-reviewed approvals.");
+                  // Claude's reviewer escalates here; F5 asks the user.
+                  break;
                 default:
                   return assertNever(runtimeMode, "Claude runtime mode");
               }
@@ -5984,6 +6181,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
               const requestType = classifyRequestType(toolName);
               const detail = summarizeToolRequest(toolName, toolInput);
+              const presentation = claudeApprovalPresentation(callbackOptions);
               const decisionDeferred = yield* Deferred.make<ProviderApprovalDecision>();
               const pendingApproval: PendingApproval = {
                 requestType,
@@ -5993,6 +6191,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ...(callbackOptions.suggestions
                   ? { suggestions: callbackOptions.suggestions }
                   : {}),
+                ...(presentation ? { presentation } : {}),
               };
 
               const requestedStamp = yield* makeEventStamp(context.session.threadId);
@@ -6009,6 +6208,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 payload: {
                   requestType,
                   detail,
+                  ...(presentation ? { presentation } : {}),
                   args: {
                     toolName,
                     input: toolInput,
@@ -6042,7 +6242,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 once: true,
               });
 
-              const decision = yield* Deferred.await(decisionDeferred);
+              const decision = effectiveClaudeApprovalDecision(
+                yield* Deferred.await(decisionDeferred),
+                pendingApproval.presentation,
+              );
               pendingApprovals.delete(requestId);
 
               // Skip duplicate `request.resolved` when the interrupt path
@@ -6123,20 +6326,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           launchReported,
         );
         const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
-        const runtimePermissionMode = (() => {
-          switch (runtimeMode) {
-            case "approval-required":
-              return "default" as const;
-            case "auto-accept-edits":
-              return "acceptEdits" as const;
-            case "auto":
-              throw new Error("Claude does not support AI-reviewed approvals.");
-            case "full-access":
-              return "bypassPermissions" as const;
-            default:
-              return assertNever(runtimeMode, "Claude permission mode");
-          }
-        })();
+        // `auto` fails closed to `default` unless the model reports support.
+        const launchPermission = claudeRuntimePermissionMode(
+          runtimeMode,
+          resolveModelCapabilities(
+            "claudeAgent",
+            runtimeModelSelection.baseModel ?? input.model,
+            launchReported,
+          ).supportsAutoMode,
+        );
+        const runtimePermissionMode = launchPermission.mode;
         // Runtime mode is the user-visible enforcement boundary. Persisted
         // provider options may tune one-off prompts, but must never override a
         // session into a more permissive SDK mode.
@@ -6344,6 +6543,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             },
           ),
           canUseTool,
+          onElicitation,
           onUserDialog,
           supportedDialogKinds: providerOptions?.resumeCompactionPrompt ? ["resume_return"] : [],
           env: queryEnvironment,
@@ -6444,9 +6644,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
+          autoRequested: runtimeMode === "auto",
           resumeSessionId: sessionId,
           pendingApprovals,
           pendingUserInputs,
+          elicitations,
+          ownedMcpServerNames: new Set(Object.keys(translatedMcpServers ?? {})),
           turns: (resumeState?.turnBoundaries ?? []).map((boundary) => ({
             id: TurnId.makeUnsafe(boundary.turnId),
             items: [],
@@ -6492,6 +6695,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitRuntimeWarning(context, pendingTranscriptWarning, {
             category: "provider",
             actionable: true,
+          });
+        if (launchPermission.autoUnavailable)
+          yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
+            category: "provider",
           });
         if (resumeFallbackWarning) {
           yield* emitRuntimeWarning(
@@ -6647,11 +6854,26 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (runtimeModelSelection.apiModel && runtimeModelSelection.baseModel) {
             const previousModel = getClaudeSessionModel(context);
             const previousContextWindow = getConfiguredClaudeContextWindow(context.configuredBase);
+            const nextReported = yield* reportedCapabilitiesFor(runtimeModelSelection.baseModel);
             const runtimeTraits = resolveClaudeRuntimeTraits(
               runtimeModelSelection,
               context.session.model,
-              yield* reportedCapabilitiesFor(runtimeModelSelection.baseModel),
+              nextReported,
             );
+            const autoRecheck = claudeAutoModeRecheck({
+              autoRequested: context.autoRequested,
+              base: context.basePermissionMode,
+              supportsAutoMode: resolveModelCapabilities(
+                "claudeAgent",
+                runtimeModelSelection.baseModel,
+                nextReported,
+              ).supportsAutoMode,
+              livePlan:
+                input.interactionMode === "plan" ||
+                (input.interactionMode === undefined &&
+                  context.configuredBase?.permissionMode === "plan"),
+              workflow: context.workflowExecutionProfile !== undefined,
+            });
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
@@ -6692,6 +6914,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }
             if (runtimeModelSelection.contextWindow === undefined) {
               Effect.runFork(refreshModelContextWindowTokens(context));
+            }
+            if (autoRecheck) {
+              context.basePermissionMode = autoRecheck.base;
+              // An explicit default interaction mode applies the new base below.
+              if (autoRecheck.setLive && input.interactionMode === undefined) {
+                const liveMode = autoRecheck.setLive;
+                yield* Effect.tryPromise({
+                  try: () => context.query.setPermissionMode(liveMode),
+                  catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
+                });
+                yield* ensureLive;
+                context.configuredBase = { ...context.configuredBase, permissionMode: liveMode };
+              }
+              if (autoRecheck.downgraded)
+                yield* emitRuntimeWarning(context, CLAUDE_AUTO_UNAVAILABLE_WARNING, {
+                  category: "provider",
+                });
             }
           }
         }
@@ -7007,6 +7246,69 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         yield* Deferred.succeed(pending.decision, decision);
       });
 
+    const respondToElicitation: NonNullable<ClaudeAdapterShape["respondToElicitation"]> = (
+      threadId,
+      requestId,
+      response,
+    ) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        if (!context.elicitations.has(requestId))
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "onElicitation",
+            detail: `Unknown pending elicitation request: ${requestId}`,
+          });
+        const submitted = yield* Effect.tryPromise({
+          try: () => context.elicitations.submit(requestId, response),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "onElicitation",
+              detail: toMessage(cause, "The answer could not be delivered."),
+            }),
+        });
+        // Forms get no elicitation_complete, and one opened outside a turn has
+        // no turn end either: the hand-off is the completion.
+        const receipt = context.elicitations.settleIfDelivered(requestId);
+        if (receipt) yield* emitElicitationReceipt(context, requestId, receipt);
+        return submitted;
+      });
+
+    const reloadMcpConfig: NonNullable<ClaudeAdapterShape["reloadMcpConfig"]> = ({
+      threadId,
+      mcpServers,
+    }) =>
+      Effect.gen(function* () {
+        const context = yield* requireSession(threadId);
+        const desired = (translateMcpForClaudeAgent(mcpServers) ?? {}) as Record<
+          string,
+          McpServerConfig
+        >;
+        const outcome = yield* Effect.tryPromise({
+          try: () =>
+            reconcileClaudeMcpServers({
+              query: context.query,
+              desired,
+              owned: context.ownedMcpServerNames,
+            }),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "mcp_set_servers",
+              detail: toMessage(cause, "Could not reconcile MCP servers."),
+            }),
+        });
+        context.ownedMcpServerNames = outcome.owned;
+        if (outcome.applied) {
+          // Keep in-process recovery (which re-creates the query) on the new set.
+          if (Object.keys(outcome.applied).length > 0)
+            context.queryOptions.mcpServers = outcome.applied;
+          else delete context.queryOptions.mcpServers;
+        }
+        return outcome.result;
+      });
+
     const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = (
       threadId,
       requestId,
@@ -7097,6 +7399,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       rollbackThread,
       respondToRequest,
       respondToUserInput,
+      respondToElicitation,
+      reloadMcpConfig,
       stopSession,
       listSessions,
       hasSession,

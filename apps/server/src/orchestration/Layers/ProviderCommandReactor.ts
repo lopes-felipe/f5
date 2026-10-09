@@ -12,6 +12,8 @@ import {
   EventId,
   type ModelSelection,
   type McpApplyToLiveSessionsResult,
+  type McpLiveSessionReloadFailure,
+  type McpReloadResult,
   type OrchestrationEvent,
   ProjectId,
   ProviderDriverKind,
@@ -28,7 +30,7 @@ import {
   type TurnId,
   type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
-import { Cause, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schema, Semaphore, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -82,6 +84,7 @@ import {
   readPersistedInstructionContext,
   readPersistedProviderOptions,
   readPersistedStartConfig,
+  readPersistedUnconvergedMcpConfigVersion,
 } from "../../provider/runtimePayload.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
@@ -360,6 +363,27 @@ export function toProviderTurnDeliveryError(error: unknown): ProviderTurnDeliver
 }
 
 const make = Effect.gen(function* () {
+  // Serializes turn delivery with MCP-apply restarts per thread, so Apply
+  // never stops a session between its idle check and a new turn. Separate
+  // from `withProviderThreadAccess`, which startSession takes itself.
+  const threadTurnGates = new Map<ThreadId, { gate: Semaphore.Semaphore; users: number }>();
+  const withThreadTurnGate = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const entry = threadTurnGates.get(threadId) ?? {
+          gate: Semaphore.makeUnsafe(1),
+          users: 0,
+        };
+        entry.users++;
+        threadTurnGates.set(threadId, entry);
+        return entry;
+      }),
+      (entry) => entry.gate.withPermit(effect),
+      (entry) =>
+        Effect.sync(() => {
+          if (--entry.users === 0) threadTurnGates.delete(threadId);
+        }),
+    );
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -1948,12 +1972,29 @@ const make = Effect.gen(function* () {
           {
             readonly projectId: ProjectId;
             readonly providerOptions?: ProviderStartOptions;
-            count: number;
+            readonly threadIds: ThreadId[];
           }
         >();
+        const claudeThreadsByProject = new Map<ProjectId, ThreadId[]>();
+        const claudeBindings = new Map<ThreadId, ProviderRuntimeBinding>();
+        const failures: Array<McpLiveSessionReloadFailure> = [];
         let codexReloaded = 0;
         let claudeRestarted = 0;
+        let claudeReconciled = 0;
+        let deferred = 0;
         let skipped = 0;
+        const recordFailure = (
+          threadId: ThreadId,
+          provider: ProviderKind,
+          result: McpReloadResult,
+        ) => {
+          failures.push({
+            threadId,
+            provider,
+            restartRequired: result.restartRequired,
+            errors: result.errors,
+          });
+        };
 
         const readEffectiveConfigForProject = (projectId: ProjectId) => {
           const cached = effectiveConfigCache.get(projectId);
@@ -1980,7 +2021,13 @@ const make = Effect.gen(function* () {
           }
 
           const effectiveConfig = yield* readEffectiveConfigForProject(binding.projectId);
-          if (binding.mcpEffectiveConfigVersion === effectiveConfig.effectiveVersion) {
+          // A session whose last reload of this version did not converge is
+          // retried: the user may have fixed the server since.
+          if (
+            binding.mcpEffectiveConfigVersion === effectiveConfig.effectiveVersion &&
+            readPersistedUnconvergedMcpConfigVersion(binding.runtimePayload) !==
+              effectiveConfig.effectiveVersion
+          ) {
             skipped += 1;
             continue;
           }
@@ -2000,24 +2047,22 @@ const make = Effect.gen(function* () {
             const groupKey = `${binding.projectId}\u0000${getProviderEnvironmentKey("codex", providerOptions)}`;
             const existingGroup = codexGroups.get(groupKey);
             if (existingGroup) {
-              existingGroup.count += 1;
+              existingGroup.threadIds.push(binding.threadId);
             } else {
               codexGroups.set(groupKey, {
                 projectId: binding.projectId,
                 ...(providerOptions !== undefined ? { providerOptions } : {}),
-                count: 1,
+                threadIds: [binding.threadId],
               });
             }
             continue;
           }
 
           if (binding.provider === "claudeAgent") {
-            const restarted = yield* restartClaudeSessionForMcpApply(binding, createdAt);
-            if (restarted) {
-              claudeRestarted += 1;
-            } else {
-              skipped += 1;
-            }
+            const threads = claudeThreadsByProject.get(binding.projectId) ?? [];
+            threads.push(binding.threadId);
+            claudeThreadsByProject.set(binding.projectId, threads);
+            claudeBindings.set(binding.threadId, binding);
             continue;
           }
 
@@ -2025,14 +2070,67 @@ const make = Effect.gen(function* () {
         }
 
         for (const group of codexGroups.values()) {
-          yield* providerService.reloadMcpConfigForProject({
+          const outcome = yield* providerService.reloadMcpConfigForProject({
             provider: "codex",
             projectId: group.projectId,
             ...(group.providerOptions !== undefined
               ? { providerOptions: group.providerOptions }
               : {}),
+            // Only the out-of-date sessions, so counts match what was skipped.
+            threadIds: group.threadIds,
           });
-          codexReloaded += group.count;
+          // Codex pins MCP servers at launch; a changed set restarts at the next turn.
+          for (const session of outcome.sessions) {
+            if (session.result.converged) {
+              codexReloaded += 1;
+              continue;
+            }
+            if (session.result.restartRequired) deferred += 1;
+            recordFailure(session.threadId, "codex", session.result);
+          }
+          skipped += Math.max(0, group.threadIds.length - outcome.sessions.length);
+        }
+
+        // Claude reconciles F5-owned servers in place. Only a session that
+        // cannot do so restarts, and only while idle; a busy one keeps its
+        // stale config version so the next turn start restarts it. The idle
+        // check and the restart share the turn gate, so a turn delivered while
+        // the reload was retrying is seen here and never stopped.
+        const restartIfStillIdle = (binding: ProviderRuntimeBinding) =>
+          withThreadTurnGate(
+            binding.threadId,
+            Effect.gen(function* () {
+              const live = (yield* providerService.listSessions()).find(
+                (entry) => entry.threadId === binding.threadId,
+              );
+              if (!live || live.activeTurnId || live.status === "running") return false;
+              return yield* restartClaudeSessionForMcpApply(binding, createdAt);
+            }),
+          );
+        for (const [projectId, threadIds] of claudeThreadsByProject) {
+          const outcome = yield* providerService.reloadMcpConfigForProject({
+            provider: "claudeAgent",
+            projectId,
+            threadIds,
+          });
+          const reached = new Set(outcome.sessions.map((session) => session.threadId));
+          skipped += threadIds.filter((threadId) => !reached.has(threadId)).length;
+          for (const session of outcome.sessions) {
+            if (session.result.converged) {
+              claudeReconciled += 1;
+              continue;
+            }
+            const binding = claudeBindings.get(session.threadId);
+            if (session.result.restartRequired && binding) {
+              const restarted = yield* restartIfStillIdle(binding);
+              if (restarted) {
+                claudeRestarted += 1;
+                continue;
+              }
+            }
+            if (session.result.restartRequired) deferred += 1;
+            recordFailure(session.threadId, "claudeAgent", session.result);
+          }
         }
 
         const responseProjectId = projectScopeProjectId ?? input.projectId;
@@ -2046,7 +2144,10 @@ const make = Effect.gen(function* () {
           ...(responseProjectId !== undefined ? { projectId: responseProjectId } : {}),
           codexReloaded,
           claudeRestarted,
+          claudeReconciled,
+          deferred,
           skipped,
+          ...(failures.length > 0 ? { failures } : {}),
           ...(responseConfig ? { configVersion: responseConfig.effectiveVersion } : {}),
         } satisfies McpApplyToLiveSessionsResult;
       });
@@ -2224,7 +2325,7 @@ const make = Effect.gen(function* () {
   });
 
   const deliverTurnStart: ProviderCommandReactorShape["deliverTurnStart"] = (event) =>
-    processTurnStartRequested(event).pipe(
+    withThreadTurnGate(event.payload.threadId, processTurnStartRequested(event)).pipe(
       Effect.tap(() =>
         increment(orchestrationEventsProcessedTotal, {
           eventType: event.type,

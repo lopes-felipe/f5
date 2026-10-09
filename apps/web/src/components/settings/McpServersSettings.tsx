@@ -1,5 +1,6 @@
 import { useProfileState } from "../../profileState";
 import {
+  type McpApplyToLiveSessionsResult,
   type McpConfigScope,
   type McpCommonConfigResult,
   type McpLoginStatusResult,
@@ -111,6 +112,28 @@ function trimToUndefined(value: string | null | undefined): string | undefined {
 
 function readErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+}
+
+export function describeMcpApplyProblems(result: McpApplyToLiveSessionsResult): string | null {
+  const failures = result.failures ?? [];
+  const deferred = result.deferred ?? 0;
+  const unconverged = failures.filter((failure) => !failure.restartRequired);
+  const parts: string[] = [];
+  if (deferred > 0) {
+    parts.push(`${deferred} session(s) will restart with the new MCP config at their next turn.`);
+  }
+  if (unconverged.length > 0) {
+    const details = unconverged
+      .flatMap((failure) => failure.errors)
+      .slice(0, 3)
+      .map((error) => (error.server ? `${error.server}: ${error.message}` : error.message));
+    parts.push(
+      `${unconverged.length} session(s) did not fully apply the MCP config${
+        details.length > 0 ? ` (${details.join("; ")})` : ""
+      }.`,
+    );
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 function normalizeServerName(name: string): string | undefined {
@@ -1437,7 +1460,9 @@ export function McpServersSettings(props: {
                     ? { projectId: selectedProject.id }
                     : {}),
                 })
-                .then(async () => {
+                .then(async (result) => {
+                  const notice = describeMcpApplyProblems(result);
+                  if (notice) setProjectActionError(notice);
                   await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
                 })
                 .catch((error) => {

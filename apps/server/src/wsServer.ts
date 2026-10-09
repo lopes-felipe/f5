@@ -61,6 +61,7 @@ import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
   USAGE_WS_METHODS,
+  ELICITATION_WS_METHODS,
   CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -141,6 +142,7 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { submitElicitation } from "./orchestration/elicitationSubmission";
 import { ProjectionWorkspaceQuery } from "./orchestration/Services/ProjectionWorkspaceQuery";
 import {
   ThreadBackgroundWork,
@@ -856,6 +858,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
+  const elicitationSubmissionsInFlight = new Set<string>();
   const providerRegistry = yield* ProviderRegistry;
   const providerInstanceRegistry = yield* ProviderInstanceRegistry;
   const providerUpdateAdvisor = yield* ProviderUpdateAdvisor;
@@ -2960,6 +2963,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               () => new RouteRequestError({ message: "Unable to load account usage." }),
             ),
           );
+      }
+
+      case ELICITATION_WS_METHODS.submit: {
+        // The connection is authenticated at upgrade; the submission itself
+        // authorizes against the thread's open request, its generation and
+        // receipt state. Values are never logged, traced or persisted.
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* submitElicitation(
+          { orchestrationEngine, providerService, inFlight: elicitationSubmissionsInFlight },
+          stripRequestTag(request.body),
+        ).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
 
       case USAGE_WS_METHODS.getSummary: {

@@ -352,3 +352,77 @@ installs, removes or edits these.
 Their decoded fields, plus the new `model/list` and `skills/list` fields, are certified
 against 0.160.1 (66 fields). The fixture was refreshed for the three new response
 schemas.
+
+## Release 3: MCP, elicitation, questions and approvals
+
+### Command approvals
+
+F5 reads `availableDecisions` and `proposedExecpolicyAmendment` from
+`item/commandExecution/requestApproval`. When an amendment is offered, the prompt shows
+**Always allow `<prefix>`** with a warning that it applies to future commands that start
+the same way. The choice is sent as `acceptWithExecpolicyAmendment` with the stored
+prefix, and only when that request offered it. A decision the request did not offer is
+refused. If the list holds no refusal F5 recognizes, **Decline** and **Cancel turn** are
+offered anyway, so a request can always be refused. Network amendments are not
+supported.
+
+### Non-blocking questions
+
+`request_user_input` with `isBlocking: false` stays visible after the turn ends. It does
+not hold the composer, the attended watchdog, restart continuation or usage-limit
+resume. It is dropped when the session ends.
+
+### MCP elicitation
+
+Form and URL requests from `mcpServer/elicitation/request` open a form in the composer.
+Answers go through the private `elicitation.submit` RPC described in
+[claude.md](./claude.md#mcp-elicitation), never through the event-sourced answer
+command. `serverRequest/resolved` and `turn/completed` settle the request: **resolved**
+for an accepted answer, **cancelled** for a decline or cancel. A request opened outside a
+turn stays pending until it is answered or the session stops. Stopping the session marks
+an answered but unconfirmed request as indeterminate. Unattended read-only workflow
+stages cancel form requests, for Codex and ACP providers alike. ACP providers (Grok,
+Antigravity) answer in-process, so their forms settle as soon as the answer is delivered,
+as Claude's do.
+
+Codex also uses `mcpServer/elicitation/request` to ask before an MCP tool call. Those
+requests have an empty schema and `_meta.codex_approval_kind` (for example
+`mcp_tool_call`). They go to the approval UI with **Approve once**, **Always allow this
+session** and **Always allow**, as advertised in `_meta.persist`, not to the private
+form path.
+
+Live check, codex-cli 0.160.1, 2026-10-09, in approval-required mode: the tool-call
+consent arrived as an approval. The tool's form then arrived through the private path,
+with only the value-free descriptor in F5's events. The answer was delivered,
+`serverRequest/resolved` produced a **resolved** receipt, and the tool received the
+values. In full-access mode, Codex declines elicitations itself and never sends them
+to F5, so MCP forms only appear in modes that ask for approval.
+
+The OpenAI form extension (`mcpServerOpenaiFormElicitation`) is still not advertised,
+because no live `openai/form` request has been exercised. codex-cli 0.147.0 could not
+be checked live: this account's current models all require a newer CLI.
+
+### MCP reload
+
+Every app-server is launched with F5's MCP servers pinned by `-c mcp_servers=...`, so
+`config/mcpServer/reload` cannot change that set. When the stored config differs from
+the set the session launched with, the reload reports **restart required**. The
+session's config version stays stale, so the session restarts at its next turn with the
+resume cursor kept. A running turn is never interrupted. Otherwise F5 reloads and reads
+`mcpServerStatus/list`. 0.160.1 lists servers without `startupStatus`, so a server that
+reports tools counts as connected. Failures are retried up to three times with backoff
+(0.5 s, 1.5 s, 4 s), then shown as a thread warning and under
+**Apply to live sessions**. The config version advances once the reload reached the
+session, even if a server still fails, since restarting would not fix it; the session is
+marked unconverged instead. **Apply** reloads sessions whose version is out of date or
+whose last reload did not converge, four at a time, so clicking it again after fixing a
+server retries it.
+
+After an MCP login, F5 reloads the project's sessions with its own retries (no per-session
+backoff). Each retry reloads only the sessions that still failed, and their warning is
+posted after the last attempt. A session that needs a restart is not a failed reload: its
+warning is posted at once, it restarts at its next turn, and the login reports success.
+
+Wire protocol 18 adds elicitation descriptors and receipts, the `elicitation.submit`
+RPC, approval presentation fields, non-blocking questions and the structured MCP apply
+result. Clients and servers must both run Release 3.

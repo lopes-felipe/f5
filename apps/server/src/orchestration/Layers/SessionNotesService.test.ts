@@ -173,6 +173,7 @@ async function createHarness(input: {
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
+    respondToElicitation: () => unsupported(),
     stopSession: () => Effect.void,
     listSessions: () => Effect.succeed([]),
     getSessionCapabilities: () => Effect.succeed(null),

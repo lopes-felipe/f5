@@ -20,7 +20,8 @@ export const RUNTIME_MODE_PRESENTATION: Readonly<Record<RuntimeMode, RuntimeMode
   },
   auto: {
     label: "Auto",
-    description: "An AI reviewer approves routine actions; risky ones still ask.",
+    description:
+      "The provider's AI reviewer decides approvals, not F5; it can approve risky commands without asking.",
     icon: SparklesIcon,
   },
   "full-access": {

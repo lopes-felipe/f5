@@ -543,6 +543,10 @@ export function ChatComposer({
                 requestId={activePendingApproval.requestId}
                 requestKind={activePendingApproval.requestKind}
                 approvalOptions={activePendingApproval.approvalOptions}
+                defaultToNo={activePendingApproval.presentation?.defaultToNo}
+                suppressAlwaysAllowRule={
+                  activePendingApproval.presentation?.suppressAlwaysAllowRule
+                }
                 canApprove={
                   activePendingApproval.requestKind !== "permission" ||
                   activePendingApproval.requestedPermissions !== undefined

@@ -1,6 +1,11 @@
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
 import { AntigravityTasks } from "../acp/AntigravityTasks.ts";
-import { acpElicitationForm } from "../acp/AcpElicitationForm.ts";
+import {
+  acpElicitationDescriptor,
+  acpElicitationResponse,
+  type AcpElicitationResponse,
+} from "../acp/AcpElicitationForm.ts";
+import { ElicitationRegistry, type ElicitationTerminalReceipt } from "../elicitationRegistry.ts";
 import {
   antigravityApprovalOptions,
   antigravityQuestion,
@@ -222,6 +227,47 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
 
     const sessions = new Map<ThreadId, GrokSessionContext>();
     const startupPendingUserInputs = new Map<ThreadId, Map<ApprovalRequestId, PendingUserInput>>();
+    /** Private ACP form/URL requests, keyed by thread so startup requests are covered. */
+    const elicitationsByThread = new Map<ThreadId, ElicitationRegistry>();
+    const elicitationsFor = (threadId: ThreadId) => {
+      let registry = elicitationsByThread.get(threadId);
+      if (!registry) {
+        registry = new ElicitationRegistry();
+        elicitationsByThread.set(threadId, registry);
+      }
+      return registry;
+    };
+    const emitElicitationReceipt = (
+      threadId: ThreadId,
+      requestId: ApprovalRequestId,
+      receipt: ElicitationTerminalReceipt,
+    ) =>
+      Effect.gen(function* () {
+        yield* offerRuntimeEvent({
+          type: "user-input.resolved",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId,
+          turnId: sessions.get(threadId)?.activeTurnId,
+          requestId: RuntimeRequestId.make(requestId),
+          payload: { answers: {}, receipt },
+        });
+      });
+    const settleElicitationsForTurn = (threadId: ThreadId, turnId: TurnId) =>
+      Effect.gen(function* () {
+        const registry = elicitationsByThread.get(threadId);
+        for (const requestId of registry?.forTurn(turnId) ?? []) {
+          const receipt = registry?.settle(requestId, "completed");
+          if (receipt) yield* emitElicitationReceipt(threadId, requestId, receipt);
+        }
+      });
+    const abortElicitations = (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const registry = elicitationsByThread.get(threadId);
+        elicitationsByThread.delete(threadId);
+        for (const { requestId, receipt } of registry?.abortAll() ?? [])
+          yield* emitElicitationReceipt(threadId, requestId, receipt);
+      });
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -365,6 +411,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         sessions.delete(ctx.threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
+        yield* abortElicitations(ctx.threadId);
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
@@ -550,38 +597,60 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       (!live || live.stopped || live.pendingUserInputs !== pendingUserInputs)
                     )
                       return { action: { action: "cancel" as const } };
-                    const form = acpElicitationForm(params);
-                    if (!form) return { action: { action: "cancel" as const } };
+                    const cancelled = { action: { action: "cancel" as const } };
+                    const descriptor = acpElicitationDescriptor(params);
+                    if (!descriptor.ok) {
+                      yield* offerRuntimeEvent({
+                        type: "runtime.warning",
+                        ...(yield* makeEventStamp()),
+                        provider: PROVIDER,
+                        threadId: input.threadId,
+                        turnId: sessions.get(input.threadId)?.activeTurnId,
+                        payload: {
+                          message: `${providerLabel} asked for input F5 cannot show completely (${descriptor.reason}); it was cancelled without submitting data.`,
+                        },
+                      });
+                      return cancelled;
+                    }
+                    // Answers travel only through the private elicitation path.
                     const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
-                    const resolution = yield* Deferred.make<PendingUserInputResolution>();
-                    pendingUserInputs.set(requestId, {
-                      resolution,
-                      validate: (answers) => form.respond(answers) !== undefined,
+                    const answer = yield* Deferred.make<AcpElicitationResponse>();
+                    const release = (response: AcpElicitationResponse) => {
+                      Effect.runSync(Deferred.succeed(answer, response));
+                    };
+                    const turnId = sessions.get(input.threadId)?.activeTurnId;
+                    elicitationsFor(input.threadId).open({
+                      requestId,
+                      descriptor: descriptor.value,
+                      turnId,
+                      deliver: async (response) => release(acpElicitationResponse(response)),
+                      abort: () => release(cancelled),
+                      // Releasing the deferred is the ACP callback's response.
+                      completesOnDelivery: true,
                     });
                     yield* offerRuntimeEvent({
                       type: "user-input.requested",
                       ...(yield* makeEventStamp()),
                       provider: PROVIDER,
                       threadId: input.threadId,
-                      turnId: sessions.get(input.threadId)?.activeTurnId,
+                      turnId,
                       requestId: RuntimeRequestId.make(requestId),
-                      payload: { questions: form.questions },
+                      payload: { questions: [], elicitation: descriptor.value },
                     });
-                    const answer = yield* Deferred.await(resolution);
-                    pendingUserInputs.delete(requestId);
-                    const answers = answer._tag === "answered" ? answer.answers : {};
-                    yield* offerRuntimeEvent({
-                      type: "user-input.resolved",
-                      ...(yield* makeEventStamp()),
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      turnId: sessions.get(input.threadId)?.activeTurnId,
-                      requestId: RuntimeRequestId.make(requestId),
-                      payload: { answers },
-                    });
-                    return form.respond(answers) ?? { action: { action: "cancel" as const } };
+                    return yield* Deferred.await(answer);
                   }),
                 ),
+              );
+            if (PROVIDER === "antigravity")
+              yield* acp.handleElicitationComplete((notification) =>
+                Effect.gen(function* () {
+                  // Correlated native completion of a URL request.
+                  const registry = elicitationsByThread.get(input.threadId);
+                  const requestId = registry?.findByNativeId(notification.elicitationId);
+                  const receipt = requestId ? registry?.settle(requestId, "completed") : undefined;
+                  if (requestId && receipt)
+                    yield* emitElicitationReceipt(input.threadId, requestId, receipt);
+                }),
               );
             yield* acp.handleRequestPermission((params) =>
               mapAcpCallbackFailure(
@@ -1162,6 +1231,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     threadId: ctx.threadId,
                     turnId: prepared.turnId,
                   } as ProviderRuntimeEvent);
+                yield* settleElicitationsForTurn(input.threadId, prepared.turnId);
                 yield* offerRuntimeEvent({
                   type: "turn.completed",
                   ...(yield* makeEventStamp()),
@@ -1229,6 +1299,34 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
         }
         yield* Deferred.succeed(pending.decision, decision);
+      });
+
+    const respondToElicitation: NonNullable<GrokAdapterShape["respondToElicitation"]> = (
+      threadId,
+      requestId,
+      response,
+    ) =>
+      Effect.gen(function* () {
+        const registry = elicitationsByThread.get(threadId);
+        if (!registry?.has(requestId))
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session/elicitation",
+            detail: `Unknown pending elicitation request: ${requestId}`,
+          });
+        const submitted = yield* Effect.tryPromise({
+          try: () => registry.submit(requestId, response),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "session/elicitation",
+              detail: cause instanceof Error ? cause.message : "The answer could not be delivered.",
+            }),
+        });
+        // The callback's response is the completion; a startup form has no turn end.
+        const receipt = registry.settleIfDelivered(requestId);
+        if (receipt) yield* emitElicitationReceipt(threadId, requestId, receipt);
+        return submitted;
       });
 
     const respondToUserInput: GrokAdapterShape["respondToUserInput"] = (
@@ -1323,6 +1421,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       rollbackThread,
       respondToRequest,
       respondToUserInput,
+      respondToElicitation,
       stopSession,
       listSessions,
       hasSession,

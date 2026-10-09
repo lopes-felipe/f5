@@ -220,6 +220,7 @@ const defaultProviderService: ProviderServiceShape = {
   interruptTurn: () => unsupportedProviderCall(),
   respondToRequest: () => unsupportedProviderCall(),
   respondToUserInput: () => unsupportedProviderCall(),
+  respondToElicitation: () => unsupportedProviderCall(),
   stopSession: () => unsupportedProviderCall(),
   listSessions: () => Effect.succeed([]),
   getSessionCapabilities: () => Effect.succeed(null),
@@ -229,7 +230,7 @@ const defaultProviderService: ProviderServiceShape = {
   rollbackConversation: () => unsupportedProviderCall(),
   runOneOffPrompt: () => unsupportedProviderCall(),
   compactConversation: () => unsupportedProviderCall(),
-  reloadMcpConfigForProject: () => Effect.void,
+  reloadMcpConfigForProject: () => Effect.succeed({ sessions: [] }),
   streamEvents: Stream.empty,
 };
 
@@ -4210,6 +4211,7 @@ describe("WebSocket Server", () => {
       interruptTurn: () => unsupported(),
       respondToRequest: () => unsupported(),
       respondToUserInput: () => unsupported(),
+      respondToElicitation: () => unsupported(),
       stopSession: () => unsupported(),
       listSessions: () => Effect.succeed([]),
       getSessionCapabilities: () => Effect.succeed(null),

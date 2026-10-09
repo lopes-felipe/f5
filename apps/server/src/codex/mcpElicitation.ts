@@ -92,8 +92,12 @@ export function mcpElicitationResponse(
     }
   }
   if (Object.keys(fields).length === 0) {
+    // Codex 0.160.1 marks consent prompts (e.g. MCP tool calls) with
+    // `_meta.codex_approval_kind`; older ChatGPT app prompts only by wording.
     represented =
-      typeof request?.message === "string" && /^Allow ChatGPT to use .+\?$/i.test(request.message);
+      typeof metadata?.codex_approval_kind === "string" ||
+      (typeof request?.message === "string" &&
+        /^Allow ChatGPT to use .+\?$/i.test(request.message));
     if (decision !== "accept" && !metadataAllows) return reject;
   }
   if (

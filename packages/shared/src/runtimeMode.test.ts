@@ -10,9 +10,11 @@ describe("runtimeModeCapabilities", () => {
       "auto",
       "full-access",
     ]);
+    // Claude `auto` is offered but falls back to asking when unsupported.
     expect([...runtimeModeCapabilities("claudeAgent")]).toEqual([
       "approval-required",
       "auto-accept-edits",
+      "auto",
       "full-access",
     ]);
     expect([...runtimeModeCapabilities("opencode")]).toEqual([

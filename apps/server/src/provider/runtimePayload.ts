@@ -36,6 +36,19 @@ export function readPersistedProviderOptions(
   return config.state === "value" ? config.value : undefined;
 }
 
+/**
+ * Config version whose MCP reload reached the session without converging. The
+ * session keeps that version (a restart would not fix a broken server), but an
+ * explicit Apply retries it.
+ */
+export function readPersistedUnconvergedMcpConfigVersion(
+  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
+): string | undefined {
+  if (!isRecord(runtimePayload)) return undefined;
+  const raw = runtimePayload.mcpUnconvergedConfigVersion;
+  return typeof raw === "string" ? raw : undefined;
+}
+
 export function readPersistedCwd(
   runtimePayload: ProviderRuntimeBinding["runtimePayload"],
 ): string | undefined {

@@ -1,5 +1,6 @@
 import { ServerSettingsService } from "../serverSettings.ts";
 import { CommandId, MessageId, type ThreadId } from "@t3tools/contracts";
+import { holdsAutomaticResume } from "@t3tools/shared/pendingUserInputs";
 import { Effect, Option } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -53,7 +54,7 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
       !thread ||
       thread.archivedAt ||
       thread.session?.activeTurnId ||
-      thread.pendingUserInputs?.length
+      thread.pendingUserInputs?.some(holdsAutomaticResume)
     )
       continue;
     if (yield* hasBlockedWork(thread.id)) continue;
@@ -112,7 +113,7 @@ export const recoverRestartTurnMarkers = Effect.gen(function* () {
           if (
             current.archivedAt ||
             current.session?.activeTurnId ||
-            current.pendingUserInputs?.length ||
+            current.pendingUserInputs?.some(holdsAutomaticResume) ||
             (yield* hasBlockedWork(thread.id))
           )
             return false;

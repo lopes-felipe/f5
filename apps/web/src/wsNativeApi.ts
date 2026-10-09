@@ -3,6 +3,7 @@ import {
   ProjectCloneJob,
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
+  ELICITATION_WS_METHODS,
   USAGE_WS_METHODS,
   type AgentsSnapshot,
   type GitActionProgressEvent,
@@ -742,6 +743,9 @@ export function createWsNativeApi(): NativeApi {
       consumeResetCredit: (input) => transport.request(USAGE_WS_METHODS.consumeResetCredit, input),
       getAccounts: (input) => transport.request(USAGE_WS_METHODS.getAccounts, input),
       getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
+    },
+    elicitation: {
+      submit: (input) => transport.request(ELICITATION_WS_METHODS.submit, input),
     },
     workflowPlatform: {
       listTemplates: () => transport.request(WS_METHODS.workflowPlatformListTemplates),

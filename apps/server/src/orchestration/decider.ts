@@ -1560,6 +1560,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: "This question was already answered or dismissed.",
         });
+      // Form/URL answers must never become event rows; they use the private RPC.
+      if (pending?.elicitation)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Answer this request from its form; its values are delivered privately.",
+        });
       const dismissed = command.type === "thread.user-input.dismiss";
       const answers = dismissed ? {} : command.answers;
       const attachments = dismissed ? [] : (command.attachments ?? []);

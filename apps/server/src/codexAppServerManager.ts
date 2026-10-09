@@ -1,4 +1,15 @@
+import {
+  codexCommandApprovalDecision,
+  readCodexCommandApprovalOffer,
+  type CodexCommandApprovalOffer,
+} from "./codex/commandApprovalOffer.ts";
 import { describeMcpElicitation, mcpElicitationResponse } from "./codex/mcpElicitation.ts";
+import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
+import {
+  ElicitationDeliveryUncertainError,
+  ElicitationRegistry,
+  type ElicitationTerminalReceipt,
+} from "./provider/elicitationRegistry.ts";
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -11,6 +22,7 @@ import {
   type CodexMcpServerEntry,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_RUNTIME_MODE,
+  type ElicitationAction,
   EventId,
   type ModelCapabilities,
   type ProjectMemory,
@@ -92,6 +104,8 @@ interface PendingApprovalRequest {
   requestKind: ProviderRequestKind;
   responseKind: "decision" | "permissions" | "legacy-decision" | "mcp-elicitation";
   elicitation?: unknown;
+  /** Decisions and execpolicy prefix the command request offered; responses must match. */
+  commandOffer?: CodexCommandApprovalOffer;
   requestedPermissions?: Record<string, unknown>;
   threadId: ThreadId;
   turnId?: TurnId;
@@ -103,7 +117,7 @@ interface NativeRequestCorrelation {
   readonly requestId: ApprovalRequestId;
   readonly method: string;
   readonly requestKind?: ProviderRequestKind;
-  readonly responseChannel: "approval" | "user-input";
+  readonly responseChannel: "approval" | "user-input" | "elicitation";
   readonly turnId?: TurnId;
   readonly itemId?: ProviderItemId;
   resolvedLocally: boolean;
@@ -131,6 +145,8 @@ interface CodexSessionContext {
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
   memoryThreadIds?: Set<string>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
+  /** MCP form/URL requests answered privately; optional for hand-built test contexts. */
+  elicitations?: ElicitationRegistry;
   nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
   instructionContext?: Partial<SharedInstructionInput>;
   configuredBase?: Record<string, unknown>;
@@ -281,6 +297,9 @@ export interface CodexThreadSnapshot {
 const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
 const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
 export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
+/** Internal event methods for private MCP form/URL requests (value-free payloads). */
+export const CODEX_ELICITATION_OPENED_METHOD = "f5/elicitation/opened";
+export const CODEX_ELICITATION_SETTLED_METHOD = "f5/elicitation/settled";
 
 export function codexRequestTimeoutMs(method: string): number {
   return method === "thread/start" || method === "thread/resume"
@@ -366,8 +385,12 @@ function codexApprovalResponse(
   pendingRequest: PendingApprovalRequest,
   decision: ProviderApprovalDecision,
 ): Record<string, unknown> {
-  if (decision === "acceptAlways" && pendingRequest.responseKind !== "mcp-elicitation")
-    throw new Error("Persistent approval is only supported for advertised MCP app approvals.");
+  if (
+    decision === "acceptAlways" &&
+    pendingRequest.responseKind !== "mcp-elicitation" &&
+    !pendingRequest.commandOffer?.execpolicyAmendment
+  )
+    throw new Error("Persistent approval is only supported when the provider offered it.");
   switch (pendingRequest.responseKind) {
     case "mcp-elicitation": {
       if (
@@ -379,7 +402,9 @@ function codexApprovalResponse(
       return mcpElicitationResponse(pendingRequest.elicitation, decision);
     }
     case "decision":
-      return { decision };
+      return pendingRequest.commandOffer
+        ? { decision: codexCommandApprovalDecision(pendingRequest.commandOffer, decision) }
+        : { decision };
     case "permissions":
       return codexPermissionApprovalResponse(decision, pendingRequest.requestedPermissions);
     case "legacy-decision":
@@ -816,9 +841,11 @@ export function buildCodexInitializeParams() {
       experimentalApi: true,
       requestAttestation: false,
       // Legacy opt-in, still accepted by 0.160.1. Its replacement is declaring
-      // `openai/form` in `capabilities.extensions`; switch once the private
-      // elicitation answer path (Release 3) passes end-to-end and the supported
-      // minimum is past 0.147. Until then F5 must not advertise form support.
+      // `openai/form` in `capabilities.extensions`. Standard MCP `form`/`url`
+      // requests already use the private elicitation path (Release 3), which
+      // was verified end-to-end against codex-cli 0.160.1. The OpenAI form
+      // extension stays off: no live `openai/form` request has been exercised,
+      // and the supported minimum is not yet past 0.147.
       mcpServerOpenaiFormElicitation: false,
       // Current servers suppress this high-volume diagnostic. The adapter and
       // UI still accept starts from older servers and persisted worklogs.
@@ -1139,6 +1166,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         pending: new Map(),
         pendingApprovals: new Map(),
         pendingUserInputs: new Map(),
+        elicitations: new ElicitationRegistry(),
         nativeRequestCorrelations: new Map(),
         instructionContext: buildCodexInstructionContext(input, resolvedCwd),
         modelContextWindowCatalog: new Map(),
@@ -2113,9 +2141,160 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
   }
 
-  async reloadMcpConfig(threadId: ThreadId): Promise<void> {
+  /**
+   * Delivers a private MCP form/URL answer. Values go straight to the native
+   * JSON-RPC response; no event, log or correlation keeps them.
+   */
+  async respondToElicitation(
+    threadId: ThreadId,
+    requestId: ApprovalRequestId,
+    response: { readonly action: ElicitationAction; readonly content?: unknown },
+  ): Promise<"submitted"> {
+    const context = this.requireSession(threadId);
+    const registry = context.elicitations;
+    if (!registry?.has(requestId))
+      throw new Error(`Unknown pending elicitation request: ${requestId}`);
+    try {
+      return await registry.submit(requestId, response);
+    } catch (error) {
+      if (error instanceof ElicitationDeliveryUncertainError)
+        this.settleElicitation(context, requestId, "aborted");
+      throw error;
+    }
+  }
+
+  private openElicitation(context: CodexSessionContext, request: JsonRpcRequest): void {
+    const params = asObject(request.params);
+    const mode = asString(params?.mode);
+    const descriptor = buildElicitationDescriptor({
+      mode: mode === "openaiForm" ? "openai/form" : mode,
+      message: params?.message ?? params?.description,
+      serverName: params?.serverName,
+      title: params?.title,
+      nativeId: params?.elicitationId,
+      requestedSchema: params?.requestedSchema,
+      url: params?.url,
+    });
+    const registry = context.elicitations;
+    if (!descriptor.ok || !registry) {
+      this.writeServerRequestResponse(context, {
+        id: request.id,
+        result: { action: "cancel", content: null, _meta: null },
+      });
+      this.emitUnsupportedServerRequestWarning(
+        context,
+        request,
+        `An MCP server asked for input F5 cannot show completely (${
+          descriptor.ok ? "no form support" : descriptor.reason
+        }); it was cancelled without submitting data.`,
+      );
+      return;
+    }
+    const route = this.readRouteFields(request.params);
+    const requestId = ApprovalRequestId.makeUnsafe(randomUUID());
+    registry.open({
+      requestId,
+      descriptor: descriptor.value,
+      turnId: route.turnId,
+      deliver: async (answer) => {
+        try {
+          await this.writeMessage(context, {
+            id: request.id,
+            result: { action: answer.action, content: answer.content ?? null, _meta: null },
+          });
+        } catch {
+          throw new ElicitationDeliveryUncertainError();
+        }
+      },
+    });
+    this.rememberNativeRequestCorrelation(context, {
+      nativeRequestId: String(request.id),
+      requestId,
+      method: request.method,
+      requestKind: "mcp-elicitation",
+      responseChannel: "elicitation",
+      ...(route.turnId ? { turnId: route.turnId } : {}),
+      ...(route.itemId ? { itemId: route.itemId } : {}),
+      resolvedLocally: false,
+    });
+    this.emitEvent({
+      id: EventId.makeUnsafe(randomUUID()),
+      kind: "request",
+      provider: "codex",
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: CODEX_ELICITATION_OPENED_METHOD,
+      turnId: route.turnId,
+      itemId: route.itemId,
+      requestId,
+      requestKind: "mcp-elicitation",
+      payload: { elicitation: descriptor.value },
+    });
+  }
+
+  private settleElicitation(
+    context: CodexSessionContext,
+    requestId: ApprovalRequestId,
+    outcome: "completed" | "aborted",
+  ): void {
+    const receipt = context.elicitations?.settle(requestId, outcome);
+    if (receipt) this.emitElicitationReceipt(context, requestId, receipt);
+  }
+
+  private emitElicitationReceipt(
+    context: CodexSessionContext,
+    requestId: ApprovalRequestId,
+    receipt: ElicitationTerminalReceipt,
+  ): void {
+    this.emitEvent({
+      id: EventId.makeUnsafe(randomUUID()),
+      kind: "notification",
+      provider: "codex",
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: CODEX_ELICITATION_SETTLED_METHOD,
+      requestId,
+      requestKind: "mcp-elicitation",
+      payload: { receipt },
+    });
+  }
+
+  private abortElicitations(context: CodexSessionContext): void {
+    for (const { requestId, receipt } of context.elicitations?.abortAll() ?? [])
+      this.emitElicitationReceipt(context, requestId, receipt);
+  }
+
+  /**
+   * Reloads MCP config and returns the status the session observes
+   * afterwards, or undefined when this Codex build cannot list it.
+   */
+  async reloadMcpConfig(
+    threadId: ThreadId,
+  ): Promise<ReadonlyArray<Record<string, unknown>> | undefined> {
     const context = this.requireSession(threadId);
     await this.sendRequest<Record<string, never>>(context, "config/mcpServer/reload", undefined);
+    try {
+      const statuses: Record<string, unknown>[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page += 1) {
+        const result = asObject(
+          await this.sendRequest<unknown>(context, "mcpServerStatus/list", {
+            limit: 100,
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+        const data = Array.isArray(result?.data) ? result.data : [];
+        for (const entry of data) {
+          const status = asObject(entry);
+          if (status) statuses.push(status);
+        }
+        cursor = asString(result?.nextCursor);
+        if (!cursor) break;
+      }
+      return statuses;
+    } catch {
+      return undefined;
+    }
   }
 
   stopSession(threadId: ThreadId): void {
@@ -2138,6 +2317,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.pending.clear();
     context.pendingApprovals.clear();
     context.pendingUserInputs.clear();
+    this.abortElicitations(context);
     context.nativeRequestCorrelations.clear();
     this.clearInitialSkillsRetry(context);
 
@@ -2236,6 +2416,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (context.stopping) {
         return;
       }
+      this.abortElicitations(context);
 
       const message = `codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
       this.updateSession(context, {
@@ -2319,6 +2500,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         : undefined;
       if (correlation) {
         correlations?.delete(correlation.nativeRequestId);
+        if (correlation.responseChannel === "elicitation") {
+          // The native completion correlated with this request: a submitted
+          // answer is resolved, an unanswered one was cancelled by Codex.
+          this.settleElicitation(context, correlation.requestId, "completed");
+          return;
+        }
         if (correlation.responseChannel === "approval") {
           context.pendingApprovals.delete(correlation.requestId);
         } else {
@@ -2502,6 +2689,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const turn = this.readObject(notification.params, "turn");
       const status = this.readString(turn, "status");
       const errorMessage = this.readString(this.readObject(turn, "error"), "message");
+      // A finished turn has consumed or abandoned its elicitations; older
+      // servers may not acknowledge them with serverRequest/resolved.
+      const completedTurnId = toTurnId(this.readString(turn, "id"));
+      if (completedTurnId)
+        for (const requestId of context.elicitations?.forTurn(completedTurnId) ?? [])
+          this.settleElicitation(context, requestId, "completed");
       this.updateSession(context, {
         status: status === "failed" ? "error" : "ready",
         activeTurnId: undefined,
@@ -2529,12 +2722,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         option.decision.startsWith("accept"),
       )
     ) {
-      this.writeServerRequestResponse(context, { id: request.id, result: { action: "cancel" } });
-      this.emitUnsupportedServerRequestWarning(
-        context,
-        request,
-        "MCP data collection requires a form UI; this unsupported request was cancelled without submitting data.",
-      );
+      this.openElicitation(context, request);
       return;
     }
     const approvalRequest = this.approvalRequestForMethod(request.method);
@@ -2557,6 +2745,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         responseKind: approvalRequest.responseKind,
         ...(approvalRequest.responseKind === "mcp-elicitation"
           ? { elicitation: request.params }
+          : {}),
+        ...(approvalRequest.method === "item/commandExecution/requestApproval"
+          ? { commandOffer: readCodexCommandApprovalOffer(request.params) }
           : {}),
         ...(requestedPermissions !== undefined ? { requestedPermissions } : {}),
         threadId: context.session.threadId,
