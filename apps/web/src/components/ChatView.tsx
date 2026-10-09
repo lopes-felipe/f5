@@ -10,7 +10,7 @@ import { workspaceBasenameMatch } from "../lib/workspaceBasename";
 import { resolveChatAssetTarget } from "../lib/chatAssetTarget";
 import { WorkspaceMediaView } from "./WorkspaceMediaView";
 import { Dialog, DialogPopup, DialogTitle } from "./ui/dialog";
-import type { ProjectIssueAssetUrlInput } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ProjectIssueAssetUrlInput } from "@t3tools/contracts";
 import { partitionDroppedAttachments } from "../lib/droppedAttachments";
 import { composerAttachmentStatus } from "../lib/attachmentValidation";
 import { foldedPasteFile } from "../lib/textPaste";
@@ -100,6 +100,8 @@ import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
+import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
+import { AgentBrowserLiveCard, BrowserCapabilityChip } from "./AgentBrowserLiveCard";
 import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
 import { FileNavigationProvider } from "../fileNavigationContext";
@@ -338,7 +340,8 @@ import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { LowDiskSpaceBanner } from "./chat/LowDiskSpaceBanner";
 import { useDiskSpaceStatus } from "../hooks/useDiskSpaceStatus";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
-import { UsageLimitResumeAction } from "./chat/UsageLimitResumeAction";
+import { UsageLimitNotice } from "./chat/UsageLimitNotice";
+import { resolveUsageLimitNotice } from "./chat/UsageLimitNotice.logic";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
@@ -6644,30 +6647,41 @@ export default function ChatView({
     if (diskSpaceStatus.level === "critical") threadNotices.push(notice);
     else lowDiskSpaceNotice = notice;
   }
-  if (activeThread.error) {
+  const dismissActiveThreadError = () => {
+    dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
+    setThreadError(activeThread.id, null);
+  };
+  const activeUsageLimit =
+    activeThread.error && activeThread.session?.lastError === activeThread.error
+      ? (activeThread.session.usageLimit ?? null)
+      : null;
+  const usageLimitNotice = activeUsageLimit
+    ? resolveUsageLimitNotice(activeUsageLimit, nextTurnQueueState.snapshot)
+    : null;
+  // A sent continue leaves nothing to show; skip the slot instead of stacking an empty row.
+  if (activeThread.error && !usageLimitNotice?.hidden) {
     threadNotices.push({
       id: "thread-error",
-      content: (
+      content: activeUsageLimit ? (
+        <UsageLimitNotice
+          threadId={activeThread.id}
+          limit={activeUsageLimit}
+          providerLabel={
+            activeThread.session
+              ? PROVIDER_DISPLAY_NAMES[activeThread.session.provider]
+              : "Provider"
+          }
+          onDismiss={dismissActiveThreadError}
+        />
+      ) : (
         <ThreadErrorBanner
           error={activeThread.error}
-          action={
-            activeThread.session?.usageLimit &&
-            activeThread.session.lastError === activeThread.error ? (
-              <UsageLimitResumeAction
-                threadId={activeThread.id}
-                limit={activeThread.session.usageLimit}
-              />
-            ) : undefined
-          }
           occurredAt={
             activeThread.session?.lastError === activeThread.error
               ? (activeThread.session.lastErrorOccurredAt ?? null)
               : null
           }
-          onDismiss={() => {
-            dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
-            setThreadError(activeThread.id, null);
-          }}
+          onDismiss={dismissActiveThreadError}
         />
       ),
     });
@@ -6939,6 +6953,20 @@ export default function ChatView({
             entries={providerRuntimeInfoEntries}
           />
         ) : null}
+        {latestConfiguredRuntimeActivity?.agentBrowser ? (
+          <div className="flex justify-end px-3 pt-1">
+            <BrowserCapabilityChip
+              agentBrowser={latestConfiguredRuntimeActivity.agentBrowser}
+              access={{
+                previewEnabled: agentBrowserPolicyFromSettings(projectSettings, undefined)
+                  .previewAutomation,
+                // Only the desktop app can host the preview agents drive.
+                previewHostAvailable: isElectron && Boolean(window.desktopBridge?.preview),
+              }}
+            />
+          </div>
+        ) : null}
+        <AgentBrowserLiveCard threadId={activeThread.id} />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
           {/* Chat column */}
@@ -7082,6 +7110,7 @@ export default function ChatView({
                           activeProviderStatus?.runtimeCapabilities?.turnSteering === true,
                         )}
                         threadId={activeThread.id}
+                        foldedItemId={usageLimitNotice?.foldedItemId ?? null}
                         provider={selectedProvider}
                         runtimeSlashCommands={composerNativeSlashCommands.commands}
                         projectSkills={activeProject?.skills}

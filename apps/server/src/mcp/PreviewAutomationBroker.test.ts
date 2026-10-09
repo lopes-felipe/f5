@@ -3,7 +3,11 @@ import { ThreadId, type PreviewAutomationRequest } from "@t3tools/contracts";
 import { Effect, Exit, Option } from "effect";
 import { afterEach, vi } from "vitest";
 
-import { makePreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
+import { DISABLED_AGENT_BROWSER_POLICY } from "./browserAccess.ts";
+import {
+  makePreviewAutomationBroker,
+  MAX_QUEUED_MUTATIONS_PER_THREAD,
+} from "./PreviewAutomationBroker.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -684,19 +688,37 @@ it.effect("lease expiry fails pending work and drops automation-session tab assi
 
     holdRequests = false;
     yield* register("client-2", "tab-new-active");
+    // The session was bound to the expired owner; it never silently moves.
+    const rebound = yield* Effect.exit(
+      broker.invoke({
+        threadId,
+        automationSessionId: "session-a",
+        operation: "navigate",
+        input: {},
+      }),
+    );
+    assert.equal(rebound._tag, "Failure");
+    yield* broker.invoke({
+      threadId,
+      automationSessionId: "session-a",
+      operation: "open",
+      input: {},
+    });
     yield* broker.invoke({
       threadId,
       automationSessionId: "session-a",
       operation: "navigate",
       input: {},
     });
-    assert.equal(seenTabs.at(-1), "tab-new-active");
+    assert.equal(seenTabs.at(-1), "tab-session");
   }),
 );
 
 it.effect("rejects automation before dispatch when project browser access is disabled", () =>
   Effect.gen(function* () {
-    const broker = makePreviewAutomationBroker(() => Effect.succeed(false));
+    const broker = makePreviewAutomationBroker({
+      resolvePolicy: () => Effect.succeed(DISABLED_AGENT_BROWSER_POLICY),
+    });
     const result = yield* Effect.exit(
       broker.invoke({
         threadId: ThreadId.makeUnsafe("disabled-thread"),
@@ -705,5 +727,399 @@ it.effect("rejects automation before dispatch when project browser access is dis
       }),
     );
     assert.equal(result._tag, "Failure");
+  }),
+);
+
+type Broker = ReturnType<typeof makePreviewAutomationBroker>;
+type HostEvent = Parameters<Parameters<Broker["registerHost"]>[0]["push"]>[0];
+
+function recordingHost(broker: Broker, hostId: string) {
+  const events: HostEvent[] = [];
+  return {
+    events,
+    register: broker.registerHost({
+      hostId,
+      push: (event) => Effect.sync(() => (events.push(event), true)),
+    }),
+  };
+}
+
+/** An owner that answers each request through `answer`, or holds it when that returns undefined. */
+function reportAnsweringOwner(
+  broker: Broker,
+  input: {
+    readonly clientId: string;
+    readonly threadId: ThreadId;
+    readonly hostId?: string;
+    readonly visible?: boolean;
+    readonly answer: (request: PreviewAutomationRequest) => unknown;
+    readonly seen?: PreviewAutomationRequest[];
+  },
+) {
+  return broker.reportOwner(
+    {
+      clientId: input.clientId,
+      threadId: input.threadId,
+      tabId: "tab-1" as never,
+      visible: input.visible ?? true,
+      supportsAutomation: true,
+      capabilities: ["automation", "viewport", "screenshot"],
+      focusedAt: new Date().toISOString(),
+    },
+    {
+      clientId: input.clientId,
+      ...(input.hostId ? { hostId: input.hostId } : {}),
+      send: (request) =>
+        Effect.sync(() => {
+          input.seen?.push(request);
+          const result = input.answer(request);
+          if (result !== undefined) {
+            void Effect.runPromise(
+              broker.respond(
+                {
+                  requestId: request.requestId,
+                  clientId: request.clientId,
+                  connectionId: request.connectionId,
+                  ok: true,
+                  result,
+                },
+                new Set([input.clientId]),
+              ),
+            );
+          }
+          return true;
+        }),
+    },
+  );
+}
+
+it.live("requests an owner from the most recently active desktop host and waits for it", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-auto-open");
+    const otherThread = ThreadId.makeUnsafe("thread-other");
+    const older = recordingHost(broker, "host-old");
+    const newer = recordingHost(broker, "host-new");
+    yield* older.register;
+    yield* newer.register;
+    yield* reportAnsweringOwner(broker, {
+      clientId: "old-owner",
+      threadId: otherThread,
+      hostId: "host-old",
+      answer: () => ({}),
+    });
+    yield* Effect.sleep("5 millis");
+    yield* reportAnsweringOwner(broker, {
+      clientId: "new-owner",
+      threadId: otherThread,
+      hostId: "host-new",
+      answer: () => ({}),
+    });
+
+    const opened = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "open", input: {}, timeoutMs: 5_000 }),
+    );
+    const second = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "open", input: {}, timeoutMs: 5_000 }),
+    );
+    while (newer.events.length === 0) yield* Effect.sleep("1 millis");
+    // Concurrent opens share one request, sent only to the most recent host.
+    assert.equal(newer.events.filter((event) => event.type === "ownerRequested").length, 1);
+    assert.equal(older.events.length, 0);
+
+    yield* reportAnsweringOwner(broker, {
+      clientId: "auto-owner",
+      threadId,
+      hostId: "host-new",
+      answer: (request) => ({ tabId: "tab-auto", operation: request.operation }),
+    });
+    const [first, next] = yield* Effect.promise(() => Promise.all([opened, second]));
+    assert.equal(Exit.isSuccess(first), true);
+    assert.equal(Exit.isSuccess(next), true);
+  }),
+);
+
+it.live("broadcasts owner requests when no host has reported an owner", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-broadcast");
+    const first = recordingHost(broker, "host-a");
+    const second = recordingHost(broker, "host-b");
+    yield* first.register;
+    yield* second.register;
+    const opened = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "open", input: {}, timeoutMs: 50 }),
+    );
+    const result = yield* Effect.promise(() => opened);
+    assert.equal(first.events[0]?.type, "ownerRequested");
+    assert.equal(second.events[0]?.type, "ownerRequested");
+    // Nobody answered within the request's own budget.
+    assert.equal(result._tag, "Failure");
+  }),
+);
+
+it.effect("status never waits for or requests an owner", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    const result = yield* Effect.exit(
+      broker.invoke({ threadId: ThreadId.makeUnsafe("t"), operation: "status", input: {} }),
+    );
+    assert.equal(result._tag, "Failure");
+    assert.equal(host.events.length, 0);
+  }),
+);
+
+it.live("a renderer can reject an owner request with capacity-exceeded", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-full");
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    const opened = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "open", input: {}, timeoutMs: 5_000 }),
+    );
+    while (host.events.length === 0) yield* Effect.sleep("1 millis");
+    const request = host.events[0];
+    assert.equal(request?.type, "ownerRequested");
+    yield* broker.respond(
+      {
+        requestId: request?.type === "ownerRequested" ? request.requestId : "",
+        ok: false,
+        error: { _tag: "PreviewAutomationCapacityExceededError", message: "full" },
+      },
+      new Set(),
+      "host-a",
+    );
+    const result = yield* Effect.promise(() => opened);
+    assert.equal(
+      Exit.isFailure(result) && JSON.stringify(result.cause).includes("CapacityExceeded"),
+      true,
+    );
+  }),
+);
+
+it.effect("binds an automation session to its first owner", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-bound");
+    const firstSeen: PreviewAutomationRequest[] = [];
+    const secondSeen: PreviewAutomationRequest[] = [];
+    yield* reportAnsweringOwner(broker, {
+      clientId: "window-1",
+      threadId,
+      visible: false,
+      answer: () => ({}),
+      seen: firstSeen,
+    });
+    yield* broker.invoke({ threadId, automationSessionId: "s", operation: "open", input: {} });
+    // A second, visible window for the same thread does not take over.
+    yield* reportAnsweringOwner(broker, {
+      clientId: "window-2",
+      threadId,
+      visible: true,
+      answer: () => ({}),
+      seen: secondSeen,
+    });
+    yield* broker.invoke({ threadId, automationSessionId: "s", operation: "click", input: {} });
+    assert.equal(firstSeen.length, 2);
+    assert.equal(secondSeen.length, 0);
+    // Unbound callers still prefer the visible owner.
+    yield* broker.invoke({ threadId, operation: "status", input: {} });
+    assert.equal(secondSeen.length, 1);
+  }),
+);
+
+it.live("serializes mutating operations per thread and rejects overflow as busy", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-queue");
+    const seen: PreviewAutomationRequest[] = [];
+    yield* reportAnsweringOwner(broker, {
+      clientId: "owner",
+      threadId,
+      answer: () => undefined,
+      seen,
+    });
+    const running = Array.from({ length: 1 + MAX_QUEUED_MUTATIONS_PER_THREAD }, () =>
+      Effect.runPromiseExit(
+        broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 }),
+      ),
+    );
+    while (seen.length === 0) yield* Effect.sleep("1 millis");
+    yield* Effect.sleep("5 millis");
+    // Only the first click reached the host; the rest wait in FIFO order.
+    assert.equal(seen.length, 1);
+    const overflow = yield* Effect.exit(
+      broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 }),
+    );
+    assert.equal(JSON.stringify(overflow).includes("PreviewAutomationBusyError"), true);
+    // Observing is never queued behind mutations.
+    const status = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "status", input: {} }),
+    );
+    while (seen.length < 2) yield* Effect.sleep("1 millis");
+    assert.equal(seen[1]?.operation, "status");
+
+    // Pausing fails everything queued; the in-flight request is the renderer's to cancel.
+    yield* broker.setPaused(threadId, true);
+    const queued = yield* Effect.promise(() => Promise.all(running.slice(1)));
+    assert.equal(
+      queued.every(
+        (exit) => Exit.isFailure(exit) && JSON.stringify(exit.cause).includes("ControlInterrupted"),
+      ),
+      true,
+    );
+    void status;
+  }),
+);
+
+it.live("pause blocks open and mutations but allows observation", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-paused");
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    yield* reportAnsweringOwner(broker, {
+      clientId: "owner",
+      threadId,
+      answer: () => ({ available: true }),
+    });
+    yield* broker.setPaused(threadId, true);
+    assert.deepEqual(host.events, [{ type: "pauseChanged", threadId, paused: true }]);
+    for (const operation of ["open", "click", "type", "navigate", "evaluate"] as const) {
+      const result = yield* Effect.exit(broker.invoke({ threadId, operation, input: {} }));
+      assert.equal(
+        JSON.stringify(result).includes("PreviewAutomationControlInterruptedError"),
+        true,
+      );
+    }
+    const status = yield* broker.invoke({ threadId, operation: "status", input: {} });
+    assert.deepEqual(status, { available: true, paused: true, reason: "paused" });
+    yield* broker.invoke({ threadId, operation: "snapshot", input: {} });
+    yield* broker.invoke({ threadId, operation: "screenshot", input: {} });
+    yield* broker.setPaused(threadId, false);
+    yield* broker.invoke({ threadId, operation: "click", input: {} });
+  }),
+);
+
+it.effect("releaseThread drops bindings and tells hosts to unpin", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-release");
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    yield* reportAnsweringOwner(broker, { clientId: "owner", threadId, answer: () => ({}) });
+    yield* broker.invoke({ threadId, automationSessionId: "s", operation: "open", input: {} });
+    yield* broker.releaseThread(threadId);
+    assert.deepEqual(host.events.at(-1), { type: "ownerReleased", threadId });
+  }),
+);
+
+it.live("shutdown rejects owner waiters", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    const opened = Effect.runPromiseExit(
+      broker.invoke({
+        threadId: ThreadId.makeUnsafe("thread-shutdown"),
+        operation: "open",
+        input: {},
+        timeoutMs: 5_000,
+      }),
+    );
+    while (host.events.length === 0) yield* Effect.sleep("1 millis");
+    yield* broker.shutdown;
+    const result = yield* Effect.promise(() => opened);
+    assert.equal(result._tag, "Failure");
+  }),
+);
+
+it.live("expires a queued mutation at its deadline without dispatching it", () =>
+  Effect.gen(function* () {
+    const broker = makePreviewAutomationBroker();
+    const threadId = ThreadId.makeUnsafe("thread-expiry");
+    const seen: PreviewAutomationRequest[] = [];
+    yield* reportAnsweringOwner(broker, {
+      clientId: "owner",
+      threadId,
+      answer: () => undefined,
+      seen,
+    });
+    void Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 }),
+    );
+    while (seen.length === 0) yield* Effect.sleep("1 millis");
+    const queued = yield* Effect.exit(
+      broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 30 }),
+    );
+    assert.equal(Exit.isFailure(queued) && JSON.stringify(queued.cause).includes("not run"), true);
+    yield* Effect.sleep("20 millis");
+    assert.equal(seen.length, 1);
+  }),
+);
+
+it.live("re-checks live policy before running a mutation that waited its turn", () =>
+  Effect.gen(function* () {
+    let enabled = true;
+    const broker = makePreviewAutomationBroker({
+      resolvePolicy: () =>
+        Effect.succeed({ ...DISABLED_AGENT_BROWSER_POLICY, previewAutomation: enabled }),
+    });
+    const threadId = ThreadId.makeUnsafe("thread-queue-revoked");
+    const seen: PreviewAutomationRequest[] = [];
+    yield* reportAnsweringOwner(broker, {
+      clientId: "owner",
+      threadId,
+      answer: () => undefined,
+      seen,
+    });
+    const first = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 }),
+    );
+    while (seen.length === 0) yield* Effect.sleep("1 millis");
+    const second = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "click", input: {}, timeoutMs: 5_000 }),
+    );
+    yield* Effect.sleep("5 millis");
+    enabled = false;
+    const request = seen[0]!;
+    yield* broker.respond(
+      {
+        requestId: request.requestId,
+        clientId: request.clientId,
+        connectionId: request.connectionId,
+        ok: true,
+        result: {},
+      },
+      new Set(["owner"]),
+    );
+    assert.equal(Exit.isSuccess(yield* Effect.promise(() => first)), true);
+    const result = yield* Effect.promise(() => second);
+    assert.equal(Exit.isFailure(result) && JSON.stringify(result.cause).includes("disabled"), true);
+    assert.equal(seen.length, 1);
+  }),
+);
+
+it.live("re-checks live policy after waiting for an owner", () =>
+  Effect.gen(function* () {
+    let enabled = true;
+    const broker = makePreviewAutomationBroker({
+      resolvePolicy: () =>
+        Effect.succeed({ ...DISABLED_AGENT_BROWSER_POLICY, previewAutomation: enabled }),
+    });
+    const threadId = ThreadId.makeUnsafe("thread-revoked");
+    const host = recordingHost(broker, "host-a");
+    yield* host.register;
+    const opened = Effect.runPromiseExit(
+      broker.invoke({ threadId, operation: "open", input: {}, timeoutMs: 5_000 }),
+    );
+    while (host.events.length === 0) yield* Effect.sleep("1 millis");
+    enabled = false;
+    yield* reportAnsweringOwner(broker, { clientId: "owner", threadId, answer: () => ({}) });
+    const result = yield* Effect.promise(() => opened);
+    assert.equal(Exit.isFailure(result) && JSON.stringify(result.cause).includes("disabled"), true);
   }),
 );

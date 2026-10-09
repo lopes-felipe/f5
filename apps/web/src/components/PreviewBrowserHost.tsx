@@ -5,6 +5,7 @@ import {
   lazy,
   useCallback,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,10 +13,15 @@ import {
   type ReactNode,
 } from "react";
 
+import { ensureNativeApi } from "../nativeApi";
+import { useRightPanelStore } from "../rightPanelStore";
 import { DiffPanelLoadingState } from "./DiffPanelShell";
 import {
   clearPreviewProjection,
+  ensureHeadlessPreviewEntry,
+  PINNED_PREVIEW_IDLE_MS,
   projectPreviewEntry,
+  unpinPreviewEntry,
   type PreviewProjectionEntry,
 } from "./PreviewBrowserHost.logic";
 
@@ -80,39 +86,127 @@ function useProjectionBounds(target: HTMLDivElement | null) {
   return bounds;
 }
 
-function PersistentPreviewInstance({ entry }: { entry: PreviewProjectionEntry }) {
+function PersistentPreviewInstance({
+  entry,
+  onUnpin,
+}: {
+  entry: PreviewProjectionEntry;
+  onUnpin: (threadId: ThreadId) => void;
+}) {
   const bounds = useProjectionBounds(entry.target);
   const projected = entry.visible && entry.target !== null;
+  const { onClose: closeEntry, threadId, pinned } = entry;
+  // Closing the preview is the user's explicit release of an agent-pinned slot.
+  const onClose = useMemo(
+    () =>
+      pinned
+        ? () => {
+            onUnpin(threadId);
+            closeEntry();
+          }
+        : closeEntry,
+    [closeEntry, onUnpin, pinned, threadId],
+  );
 
   return (
     <div
       aria-hidden={!projected}
       inert={!projected}
-      className="fixed z-50 flex min-h-0 flex-col overflow-hidden bg-background"
+      className="fixed flex min-h-0 flex-col overflow-hidden bg-background"
+      // A hidden instance stays inside the viewport, transparent and behind the app:
+      // Chromium produces no frames for an off-screen guest, so agent screenshots would hang.
       style={{
-        left: projected ? bounds.left : -100_000,
+        left: projected ? bounds.left : 0,
         top: projected ? bounds.top : 0,
         width: bounds.width,
         height: bounds.height,
+        zIndex: projected ? 50 : -1,
         opacity: projected ? 1 : 0,
         pointerEvents: projected ? "auto" : "none",
       }}
     >
       <Suspense fallback={<DiffPanelLoadingState label="Loading preview..." />}>
-        <PreviewPanel threadId={entry.threadId} visible={projected} onClose={entry.onClose} />
+        <PreviewPanel threadId={entry.threadId} visible={projected} onClose={onClose} />
       </Suspense>
     </div>
   );
 }
 
+const SEEN_OWNER_REQUEST_LIMIT = 200;
+
 export function PreviewBrowserHost(props: { readonly children: ReactNode }) {
   const [entries, setEntries] = useState<ReadonlyMap<ThreadId, PreviewProjectionEntry>>(
     () => new Map(),
   );
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const pinnedActivityRef = useRef(new Map<ThreadId, number>());
 
   const project = useCallback((entry: PreviewProjectionEntry) => {
     setEntries((current) => projectPreviewEntry(current, entry));
   }, []);
+
+  const unpin = useCallback((threadId: ThreadId) => {
+    pinnedActivityRef.current.delete(threadId);
+    setEntries((current) => unpinPreviewEntry(current, threadId));
+  }, []);
+
+  // The server asks this window to host automation for a thread whose preview is not open.
+  useEffect(() => {
+    if (!window.desktopBridge?.preview?.automation) return;
+    const api = ensureNativeApi();
+    const seenRequestIds = new Set<string>();
+    const unsubscribeRequested = api.preview.automation.onOwnerRequested((request) => {
+      if (seenRequestIds.has(request.requestId)) return;
+      seenRequestIds.add(request.requestId);
+      if (seenRequestIds.size > SEEN_OWNER_REQUEST_LIMIT) {
+        seenRequestIds.delete(seenRequestIds.values().next().value!);
+      }
+      const result = ensureHeadlessPreviewEntry(entriesRef.current, request.threadId, () =>
+        unpin(request.threadId),
+      );
+      if (!result.ok) {
+        void api.preview.automation
+          .respond({
+            requestId: request.requestId,
+            ok: false,
+            error: {
+              _tag: "PreviewAutomationCapacityExceededError",
+              message:
+                "Every agent browser slot is in use by other threads. Close one of their previews or wait for those agents to finish.",
+            },
+          })
+          .catch(() => undefined);
+        return;
+      }
+      pinnedActivityRef.current.set(request.threadId, Date.now());
+      entriesRef.current = result.entries;
+      setEntries(result.entries);
+      // Show the tab without opening the panel or stealing focus.
+      useRightPanelStore.getState().addSurface(request.threadId, "preview");
+    });
+    const unsubscribeReleased = api.preview.automation.onOwnerReleased((event) =>
+      unpin(event.threadId),
+    );
+    // Any agent action keeps its pinned preview alive.
+    const unsubscribeActivity = api.preview.automation.onRequest((request) => {
+      if (pinnedActivityRef.current.has(request.threadId)) {
+        pinnedActivityRef.current.set(request.threadId, Date.now());
+      }
+    });
+    const idleTimer = window.setInterval(() => {
+      const now = Date.now();
+      for (const [threadId, lastActivity] of pinnedActivityRef.current) {
+        if (now - lastActivity >= PINNED_PREVIEW_IDLE_MS) unpin(threadId);
+      }
+    }, 60_000);
+    return () => {
+      unsubscribeRequested();
+      unsubscribeReleased();
+      unsubscribeActivity();
+      window.clearInterval(idleTimer);
+    };
+  }, [unpin]);
 
   const clearProjection = useCallback((threadId: ThreadId, target: HTMLDivElement) => {
     setEntries((current) => clearPreviewProjection(current, threadId, target));
@@ -124,7 +218,7 @@ export function PreviewBrowserHost(props: { readonly children: ReactNode }) {
     <PreviewBrowserHostContext.Provider value={context}>
       {props.children}
       {[...entries.values()].map((entry) => (
-        <PersistentPreviewInstance key={entry.threadId} entry={entry} />
+        <PersistentPreviewInstance key={entry.threadId} entry={entry} onUnpin={unpin} />
       ))}
     </PreviewBrowserHostContext.Provider>
   );

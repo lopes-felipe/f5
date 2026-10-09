@@ -1,4 +1,5 @@
 import type { ThreadId } from "./baseSchemas";
+import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type { PullRequestKey } from "./prHub";
 import type {
   ForgeAccount,
@@ -173,6 +174,11 @@ import type {
   PreviewAutomationResponse,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
+  PreviewAutomationActionGeometry,
+  PreviewAutomationOwnerReleased,
+  PreviewAutomationOwnerRequested,
+  PreviewAutomationPauseChanged,
+  PreviewAutomationSetPausedInput,
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
@@ -486,6 +492,8 @@ export type QuitShortcutHintEvent =
   | { state: "down"; mode: Exclude<QuitShortcutMode, "direct"> };
 
 export interface DesktopBridge {
+  /** F5-native computer control; reports why it is unavailable until certified. */
+  computerAutomation?: DesktopComputerAutomationBridge;
   setQuitShortcutMode?: (mode: QuitShortcutMode) => Promise<void>;
   onQuitShortcut?: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
   setAttentionBadge?: (count: number) => Promise<void>;
@@ -549,7 +557,8 @@ export interface DesktopPreviewBridge {
   ) => Promise<DesktopPreviewWebviewConfig | void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
-  navigate: (tabId: string, url: string) => Promise<void>;
+  /** `agent: true` keeps agent provenance on the navigation's redirects (see agent-browser.md). */
+  navigate: (tabId: string, url: string, options?: { readonly agent?: boolean }) => Promise<void>;
   goBack: (tabId: string) => Promise<void>;
   goForward: (tabId: string) => Promise<void>;
   refresh: (tabId: string) => Promise<void>;
@@ -572,12 +581,24 @@ export interface DesktopPreviewBridge {
   automation?: {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
     snapshot: (tabId: string, save?: boolean) => Promise<PreviewAutomationSnapshot>;
-    click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
-    type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
+    click: (
+      tabId: string,
+      input: PreviewAutomationClickInput,
+    ) => Promise<PreviewAutomationActionGeometry | void>;
+    type: (
+      tabId: string,
+      input: PreviewAutomationTypeInput,
+    ) => Promise<PreviewAutomationActionGeometry | void>;
     press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
     scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
     evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
     waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;
+    /** Interrupts the running and queued agent actions on the tab (user take-over). */
+    cancel?: (tabId: string) => Promise<void>;
+    /** External sites this tab may load besides loopback; malformed lists are rejected. */
+    setNavigationPolicy?: (tabId: string, externalHosts: ReadonlyArray<string>) => Promise<boolean>;
+    /** Small JPEG data URL for the live agent card, or null when unavailable. */
+    captureThumbnail?: (tabId: string) => Promise<string | null>;
   };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
 }
@@ -646,6 +667,17 @@ export interface NativeApi {
       reportOwner: (owner: PreviewAutomationOwner) => Promise<PreviewAutomationRegistration>;
       clearOwner: (input: PreviewAutomationClearOwnerInput) => Promise<void>;
       onRequest: (callback: (request: PreviewAutomationRequest) => void) => () => void;
+      /** User take-over: pausing fails running and queued agent actions for the thread. */
+      setPaused: (input: PreviewAutomationSetPausedInput) => Promise<void>;
+      onOwnerRequested: (
+        callback: (request: PreviewAutomationOwnerRequested) => void,
+      ) => () => void;
+      onOwnerReleased: (callback: (event: PreviewAutomationOwnerReleased) => void) => () => void;
+      onPauseChanged: (callback: (event: PreviewAutomationPauseChanged) => void) => () => void;
+      /** Which thread controls this computer (computer use); null when none. */
+      onComputerUseChanged: (
+        callback: (event: { readonly threadId: ThreadId | null }) => void,
+      ) => () => void;
     };
     onEvent: (callback: (event: PreviewEvent) => void) => () => void;
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;

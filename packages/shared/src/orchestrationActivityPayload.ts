@@ -729,6 +729,39 @@ function readMcpToolPayload(payload: UnknownRecord): Partial<CompactToolActivity
   };
 }
 
+const MAX_COMPACT_TOOL_IMAGES = 8;
+
+function readToolImages(
+  payload: UnknownRecord,
+): Pick<CompactToolActivityPayload, "mcpImages" | "mcpImagesOmitted"> {
+  const declared = Array.isArray(payload.mcpImages) ? payload.mcpImages : [];
+  const images = declared.length
+    ? declared.slice(0, MAX_COMPACT_TOOL_IMAGES).flatMap((entry) => {
+        const record = asRecord(entry);
+        const attachmentId = asTrimmedString(record?.attachmentId);
+        const mimeType = asTrimmedString(record?.mimeType);
+        const sizeBytes = record?.sizeBytes;
+        return attachmentId &&
+          mimeType?.startsWith("image/") &&
+          typeof sizeBytes === "number" &&
+          Number.isInteger(sizeBytes) &&
+          sizeBytes >= 0
+          ? [{ attachmentId, mimeType, sizeBytes }]
+          : [];
+      })
+    : [];
+  const declaredOmitted = payload.mcpImagesOmitted;
+  // References past the compact bound count as omitted so the work log reports the loss.
+  const omitted =
+    (typeof declaredOmitted === "number" && Number.isInteger(declaredOmitted) && declaredOmitted > 0
+      ? declaredOmitted
+      : 0) + Math.max(0, declared.length - MAX_COMPACT_TOOL_IMAGES);
+  return {
+    ...(images.length > 0 ? { mcpImages: images } : {}),
+    ...(omitted > 0 ? { mcpImagesOmitted: omitted } : {}),
+  };
+}
+
 const isToolCompletionEnvelope = Schema.is(ToolCompletionEnvelope);
 
 function compactToolPayload(payload: CompactToolActivityPayload): Record<string, unknown> {
@@ -809,6 +842,10 @@ function compactToolPayload(payload: CompactToolActivityPayload): Record<string,
     ...(payload.itemType === "mcp_tool_call" && payload.mcpResult
       ? { mcpResult: payload.mcpResult }
       : {}),
+    ...(payload.mcpImages && payload.mcpImages.length > 0
+      ? { mcpImages: payload.mcpImages.map((image) => ({ ...image })) }
+      : {}),
+    ...(payload.mcpImagesOmitted ? { mcpImagesOmitted: payload.mcpImagesOmitted } : {}),
   };
 }
 
@@ -841,6 +878,7 @@ function compactRuntimeConfiguredPayload(
       : {}),
     ...(payload.instructionStrategy ? { instructionStrategy: payload.instructionStrategy } : {}),
     ...(payload.slashCommands ? { slashCommands: [...payload.slashCommands] } : {}),
+    ...(payload.agentBrowser ? { agentBrowser: payload.agentBrowser } : {}),
   };
 }
 
@@ -920,6 +958,7 @@ export function readToolActivityPayload(payload: unknown): CompactToolActivityPa
     ...(fileChangeId ? { fileChangeId } : {}),
     ...subagentPayload,
     ...mcpPayload,
+    ...readToolImages(record),
   };
 }
 
@@ -972,6 +1011,63 @@ function readRuntimeSlashCommands(
   return slashCommands;
 }
 
+const AGENT_CAPABILITY_STATES: ReadonlySet<string> = new Set([
+  "off",
+  "pending",
+  "connected",
+  "failed",
+  "unavailable",
+]);
+const MAX_AGENT_CAPABILITY_DETAIL_CHARS = 500;
+
+function readAgentCapabilityState(value: unknown) {
+  const record = asRecord(value);
+  const state = asTrimmedString(record?.state);
+  if (!record || !state || !AGENT_CAPABILITY_STATES.has(state)) return undefined;
+  const detail = asTrimmedString(record.detail)?.slice(0, MAX_AGENT_CAPABILITY_DETAIL_CHARS);
+  return {
+    state: state as NonNullable<
+      NonNullable<CompactRuntimeConfiguredActivityPayload["agentBrowser"]>["chrome"]
+    >["state"],
+    ...(detail ? { detail } : {}),
+  };
+}
+
+function readRuntimeAgentBrowser(
+  value: unknown,
+): CompactRuntimeConfiguredActivityPayload["agentBrowser"] | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const preview = asRecord(record.preview);
+  const serverName = asTrimmedString(preview?.serverName);
+  const chrome = readAgentCapabilityState(record.chrome);
+  const computerUse = readAgentCapabilityState(record.computerUse);
+  const rawBackend = asTrimmedString(asRecord(record.computerUse)?.backend);
+  const backend: "claude" | "native" | undefined =
+    rawBackend === "claude" || rawBackend === "native" ? rawBackend : undefined;
+  const result: NonNullable<CompactRuntimeConfiguredActivityPayload["agentBrowser"]> = {
+    ...(preview && serverName
+      ? {
+          preview: {
+            serverName,
+            installed: preview.installed === true,
+            ...(typeof preview.verified === "boolean" ? { verified: preview.verified } : {}),
+          },
+        }
+      : {}),
+    ...(chrome ? { chrome } : {}),
+    ...(computerUse
+      ? {
+          computerUse: {
+            ...computerUse,
+            ...(backend ? { backend } : {}),
+          },
+        }
+      : {}),
+  };
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 export function readRuntimeConfiguredPayload(
   payload: unknown,
 ): CompactRuntimeConfiguredActivityPayload | null {
@@ -983,6 +1079,7 @@ export function readRuntimeConfiguredPayload(
   const config = asRecord(record.config);
   const instructionProfile = readInstructionProfile(record) ?? readInstructionProfile(config);
   const slashCommands = readRuntimeSlashCommands(record.slashCommands ?? config?.slashCommands);
+  const agentBrowser = readRuntimeAgentBrowser(record.agentBrowser ?? config?.agentBrowser);
   const result: CompactRuntimeConfiguredActivityPayload = {
     ...(readConfiguredValue(record.model, config?.model)
       ? { model: readConfiguredValue(record.model, config?.model)! }
@@ -1054,6 +1151,7 @@ export function readRuntimeConfiguredPayload(
         }
       : {}),
     ...(slashCommands !== undefined ? { slashCommands } : {}),
+    ...(agentBrowser ? { agentBrowser } : {}),
   };
 
   return Object.keys(result).length > 0 ? result : null;

@@ -27,11 +27,36 @@ import {
 import { ServerConfig } from "../../config.ts";
 import { CodexAdapter } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { readRuntimeConfiguredPayload } from "@t3tools/shared/orchestrationActivityPayload";
 import {
   hookTargetItemId,
   makeCodexAdapterLive,
   normalizeCodexThreadItemType,
+  withAgentBrowserPreview,
 } from "./CodexAdapter.ts";
+
+it("reports Codex's preview as verified, so its chip can reach ready", () => {
+  const [event] = withAgentBrowserPreview(
+    [
+      {
+        type: "session.configured",
+        eventId: EventId.makeUnsafe("evt-configured"),
+        provider: "codex",
+        threadId: ThreadId.makeUnsafe("thread-preview"),
+        createdAt: "2026-10-09T00:00:00.000Z",
+        payload: { config: { model: "gpt-5.5" } },
+      },
+    ],
+    "f5_preview",
+  );
+  assert.equal(event?.type, "session.configured");
+  if (event?.type !== "session.configured") return;
+  assert.deepEqual(readRuntimeConfiguredPayload(event.payload)?.agentBrowser?.preview, {
+    serverName: "f5_preview",
+    installed: true,
+    verified: true,
+  });
+});
 
 it("maps exact current Codex item types and legacy aliases without substring collisions", () => {
   const aliases = {

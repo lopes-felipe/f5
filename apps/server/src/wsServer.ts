@@ -266,6 +266,7 @@ import {
 import { makePreviewManager } from "./preview/Manager.ts";
 import { scanLocalServers, OwnedPreviewUrls } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
+import { computerUseLease } from "./provider/computerUseLease.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
 
@@ -1045,6 +1046,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       (close) => Effect.sync(close),
     );
   }
+  // Every window shows a global banner while an agent controls the computer.
+  yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      computerUseLease.subscribe((holder) => {
+        void Effect.runPromise(
+          pushBus.publishAll(WS_CHANNELS.agentComputerUseChanged, {
+            threadId: holder === null ? null : ThreadId.makeUnsafe(holder),
+          }),
+        );
+      }),
+    ),
+    (unsubscribe) => Effect.sync(unsubscribe),
+  );
   const accountService = new ProviderAccountService(
     serverConfig,
     serverSettings,
@@ -1081,8 +1095,47 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     },
   );
   yield* Effect.addFinalizer(() => Effect.promise(() => accountService.dispose()));
-  const previewManager = makePreviewManager();
+  const previewManager = makePreviewManager({
+    resolveNavigationPolicy: (threadId) =>
+      previewAutomationBroker
+        .resolvePolicy(threadId as ThreadId)
+        .pipe(Effect.map((policy) => ({ externalHosts: policy.externalHosts }))),
+  });
   const previewAutomationClientIdsByWs = new WeakMap<WebSocket, Map<string, string>>();
+  const previewAutomationHostIdByWs = new WeakMap<WebSocket, string>();
+
+  const getPreviewAutomationHostId = (ws: WebSocket): string => {
+    let hostId = previewAutomationHostIdByWs.get(ws);
+    if (!hostId) {
+      hostId = `preview-host-${randomUUID()}`;
+      previewAutomationHostIdByWs.set(ws, hostId);
+    }
+    return hostId;
+  };
+
+  /** Every renderer connection can be asked to host a preview; non-desktop ones ignore it. */
+  const registerPreviewAutomationHost = (ws: WebSocket) =>
+    previewAutomationBroker.registerHost({
+      hostId: getPreviewAutomationHostId(ws),
+      push: (event) => {
+        switch (event.type) {
+          case "ownerRequested":
+            return pushBus.publishClient(ws, WS_CHANNELS.previewAutomationOwnerRequested, {
+              requestId: event.requestId,
+              threadId: event.threadId,
+            });
+          case "ownerReleased":
+            return pushBus.publishClient(ws, WS_CHANNELS.previewAutomationOwnerReleased, {
+              threadId: event.threadId,
+            });
+          case "pauseChanged":
+            return pushBus.publishClient(ws, WS_CHANNELS.previewAutomationPauseChanged, {
+              threadId: event.threadId,
+              paused: event.paused,
+            });
+        }
+      },
+    });
 
   const getPreviewAutomationClientIdsForWs = (ws: WebSocket): Map<string, string> => {
     let clientIds = previewAutomationClientIdsByWs.get(ws);
@@ -4386,6 +4439,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           {
             clientId,
             rendererClientId: body.clientId,
+            hostId: getPreviewAutomationHostId(ws),
             send: (automationRequest) =>
               pushBus.publishClient(ws, WS_CHANNELS.previewAutomationRequest, automationRequest),
           },
@@ -4405,7 +4459,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.previewAutomationRespond: {
         const body = stripRequestTag(request.body);
-        yield* previewAutomationBroker.respond(body, authorizedPreviewAutomationClientIds(ws));
+        yield* previewAutomationBroker.respond(
+          body,
+          authorizedPreviewAutomationClientIds(ws),
+          previewAutomationHostIdByWs.get(ws),
+        );
+        return undefined;
+      }
+
+      case WS_METHODS.previewAutomationSetPaused: {
+        const body = stripRequestTag(request.body);
+        yield* previewAutomationBroker.setPaused(body.threadId, body.paused);
         return undefined;
       }
 
@@ -5687,7 +5751,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           }),
         ),
         Effect.flatMap((delivered) =>
-          delivered ? Ref.update(clients, (clients) => clients.add(ws)) : Effect.void,
+          delivered
+            ? Ref.update(clients, (clients) => clients.add(ws)).pipe(
+                Effect.andThen(registerPreviewAutomationHost(ws)),
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    const holder = computerUseLease.current();
+                    return holder === null
+                      ? Effect.void
+                      : pushBus.publishClient(ws, WS_CHANNELS.agentComputerUseChanged, {
+                          threadId: ThreadId.makeUnsafe(holder),
+                        });
+                  }),
+                ),
+              )
+            : Effect.void,
         ),
       ),
     );
@@ -5715,6 +5793,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }).pipe(
           Effect.andThen(
             Effect.gen(function* () {
+              const hostId = previewAutomationHostIdByWs.get(ws);
+              if (hostId) yield* previewAutomationBroker.unregisterHost(hostId);
               const clientIds = previewAutomationClientIdsByWs.get(ws);
               if (!clientIds) return;
               previewAutomationClientIdsByWs.delete(ws);

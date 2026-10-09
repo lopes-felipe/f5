@@ -74,11 +74,30 @@ function resolveStreamLabel(stream: EventNdjsonStream): string {
   }
 }
 
+/** Replaces inline base64 image blocks (Claude and MCP shapes) so logs never hold screenshots. */
+export function scrubInlineImagesReplacer(_key: string, value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (record.type !== "image") return value;
+  const source =
+    record.source && typeof record.source === "object"
+      ? (record.source as Record<string, unknown>)
+      : null;
+  const data = typeof record.data === "string" ? record.data : source?.data;
+  if (typeof data !== "string") return value;
+  return {
+    type: "image",
+    mimeType: record.mimeType ?? source?.media_type,
+    omitted: true,
+    base64Chars: data.length,
+  };
+}
+
 function toLogMessage(event: unknown): Effect.Effect<string | undefined> {
   return Effect.gen(function* () {
     const serialized = yield* Effect.sync(() => {
       try {
-        return { ok: true as const, value: JSON.stringify(event) };
+        return { ok: true as const, value: JSON.stringify(event, scrubInlineImagesReplacer) };
       } catch (error) {
         return { ok: false as const, error };
       }

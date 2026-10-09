@@ -1,7 +1,6 @@
 import {
   type ClaudeCodeEffort,
   type ClaudeModelOptions,
-  DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   type CodexModelOptions,
   type CodexReasoningEffort,
   type CursorModelOptions,
@@ -65,15 +64,17 @@ export function normalizeProviderModelOptions(
     codexCandidate?.fastMode === true ||
     (provider === "codex" && legacy?.codexFastMode === true) ||
     legacy?.serviceTier === "fast";
-  const codex =
-    codexReasoningEffort && codexReasoningEffort !== DEFAULT_REASONING_EFFORT_BY_PROVIDER.codex
-      ? {
-          reasoningEffort: codexReasoningEffort,
-          ...(codexFastMode ? { fastMode: true } : {}),
-        }
-      : codexFastMode
-        ? { fastMode: true }
-        : undefined;
+  // No model is known here, so every valid effort is kept: a model's reported
+  // default can differ from the provider-wide one (Sol reports "low"), and only
+  // `normalizeCodexModelOptions` knows which effort is the default to omit.
+  const codex = codexReasoningEffort
+    ? {
+        reasoningEffort: codexReasoningEffort,
+        ...(codexFastMode ? { fastMode: true } : {}),
+      }
+    : codexFastMode
+      ? { fastMode: true }
+      : undefined;
 
   const claudeThinking = claudeCandidate?.thinking === false ? false : undefined;
   const claudeEffort: ClaudeCodeEffort | undefined =

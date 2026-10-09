@@ -52,15 +52,18 @@ beforeEach(() => {
 });
 it("selects profiles for new tabs and exposes incognito without changing existing tabs", async () => {
   render(<BrowserSettings />);
-  await expect.element(page.getByText("Private (incognito)", { exact: false })).toBeVisible();
+  await expect.element(page.getByText("Private")).toBeVisible();
+  await expect.element(page.getByText("Incognito", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Use for new tabs" }).nth(1).click();
   expect(api.select).toHaveBeenCalledWith("private");
   expect(api.create).not.toHaveBeenCalled();
 });
 it("shows staged import progress and permits cancellation without touching the target profiles", async () => {
   render(<BrowserSettings />);
-  await page.getByRole("combobox", { name: "Import source" }).selectOptions("fixture");
-  await page.getByRole("combobox", { name: "Source profile" }).selectOptions("one");
+  await page.getByRole("combobox", { name: "Import source" }).click();
+  await page.getByRole("option", { name: "Synthetic Firefox" }).click();
+  await page.getByRole("combobox", { name: "Source profile" }).click();
+  await page.getByRole("option", { name: "Fixture profile" }).click();
   await page.getByRole("button", { name: "Import into new profile" }).click();
   await expect
     .element(page.getByRole("status"))

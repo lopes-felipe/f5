@@ -36,6 +36,9 @@ function makeHarness() {
     automationScroll: vi.fn(),
     automationEvaluate: vi.fn(),
     automationWaitFor: vi.fn(),
+    automationCancel: vi.fn(),
+    setNavigationPolicy: vi.fn(() => true),
+    captureThumbnail: vi.fn(),
     setViewport: vi.fn(() => true),
     setColorScheme: vi.fn(() => true),
     captureScreenshot: vi.fn(),
@@ -99,6 +102,29 @@ describe("registerPreviewIpc", () => {
     expect(() => invoke(PREVIEW_IPC_CHANNELS.setArtifactRetention, "14")).toThrow(
       "Preview artifact retention is invalid.",
     );
+  });
+
+  it("routes take-over cancellation and rejects malformed navigation policies", () => {
+    const { invoke, operations } = makeHarness();
+    invoke(PREVIEW_IPC_CHANNELS.automationCancel, "tab-1");
+    expect(operations.automationCancel).toHaveBeenCalledWith("tab-1");
+    invoke(PREVIEW_IPC_CHANNELS.setNavigationPolicy, "tab-1", ["example.com"]);
+    expect(operations.setNavigationPolicy).toHaveBeenCalledWith("tab-1", ["example.com"]);
+    expect(invoke(PREVIEW_IPC_CHANNELS.setNavigationPolicy, "tab-1", "example.com")).toBe(false);
+    expect(invoke(PREVIEW_IPC_CHANNELS.setNavigationPolicy, "tab-1", [42])).toBe(false);
+    expect(operations.setNavigationPolicy).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks only an explicit agent navigation as agent-driven", () => {
+    const { invoke, operations } = makeHarness();
+    invoke(PREVIEW_IPC_CHANNELS.navigate, "tab-1", "https://example.com/", { agent: true });
+    invoke(PREVIEW_IPC_CHANNELS.navigate, "tab-1", "https://example.com/");
+    invoke(PREVIEW_IPC_CHANNELS.navigate, "tab-1", "https://example.com/", { agent: "yes" });
+    expect(operations.navigate.mock.calls.map((call) => (call as unknown[])[2])).toEqual([
+      true,
+      false,
+      false,
+    ]);
   });
 
   it("rejects unknown preview color schemes before they reach the runtime", () => {

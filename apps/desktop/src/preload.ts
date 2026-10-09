@@ -35,6 +35,9 @@ const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop-preview:automation-press";
 const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
 const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
 const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
+const PREVIEW_AUTOMATION_CANCEL_CHANNEL = "desktop-preview:automation-cancel";
+const PREVIEW_SET_NAVIGATION_POLICY_CHANNEL = "desktop-preview:set-navigation-policy";
+const PREVIEW_CAPTURE_THUMBNAIL_CHANNEL = "desktop-preview:capture-thumbnail";
 const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop-preview:set-viewport";
 const PREVIEW_SET_COLOR_SCHEME_CHANNEL = "desktop-preview:set-color-scheme";
 const PREVIEW_CAPTURE_SCREENSHOT_CHANNEL = "desktop-preview:capture-screenshot";
@@ -53,6 +56,9 @@ const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  computerAutomation: {
+    status: () => ipcRenderer.invoke("desktop-computer:status"),
+  },
   getSystemLocale: () => systemLocale,
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
@@ -156,7 +162,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     closeTab: (tabId) => ipcRenderer.invoke(PREVIEW_CLOSE_TAB_CHANNEL, tabId),
     registerWebview: (tabId, webContentsId) =>
       ipcRenderer.invoke(PREVIEW_REGISTER_WEBVIEW_CHANNEL, tabId, webContentsId),
-    navigate: (tabId, url) => ipcRenderer.invoke(PREVIEW_NAVIGATE_CHANNEL, tabId, url),
+    navigate: (tabId, url, options) =>
+      ipcRenderer.invoke(PREVIEW_NAVIGATE_CHANNEL, tabId, url, options),
     goBack: (tabId) => ipcRenderer.invoke(PREVIEW_GO_BACK_CHANNEL, tabId),
     goForward: (tabId) => ipcRenderer.invoke(PREVIEW_GO_FORWARD_CHANNEL, tabId),
     refresh: (tabId) => ipcRenderer.invoke(PREVIEW_REFRESH_CHANNEL, tabId),
@@ -198,6 +205,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
         ipcRenderer.invoke(PREVIEW_AUTOMATION_EVALUATE_CHANNEL, tabId, input),
       waitFor: (tabId, input) =>
         ipcRenderer.invoke(PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL, tabId, input),
+      cancel: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_CANCEL_CHANNEL, tabId),
+      setNavigationPolicy: (tabId, externalHosts) =>
+        ipcRenderer.invoke(PREVIEW_SET_NAVIGATION_POLICY_CHANNEL, tabId, externalHosts),
+      captureThumbnail: (tabId) => ipcRenderer.invoke(PREVIEW_CAPTURE_THUMBNAIL_CHANNEL, tabId),
     },
     onStateChange: (listener) => {
       const wrappedListener = (

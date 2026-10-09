@@ -107,7 +107,7 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
   static readonly layerTest = (
     cwd: string,
     stateDirOrPrefix: string | { prefix: string },
-    options?: { readonly acpHardeningEnabled?: boolean },
+    options?: { readonly acpHardeningEnabled?: boolean; readonly mode?: "web" | "desktop" },
   ) =>
     Layer.effect(
       ServerConfig,
@@ -138,7 +138,7 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
           profilesRoot: profilesRootDir(paths.stateDir),
           defaultStateDir: paths.stateDir,
           ...paths,
-          mode: "web",
+          mode: options?.mode ?? "web",
           autoBootstrapProjectFromCwd: false,
           logWebSocketEvents: false,
           port: 0,

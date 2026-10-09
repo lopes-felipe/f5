@@ -2,6 +2,14 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const INTEGRATIONS_SETTINGS_DESCRIPTORS = [
   {
+    id: "integrations.browser",
+    category: "integrations",
+    label: "Browser",
+    description: "Where links open, agent browser access, and allowed external sites.",
+    keywords: ["preview", "agent browser", "allowed sites", "allowlist", "links", "chrome"],
+    targetSelector: '[data-settings-search-target="integrations.browser"]',
+  },
+  {
     id: "integrations.github",
     category: "integrations",
     label: "GitHub account",

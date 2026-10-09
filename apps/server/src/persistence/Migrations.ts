@@ -1,6 +1,7 @@
 import Migration0107 from "./Migrations/107_DatabaseCompaction.ts";
 import Migration0106 from "./Migrations/106_StorageAutomationAuditCodexStaging.ts";
 import Migration0104 from "./Migrations/104_ProviderSubmissionProvenance.ts";
+import Migration0109 from "./Migrations/109_AttachmentOwnerActivity.ts";
 import Migration0105 from "./Migrations/105_ProjectionThreadTaskTracking.ts";
 import Migration0108 from "./Migrations/108_ProjectionThreadSessionCapabilities.ts";
 import Migration0093 from "./Migrations/093_AttachmentUploads.ts";
@@ -141,6 +142,7 @@ import Migration0102 from "./Migrations/102_ForgeAccounts.ts";
 import Migration0101 from "./Migrations/101_UsageResetCreditRequests.ts";
 
 export const MIGRATIONS = {
+  "109_AttachmentOwnerActivity": Migration0109,
   "102_ForgeAccounts": Migration0102,
   "108_ProjectionThreadSessionCapabilities": Migration0108,
   "105_ProjectionThreadTaskTracking": Migration0105,

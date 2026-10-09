@@ -73,6 +73,137 @@ describe("NextTurnQueuePanel", () => {
     await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
   });
 
+  it("folds the usage-limit auto-continue into the card and shows it again when unfolded", async () => {
+    const threadId = ThreadId.makeUnsafe("queue-thread-usage-limit");
+    useNextTurnQueueStore.getState().applySnapshot({
+      threadId,
+      revision: 1,
+      paused: false,
+      blockedKind: "waiting",
+      reasonCode: "usage_limit_reset",
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: [
+        {
+          itemId: CommandId.makeUnsafe("usage-resume"),
+          threadId,
+          submissionId: CommandId.makeUnsafe("usage-submission"),
+          position: 0,
+          status: "queued",
+          command: {
+            type: "thread.turn.start",
+            commandId: CommandId.makeUnsafe("usage-command"),
+            threadId,
+            message: {
+              messageId: MessageId.makeUnsafe("usage-message"),
+              role: "user",
+              text: "continue",
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            presentation: "continuation",
+            createdAt: "2026-10-08T12:00:00.000Z",
+          },
+          attemptCount: 0,
+          notBefore: "2099-10-08T12:01:00.000Z",
+          scheduleReason: "usage_limit_reset",
+          dispatchStartedAt: null,
+          lastErrorCode: null,
+          lastErrorDetail: null,
+          createdAt: "2026-10-08T12:00:00.000Z",
+          updatedAt: "2026-10-08T12:00:00.000Z",
+        },
+      ],
+    });
+    active = await render(
+      <NextTurnQueuePanel
+        threadId={threadId}
+        foldedItemId={CommandId.makeUnsafe("usage-resume")}
+      />,
+    );
+    await expect.element(page.getByLabelText("Queued turns")).not.toBeInTheDocument();
+
+    await active.rerender(<NextTurnQueuePanel threadId={threadId} foldedItemId={null} />);
+    await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+    await expect.element(page.getByText(/^Continues after usage limit resets/)).toBeInTheDocument();
+  });
+
+  it("keeps a folded usage-limit continue in place on move to top and clear", async () => {
+    const threadId = ThreadId.makeUnsafe("queue-thread-usage-limit-clear");
+    const item = (id: string, text: string, scheduleReason?: "usage_limit_reset") => ({
+      itemId: CommandId.makeUnsafe(id),
+      threadId,
+      submissionId: CommandId.makeUnsafe(`${id}-submission`),
+      position: 0,
+      status: "queued" as const,
+      command: {
+        type: "thread.turn.start" as const,
+        commandId: CommandId.makeUnsafe(`${id}-command`),
+        threadId,
+        message: {
+          messageId: MessageId.makeUnsafe(`${id}-message`),
+          role: "user" as const,
+          text,
+          attachments: [],
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: "2026-10-08T12:00:00.000Z",
+      },
+      attemptCount: 0,
+      notBefore: scheduleReason ? "2099-10-08T12:01:00.000Z" : null,
+      ...(scheduleReason ? { scheduleReason } : {}),
+      dispatchStartedAt: null,
+      lastErrorCode: null,
+      lastErrorDetail: null,
+      createdAt: "2026-10-08T12:00:00.000Z",
+      updatedAt: "2026-10-08T12:00:00.000Z",
+    });
+    const snapshot = {
+      threadId,
+      revision: 3,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: [
+        item("usage-resume", "continue", "usage_limit_reset"),
+        item("follow-up", "Run the follow-up"),
+        item("second", "Run the second turn"),
+      ],
+    };
+    const clear = vi.fn().mockResolvedValue({ snapshot, removed: [] });
+    const reorder = vi.fn().mockResolvedValue(snapshot);
+    nativeApiMock.current = { nextTurnQueue: { clear, reorder } };
+    useNextTurnQueueStore.getState().applySnapshot(snapshot);
+    active = await render(
+      <NextTurnQueuePanel
+        threadId={threadId}
+        foldedItemId={CommandId.makeUnsafe("usage-resume")}
+      />,
+    );
+
+    await expect.element(page.getByText("Next turns (2)")).toBeInTheDocument();
+    await page.getByRole("button", { name: "Move queued turn to top" }).nth(1).click();
+    expect(reorder).toHaveBeenCalledWith({
+      threadId,
+      orderedItemIds: ["usage-resume", "second", "follow-up"],
+      expectedRevision: 3,
+    });
+
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    expect(clear).toHaveBeenCalledWith({
+      threadId,
+      scope: "all",
+      expectedRevision: 3,
+      keepItemIds: ["usage-resume"],
+    });
+  });
+
   it("keeps the composer on screen with a full 20-item queue in the tray", async () => {
     const threadId = ThreadId.makeUnsafe("queue-thread-full");
     useNextTurnQueueStore.getState().applySnapshot({

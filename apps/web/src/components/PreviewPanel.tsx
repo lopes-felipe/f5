@@ -1,4 +1,10 @@
+import { decodeTaggedAutomationErrorMessage } from "@t3tools/shared/preview";
+import { agentBrowserPolicyFromSettings } from "@t3tools/shared/projectSettings";
+import { isAgentBrowserActive, useAgentBrowserActivityStore } from "../agentBrowserActivityStore";
 import { useAppSettings } from "../appSettings";
+import { useSettings, type UnifiedWebSettings } from "../hooks/useSettings";
+import { useStore } from "../store";
+import { PreviewAgentOverlay } from "./PreviewAgentOverlay";
 import { setAttachmentSource } from "../lib/attachmentUploadQueue";
 import { notifyPreviewFocused } from "../lib/previewFocus";
 import {
@@ -6,6 +12,7 @@ import {
   type DesktopPreviewTabState,
   type DesktopPreviewWebviewConfig,
   type DiscoveredLocalServer,
+  type PreviewAutomationActionGeometry,
   type PreviewAutomationClickInput,
   type PreviewAutomationEvaluateInput,
   type PreviewAutomationNavigateInput,
@@ -43,7 +50,7 @@ import {
   VideoIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
 import { cn, randomUUID } from "../lib/utils";
@@ -87,6 +94,7 @@ interface PreviewPanelProps {
 }
 
 const PREVIEW_AUTOMATION_ATTACHMENT_POLL_INTERVAL_MS = 100;
+const PREVIEW_THUMBNAIL_INTERVAL_MS = 2_000;
 const PREVIEW_RECORDING_MAX_PENDING_CHUNKS = 2;
 const PREVIEW_RECORDING_MAX_CHUNK_BYTES = 4 * 1024 * 1024;
 const PREVIEW_RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
@@ -255,22 +263,50 @@ function previewAutomationErrorResponse(
   request: PreviewAutomationRequest,
   cause: unknown,
 ): PreviewAutomationResponse {
-  const message = cause instanceof Error ? cause.message : String(cause);
+  const rawMessage = cause instanceof Error ? cause.message : String(cause);
   const tagged =
     cause && typeof cause === "object" && "_tag" in cause && typeof cause._tag === "string"
       ? (cause as { _tag: string; detail?: unknown })
       : null;
+  // Errors thrown in the desktop main process arrive flattened; recover their tag.
+  const desktopTagged = tagged ? null : decodeTaggedAutomationErrorMessage(rawMessage);
   return {
     requestId: request.requestId,
     ...(request.clientId ? { clientId: request.clientId } : {}),
     ...(request.connectionId ? { connectionId: request.connectionId } : {}),
     ok: false,
     error: {
-      _tag: tagged?._tag ?? "PreviewAutomationExecutionError",
-      message,
+      _tag: tagged?._tag ?? desktopTagged?.tag ?? "PreviewAutomationExecutionError",
+      message: desktopTagged?.message ?? rawMessage,
       ...(tagged?.detail !== undefined ? { detail: tagged.detail } : {}),
     },
   };
+}
+
+function selectPreviewExternalHostsKey(settings: UnifiedWebSettings): string {
+  return agentBrowserPolicyFromSettings(settings, undefined).externalHosts.join("\n");
+}
+
+function readActionGeometry(
+  operation: PreviewAutomationRequest["operation"],
+  result: unknown,
+): PreviewAutomationActionGeometry | undefined {
+  if ((operation !== "click" && operation !== "type") || !result || typeof result !== "object") {
+    return undefined;
+  }
+  const candidate = result as PreviewAutomationActionGeometry;
+  const point =
+    candidate.point && Number.isFinite(candidate.point.x) && Number.isFinite(candidate.point.y)
+      ? candidate.point
+      : undefined;
+  const rect =
+    candidate.rect &&
+    [candidate.rect.x, candidate.rect.y, candidate.rect.width, candidate.rect.height].every(
+      Number.isFinite,
+    )
+      ? candidate.rect
+      : undefined;
+  return point || rect ? { ...(point ? { point } : {}), ...(rect ? { rect } : {}) } : undefined;
 }
 
 function makePreviewAutomationError(
@@ -342,8 +378,17 @@ function PreviewBrowserWebview(props: {
     webview: PreviewWebviewElement,
     navStatus: PreviewNavStatus,
   ) => void;
+  /** True when an agent opened this tab, so its first navigation keeps agent provenance. */
+  readonly isAgentTab?: () => boolean;
+  /** Installs the tab's allowlist; awaited before the first navigation. */
+  readonly applyNavigationPolicy?: (tabId: string) => Promise<void>;
+  readonly overlay?: ReactNode;
 }) {
   const { settings } = useAppSettings();
+  const isAgentTabRef = useRef(props.isAgentTab);
+  isAgentTabRef.current = props.isAgentTab;
+  const applyNavigationPolicyRef = useRef(props.applyNavigationPolicy);
+  applyNavigationPolicyRef.current = props.applyNavigationPolicy;
   const defaults = useRef(settings.previewDefaults);
   const [tabConfig, setTabConfig] = useState<DesktopPreviewWebviewConfig | null>(null);
   const webviewRef = useRef<PreviewWebviewElement | null>(null);
@@ -378,17 +423,36 @@ function PreviewBrowserWebview(props: {
   useEffect(() => {
     const webview = webviewRef.current;
     if (!webview) return;
+    // Every guest attaches blank (desktop `will-attach-webview`) and loads only after
+    // registration, once this tab's allowlist and navigation listeners are installed.
+    let initialNavigationPending = true;
     const register = () => {
       const webContentsId = readReadyWebContentsId(webview);
       if (webContentsId !== null) {
         void props.desktopPreview
           .registerWebview(props.session.tabId, webContentsId)
-          .then(() =>
-            props.desktopPreview.setColorScheme(
+          .then(async () => {
+            await props.desktopPreview.setColorScheme(
               props.session.tabId,
               sessionRef.current.colorScheme ?? "system",
-            ),
-          )
+            );
+            const target = activeUrlRef.current;
+            const loaded = readReadyWebviewValue(() => webview.getURL?.(), "about:blank");
+            if (
+              !initialNavigationPending ||
+              !target ||
+              target === "about:blank" ||
+              (loaded && loaded !== "about:blank")
+            ) {
+              initialNavigationPending = false;
+              return;
+            }
+            initialNavigationPending = false;
+            await applyNavigationPolicyRef.current?.(props.session.tabId);
+            await props.desktopPreview.navigate(props.session.tabId, target, {
+              agent: isAgentTabRef.current?.() === true,
+            });
+          })
           .catch(() => undefined);
       }
     };
@@ -467,7 +531,9 @@ function PreviewBrowserWebview(props: {
       )}
       style={
         props.visible && props.dimensions === null
-          ? { width: "100%", height: "100%" }
+          ? // The parent only has a min-height, so `height: 100%` would resolve to auto and
+            // collapse the webview to its 150px intrinsic height; stretching fills it instead.
+            { width: "100%", alignSelf: "stretch" }
           : { width: dimensions.width, height: dimensions.height }
       }
     >
@@ -477,13 +543,17 @@ function PreviewBrowserWebview(props: {
             webviewRef.current = node as PreviewWebviewElement | null;
             node?.setAttribute("allowpopups", "");
           }}
-          src={activeUrl || "about:blank"}
+          // Navigation is always explicit (registration, URL bar, agent). Binding `src` to the
+          // reported URL would restart the committed page whenever a slow load reports
+          // Loading, aborting that load.
+          src="about:blank"
           partition={tabConfig?.partition ?? props.config.partition}
           webpreferences={tabConfig?.webPreferences ?? props.config.webPreferences}
           preload={tabConfig?.preload ?? props.config.preload}
           className="h-full w-full bg-background"
         />
       ) : null}
+      {props.visible ? props.overlay : null}
       {props.visible && props.session.navStatus._tag === "LoadFailed" ? (
         <div className="absolute inset-0 flex items-center justify-center bg-background/92 p-6 text-center">
           <div className="max-w-sm">
@@ -552,6 +622,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
   const sessionsRef = useRef<PreviewSessionSnapshot[]>([]);
   sessionsRef.current = sessions;
+  // Settles with the tab the panel's initial load made active. Agent requests that arrive
+  // before it renders wait on it so `open` reuses that tab instead of creating a second one.
+  const initialSessionLoadRef = useRef<Promise<PreviewSessionSnapshot | null>>(
+    Promise.resolve(null),
+  );
+  // Once those tabs render, `activeSession` is authoritative; a stale fallback would point
+  // at a tab the user has since closed.
+  if (sessions.length > 0) initialSessionLoadRef.current = Promise.resolve(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const { settings: previewSettings } = useAppSettings();
   const [zoomTabs, setZoomTabs] = useState<Record<string, number>>({});
@@ -590,6 +668,95 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const canGoBack = activeSession?.canGoBack ?? false;
   const canGoForward = activeSession?.canGoForward ?? false;
   const previewAutomation = desktopPreview?.automation;
+  const projectId = useStore(
+    (store) => store.threads.find((entry) => entry.id === threadId)?.projectId,
+  );
+  // Project-resolved settings: the same allowlist the server enforces for this thread.
+  const externalHostsKey = useSettings(selectPreviewExternalHostsKey, projectId);
+  const sessionTabIdsKey = sessions.map((session) => session.tabId).join("\n");
+  const externalHostsKeyRef = useRef(externalHostsKey);
+  externalHostsKeyRef.current = externalHostsKey;
+  /** Pushes the current allowlist to a tab; awaited before navigating a new tab. */
+  const applyNavigationPolicy = useCallback(
+    async (tabId: string) => {
+      if (!previewAutomation?.setNavigationPolicy) return;
+      const key = externalHostsKeyRef.current;
+      await previewAutomation
+        .setNavigationPolicy(tabId, key ? key.split("\n") : [])
+        .catch(() => undefined);
+    },
+    [previewAutomation],
+  );
+  useEffect(() => {
+    for (const tabId of sessionTabIdsKey ? sessionTabIdsKey.split("\n") : []) {
+      void applyNavigationPolicy(tabId);
+    }
+  }, [applyNavigationPolicy, externalHostsKey, sessionTabIdsKey]);
+
+  const agentPaused = useAgentBrowserActivityStore(
+    (store) => store.byThreadId[String(threadId)]?.paused ?? false,
+  );
+  const cancelAgentActions = useCallback(() => {
+    for (const session of sessionsRef.current) {
+      void previewAutomation?.cancel?.(session.tabId).catch(() => undefined);
+    }
+  }, [previewAutomation]);
+  const setAgentPaused = useCallback(
+    (paused: boolean) => {
+      // The paused-state effect below cancels in-flight input; the server fails queued actions.
+      useAgentBrowserActivityStore.getState().setPaused(threadId, paused);
+      void api.preview.automation.setPaused({ threadId, paused }).catch(() => undefined);
+    },
+    [api, threadId],
+  );
+  // Any local pause (this overlay or the chat's live card) stops in-flight input at once,
+  // without waiting for the server's pause broadcast.
+  useEffect(() => {
+    if (agentPaused) cancelAgentActions();
+  }, [agentPaused, cancelAgentActions]);
+  useEffect(() => {
+    if (!desktopPreview) return;
+    return api.preview.automation.onPauseChanged((event) => {
+      if (event.threadId !== threadId) return;
+      useAgentBrowserActivityStore.getState().setPaused(threadId, event.paused);
+      if (event.paused) cancelAgentActions();
+    });
+  }, [api, cancelAgentActions, desktopPreview, threadId]);
+
+  const agentActivitySeen = useAgentBrowserActivityStore(
+    (store) => store.byThreadId[String(threadId)] !== undefined,
+  );
+  const activeTitleForActivity = activeSession ? navStatusTitle(activeSession.navStatus) : null;
+  useEffect(() => {
+    if (!agentActivitySeen) return;
+    useAgentBrowserActivityStore
+      .getState()
+      .setPage(threadId, activeUrl || null, activeTitleForActivity || null);
+  }, [activeTitleForActivity, activeUrl, agentActivitySeen, threadId]);
+  // While the agent works in a preview the user is not looking at, keep a small live
+  // thumbnail for the chat card. Thumbnails stay local and are never sent to providers.
+  const activeTabIdForThumbnail = activeSession?.tabId ?? null;
+  useEffect(() => {
+    const captureThumbnail = previewAutomation?.captureThumbnail;
+    if (visible || !captureThumbnail || !activeTabIdForThumbnail || !agentActivitySeen) return;
+    let stopped = false;
+    const capture = () => {
+      const activity = useAgentBrowserActivityStore.getState().byThreadId[String(threadId)];
+      if (!isAgentBrowserActive(activity, Date.now())) return;
+      void captureThumbnail(activeTabIdForThumbnail)
+        .then((thumbnail) => {
+          if (!stopped) useAgentBrowserActivityStore.getState().setThumbnail(threadId, thumbnail);
+        })
+        .catch(() => undefined);
+    };
+    capture();
+    const timer = window.setInterval(capture, PREVIEW_THUMBNAIL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTabIdForThumbnail, agentActivitySeen, previewAutomation, threadId, visible]);
+
   const automationOwnerStateRef = useRef({
     tabId: null as string | null,
     visible,
@@ -787,13 +954,13 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       return;
     }
     let cancelled = false;
-    void (async () => {
+    initialSessionLoadRef.current = (async (): Promise<PreviewSessionSnapshot | null> => {
       try {
         const [config, list] = await Promise.all([
           desktopPreview.getPreviewConfig(),
           api.preview.list({ threadId }),
         ]);
-        if (cancelled) return;
+        if (cancelled) return null;
         setWebviewConfig(config);
         setRecentLocations(list.recentLocations ?? []);
         const requested: Record<string, PreviewViewportDimensions | null> = {};
@@ -812,19 +979,21 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         if (list.sessions.length > 0) {
           setSessions([...list.sessions]);
           setActiveTabId((current) => current ?? list.sessions.at(-1)?.tabId ?? null);
-          return;
+          return list.sessions.at(-1) ?? null;
         }
         const snapshot = await api.preview.open({
           threadId,
           colorScheme: previewSettings.previewDefaults.colorScheme,
         });
-        if (cancelled) return;
+        if (cancelled) return null;
         setSessions([snapshot]);
         setActiveTabId(snapshot.tabId);
+        return snapshot;
       } catch (cause) {
         if (!cancelled) {
           setError(cause instanceof Error ? cause.message : String(cause));
         }
+        return null;
       }
     })();
     return () => {
@@ -1155,6 +1324,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           "Preview automation is only available in the Electron desktop app.",
         );
       }
+      // This callback may predate the initial load's render; fall back to the tab it settled on.
+      const currentSession = activeSession ?? (await initialSessionLoadRef.current);
 
       const statusForTab = (tabId: string | null | undefined) =>
         tabId
@@ -1183,7 +1354,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         );
       };
       const requireTabId = (): string => {
-        const tabId = request.tabId ?? activeSession?.tabId;
+        const tabId = request.tabId ?? currentSession?.tabId;
         if (!tabId) {
           throw makePreviewAutomationError(
             "PreviewAutomationTabNotFoundError",
@@ -1195,11 +1366,11 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
 
       switch (request.operation) {
         case "status":
-          return statusForTab(request.tabId ?? activeSession?.tabId);
+          return statusForTab(request.tabId ?? currentSession?.tabId);
 
         case "open": {
           const input = request.input as PreviewAutomationOpenInput;
-          let session = activeSession;
+          let session = currentSession;
           let createdSession = false;
           if (!session || input.reuseExistingTab === false) {
             const openedSession = await api.preview.open({
@@ -1228,6 +1399,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
               "The preview does not have an active tab.",
             );
           }
+          // A reused tab may come straight from the initial load, before its webview mounts.
+          if (!createdSession) await waitForAttachedTab(session.tabId);
 
           if (input.url) {
             const snapshot = await api.preview.navigate({
@@ -1246,12 +1419,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             );
             const normalizedUrl = navStatusUrl(snapshot.navStatus);
             if (normalizedUrl && !createdSession) {
-              await desktopPreview.navigate(session.tabId, normalizedUrl);
+              await applyNavigationPolicy(session.tabId);
+              await desktopPreview.navigate(session.tabId, normalizedUrl, { agent: true });
             }
           } else {
             const sessionUrl = navStatusUrl(session.navStatus);
             if (sessionUrl && !createdSession) {
-              await desktopPreview.navigate(session.tabId, sessionUrl);
+              await applyNavigationPolicy(session.tabId);
+              await desktopPreview.navigate(session.tabId, sessionUrl, { agent: true });
             }
           }
 
@@ -1274,7 +1449,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           );
           const normalizedUrl = navStatusUrl(snapshot.navStatus);
           if (normalizedUrl) {
-            await desktopPreview.navigate(tabId, normalizedUrl);
+            await applyNavigationPolicy(tabId);
+            await desktopPreview.navigate(tabId, normalizedUrl, { agent: true });
           }
           return statusForTab(tabId);
         }
@@ -1285,14 +1461,19 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             (request.input as { save?: boolean })?.save === true,
           );
         case "click":
-          await previewAutomation.click(
-            requireTabId(),
-            request.input as PreviewAutomationClickInput,
+          return (
+            (await previewAutomation.click(
+              requireTabId(),
+              request.input as PreviewAutomationClickInput,
+            )) ?? null
           );
-          return null;
         case "type":
-          await previewAutomation.type(requireTabId(), request.input as PreviewAutomationTypeInput);
-          return null;
+          return (
+            (await previewAutomation.type(
+              requireTabId(),
+              request.input as PreviewAutomationTypeInput,
+            )) ?? null
+          );
         case "press":
           await previewAutomation.press(
             requireTabId(),
@@ -1349,6 +1530,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
     [
       activeSession,
       api,
+      applyNavigationPolicy,
       captureScreenshot,
       desktopPreview,
       persistViewport,
@@ -1389,6 +1571,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           }
           return;
         }
+        const activity = useAgentBrowserActivityStore.getState();
+        const tracked = request.operation !== "status";
+        if (tracked) activity.start(threadId, request.operation);
         try {
           const result = await runAutomationRequest(request);
           const response: PreviewAutomationResponse = {
@@ -1399,10 +1584,24 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             ...(result !== undefined ? { result } : {}),
           };
           cache.store(request, response);
+          if (tracked) {
+            activity.finish(threadId, "succeeded", {
+              geometry: readActionGeometry(request.operation, result),
+            });
+          }
           await api.preview.automation.respond(response);
         } catch (cause) {
           const response = previewAutomationErrorResponse(request, cause);
           cache.store(request, response);
+          if (tracked) {
+            activity.finish(
+              threadId,
+              response.error?._tag === "PreviewAutomationControlInterruptedError"
+                ? "interrupted"
+                : "failed",
+              { error: response.error?.message },
+            );
+          }
           await api.preview.automation.respond(response);
         }
       })();
@@ -1799,6 +1998,19 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                   dimensions={dimensions}
                   hiddenDimensions={requested ?? viewportBounds}
                   onStatus={reportWebviewStatus}
+                  isAgentTab={() => automationOwnedTabs.current.has(session.tabId)}
+                  applyNavigationPolicy={applyNavigationPolicy}
+                  overlay={
+                    isActive ? (
+                      <PreviewAgentOverlay
+                        threadId={threadId}
+                        zoomFactor={desktopStateByTabId[session.tabId]?.zoomFactor ?? 1}
+                        paused={agentPaused}
+                        onTakeOver={() => setAgentPaused(true)}
+                        onResume={() => setAgentPaused(false)}
+                      />
+                    ) : null
+                  }
                 />
               );
             })}

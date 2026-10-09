@@ -9,6 +9,24 @@ import {
 } from "./orchestrationActivityPayload";
 
 describe("orchestrationActivityPayload", () => {
+  it("keeps validated tool screenshot references through compaction", () => {
+    const payload = {
+      itemType: "mcp_tool_call",
+      data: { result: { content: [{ type: "image", mimeType: "image/png", omitted: true }] } },
+      mcpImages: [
+        { attachmentId: "thread-1-img", mimeType: "image/png", sizeBytes: 68 },
+        { attachmentId: "bad", mimeType: "text/html", sizeBytes: 1 },
+      ],
+      mcpImagesOmitted: 2,
+    };
+    const compact = compactThreadActivityPayload({ kind: "tool.completed", payload });
+    const read = readToolActivityPayload(compact);
+    expect(read?.mcpImages).toEqual([
+      { attachmentId: "thread-1-img", mimeType: "image/png", sizeBytes: 68 },
+    ]);
+    expect(read?.mcpImagesOmitted).toBe(2);
+  });
+
   it.each([
     { path: "/repo/output.png" },
     { input: { file_path: "/repo/output.png" } },
@@ -756,6 +774,27 @@ describe("orchestrationActivityPayload", () => {
         unknownRootField: "value",
       }),
     ).toBeNull();
+  });
+
+  it("keeps only validated agent browser capabilities in compact runtime payloads", () => {
+    const compact = compactThreadActivityPayload({
+      kind: "runtime.configured",
+      payload: {
+        config: {
+          agentBrowser: {
+            preview: { serverName: "f5_preview_2", installed: true, extra: "x" },
+            chrome: { state: "failed", detail: "Extension not connected" },
+            computerUse: { state: "bogus" },
+          },
+        },
+      },
+    });
+    expect(compact).toEqual({
+      agentBrowser: {
+        preview: { serverName: "f5_preview_2", installed: true },
+        chrome: { state: "failed", detail: "Extension not connected" },
+      },
+    });
   });
 
   it("reads runtime slash commands, including explicit empty arrays", () => {

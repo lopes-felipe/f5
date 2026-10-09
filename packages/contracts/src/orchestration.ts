@@ -774,10 +774,53 @@ export const CompactToolActivityPayload = Schema.Struct({
   mcpToolName: Schema.optional(TrimmedNonEmptyString),
   mcpInput: Schema.optional(Schema.String),
   mcpResult: Schema.optional(Schema.String),
+  /** Tool-result screenshots stored in the attachment registry; base64 never stays inline. */
+  mcpImages: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        attachmentId: TrimmedNonEmptyString,
+        mimeType: TrimmedNonEmptyString,
+        sizeBytes: NonNegativeInt,
+      }),
+    ),
+  ),
+  mcpImagesOmitted: Schema.optional(NonNegativeInt),
   /** Typed native result, present only on `tool.completed` activities. */
   completion: Schema.optional(ToolCompletionEnvelope),
 });
 export type CompactToolActivityPayload = typeof CompactToolActivityPayload.Type;
+
+export const AgentCapabilityState = Schema.Literals([
+  "off",
+  "pending",
+  "connected",
+  "failed",
+  "unavailable",
+]);
+export type AgentCapabilityState = typeof AgentCapabilityState.Type;
+
+/** Browser/computer capabilities installed for the latest provider session. */
+export const RuntimeAgentBrowserCapabilities = Schema.Struct({
+  preview: Schema.optional(
+    Schema.Struct({
+      serverName: TrimmedNonEmptyString,
+      installed: Schema.Boolean,
+      /** False once the provider reported the server without F5's exact provenance. */
+      verified: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  chrome: Schema.optional(
+    Schema.Struct({ state: AgentCapabilityState, detail: Schema.optional(Schema.String) }),
+  ),
+  computerUse: Schema.optional(
+    Schema.Struct({
+      state: AgentCapabilityState,
+      backend: Schema.optional(Schema.Literals(["claude", "native"])),
+      detail: Schema.optional(Schema.String),
+    }),
+  ),
+});
+export type RuntimeAgentBrowserCapabilities = typeof RuntimeAgentBrowserCapabilities.Type;
 
 export const CompactRuntimeConfiguredActivityPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
@@ -801,6 +844,7 @@ export const CompactRuntimeConfiguredActivityPayload = Schema.Struct({
       }),
     ),
   ),
+  agentBrowser: Schema.optional(RuntimeAgentBrowserCapabilities),
 });
 export type CompactRuntimeConfiguredActivityPayload =
   typeof CompactRuntimeConfiguredActivityPayload.Type;

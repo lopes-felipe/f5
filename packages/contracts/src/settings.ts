@@ -292,6 +292,12 @@ const StorageCleanupSettingsPatch = Schema.Struct({
   terminalThreadLogsAfterDays: Schema.optionalKey(StorageRetentionDays),
 });
 
+/** User-only allowlist of non-loopback hosts agents may open in the F5 preview. */
+export const PreviewExternalHosts = Schema.Array(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(253 + "http://".length)),
+).check(Schema.isMaxLength(200));
+export type PreviewExternalHosts = typeof PreviewExternalHosts.Type;
+
 export const ProjectSettingsOverrides = Schema.Struct({
   autoResumeUsageLimitedThreads: Schema.optionalKey(Schema.Boolean),
   resumeActiveTurnsAfterRestart: Schema.optionalKey(Schema.Boolean),
@@ -306,6 +312,9 @@ export const ProjectSettingsOverrides = Schema.Struct({
   ),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  previewExternalHosts: Schema.optionalKey(PreviewExternalHosts),
+  enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
+  enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
 });
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
@@ -354,6 +363,12 @@ export const ServerSettings = Schema.Struct({
   worktreeCleanup: Schema.NullOr(WorktreeCleanup).pipe(Schema.withDecodingDefault(() => null)),
   /** Fast-forward clean default branches in the background. Off by default. */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  /** Non-loopback hosts agents may open in the preview. Empty keeps the preview localhost-only. */
+  previewExternalHosts: PreviewExternalHosts.pipe(Schema.withDecodingDefault(() => [])),
+  /** Launch Claude sessions with Claude in Chrome. Off by default. */
+  enableClaudeInChrome: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /** Allow agents to control the computer after per-turn approval. Off by default. */
+  enableAgentComputerUse: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   autoPullDefaultBranch: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -484,6 +499,9 @@ export const ServerSettingsPatch = Schema.Struct({
   storageCleanup: Schema.optionalKey(StorageCleanupSettingsPatch),
   worktreeCleanup: Schema.optionalKey(Schema.NullOr(WorktreeCleanup)),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
+  previewExternalHosts: Schema.optionalKey(PreviewExternalHosts),
+  enableClaudeInChrome: Schema.optionalKey(Schema.Boolean),
+  enableAgentComputerUse: Schema.optionalKey(Schema.Boolean),
   autoPullDefaultBranch: Schema.optionalKey(Schema.Boolean),
   observability: Schema.optionalKey(
     Schema.Struct({
@@ -528,6 +546,9 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "prHubDefaultMergeMethod",
   "worktreeCleanup",
   "enableAgentBrowserAccess",
+  "previewExternalHosts",
+  "enableClaudeInChrome",
+  "enableAgentComputerUse",
   "autoPullDefaultBranch",
 ] as const satisfies ReadonlyArray<keyof ServerSettings>;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];

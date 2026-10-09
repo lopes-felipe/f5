@@ -40,6 +40,30 @@ export function moveItemInOrder(
   return next;
 }
 
+/** The usage-limit card shows this pending continue, so the queue does not list it twice. */
+export function isFoldedUsageLimitItem(
+  item: NextTurnQueueItem,
+  foldedItemId: CommandId | null,
+): boolean {
+  return (
+    item.itemId === foldedItemId &&
+    item.scheduleReason === "usage_limit_reset" &&
+    (item.status === "queued" || item.status === "dispatching")
+  );
+}
+
+/** Applies a reorder of the visible rows while keeping hidden rows at their original indices. */
+export function mergeVisibleOrder(
+  fullOrder: ReadonlyArray<CommandId>,
+  hiddenIds: ReadonlySet<CommandId>,
+  newVisibleOrder: ReadonlyArray<CommandId>,
+): ReadonlyArray<CommandId> {
+  let visibleIndex = 0;
+  return fullOrder.map((itemId) =>
+    hiddenIds.has(itemId) ? itemId : (newVisibleOrder[visibleIndex++] ?? itemId),
+  );
+}
+
 export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): string | null {
   const fallback = snapshot.reasonDetail;
   switch (snapshot.reasonCode) {

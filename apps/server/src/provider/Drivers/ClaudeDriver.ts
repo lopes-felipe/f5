@@ -35,6 +35,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter, resolveClaudeConfigDir } from "../Layers/ClaudeAdapter.ts";
 import { readClaudeInventory, resolveClaudeUserStatePath } from "../claudeInventory.ts";
@@ -75,6 +76,7 @@ export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | Path.Path
+  | PreviewAutomationBroker
   | ProviderEventLoggers
   | ServerConfig;
 
@@ -154,6 +156,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig.launchArgs,
         instanceId,
       );
+      const previewAutomationBroker = yield* PreviewAutomationBroker;
       // Latest probed models, so launches use the capabilities the CLI reported
       // (the same ones the composer shows) instead of only F5's static table.
       const probedModels = yield* Ref.make<ReadonlyArray<ServerProviderModel>>([]);
@@ -169,6 +172,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             }),
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        previewAutomationBroker,
         oneOffProviderOptions: {
           autoCompactWindow: effectiveConfig.autoCompactWindow,
           resumeCompactionPrompt: effectiveConfig.resumeCompactionPrompt,

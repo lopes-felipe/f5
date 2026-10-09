@@ -11,6 +11,7 @@ import { CommandPalette } from "../components/CommandPalette";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
 import PrAttentionNotificationController from "../components/prHub/PrAttentionNotificationController";
 import { PreviewBrowserHost } from "../components/PreviewBrowserHost";
+import { ComputerUseBanner } from "../components/ComputerUseBanner";
 import ModelRecencyController from "../components/ModelRecencyController";
 import ThreadRecencyController from "../components/ThreadRecencyController";
 import { NextTurnQueueController } from "../components/NextTurnQueueController";
@@ -136,6 +137,7 @@ function ChatRouteLayout() {
         <PreviewBrowserHost>
           <Outlet />
         </PreviewBrowserHost>
+        <ComputerUseBanner />
         <WorkflowCreateDialogHost />
       </CommandPalette>
     </SidebarProvider>

@@ -24,6 +24,7 @@ export * from "./review";
 export * from "./sourceControl";
 export * from "./preview";
 export * from "./previewAutomation";
+export * from "./computerAutomation";
 export * from "./orchestration";
 export * from "./mcp";
 export * from "./mcpServer";

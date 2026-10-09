@@ -37,7 +37,8 @@ import {
   type ProviderSessionCapabilities,
   type OrchestrationUsageLimit,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Stream } from "effect";
+import { Cache, Cause, Duration, Effect, FileSystem, Layer, Option, Path, Stream } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { isBlockingUserInput } from "@t3tools/shared/pendingUserInputs";
 import { reconcileElicitationsOnStartup } from "../elicitationSubmission.ts";
@@ -87,6 +88,11 @@ import {
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
+import {
+  extractToolResultImages,
+  ingestToolResultImage,
+  type ToolResultImageRef,
+} from "../toolResultImages.ts";
 import { validateThreadTaskTracking, validateThreadTasks } from "../threadTasks.ts";
 import {
   abandonPendingTaskToolCalls,
@@ -1038,6 +1044,43 @@ function runtimeErrorMessageFromEvent(event: ProviderRuntimeEvent): string | und
   return payloadMessage;
 }
 
+/** Display shape that lets the work log render one local-time usage-limit row. */
+function usageLimitActivityPayload(
+  event: ProviderRuntimeEvent,
+  windowLabel: string | null,
+  resetsAt: string | null,
+): {
+  provider: ProviderRuntimeEvent["provider"];
+  windowLabel: string | null;
+  resetsAt: string | null;
+} {
+  // Store the provider kind; the client looks up its current display name.
+  return { provider: event.provider, windowLabel, resetsAt };
+}
+
+function usageLimitFromRuntimeError(
+  event: Extract<ProviderRuntimeEvent, { type: "runtime.error" }>,
+) {
+  const limit = event.payload.usageLimit;
+  if (!limit) return undefined;
+  const window =
+    limit.windows.find((candidate) => candidate.label && candidate.resetsAt === limit.resetsAt) ??
+    limit.windows.find((candidate) => candidate.label);
+  return usageLimitActivityPayload(event, window?.label ?? null, limit.resetsAt);
+}
+
+function usageLimitFromRuntimeWarning(
+  event: Extract<ProviderRuntimeEvent, { type: "runtime.warning" }>,
+) {
+  const detail = asRecord(event.payload.detail);
+  if (!detail || typeof detail.rateLimitType !== "string") return undefined;
+  return usageLimitActivityPayload(
+    event,
+    asString(detail.windowLabel) ?? null,
+    asString(detail.resetsAt) ?? null,
+  );
+}
+
 function orchestrationSessionStatusFromRuntimeState(
   state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
@@ -1263,10 +1306,12 @@ function buildCompactToolLifecyclePayload(
     ProviderRuntimeEvent,
     { type: "item.started" | "item.updated" | "item.completed" }
   >,
+  toolImages?: ToolImageRefs,
 ) {
   const fileChangeId = compactFileChangeIdForLifecycleEvent(event);
   const normalizedTitle = commandExecutionLifecycleTitle(event);
   return {
+    ...toolImages,
     itemType: event.payload.itemType,
     ...(event.itemId ? { providerItemId: event.itemId } : {}),
     ...(event.payload.status ? { status: event.payload.status } : {}),
@@ -1282,8 +1327,15 @@ function buildCompactToolLifecyclePayload(
   };
 }
 
-function runtimeEventToActivities(
+/** Screenshot references stored before compaction (see `extractLifecycleImages`). */
+interface ToolImageRefs {
+  readonly mcpImages?: ReadonlyArray<ToolResultImageRef>;
+  readonly mcpImagesOmitted?: number;
+}
+
+export function runtimeEventToActivities(
   event: ProviderRuntimeEvent,
+  toolImages?: ToolImageRefs,
 ): ReadonlyArray<OrchestrationThreadActivity> {
   const maybeSequence = (() => {
     const eventWithSequence = event as ProviderRuntimeEvent & { sessionSequence?: number };
@@ -1819,6 +1871,7 @@ function runtimeEventToActivities(
       if (!message) {
         return [];
       }
+      const usageLimit = usageLimitFromRuntimeError(event);
       return [
         {
           id: event.eventId,
@@ -1828,6 +1881,7 @@ function runtimeEventToActivities(
           summary: "Runtime error",
           payload: {
             message: truncateDetail(message),
+            ...(usageLimit ? { usageLimit } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1836,6 +1890,7 @@ function runtimeEventToActivities(
     }
 
     case "runtime.warning": {
+      const usageLimit = usageLimitFromRuntimeWarning(event);
       return [
         {
           id: event.eventId,
@@ -1864,6 +1919,7 @@ function runtimeEventToActivities(
               ? { protocolMethod: event.payload.protocolMethod }
               : {}),
             ...(event.payload.protocolValue ? { protocolValue: event.payload.protocolValue } : {}),
+            ...(usageLimit ? { usageLimit } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2085,7 +2141,7 @@ function runtimeEventToActivities(
           summary: normalizedTitle ?? "Tool updated",
           payload: compactThreadActivityPayload({
             kind: "tool.updated",
-            payload: buildCompactToolLifecyclePayload(event),
+            payload: buildCompactToolLifecyclePayload(event, toolImages),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2113,7 +2169,7 @@ function runtimeEventToActivities(
           summary: normalizedTitle ?? "Tool",
           payload: compactThreadActivityPayload({
             kind: "tool.completed",
-            payload: buildCompactToolLifecyclePayload(event),
+            payload: buildCompactToolLifecyclePayload(event, toolImages),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2138,7 +2194,7 @@ function runtimeEventToActivities(
           summary: `${normalizedTitle ?? "Tool"} started`,
           payload: compactThreadActivityPayload({
             kind: "tool.started",
-            payload: buildCompactToolLifecyclePayload(event),
+            payload: buildCompactToolLifecyclePayload(event, toolImages),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -2168,6 +2224,74 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
+  const imageStorage = {
+    config: yield* Effect.serviceOption(ServerConfig),
+    sql: yield* Effect.serviceOption(SqlClient.SqlClient),
+    fileSystem: yield* Effect.serviceOption(FileSystem.FileSystem),
+    path: yield* Effect.serviceOption(Path.Path),
+  };
+
+  /**
+   * Tool results can carry base64 screenshots. Before the lifecycle event is compacted
+   * into an activity, they are moved into the attachment registry (owned by the activity)
+   * and the event keeps only a scrubbed result, so durable activities never hold image
+   * bytes and compaction cannot serialize them into `mcpResult`.
+   */
+  const extractLifecycleImages = (
+    threadId: ThreadId,
+    event: ProviderRuntimeEvent,
+  ): Effect.Effect<{ readonly event: ProviderRuntimeEvent; readonly images?: ToolImageRefs }> => {
+    if (
+      (event.type !== "item.started" &&
+        event.type !== "item.updated" &&
+        event.type !== "item.completed") ||
+      event.payload.data === undefined
+    ) {
+      return Effect.succeed({ event });
+    }
+    const extraction = extractToolResultImages(event.payload.data);
+    if (extraction.images.length === 0 && extraction.omitted === 0) {
+      return Effect.succeed({ event });
+    }
+    return Effect.gen(function* () {
+      const refs: ToolResultImageRef[] = [];
+      let omitted = extraction.omitted;
+      const { config, sql, fileSystem, path } = imageStorage;
+      for (const image of extraction.images) {
+        if (
+          Option.isNone(config) ||
+          Option.isNone(sql) ||
+          Option.isNone(fileSystem) ||
+          Option.isNone(path)
+        ) {
+          omitted += 1;
+          continue;
+        }
+        const ref = yield* ingestToolResultImage({
+          attachmentsDir: config.value.attachmentsDir,
+          threadId,
+          itemKey: event.itemId ?? event.eventId,
+          // Lifecycle activities are keyed by their event id.
+          activityId: event.eventId,
+          image,
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql.value),
+          Effect.provideService(FileSystem.FileSystem, fileSystem.value),
+          Effect.provideService(Path.Path, path.value),
+          Effect.catchCause(() => Effect.succeed(null)),
+        );
+        if (ref) refs.push(ref);
+        else omitted += 1;
+      }
+      return {
+        event: { ...event, payload: { ...event.payload, data: extraction.scrubbed } },
+        images: {
+          ...(refs.length > 0 ? { mcpImages: refs } : {}),
+          ...(omitted > 0 ? { mcpImagesOmitted: omitted } : {}),
+        },
+      };
+    });
+  };
   const profiledTurnWatchdogs = new Map<
     ThreadId,
     { readonly turnId: TurnId; readonly timer: ReturnType<typeof setTimeout> }
@@ -4858,7 +4982,8 @@ const make = Effect.gen(function* () {
         }
       }
 
-      const activities = runtimeEventToActivities(event);
+      const lifecycle = yield* extractLifecycleImages(thread.id, event);
+      const activities = runtimeEventToActivities(lifecycle.event, lifecycle.images);
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",

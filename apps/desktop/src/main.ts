@@ -1,6 +1,16 @@
 import { profilePreviewPartition } from "./profileRuntime";
 import { CaptureShortcut } from "./snapShot/CaptureShortcut";
 import { captureBoundedPage } from "./preview/capture";
+import {
+  PreviewAutomationControl,
+  PreviewDiagnostics,
+  assertSnapshotResponseSize,
+  boundSnapshotPageData,
+  chunkTypedText,
+  encodeBoundedPreviewImage,
+  taggedAutomationError,
+  type PreviewAutomationCheckpoint,
+} from "./preview/automationControl";
 import { pathToFileURL } from "node:url";
 import { installGuestControls } from "./preview/guestControls";
 import { BrowserProfiles } from "./preview/BrowserProfiles";
@@ -10,6 +20,7 @@ import { captureMacWindow } from "./snapShot/MacSnapShot";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
 import { closeWindowsForQuit } from "./quitPreflight";
 import { installDesktopAttention } from "./desktopAttention";
+import { registerComputerAutomationIpc } from "./computerAutomation";
 import type { ProfileRecord } from "@t3tools/contracts";
 import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
 import {
@@ -55,6 +66,7 @@ import type {
   PreviewAutomationPressInput,
   PreviewAutomationScrollInput,
   PreviewAutomationSnapshot,
+  PreviewAutomationActionGeometry,
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
@@ -66,7 +78,11 @@ import { autoUpdater } from "electron-updater";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
-import { normalizePreviewUrl } from "@t3tools/shared/preview";
+import {
+  isLoopbackPreviewHost,
+  normalizePreviewUrl,
+  validatePreviewHostPatterns,
+} from "@t3tools/shared/preview";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
 import {
@@ -287,6 +303,8 @@ function browserStore(ownerId: number) {
   return store;
 }
 const previewTabs = previewRuntime.tabs;
+const previewAutomationControl = new PreviewAutomationControl();
+const previewDiagnostics = new PreviewDiagnostics();
 interface PreviewRecordingOwnership {
   readonly ownerWebContentsId: number;
   readonly scopedTabId: string;
@@ -367,15 +385,74 @@ function getSafeExternalUrl(rawUrl: unknown): string | null {
   return parsedUrl.toString();
 }
 
-function getSafePreviewUrl(rawUrl: unknown): string | null {
+function getSafePreviewUrl(
+  rawUrl: unknown,
+  externalHosts: ReadonlyArray<string> = [],
+): string | null {
   if (typeof rawUrl !== "string" || rawUrl.length === 0) {
     return null;
   }
 
   try {
-    return normalizePreviewUrl(rawUrl);
+    return normalizePreviewUrl(rawUrl, { externalHosts });
   } catch {
     return null;
+  }
+}
+
+function previewTabExternalHosts(tabId: string): ReadonlyArray<string> {
+  return lookupPreviewTabEntry(tabId)?.externalHosts ?? [];
+}
+
+function hostOfUrl(url: string): string | undefined {
+  try {
+    return new URL(url).hostname || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A click or agent navigation can start its page load after the action returns; loads
+ * that start in this window keep agent provenance until they settle, however slow.
+ */
+const AGENT_NAVIGATION_GRACE_MS = 10_000;
+
+function markAgentNavigation(tabId: string): void {
+  const entry = lookupPreviewTabEntry(tabId);
+  if (entry) entry.agentNavigationUntil = Date.now() + AGENT_NAVIGATION_GRACE_MS;
+}
+
+/** Agent-driven navigations are blocked with `external-blocked`, never handed to the system browser. */
+function isAgentPreviewNavigation(tabId: string): boolean {
+  if (previewAutomationControl.isActive(tabId)) return true;
+  const entry = lookupPreviewTabEntry(tabId);
+  return entry?.agentNavigationActive === true || (entry?.agentNavigationUntil ?? 0) > Date.now();
+}
+
+function recordBlockedAgentNavigation(tabId: string, url: string): void {
+  const entry = lookupPreviewTabEntry(tabId);
+  if (entry) entry.blockedHost = hostOfUrl(url) ?? url;
+}
+
+/** Fails an automation action when the tab is showing a page outside the allowed sites. */
+function requireAllowedPreviewPage(tabId: string, guest: Electron.WebContents): void {
+  const entry = lookupPreviewTabEntry(tabId);
+  const blockedHost = entry?.blockedHost;
+  if (entry && blockedHost) {
+    entry.blockedHost = null;
+    throw taggedAutomationError(
+      "PreviewAutomationNavigationBlockedError",
+      `Navigation to ${blockedHost} was blocked because it is not in the allowed sites list.`,
+    );
+  }
+  const url = guest.getURL();
+  if (!url || url === "about:blank") return;
+  if (!getSafePreviewUrl(url, previewTabExternalHosts(tabId))) {
+    throw taggedAutomationError(
+      "PreviewAutomationNavigationBlockedError",
+      `The preview is showing ${hostOfUrl(url) ?? "a page"}, which is not in the allowed sites list.`,
+    );
   }
 }
 
@@ -537,13 +614,29 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   // Preserve the new-tab zoom default rather than inheriting an unrelated guest zoom.
 
   const owner = guest.hostWebContents ? BrowserWindow.fromWebContents(guest.hostWebContents) : null;
-  if (owner)
-    registerPreviewWindowOpen(guest, owner, (url) => {
-      const id = owner.webContents.id;
-      if (previewLinkTargets.get(id) === "preview")
-        owner.webContents.send("desktop-preview:open-link", url);
-      else void shell.openExternal(url);
-    });
+  if (owner) {
+    const popups = registerPreviewWindowOpen(
+      guest,
+      owner,
+      (url) => {
+        const id = owner.webContents.id;
+        if (previewLinkTargets.get(id) === "preview")
+          owner.webContents.send("desktop-preview:open-link", url);
+        else void shell.openExternal(url);
+      },
+      (delta) => {
+        const currentEntry = lookupPreviewTabEntry(tabId);
+        if (currentEntry)
+          currentEntry.popupCount = Math.max(0, (currentEntry.popupCount ?? 0) + delta);
+      },
+      {
+        isAgentNavigation: () => isAgentPreviewNavigation(tabId),
+        isAllowedUrl: (url) => getSafePreviewUrl(url, previewTabExternalHosts(tabId)) !== null,
+        onBlocked: (url) => recordBlockedAgentNavigation(tabId, url),
+      },
+    );
+    entry.enforcePopupPolicy = popups.enforcePolicy;
+  }
   guest.setZoomFactor(entry.zoomFactor);
   guest.setAudioMuted(entry.muted ?? false);
   installGuestControls(guest);
@@ -585,6 +678,15 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   });
 
   const onState = () => emitPreviewState(tabId);
+  const onStopLoading = () => {
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (currentEntry?.agentNavigationActive) {
+      currentEntry.agentNavigationActive = false;
+      // Script redirects right after an agent load are still the agent's.
+      markAgentNavigation(tabId);
+    }
+    emitPreviewState(tabId);
+  };
   const onNavigationStart = () => {
     const currentEntry = lookupPreviewTabEntry(tabId);
     if (currentEntry?.webContentsId === webContentsId) {
@@ -632,16 +734,73 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
         }
       });
   };
-  const onWillNavigate = (event: Electron.Event, url: string) => {
-    const previewUrl = getSafePreviewUrl(url);
-    if (previewUrl) {
-      return;
+  const blockDisallowedNavigation = (url: string): boolean => {
+    if (getSafePreviewUrl(url, previewTabExternalHosts(tabId))) return false;
+    if (isAgentPreviewNavigation(tabId)) {
+      // Agent-driven navigation never escapes to the system browser.
+      recordBlockedAgentNavigation(tabId, url);
+      return true;
     }
     const externalUrl = getSafeExternalUrl(url);
     if (externalUrl) {
       void shell.openExternal(externalUrl);
     }
-    event.preventDefault();
+    return true;
+  };
+  const onWillNavigate = (event: Electron.Event, url: string) => {
+    if (blockDisallowedNavigation(url)) event.preventDefault();
+  };
+  const onWillRedirect = (details: Electron.Event<Electron.WebContentsWillRedirectEventParams>) => {
+    if (!details.isMainFrame) return;
+    if (blockDisallowedNavigation(details.url)) details.preventDefault();
+  };
+  const onDidStartNavigation = (
+    details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+  ) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    // A load that starts agent-driven stays so through every redirect until it settles.
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (currentEntry && isAgentPreviewNavigation(tabId)) currentEntry.agentNavigationActive = true;
+    // F5 itself loads about:blank to leave pages the allowlist no longer permits.
+    if (details.url === "about:blank") return;
+    // Backstop for navigations that bypass will-navigate (history, reload, renderer-initiated).
+    if (getSafePreviewUrl(details.url, previewTabExternalHosts(tabId))) return;
+    if (isAgentPreviewNavigation(tabId)) recordBlockedAgentNavigation(tabId, details.url);
+    guest.stop();
+  };
+  const onConsoleMessage = (
+    details: Electron.Event<Electron.WebContentsConsoleMessageEventParams>,
+  ) => {
+    previewDiagnostics.recordConsole(tabId, {
+      level: details.level,
+      text: details.message,
+      ...(details.sourceId ? { source: `${details.sourceId}:${details.lineNumber}` } : {}),
+    });
+  };
+  const onDidNavigate = (_event: Electron.Event, url: string, httpResponseCode: number) => {
+    previewDiagnostics.recordNetwork(tabId, {
+      url,
+      method: "GET",
+      status: httpResponseCode > 0 ? httpResponseCode : null,
+      failed: httpResponseCode >= 400,
+    });
+    emitPreviewState(tabId);
+  };
+  const onDidFailLoad = (
+    _event: Electron.Event,
+    errorCode: number,
+    errorDescription: string,
+    validatedURL: string,
+  ) => {
+    // -3 is ERR_ABORTED, which every superseded navigation reports.
+    if (errorCode === -3) return;
+    previewDiagnostics.recordNetwork(tabId, {
+      url: validatedURL,
+      method: "GET",
+      status: null,
+      failed: true,
+      errorText: errorDescription,
+    });
   };
   const onDestroyed = () => {
     const current = previewTabs.get(tabId);
@@ -656,21 +815,29 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   };
 
   guest.on("did-start-loading", onNavigationStart);
-  guest.on("did-stop-loading", onState);
-  guest.on("did-navigate", onState);
+  guest.on("did-stop-loading", onStopLoading);
+  guest.on("did-navigate", onDidNavigate);
   guest.on("did-navigate-in-page", onState);
   guest.on("page-title-updated", onState);
   guest.on("page-favicon-updated", onFaviconUpdated);
   guest.on("will-navigate", onWillNavigate);
+  guest.on("will-redirect", onWillRedirect);
+  guest.on("did-start-navigation", onDidStartNavigation);
+  guest.on("console-message", onConsoleMessage);
+  guest.on("did-fail-load", onDidFailLoad);
   guest.on("destroyed", onDestroyed);
   entry.removeListeners.push(
     () => guest.off("did-start-loading", onNavigationStart),
-    () => guest.off("did-stop-loading", onState),
-    () => guest.off("did-navigate", onState),
+    () => guest.off("did-stop-loading", onStopLoading),
+    () => guest.off("did-navigate", onDidNavigate),
     () => guest.off("did-navigate-in-page", onState),
     () => guest.off("page-title-updated", onState),
     () => guest.off("page-favicon-updated", onFaviconUpdated),
     () => guest.off("will-navigate", onWillNavigate),
+    () => guest.off("will-redirect", onWillRedirect),
+    () => guest.off("did-start-navigation", onDidStartNavigation),
+    () => guest.off("console-message", onConsoleMessage),
+    () => guest.off("did-fail-load", onDidFailLoad),
     () => guest.off("destroyed", onDestroyed),
   );
   emitPreviewState(tabId);
@@ -695,6 +862,8 @@ function closePreviewTab(tabId: string): void {
   }
   const owner = previewOwnerWebContents(tabId);
   previewTabs.delete(tabId);
+  previewAutomationControl.forget(tabId);
+  previewDiagnostics.forget(tabId);
   lastPreviewStateEmissionByTabId.delete(tabId);
   owner?.send(
     PREVIEW_STATE_CHANNEL,
@@ -1003,6 +1172,10 @@ function requirePreviewWebContents(tabId: unknown): Electron.WebContents {
   return guest;
 }
 
+/**
+ * Reports the renderer's tab id, never the window-scoped one: the broker sends result
+ * tab ids back as later targets, and a scoped id would be scoped again and miss.
+ */
 function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
   const guest = getPreviewWebContents(tabId);
   if (!guest) {
@@ -1010,20 +1183,103 @@ function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
     return {
       available: false,
       visible: false,
-      tabId: entry ? tabId : null,
+      tabId: entry ? clientPreviewTabId(tabId) : null,
       url: null,
       title: null,
       loading: false,
     };
   }
+  const entry = lookupPreviewTabEntry(tabId);
+  const popupOpen = (entry?.popupCount ?? 0) > 0;
   return {
     available: true,
     visible: true,
-    tabId,
+    tabId: clientPreviewTabId(tabId),
     url: guest.getURL() || null,
     title: guest.getTitle() || null,
     loading: guest.isLoading(),
+    ...(popupOpen ? { popupOpen } : {}),
+    ...(entry?.blockedHost ? { reason: "external-blocked" as const } : {}),
   };
+}
+
+/**
+ * Runs one agent action on a tab: serialized behind earlier actions, recorded in the action
+ * timeline, interruptible by the user, and re-checked against the allowed sites list.
+ */
+async function runPreviewAutomationAction<T>(
+  tabId: string,
+  action: string,
+  run: (guest: Electron.WebContents, checkpoint: PreviewAutomationCheckpoint) => Promise<T>,
+): Promise<T> {
+  const complete = previewDiagnostics.startAction(tabId, action);
+  try {
+    const result = await previewAutomationControl.run(tabId, async (checkpoint) => {
+      const guest = requirePreviewWebContents(tabId);
+      requireAllowedPreviewPage(tabId, guest);
+      markAgentNavigation(tabId);
+      try {
+        const value = await run(guest, checkpoint);
+        requireAllowedPreviewPage(tabId, guest);
+        return value;
+      } finally {
+        // The page load a click triggers may start after the action returns.
+        markAgentNavigation(tabId);
+      }
+    });
+    complete("succeeded");
+    return result;
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    complete(
+      message.includes("PreviewAutomationControlInterruptedError") ? "interrupted" : "failed",
+      message,
+    );
+    throw cause;
+  }
+}
+
+function cancelPreviewAutomation(tabId: string): void {
+  previewAutomationControl.cancel(tabId);
+  // The user took over: their own navigations are theirs again.
+  const entry = lookupPreviewTabEntry(tabId);
+  if (!entry) return;
+  entry.agentNavigationUntil = 0;
+  if (entry.agentNavigationActive) {
+    entry.agentNavigationActive = false;
+    // A slow agent load must not replace the page the user now controls.
+    getPreviewWebContents(tabId)?.stop();
+  }
+}
+
+/** A small JPEG of the visible page for the live agent card; never sent to providers. */
+async function capturePreviewThumbnail(tabId: string): Promise<string | null> {
+  const guest = getPreviewWebContents(tabId);
+  if (!guest) return null;
+  const image = await captureBoundedPage(guest, undefined, 3_000).catch(() => null);
+  if (!image) return null;
+  const size = image.getSize();
+  const thumbnail = size.width > 480 ? image.resize({ width: 480 }) : image;
+  return `data:image/jpeg;base64,${thumbnail.toJPEG(60).toString("base64")}`;
+}
+
+function setPreviewNavigationPolicy(tabId: string, externalHosts: unknown): boolean {
+  const entry = ensurePreviewTabEntry(tabId);
+  if (!entry || !Array.isArray(externalHosts)) return false;
+  const hosts = externalHosts.filter((host): host is string => typeof host === "string");
+  // Malformed patterns never widen reach; the whole update is rejected instead.
+  if (hosts.length !== externalHosts.length || validatePreviewHostPatterns(hosts).length > 0)
+    return false;
+  entry.externalHosts = hosts;
+  entry.enforcePopupPolicy?.();
+  const guest = getPreviewWebContents(tabId);
+  const url = guest?.getURL();
+  if (guest && url && url !== "about:blank" && !getSafePreviewUrl(url, hosts)) {
+    // The allowlist shrank under an open external page: leave it immediately.
+    guest.stop();
+    void guest.loadURL("about:blank").catch(() => undefined);
+  }
+  return true;
 }
 
 function automationSelectorResolverScript(input: {
@@ -1150,10 +1406,16 @@ async function previewAutomationSnapshot(
   save = false,
 ): Promise<PreviewAutomationSnapshot> {
   const guest = requirePreviewWebContents(tabId);
-  const page = await executePreviewJavaScript<Omit<PreviewAutomationSnapshot, "screenshot">>(
-    guest,
-    buildPreviewAutomationSnapshotScript(),
-  );
+  requireAllowedPreviewPage(tabId, guest);
+  const scriptedPage = await executePreviewJavaScript<
+    Omit<PreviewAutomationSnapshot, "screenshot">
+  >(guest, buildPreviewAutomationSnapshotScript());
+  const popupOpen = (lookupPreviewTabEntry(tabId)?.popupCount ?? 0) > 0;
+  const page = boundSnapshotPageData({
+    ...scriptedPage,
+    ...previewDiagnostics.read(tabId),
+    ...(popupOpen ? { popupOpen } : {}),
+  });
   const viewport = normalizePickViewport(
     await executePreviewJavaScript<unknown>(
       guest,
@@ -1168,26 +1430,31 @@ async function previewAutomationSnapshot(
     : null;
   const image = await captureBoundedPage(guest, rect ?? undefined);
   const size = image.getSize();
-  const png = image.toPNG();
-  return {
+  const encoded = encodeBoundedPreviewImage(image);
+  return assertSnapshotResponseSize({
     ...page,
     ...(save
       ? {
-          savedScreenshot: await previewRuntime.saveScreenshot(png, size.width, size.height),
+          savedScreenshot: await previewRuntime.saveScreenshot(
+            image.toPNG(),
+            size.width,
+            size.height,
+          ),
         }
       : {}),
     screenshot: {
-      mimeType: "image/png",
-      data: png.toString("base64"),
-      width: size.width,
-      height: size.height,
+      mimeType: encoded.mimeType,
+      data: encoded.bytes.toString("base64"),
+      width: encoded.width,
+      height: encoded.height,
     },
-  };
+  });
 }
 
 async function resolveAutomationClickPoint(
   guest: Electron.WebContents,
   input: PreviewAutomationClickInput,
+  checkpoint: PreviewAutomationCheckpoint,
 ): Promise<{ x: number; y: number }> {
   if (typeof input.x === "number" && typeof input.y === "number") {
     return { x: input.x, y: input.y };
@@ -1195,6 +1462,7 @@ async function resolveAutomationClickPoint(
   const timeoutMs = input.timeoutMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
   while (true) {
+    checkpoint.check();
     const result = await executePreviewJavaScript<
       { ok: true; x: number; y: number } | { ok: false; message: string }
     >(
@@ -1221,40 +1489,49 @@ async function resolveAutomationClickPoint(
 async function previewAutomationClick(
   tabId: string,
   input: PreviewAutomationClickInput,
-): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
-  const point = await resolveAutomationClickPoint(guest, input);
-  guest.sendInputEvent({ type: "mouseMove", x: Math.round(point.x), y: Math.round(point.y) });
-  guest.sendInputEvent({
-    type: "mouseDown",
-    x: Math.round(point.x),
-    y: Math.round(point.y),
-    button: "left",
-    clickCount: 1,
-  });
-  guest.sendInputEvent({
-    type: "mouseUp",
-    x: Math.round(point.x),
-    y: Math.round(point.y),
-    button: "left",
-    clickCount: 1,
+): Promise<PreviewAutomationActionGeometry> {
+  return runPreviewAutomationAction(tabId, "click", async (guest, checkpoint) => {
+    const point = await resolveAutomationClickPoint(guest, input, checkpoint);
+    const x = Math.round(point.x);
+    const y = Math.round(point.y);
+    checkpoint.check();
+    guest.sendInputEvent({ type: "mouseMove", x, y });
+    guest.sendInputEvent({ type: "mouseDown", x, y, button: "left", clickCount: 1 });
+    guest.sendInputEvent({ type: "mouseUp", x, y, button: "left", clickCount: 1 });
+    return { point: { x, y } };
   });
 }
 
 async function previewAutomationType(
   tabId: string,
   input: PreviewAutomationTypeInput,
-): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
+): Promise<PreviewAutomationActionGeometry> {
+  return runPreviewAutomationAction(tabId, "type", (guest, checkpoint) =>
+    typeIntoPreview(guest, input, checkpoint),
+  );
+}
+
+async function typeIntoPreview(
+  guest: Electron.WebContents,
+  input: PreviewAutomationTypeInput,
+  checkpoint: PreviewAutomationCheckpoint,
+): Promise<PreviewAutomationActionGeometry> {
   const timeoutMs = input.timeoutMs ?? 15_000;
   const deadline = Date.now() + timeoutMs;
+  let rect: { x: number; y: number; width: number; height: number } | null = null;
   while (true) {
-    const focused = await executePreviewJavaScript<boolean>(
+    checkpoint.check();
+    rect = await executePreviewJavaScript<{
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    } | null>(
       guest,
       `(() => {
         ${automationSelectorResolverScript(input)}
         const element = targetFromSelectorOrLocator();
-        if (!element) return false;
+        if (!element) return null;
         window.__f5PreviewAutomationTypeTarget = element;
         element.focus();
         if (${input.clear === true ? "true" : "false"}) {
@@ -1262,10 +1539,13 @@ async function previewAutomationType(
           else if (element.isContentEditable) element.textContent = "";
           element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
         }
-        return true;
+        const bounds = element.getBoundingClientRect?.();
+        return bounds
+          ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+          : { x: 0, y: 0, width: 0, height: 0 };
       })()`,
     );
-    if (focused) {
+    if (rect) {
       break;
     }
     if (Date.now() >= deadline) {
@@ -1273,7 +1553,11 @@ async function previewAutomationType(
     }
     await waitPreviewAutomationPoll();
   }
-  await guest.insertText(input.text);
+  // Chunked so a take-over stops typing between chunks instead of after the whole string.
+  for (const chunk of chunkTypedText(input.text)) {
+    checkpoint.check();
+    await guest.insertText(chunk);
+  }
   await executePreviewJavaScript(
     guest,
     `(() => {
@@ -1284,6 +1568,7 @@ async function previewAutomationType(
       element?.dispatchEvent(new Event("change", { bubbles: true }));
     })()`,
   );
+  return { rect };
 }
 
 function electronModifiers(
@@ -1323,38 +1608,60 @@ async function previewAutomationPress(
   tabId: string,
   input: PreviewAutomationPressInput,
 ): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
   const modifiers = electronModifiers(input.modifiers);
   const keyCode = previewAutomationKeyCode(input.key);
-  guest.sendInputEvent({ type: "keyDown", keyCode, modifiers });
-  guest.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+  await runPreviewAutomationAction(tabId, "press", async (guest, checkpoint) => {
+    checkpoint.check();
+    guest.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+    guest.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+  });
 }
 
 async function previewAutomationScroll(
   tabId: string,
   input: PreviewAutomationScrollInput,
 ): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
-  const result = await executePreviewJavaScript<boolean>(
-    guest,
-    `(() => {
-      ${automationSelectorResolverScript(input)}
-      const target = ${input.selector || input.locator ? "targetFromSelectorOrLocator()" : "window"};
-      if (!target) return false;
-      target.scrollBy({ left: ${input.deltaX ?? 0}, top: ${input.deltaY ?? 0}, behavior: "instant" });
-      return true;
-    })()`,
-  );
-  if (!result) {
-    throw new Error("No element matched the requested preview target.");
-  }
+  await runPreviewAutomationAction(tabId, "scroll", async (guest, checkpoint) => {
+    checkpoint.check();
+    const result = await executePreviewJavaScript<boolean>(
+      guest,
+      `(() => {
+        ${automationSelectorResolverScript(input)}
+        const target = ${input.selector || input.locator ? "targetFromSelectorOrLocator()" : "window"};
+        if (!target) return false;
+        target.scrollBy({ left: ${input.deltaX ?? 0}, top: ${input.deltaY ?? 0}, behavior: "instant" });
+        return true;
+      })()`,
+    );
+    if (!result) {
+      throw new Error("No element matched the requested preview target.");
+    }
+  });
 }
 
 async function previewAutomationEvaluate(
   tabId: string,
   input: PreviewAutomationEvaluateInput,
 ): Promise<unknown> {
-  const guest = requirePreviewWebContents(tabId);
+  return runPreviewAutomationAction(tabId, "evaluate", (guest, checkpoint) =>
+    evaluateInPreview(guest, input, checkpoint),
+  );
+}
+
+async function evaluateInPreview(
+  guest: Electron.WebContents,
+  input: PreviewAutomationEvaluateInput,
+  checkpoint: PreviewAutomationCheckpoint,
+): Promise<unknown> {
+  // Arbitrary script runs only against the user's own loopback apps, never allowed external sites.
+  const host = hostOfUrl(guest.getURL());
+  if (host && !isLoopbackPreviewHost(host)) {
+    throw taggedAutomationError(
+      "PreviewAutomationNavigationBlockedError",
+      `preview_evaluate is only available on local development servers, not ${host}.`,
+    );
+  }
+  checkpoint.check();
   const timeoutMs = input.timeoutMs ?? PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS;
   const result = await executePreviewJavaScript(
     guest,
@@ -1381,7 +1688,10 @@ async function previewAutomationEvaluate(
     serialized &&
     Buffer.byteLength(serialized, "utf8") > PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES
   ) {
-    throw new Error(`Evaluation result exceeds ${PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES} bytes.`);
+    throw taggedAutomationError(
+      "PreviewAutomationResultTooLargeError",
+      `Evaluation result exceeds ${PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES} bytes.`,
+    );
   }
   return result;
 }
@@ -1390,8 +1700,6 @@ async function previewAutomationWaitFor(
   tabId: string,
   input: PreviewAutomationWaitForInput,
 ): Promise<void> {
-  const guest = requirePreviewWebContents(tabId);
-  const deadline = Date.now() + (input.timeoutMs ?? 15_000);
   const checkScript = `(() => {
     ${automationSelectorResolverScript(input)}
     const selectorMatched = ${input.selector || input.locator ? "targetFromSelectorOrLocator() !== null" : "true"};
@@ -1399,8 +1707,13 @@ async function previewAutomationWaitFor(
     const urlMatched = ${input.urlIncludes ? `location.href.includes(${JSON.stringify(input.urlIncludes)})` : "true"};
     return selectorMatched && textMatched && urlMatched;
   })()`;
+  // Waits observe, so they stay out of the action queue: a click that satisfies the wait
+  // must not queue behind it. Take over still stops the poll loop at its next checkpoint.
+  const checkpoint = previewAutomationControl.checkpoint(tabId);
+  const deadline = Date.now() + (input.timeoutMs ?? 15_000);
   while (Date.now() < deadline) {
-    if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
+    checkpoint.check();
+    if (await executePreviewJavaScript<boolean>(requirePreviewWebContents(tabId), checkScript)) {
       return;
     }
     await waitPreviewAutomationPoll();
@@ -2929,15 +3242,23 @@ function registerIpcHandlers(): void {
           return false;
         return registerPreviewWebContents(scopedTabId, webContentsId);
       },
-      navigate: async (tabId, rawUrl) => {
-        const guest = getPreviewWebContents(scopeTabId(tabId));
-        const url = getSafePreviewUrl(rawUrl);
+      navigate: async (tabId, rawUrl, agent) => {
+        const scopedTabId = scopeTabId(tabId);
+        const guest = getPreviewWebContents(scopedTabId);
+        const url = getSafePreviewUrl(rawUrl, previewTabExternalHosts(scopedTabId));
         if (!guest || !url) throw new Error("Preview navigation target is invalid.");
+        // Redirects from an agent's navigation are blocked, never opened externally.
+        if (agent) markAgentNavigation(scopedTabId);
+        // Take over stops a pending agent load (as ERR_FAILED); tell the agent it was
+        // interrupted rather than report success or a load failure.
+        const takeover = agent ? previewAutomationControl.checkpoint(scopedTabId) : null;
         try {
           await guest.loadURL(url);
         } catch (error) {
+          takeover?.check();
           if (!isPreviewNavigationAbortError(error)) throw error;
         }
+        takeover?.check();
       },
       goBack: (tabId) => {
         const guest = getPreviewWebContents(scopeTabId(tabId));
@@ -2965,6 +3286,10 @@ function registerIpcHandlers(): void {
       automationScroll: (tabId, input) => previewAutomationScroll(scopeTabId(tabId), input),
       automationEvaluate: (tabId, input) => previewAutomationEvaluate(scopeTabId(tabId), input),
       automationWaitFor: (tabId, input) => previewAutomationWaitFor(scopeTabId(tabId), input),
+      automationCancel: (tabId) => cancelPreviewAutomation(scopeTabId(tabId)),
+      setNavigationPolicy: (tabId, externalHosts) =>
+        setPreviewNavigationPolicy(scopeTabId(tabId), externalHosts),
+      captureThumbnail: (tabId) => capturePreviewThumbnail(scopeTabId(tabId)),
       setViewport: (tabId, viewport) => previewRuntime.setViewport(scopeTabId(tabId), viewport),
       setColorScheme: (tabId, colorScheme) =>
         previewRuntime.setColorScheme(scopeTabId(tabId), colorScheme),
@@ -3065,11 +3390,12 @@ function createWindow(
       event.preventDefault();
       return;
     }
-    const src = typeof params.src === "string" ? params.src : "";
-    if (src.length > 0 && src !== "about:blank" && !getSafePreviewUrl(src)) {
-      event.preventDefault();
-      return;
-    }
+    // Every guest attaches blank, even loopback: a local page could redirect elsewhere
+    // before this tab's allowlist and navigation listeners exist. The renderer navigates
+    // once the guest registers and those are in place.
+    params.src = "about:blank";
+    // Agent-driven previews may be hidden or headless; keep timers and rendering running.
+    webPreferences.backgroundThrottling = false;
     webPreferences.sandbox = true;
     webPreferences.nodeIntegration = false;
     webPreferences.nodeIntegrationInSubFrames = false;
@@ -3244,6 +3570,7 @@ async function bootstrap(): Promise<void> {
 }
 
 installDesktopAttention((id) => profileByWebContentsId.get(id));
+registerComputerAutomationIpc(ipcMain);
 
 let shutdownPending = false;
 let shutdownComplete = false;

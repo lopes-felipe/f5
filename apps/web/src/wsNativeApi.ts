@@ -482,6 +482,23 @@ export function createWsNativeApi(): NativeApi {
             previewAutomationRequestListeners.delete(callback);
           };
         },
+        setPaused: (input) => transport.request(WS_METHODS.previewAutomationSetPaused, input),
+        onOwnerRequested: (callback) =>
+          transport.subscribe(WS_CHANNELS.previewAutomationOwnerRequested, (message) =>
+            callback(message.data),
+          ),
+        onOwnerReleased: (callback) =>
+          transport.subscribe(WS_CHANNELS.previewAutomationOwnerReleased, (message) =>
+            callback(message.data),
+          ),
+        onPauseChanged: (callback) =>
+          transport.subscribe(WS_CHANNELS.previewAutomationPauseChanged, (message) =>
+            callback(message.data),
+          ),
+        onComputerUseChanged: (callback) =>
+          transport.subscribe(WS_CHANNELS.agentComputerUseChanged, (message) =>
+            callback(message.data),
+          ),
       },
       onEvent: (callback) => {
         previewEventListeners.add(callback);

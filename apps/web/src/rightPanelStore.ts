@@ -34,6 +34,15 @@ export interface OpenFileSurfaceInput {
 interface RightPanelStoreState {
   byThreadId: Record<string, ThreadRightPanelState>;
   open: (threadId: ThreadId, kind: Exclude<RightPanelSurfaceKind, "file">) => void;
+  /**
+   * Adds a surface tab without opening the panel or changing the active tab unless
+   * `activate` is set. Agent-initiated surfaces use this so they never steal focus.
+   */
+  addSurface: (
+    threadId: ThreadId,
+    kind: Exclude<RightPanelSurfaceKind, "file">,
+    options?: { readonly activate?: boolean },
+  ) => void;
   openDirectory: (threadId: ThreadId, relativePath: string) => void;
   openFile: (threadId: ThreadId, input: OpenFileSurfaceInput) => RightPanelSurface;
   activateSurface: (threadId: ThreadId, surfaceId: string) => void;
@@ -132,6 +141,19 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
       byThreadId: updateThread(state.byThreadId, threadId, (current) =>
         upsertSurface(current, singletonSurface(kind)),
       ),
+    })),
+  addSurface: (threadId, kind, options) =>
+    set((state) => ({
+      byThreadId: updateThread(state.byThreadId, threadId, (current) => {
+        const surface = singletonSurface(kind);
+        if (options?.activate) return upsertSurface(current, surface);
+        if (current.surfaces.some((entry) => entry.id === surface.id)) return current;
+        return {
+          ...current,
+          surfaces: [...current.surfaces, surface],
+          activeSurfaceId: current.activeSurfaceId ?? surface.id,
+        };
+      }),
     })),
   openDirectory: (threadId, relativePath) =>
     set((state) => ({

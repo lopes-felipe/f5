@@ -1,3 +1,4 @@
+import { parsePreviewHostPattern } from "./preview";
 import { resolveTextGenerationProvider } from "./serverSettings";
 import {
   type WorktreeCleanupRules,
@@ -18,6 +19,10 @@ import {
 const USER_ONLY_PROJECT_SETTING_KEYS: ReadonlySet<string> = new Set([
   "worktreeCleanup",
   "autoPullDefaultBranch",
+  // Capabilities that widen what an agent can reach must never come from a checked-in file.
+  "previewExternalHosts",
+  "enableClaudeInChrome",
+  "enableAgentComputerUse",
 ]);
 
 /** Resolve only the approved project-scoped keys. Explicit false and null are values. */
@@ -62,6 +67,45 @@ export function resolveProjectSettings(input: {
     Object.assign(sources, { [key]: source });
   }
   return { settings: resolveTextGenerationProvider(settings), sources, overrides };
+}
+
+/**
+ * Live agent browser/computer policy for one project. Every flag is already ANDed
+ * with `enableAgentBrowserAccess`, so callers never re-check the master switch.
+ */
+export interface AgentBrowserPolicy {
+  readonly previewAutomation: boolean;
+  readonly externalHosts: ReadonlyArray<string>;
+  readonly claudeInChrome: boolean;
+  readonly computerUse: boolean;
+}
+
+export const DISABLED_AGENT_BROWSER_POLICY: AgentBrowserPolicy = {
+  previewAutomation: false,
+  externalHosts: [],
+  claudeInChrome: false,
+  computerUse: false,
+};
+
+/** User overrides for the project win over global settings; checked-in files never apply. */
+export function agentBrowserPolicyFromSettings(
+  settings: ServerSettings,
+  projectId: string | undefined,
+): AgentBrowserPolicy {
+  const overrides =
+    projectId !== undefined ? settings.projectSettingsOverrides[projectId as ProjectId] : undefined;
+  const enabled = overrides?.enableAgentBrowserAccess ?? settings.enableAgentBrowserAccess;
+  if (!enabled) return DISABLED_AGENT_BROWSER_POLICY;
+  return {
+    previewAutomation: true,
+    // Saved values bypass the editor's validation (files, older builds); a malformed entry
+    // is dropped so it can never widen reach.
+    externalHosts: (overrides?.previewExternalHosts ?? settings.previewExternalHosts).filter(
+      (pattern) => parsePreviewHostPattern(pattern).ok,
+    ),
+    claudeInChrome: overrides?.enableClaudeInChrome ?? settings.enableClaudeInChrome,
+    computerUse: overrides?.enableAgentComputerUse ?? settings.enableAgentComputerUse,
+  };
 }
 
 /**

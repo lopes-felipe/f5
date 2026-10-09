@@ -206,17 +206,33 @@ try {
     },
     { origin: backendOrigin, partition: previewConfig.partition },
   );
-  await page.evaluate(
-    ({ origin, partition }) => {
-      const guest = document.createElement("webview");
-      guest.id = "smoke-untrusted-guest";
-      guest.setAttribute("partition", partition);
-      guest.setAttribute("src", `${origin}/api/bootstrap?smoke=guest`);
-      guest.style.height = "100px";
-      document.body.append(guest);
-    },
+  const attachedUrl = await page.evaluate(
+    ({ origin, partition }) =>
+      new Promise((resolve, reject) => {
+        const target = `${origin}/api/bootstrap?smoke=guest`;
+        const guest = document.createElement("webview");
+        guest.id = "smoke-untrusted-guest";
+        guest.setAttribute("partition", partition);
+        guest.setAttribute("src", target);
+        guest.style.height = "100px";
+        const timer = setTimeout(() => reject(new Error("Guest did not attach")), 10000);
+        guest.addEventListener(
+          "dom-ready",
+          () => {
+            clearTimeout(timer);
+            // Guests attach blank; load the backend explicitly to check its authorization.
+            const url = guest.getURL();
+            void guest.loadURL(target).catch(() => undefined);
+            resolve(url);
+          },
+          { once: true },
+        );
+        document.body.append(guest);
+      }),
     { origin: backendOrigin, partition: previewConfig.partition },
   );
+  if (attachedUrl !== "about:blank")
+    throw new Error(`Guest loaded ${attachedUrl} before its tab policy was installed`);
   const guestStatus = await application.evaluate(async ({ session }, partition) => {
     try {
       return await globalThis.__smokeGuestResponse;
@@ -233,8 +249,10 @@ try {
   await page.getByRole("button", { name: "Add your first project", exact: true }).click();
   await page.getByPlaceholder("Enter path (e.g. ~/projects/my-app)").fill(workspace);
   await page.getByRole("button", { name: "Add (Enter)", exact: true }).click();
+  // The chat header breadcrumb reuses this label; wait for the sidebar entry.
   await page
-    .getByRole("button", { name: "Project actions for workspace", exact: true })
+    .locator('[data-sidebar="menu-action"]')
+    .and(page.getByRole("button", { name: "Project actions for workspace", exact: true }))
     .waitFor({ timeout: 60_000 });
   await page.locator('[contenteditable="true"]').fill("**a****b**\n# Title **bold**");
   await page.reload();
