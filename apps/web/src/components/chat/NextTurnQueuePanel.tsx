@@ -325,7 +325,12 @@ export function NextTurnQueuePanel({
                 const api = readNativeApi();
                 if (!api) return;
                 void api.nextTurnQueue
-                  .clear({ threadId, scope: "all", expectedRevision: snapshot.revision })
+                  .clear({
+                    threadId,
+                    // The card owns a folded continue; Clear only removes the listed turns.
+                    scope: hiddenIds.size > 0 ? "except_usage_limit_resume" : "all",
+                    expectedRevision: snapshot.revision,
+                  })
                   .then((result) => {
                     applySnapshot(result.snapshot);
                     if (result.removed.length > 0) {

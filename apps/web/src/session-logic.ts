@@ -1128,26 +1128,35 @@ export function deriveWorkLogEntries(
       terminalCodexProviderItemIds.add(payload.providerItemId);
     }
   }
-  // A usage limit arrives as a warning and then as the turn's error; show it once.
-  const usageLimitWarningTurnIds = new Set(
-    ordered.flatMap((activity) =>
-      activity.kind === "runtime.warning" &&
-      activity.turnId &&
-      readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit)
-        ? [activity.turnId]
-        : [],
-    ),
-  );
+  // A usage limit arrives as one warning per exhausted window and then as the
+  // turn's error; show one row per turn. The error carries the combined reset,
+  // so it wins; until it arrives, the latest warning stands in.
+  const usageLimitRowByTurn = new Map<TurnId, OrchestrationThreadActivity>();
+  for (const activity of ordered) {
+    if (
+      (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
+      !activity.turnId ||
+      !readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit)
+    ) {
+      continue;
+    }
+    if (
+      usageLimitRowByTurn.get(activity.turnId)?.kind !== "runtime.error" ||
+      activity.kind === "runtime.error"
+    ) {
+      usageLimitRowByTurn.set(activity.turnId, activity);
+    }
+  }
   const entries = ordered
     .filter((activity) =>
       shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
     )
     .filter(
       (activity) =>
-        activity.kind !== "runtime.error" ||
+        (activity.kind !== "runtime.warning" && activity.kind !== "runtime.error") ||
         !activity.turnId ||
-        !usageLimitWarningTurnIds.has(activity.turnId) ||
-        !readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit),
+        !readUsageLimitActivityDisplay(workLogPayload(activity)?.usageLimit) ||
+        usageLimitRowByTurn.get(activity.turnId)?.id === activity.id,
     )
     .filter((activity) =>
       options?.suppressCommandToolLifecycle ? !isCommandToolLifecycleActivity(activity) : true,

@@ -1077,12 +1077,57 @@ describe("deriveWorkLogEntries", () => {
         { runtimeWarningVisibility: "hidden" },
       );
 
-      expect(entries.map((entry) => entry.id)).toEqual(["limit-warning"]);
+      expect(entries.map((entry) => entry.id)).toEqual(["limit-error"]);
       expect(entries[0]?.label).toBe(
         `Claude 5-hour limit reached · resets ${formatUsageResumeTime(resetsAt)}`,
       );
       expect(entries[0]?.tone).toBe("info");
       expect(entries[0]?.isIssue).toBe(true);
+    });
+
+    it("shows one row for several exhausted windows, using the error's combined reset", () => {
+      const weeklyReset = "2026-10-10T09:00:00.000Z";
+      const warning = (id: string, windowLabel: string, reset: string) =>
+        makeActivity({
+          id,
+          kind: "runtime.warning",
+          summary: "Runtime warning",
+          tone: "info",
+          turnId: "turn-multi",
+          payload: {
+            message,
+            usageLimit: { providerLabel: "Claude", windowLabel, resetsAt: reset },
+          },
+        });
+      const warnings = [
+        warning("five-hour-warning", "5-hour", resetsAt),
+        warning("weekly-warning", "7-day", weeklyReset),
+      ];
+
+      const running = deriveWorkLogEntries(warnings, undefined);
+      expect(running.map((entry) => entry.id)).toEqual(["weekly-warning"]);
+
+      const failed = deriveWorkLogEntries(
+        [
+          ...warnings,
+          makeActivity({
+            id: "multi-error",
+            createdAt: "2026-02-23T00:00:01.000Z",
+            kind: "runtime.error",
+            summary: "Runtime error",
+            tone: "error",
+            turnId: "turn-multi",
+            payload: {
+              message,
+              usageLimit: { providerLabel: "Claude", windowLabel: "7-day", resetsAt: weeklyReset },
+            },
+          }),
+        ],
+        undefined,
+      );
+      expect(failed.map((entry) => entry.label)).toEqual([
+        `Claude 7-day limit reached · resets ${formatUsageResumeTime(weeklyReset)}`,
+      ]);
     });
 
     it("turns a usage-limit error without a warning into the neutral row", () => {

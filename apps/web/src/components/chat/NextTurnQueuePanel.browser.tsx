@@ -125,6 +125,65 @@ describe("NextTurnQueuePanel", () => {
     await expect.element(page.getByText(/^Continues after usage limit resets/)).toBeInTheDocument();
   });
 
+  it("keeps a folded usage-limit continue when clearing the listed turns", async () => {
+    const threadId = ThreadId.makeUnsafe("queue-thread-usage-limit-clear");
+    const item = (id: string, text: string, scheduleReason?: "usage_limit_reset") => ({
+      itemId: CommandId.makeUnsafe(id),
+      threadId,
+      submissionId: CommandId.makeUnsafe(`${id}-submission`),
+      position: 0,
+      status: "queued" as const,
+      command: {
+        type: "thread.turn.start" as const,
+        commandId: CommandId.makeUnsafe(`${id}-command`),
+        threadId,
+        message: {
+          messageId: MessageId.makeUnsafe(`${id}-message`),
+          role: "user" as const,
+          text,
+          attachments: [],
+        },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        createdAt: "2026-10-08T12:00:00.000Z",
+      },
+      attemptCount: 0,
+      notBefore: scheduleReason ? "2099-10-08T12:01:00.000Z" : null,
+      ...(scheduleReason ? { scheduleReason } : {}),
+      dispatchStartedAt: null,
+      lastErrorCode: null,
+      lastErrorDetail: null,
+      createdAt: "2026-10-08T12:00:00.000Z",
+      updatedAt: "2026-10-08T12:00:00.000Z",
+    });
+    const snapshot = {
+      threadId,
+      revision: 3,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: [
+        item("usage-resume", "continue", "usage_limit_reset"),
+        item("follow-up", "Run the follow-up"),
+      ],
+    };
+    const clear = vi.fn().mockResolvedValue({ snapshot, removed: [] });
+    nativeApiMock.current = { nextTurnQueue: { clear } };
+    useNextTurnQueueStore.getState().applySnapshot(snapshot);
+    active = await render(<NextTurnQueuePanel threadId={threadId} foldUsageLimitResume />);
+
+    await expect.element(page.getByText("Next turns (1)")).toBeInTheDocument();
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    expect(clear).toHaveBeenCalledWith({
+      threadId,
+      scope: "except_usage_limit_resume",
+      expectedRevision: 3,
+    });
+  });
+
   it("keeps the composer on screen with a full 20-item queue in the tray", async () => {
     const threadId = ThreadId.makeUnsafe("queue-thread-full");
     useNextTurnQueueStore.getState().applySnapshot({

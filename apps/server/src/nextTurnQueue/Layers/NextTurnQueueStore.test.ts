@@ -451,6 +451,40 @@ layer("NextTurnQueueStore", (it) => {
     }),
   );
 
+  it.effect("clears the other turns but keeps a scheduled usage-limit continue", () =>
+    Effect.gen(function* () {
+      const store = yield* NextTurnQueueStore;
+      const threadId = ThreadId.makeUnsafe("usage-resume-clear");
+      yield* seedThread(threadId);
+      const input = {
+        command: command(9935, threadId),
+        itemId: CommandId.makeUnsafe("resume-clear"),
+        submissionId: CommandId.makeUnsafe("resume-clear-submission"),
+        requestHash: "resume",
+        limitKey: "instance:codex:turn:clear",
+        providerInstanceId: "codex",
+        source: "manual" as const,
+        notBefore: new Date(Date.now() + 60_000).toISOString(),
+      };
+      yield* store.scheduleUsageLimitResume(input);
+      yield* insert(store, 9936, threadId);
+      const before = yield* store.listByThread(threadId);
+      const removed = yield* store.clear({
+        threadId,
+        scope: "except_usage_limit_resume",
+        expectedRevision: before.state.revision,
+      });
+      assert.equal(removed.length, 1);
+      assert.notEqual(removed[0]?.itemId, input.itemId);
+      const after = yield* store.listByThread(threadId);
+      assert.deepEqual(
+        after.items.map((item) => item.itemId),
+        [input.itemId],
+      );
+      assert.equal((yield* store.getUsageResumeLedger(threadId))?.state, "scheduled");
+    }),
+  );
+
   it.effect("reserves one recovery slot and atomically clears the schedule on promote", () =>
     Effect.gen(function* () {
       const store = yield* NextTurnQueueStore;

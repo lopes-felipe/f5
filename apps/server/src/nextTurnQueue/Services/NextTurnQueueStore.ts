@@ -247,7 +247,7 @@ export interface NextTurnQueueStoreShape {
   }) => Effect.Effect<NextTurnQueueItem, NextTurnQueueError>;
   readonly clear: (input: {
     readonly threadId: ThreadId;
-    readonly scope: "all" | "failed";
+    readonly scope: "all" | "failed" | "except_usage_limit_resume";
     readonly expectedRevision: number;
   }) => Effect.Effect<ReadonlyArray<NextTurnQueueItem>, NextTurnQueueError>;
   readonly restore: (input: {

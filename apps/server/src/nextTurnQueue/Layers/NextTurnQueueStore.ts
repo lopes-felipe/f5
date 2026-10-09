@@ -1362,8 +1362,12 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 message: "The queue changed in another client. Refresh and try again.",
               });
             }
-            const items = (yield* readItems(input.threadId)).filter(
-              (item) => input.scope === "all" || item.status === "failed",
+            const items = (yield* readItems(input.threadId)).filter((item) =>
+              input.scope === "failed"
+                ? item.status === "failed"
+                : input.scope === "all" ||
+                  item.scheduleReason !== "usage_limit_reset" ||
+                  item.status === "failed",
             );
             if (items.some((item) => item.status === "dispatching")) {
               return yield* new NextTurnQueueItemDispatchingError({
