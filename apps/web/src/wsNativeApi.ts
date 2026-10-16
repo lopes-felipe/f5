@@ -829,6 +829,14 @@ export function createWsNativeApi(): NativeApi {
       pauseTask: (input) => transport.request(AGENT_BRIDGE_WS_METHODS.pauseTask, input),
       resumeTask: (input) => transport.request(AGENT_BRIDGE_WS_METHODS.resumeTask, input),
       cancelTask: (input) => transport.request(AGENT_BRIDGE_WS_METHODS.cancelTask, input),
+      openPairingWindow: () => transport.request(AGENT_BRIDGE_WS_METHODS.openPairingWindow, {}),
+      decideAuthorization: (input) =>
+        transport.request(AGENT_BRIDGE_WS_METHODS.decideAuthorization, input),
+      updateClientGrant: (input) =>
+        transport.request(AGENT_BRIDGE_WS_METHODS.updateClientGrant, input),
+      revokeClient: (input) => transport.request(AGENT_BRIDGE_WS_METHODS.revokeClient, input),
+      retryNotification: (input) =>
+        transport.request(AGENT_BRIDGE_WS_METHODS.retryNotification, input),
     },
     agents: {
       getSnapshot: (input) => transport.request(AGENTS_WS_METHODS.getSnapshot, input ?? {}),

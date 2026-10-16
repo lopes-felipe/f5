@@ -19,6 +19,10 @@ import type {
 import type { ThreadId } from "./baseSchemas";
 import type {
   AgentBridgeCreateTaskInput,
+  AgentBridgeDecideAuthorizationInput,
+  AgentBridgeRetryNotificationInput,
+  AgentBridgeRevokeClientInput,
+  AgentBridgeUpdateClientGrantInput,
   AgentBridgeGetTaskActivitiesInput,
   AgentBridgeGetTaskActivitiesResult,
   AgentBridgeGetTasksInput,
@@ -930,6 +934,11 @@ export interface NativeApi {
     pauseTask: (input: AgentBridgeTaskControlInput) => Promise<BotTask>;
     resumeTask: (input: AgentBridgeTaskControlInput) => Promise<BotTask>;
     cancelTask: (input: AgentBridgeTaskControlInput) => Promise<BotTask>;
+    openPairingWindow: () => Promise<AgentBridgeState>;
+    decideAuthorization: (input: AgentBridgeDecideAuthorizationInput) => Promise<AgentBridgeState>;
+    updateClientGrant: (input: AgentBridgeUpdateClientGrantInput) => Promise<AgentBridgeState>;
+    revokeClient: (input: AgentBridgeRevokeClientInput) => Promise<AgentBridgeState>;
+    retryNotification: (input: AgentBridgeRetryNotificationInput) => Promise<AgentBridgeState>;
   };
   agents: {
     getSnapshot: (input?: AgentsGetSnapshotInput) => Promise<AgentsSnapshot>;

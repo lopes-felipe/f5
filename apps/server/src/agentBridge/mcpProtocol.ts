@@ -51,7 +51,19 @@ export interface McpRequestContext {
   readonly serverVersion: string;
   /** Present only on the remote listener with Events enabled for this client. */
   readonly eventsCapability?: Record<string, unknown>;
+  /** Handles `events/*` methods; offered only together with `eventsCapability`. */
+  readonly events?: (
+    method: string,
+    params: Record<string, unknown>,
+    caller: AgentBridgeCaller,
+  ) => Effect.Effect<McpMethodOutcome> | null;
 }
+
+export type McpMethodOutcome =
+  | { readonly result: unknown }
+  | {
+      readonly error: { readonly code: number; readonly message: string; readonly data?: unknown };
+    };
 
 export interface McpToolCallResult {
   readonly content: ReadonlyArray<{ readonly type: "text"; readonly text: string }>;
@@ -193,9 +205,24 @@ export function handleMcpRequest(
       return Effect.succeed(jsonRpcSuccess(request.id, { resources: [] }));
     case "prompts/list":
       return Effect.succeed(jsonRpcSuccess(request.id, { prompts: [] }));
-    default:
+    default: {
+      const handled =
+        request.method.startsWith("events/") && context.eventsCapability && context.events
+          ? context.events(request.method, asObject(request.params), context.caller)
+          : null;
+      if (handled) {
+        const id = request.id;
+        return handled.pipe(
+          Effect.map((outcome) =>
+            "result" in outcome
+              ? jsonRpcSuccess(id, outcome.result)
+              : jsonRpcError(id, outcome.error.code, outcome.error.message, outcome.error.data),
+          ),
+        );
+      }
       return Effect.succeed(
         jsonRpcError(request.id, -32601, `Unknown MCP method: ${request.method}`),
       );
+    }
   }
 }

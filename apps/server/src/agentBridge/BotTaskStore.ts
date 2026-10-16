@@ -304,6 +304,11 @@ export interface BotTaskStore {
     readonly reason: string;
     readonly at: string;
   }) => Effect.Effect<ReadonlyArray<string>, BotTaskError>;
+  /**
+   * After a grant change: advances the epoch of the client's nonterminal tasks
+   * without changing their status, so writes made under the old grant fail.
+   */
+  readonly advanceEpochs: (clientId: string) => Effect.Effect<ReadonlyArray<string>, BotTaskError>;
   readonly clearSourceThread: (
     threadId: string,
   ) => Effect.Effect<ReadonlyArray<string>, BotTaskError>;
@@ -858,6 +863,24 @@ export const makeBotTaskStore = (sql: SqlClient.SqlClient): BotTaskStore => {
           }),
         )
         .pipe(wrap("fenceTasks")),
+
+    advanceEpochs: (clientId) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql<{ id: string }>`SELECT id FROM bot_tasks
+              WHERE client_id = ${clientId}
+                AND status NOT IN ('completed', 'failed', 'cancelled')`;
+            if (rows.length === 0) return [];
+            const revision = yield* bumpRevision;
+            yield* sql`UPDATE bot_tasks SET execution_epoch = execution_epoch + 1,
+                version = version + 1, revision = ${revision}
+              WHERE client_id = ${clientId}
+                AND status NOT IN ('completed', 'failed', 'cancelled')`;
+            return rows.map((row) => row.id);
+          }),
+        )
+        .pipe(wrap("advanceEpochs")),
 
     clearSourceThread: (threadId) =>
       Effect.gen(function* () {

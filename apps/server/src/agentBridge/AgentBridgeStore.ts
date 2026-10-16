@@ -35,6 +35,8 @@ export interface AgentBridgeClientRecord {
   readonly createdAt: string;
   readonly lastUsedAt: string | null;
   readonly revokedAt: string | null;
+  /** Exact redirect URIs registered for an OAuth client. */
+  readonly redirectUris: ReadonlyArray<string>;
 }
 
 export interface AgentBridgeRequestRecord {
@@ -60,6 +62,7 @@ interface ClientRow {
   readonly created_at: string;
   readonly last_used_at: string | null;
   readonly revoked_at: string | null;
+  readonly redirect_uris_json: string;
 }
 
 interface RequestRow {
@@ -96,6 +99,7 @@ const toClient = (row: ClientRow): AgentBridgeClientRecord => ({
   createdAt: row.created_at,
   lastUsedAt: row.last_used_at,
   revokedAt: row.revoked_at,
+  redirectUris: parseJson<string[]>(row.redirect_uris_json, []),
 });
 
 const toRequest = (row: RequestRow): AgentBridgeRequestRecord => ({

@@ -40,6 +40,7 @@ const client = (
   createdAt: "2026-01-01T00:00:00.000Z",
   lastUsedAt: null,
   revokedAt: null,
+  redirectUris: [],
 });
 
 const caller = (scopes?: ReadonlyArray<AgentBridgeScope>): AgentBridgeCaller => ({

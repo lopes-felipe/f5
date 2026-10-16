@@ -123,12 +123,14 @@ export class FakeAgentBridgeHost {
   failNextBeforeAdmission: { message: string; code?: string } | null = null;
   readonly queueChanges = Effect.runSync(PubSub.unbounded<ThreadId>());
   readonly domainEvents = Effect.runSync(PubSub.unbounded<OrchestrationEvent>());
+  /** Persisted events served by `readEventsAfter`. */
+  events: OrchestrationEvent[] = [];
 
   readonly shape: AgentBridgeHostShape = {
     readSnapshot: Effect.sync(() => {
       this.snapshotReads += 1;
       return {
-        snapshotSequence: 0,
+        snapshotSequence: this.events.at(-1)?.sequence ?? 0,
         projects: this.projects,
         threads: this.threads,
         planningWorkflows: [],
@@ -163,6 +165,8 @@ export class FakeAgentBridgeHost {
       Effect.sync(() => this.records.get(submissionId) ?? null),
     queueChanges: Stream.fromPubSub(this.queueChanges),
     domainEvents: Stream.fromPubSub(this.domainEvents),
+    readEventsAfter: (sequence: number) =>
+      Stream.fromIterable(this.events.filter((event) => event.sequence > sequence)),
     listProviderInstances: Effect.sync(() => this.providers),
     getSettings: Effect.sync(() => this.settings),
     getProjectGitBranch: (cwd) =>

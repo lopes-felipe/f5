@@ -1,9 +1,11 @@
 /**
- * Agent Bridge HTTP listener. It binds 127.0.0.1 and is separate from the
+ * Agent Bridge HTTP listeners. Both bind 127.0.0.1 and are separate from the
  * app/WS port. The local listener accepts only the rotating local token and
- * is reached through the STDIO shim; it is never tunneled.
+ * is reached through the STDIO shim; it is never tunneled. The remote listener
+ * accepts only OAuth access tokens, serves the OAuth routes, and is the only
+ * port a user tunnels.
  *
- * Rules: unknown routes return 404, a missing or invalid credential
+ * Shared rules: unknown routes return 404, a missing or invalid credential
  * returns 401, browser origins are rejected, and F5 cookies or the server
  * master token are never accepted.
  *
@@ -49,6 +51,15 @@ export interface McpListenerOptions {
   /** Headers added to 401 responses (the remote listener's resource metadata). */
   readonly unauthorizedHeaders?: Readonly<Record<string, string>>;
   readonly eventsCapability?: (caller: AgentBridgeCaller) => Record<string, unknown> | undefined;
+  readonly events?: McpRequestContext["events"];
+  /** Extra Host header values accepted besides loopback (the tunnel's public host). */
+  readonly allowedHosts?: () => ReadonlyArray<string>;
+  /** Non-MCP routes (OAuth); returns true when it handled the request. */
+  readonly routes?: (
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    pathname: string,
+  ) => Promise<boolean>;
 }
 
 export interface McpListener {
@@ -69,7 +80,10 @@ export async function startMcpListener(options: McpListenerOptions): Promise<Mcp
         return;
       }
       const host = request.headers.host?.toLowerCase();
-      if (!isAllowedHostHeader(host, expectedPort)) {
+      if (
+        !isAllowedHostHeader(host, expectedPort) &&
+        !(host !== undefined && (options.allowedHosts?.() ?? []).includes(host))
+      ) {
         writeJson(response, 403, { error: "invalid_host" });
         return;
       }
@@ -79,6 +93,9 @@ export async function startMcpListener(options: McpListenerOptions): Promise<Mcp
         return;
       }
       const pathname = (request.url ?? "").split("?")[0] ?? "";
+      if (pathname !== AGENT_BRIDGE_MCP_PATH && options.routes) {
+        if (await options.routes(request, response, pathname)) return;
+      }
       if (pathname !== AGENT_BRIDGE_MCP_PATH) {
         writeJson(response, 404, { error: "not_found" });
         return;
@@ -140,6 +157,7 @@ export async function startMcpListener(options: McpListenerOptions): Promise<Mcp
         protocolVersionHeader,
         serverVersion: options.serverVersion,
         ...(eventsCapability ? { eventsCapability } : {}),
+        ...(eventsCapability && options.events ? { events: options.events } : {}),
       };
       const fiber = Effect.runFork(handleMcpRequest(rpc, options.tools(), context));
       // A disconnect interrupts the call (for example a long wait_for_submission).

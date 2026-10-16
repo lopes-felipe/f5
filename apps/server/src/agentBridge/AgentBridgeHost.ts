@@ -59,6 +59,10 @@ export interface AgentBridgeHostShape {
   /** Wakes waiters; the queue publishes a thread id whenever its state changes. */
   readonly queueChanges: Stream.Stream<ThreadId>;
   readonly domainEvents: Stream.Stream<OrchestrationEvent>;
+  /** Persisted events after a sequence (exclusive), in bounded pages; drives event delivery. */
+  readonly readEventsAfter: (
+    sequenceExclusive: number,
+  ) => Stream.Stream<OrchestrationEvent, AgentBridgeHostError>;
   readonly listProviderInstances: Effect.Effect<ReadonlyArray<ServerProvider>>;
   readonly getSettings: Effect.Effect<ServerSettings, AgentBridgeHostError>;
   /** Current branch of a project checkout, or null when it is not a git repository. */

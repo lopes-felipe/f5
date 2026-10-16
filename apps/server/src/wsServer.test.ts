@@ -3634,6 +3634,146 @@ describe("WebSocket Server", () => {
       };
     }
 
+    it("runs the remote listener, pairs a client, and revokes it", async () => {
+      const stateDir = makeTempDir("f5-agent-bridge-remote-");
+      const dbPath = path.join(stateDir, "state.sqlite");
+      server = await createTestServer({
+        cwd: makeBridgeRepo(),
+        stateDir,
+        persistenceLayer: makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer)),
+      });
+      const addr = server.address();
+      const [ws] = await connectAndAwaitWelcome(
+        typeof addr === "object" && addr !== null ? addr.port : 0,
+      );
+      connections.push(ws);
+      const freePort = await new Promise<number>((resolve) => {
+        const probe = Http.createServer();
+        probe.listen(0, "127.0.0.1", () => {
+          const port = (probe.address() as { port: number }).port;
+          probe.close(() => resolve(port));
+        });
+      });
+      const getState = async () =>
+        (await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.getState, {})).result as {
+          remote: {
+            status: string;
+            port: number | null;
+            issuer: string | null;
+            detail: string | null;
+          };
+          pairing: { openUntil: string | null; pending: { requestId: string } | null };
+          clients: Array<{ id: string; revokedAt: string | null; callbackHosts: string[] }>;
+        };
+
+      // Pairing needs the remote listener.
+      const early = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.openPairingWindow, {});
+      expect(early.error).toBeDefined();
+
+      await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+        agentBridge: {
+          enabled: true,
+          remote: { enabled: true, port: 80, publicBaseUrl: "https://F5.Example.com/" },
+        },
+      });
+      await vi.waitFor(async () => {
+        const state = await getState();
+        expect(state.remote.status).toBe("failed");
+        expect(state.remote.detail).toContain("1024");
+      }, SLOW_WAIT);
+      await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+        agentBridge: { remote: { port: freePort } },
+      });
+      await vi.waitFor(async () => {
+        const state = await getState();
+        expect(state.remote).toMatchObject({
+          status: "running",
+          port: freePort,
+          issuer: "https://f5.example.com",
+        });
+      }, SLOW_WAIT);
+      const base = `http://127.0.0.1:${freePort}`;
+      const metadata = (await (
+        await fetch(`${base}/.well-known/oauth-authorization-server`)
+      ).json()) as { issuer: string };
+      expect(metadata.issuer).toBe("https://f5.example.com");
+      // The local token is never accepted remotely.
+      const local = JSON.parse(
+        fs.readFileSync(path.join(stateDir, "agent-bridge", "local.json"), "utf8"),
+      ) as { token: string };
+      const rejected = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${local.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      expect(rejected.status).toBe(401);
+
+      const registered = (await (
+        await fetch(`${base}/oauth/register`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            client_name: "Dot",
+            redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"],
+          }),
+        })
+      ).json()) as { client_id: string };
+      const opened = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.openPairingWindow, {});
+      expect(opened.error).toBeUndefined();
+      const verifier = "v".repeat(43);
+      const challenge = createHash("sha256").update(verifier).digest("base64url");
+      const authorize = await fetch(
+        `${base}/oauth/authorize?${new URLSearchParams({
+          response_type: "code",
+          client_id: registered.client_id,
+          redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          resource: "https://f5.example.com/mcp",
+          state: "abc",
+        }).toString()}`,
+      );
+      expect(authorize.status).toBe(200);
+      const pending = (await getState()).pairing.pending;
+      expect(pending).not.toBeNull();
+      // Only shared projects can be granted.
+      const unshared = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.decideAuthorization, {
+        requestId: pending!.requestId,
+        approve: true,
+        scopes: ["f5.read", "f5.tasks"],
+        projectIds: ["not-shared"],
+      });
+      expect(unshared.error).toBeDefined();
+      const decided = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.decideAuthorization, {
+        requestId: pending!.requestId,
+        approve: true,
+        scopes: ["f5.read", "f5.tasks"],
+        projectIds: [],
+      });
+      expect(decided.error).toBeUndefined();
+      const client = (await getState()).clients.find((entry) => entry.id === registered.client_id);
+      expect(client?.callbackHosts).toEqual(["chatgpt.com"]);
+
+      const revoked = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.revokeClient, {
+        clientId: registered.client_id,
+      });
+      expect(revoked.error).toBeUndefined();
+      expect(
+        (await getState()).clients.find((entry) => entry.id === registered.client_id)?.revokedAt,
+      ).not.toBeNull();
+      const localRevoke = await sendRequest(ws, AGENT_BRIDGE_WS_METHODS.revokeClient, {
+        clientId: "local",
+      });
+      expect(localRevoke.error).toBeDefined();
+
+      await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
+        agentBridge: { remote: { enabled: false } },
+      });
+      await vi.waitFor(async () => {
+        expect((await getState()).remote.status).toBe("stopped");
+      }, SLOW_WAIT);
+    });
+
     it("runs a task lifecycle through the STDIO shim across a restart", async () => {
       const repo = makeBridgeRepo();
       const stateDir = makeTempDir("f5-agent-bridge-tasks-");

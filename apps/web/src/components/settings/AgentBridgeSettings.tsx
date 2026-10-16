@@ -1,6 +1,7 @@
 import {
   AGENT_BRIDGE_LOCAL_CLIENT_ID,
   type AgentBridgeClient,
+  type AgentBridgeClientReadiness,
   type AgentBridgeSettingsPatch,
   type AgentBridgeState,
   type AgentBridgeStdioSetup,
@@ -12,6 +13,9 @@ import { type UnifiedWebSettings, useSettings, useUpdateSettings } from "../../h
 import { ensureNativeApi } from "../../nativeApi";
 import { onServerWelcome } from "../../wsNativeApi";
 import { Badge } from "../ui/badge";
+import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
+import { ClientGrantDialog, PairingDialog, RemoteAccessSection } from "./AgentBridgeRemoteSettings";
 import { Checkbox } from "../ui/checkbox";
 import { Switch } from "../ui/switch";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
@@ -50,10 +54,31 @@ function useAgentBridgeState() {
   return { state, error, setState };
 }
 
-/** A connection is whoever holds its credential, not a verified bot. */
+/** Authentication alone is never "Ready": that needs an event subscription. */
+export const READINESS_LABELS: Record<AgentBridgeClientReadiness, string> = {
+  linked: "Linked",
+  "awaiting-subscription": "Awaiting subscription",
+  ready: "Ready",
+  expired: "Subscription expired",
+  "delivery-failed": "Delivery failed",
+};
+const READINESS_VARIANT: Record<
+  AgentBridgeClientReadiness,
+  "success" | "warning" | "outline" | "error"
+> = {
+  linked: "outline",
+  "awaiting-subscription": "warning",
+  ready: "success",
+  expired: "warning",
+  "delivery-failed": "error",
+};
+
+/** A connection is whoever holds its credential; ChatGPT ones are shared by its Dots. */
 export function clientDisplayName(client: AgentBridgeClient): string {
   if (client.id === AGENT_BRIDGE_LOCAL_CLIENT_ID) return client.name;
-  return `${client.name} connection`;
+  const chatgpt =
+    client.clientIdHost === "chatgpt.com" || client.callbackHosts.includes("chatgpt.com");
+  return chatgpt ? "ChatGPT / Dots connection" : `${client.name} connection`;
 }
 
 export function formatStdioSetup(setup: AgentBridgeStdioSetup): string {
@@ -90,7 +115,7 @@ export function AgentBridgeSettings() {
   const agentBridge = useSettings((settings) => settings.agentBridge);
   const { updateSettings } = useUpdateSettings();
   const { projects } = useSettingsRouteContext();
-  const { state, error } = useAgentBridgeState();
+  const { state, error, setState } = useAgentBridgeState();
   const exposed = new Set<string>(agentBridge.exposedProjectIds);
   // Send only the changed fields; the server deep-merges `agentBridge`.
   const patchAgentBridge = useCallback(
@@ -104,6 +129,32 @@ export function AgentBridgeSettings() {
   useEffect(() => {
     if (pendingToggles.current === 0) exposedRef.current = agentBridge.exposedProjectIds;
   }, [agentBridge.exposedProjectIds]);
+  const sharedProjects = projects.filter((project) => exposed.has(project.id));
+  const [editingClient, setEditingClient] = useState<AgentBridgeClient | null>(null);
+  const revoke = async (client: AgentBridgeClient) => {
+    try {
+      setState(await ensureNativeApi().agentBridge.revokeClient({ clientId: client.id }));
+    } catch (cause) {
+      toastManager.add({
+        type: "error",
+        title: "Client not revoked",
+        description: cause instanceof Error ? cause.message : "The request failed.",
+      });
+    }
+  };
+
+  const notifyAgain = async (client: AgentBridgeClient) => {
+    try {
+      setState(await ensureNativeApi().agentBridge.retryNotification({ clientId: client.id }));
+    } catch (cause) {
+      toastManager.add({
+        type: "error",
+        title: "Notification not sent",
+        description: cause instanceof Error ? cause.message : "The request failed.",
+      });
+    }
+  };
+
   const setExposed = useCallback(
     (projectId: ProjectId, checked: boolean) => {
       const current = exposedRef.current.filter((id) => id !== projectId);
@@ -185,6 +236,13 @@ export function AgentBridgeSettings() {
         ) : null}
       </div>
 
+      <RemoteAccessSection
+        settings={agentBridge}
+        state={state}
+        onSave={(remote) => void patchAgentBridge({ remote })}
+        onState={setState}
+      />
+
       <div className="border-b border-border py-3">
         <p className="text-sm font-medium text-foreground">Connected clients</p>
         {state && state.clients.length > 0 ? (
@@ -194,8 +252,17 @@ export function AgentBridgeSettings() {
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center gap-1.5 font-medium text-foreground">
                     {clientDisplayName(client)}
+                    {client.readiness ? (
+                      <Badge size="sm" variant={READINESS_VARIANT[client.readiness]}>
+                        {READINESS_LABELS[client.readiness]}
+                      </Badge>
+                    ) : null}
                   </p>
                   <p className="text-muted-foreground">
+                    {client.clientIdHost ? `${client.clientIdHost} · ` : ""}
+                    {client.callbackHosts.length > 0
+                      ? `returns to ${client.callbackHosts.join(", ")} · `
+                      : ""}
                     {client.scopes.join(", ") || "no permissions"} · {client.projectIds.length}{" "}
                     project
                     {client.projectIds.length === 1 ? "" : "s"} ·{" "}
@@ -205,6 +272,25 @@ export function AgentBridgeSettings() {
                     {client.revokedAt ? " · revoked" : ""}
                   </p>
                 </div>
+                {client.id !== AGENT_BRIDGE_LOCAL_CLIENT_ID && client.revokedAt === null ? (
+                  <div className="flex shrink-0 gap-1">
+                    {client.readiness === "ready" || client.readiness === "delivery-failed" ? (
+                      <Button size="xs" variant="outline" onClick={() => void notifyAgain(client)}>
+                        Notify again
+                      </Button>
+                    ) : null}
+                    <Button size="xs" variant="outline" onClick={() => setEditingClient(client)}>
+                      Permissions
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="destructive-outline"
+                      onClick={() => void revoke(client)}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -214,12 +300,26 @@ export function AgentBridgeSettings() {
       </div>
 
       <ul className="mt-3 list-disc space-y-1 pl-4 text-xs text-muted-foreground">
-        <li>A connection is whoever holds its credential, not a verified bot.</li>
+        <li>
+          A connection is whoever holds its credential, not a verified bot. With a ChatGPT / Dots
+          connection, other ChatGPT conversations that use the same connected plugin can use it too.
+        </li>
+        <li>
+          Remote access for hosted agents needs your own HTTPS tunnel to F5. F5 cannot check the
+          client certificate ChatGPT presents; your tunnel terminates TLS.
+        </li>
         <li>
           The Muse personal agent is not supported yet: it has no public Meta API. Muse Code is
           available as a provider.
         </li>
       </ul>
+      {state ? <PairingDialog state={state} projects={sharedProjects} onState={setState} /> : null}
+      <ClientGrantDialog
+        client={editingClient}
+        projects={sharedProjects}
+        onClose={() => setEditingClient(null)}
+        onState={setState}
+      />
     </SettingsCard>
   );
 }

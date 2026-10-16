@@ -62,6 +62,80 @@ on Windows only the environment marker applies.
 This guard is best effort, not a security boundary. An agent with shell access runs as your user
 and can read `local.json` and call the listener directly.
 
+## Remote access (hosted agents such as a ChatGPT Dot)
+
+> **Status:** remote access is implemented to this specification but has not yet been certified
+> against a live ChatGPT Dot. Treat it as preview until that check is recorded here.
+
+A hosted agent reaches F5 through your own HTTPS tunnel to a second listener that accepts only
+OAuth access tokens. The local token is never accepted there.
+
+1. In **Agent Bridge**, turn on **Remote access**, choose a local port (1024–65535), and enter
+   the tunnel's public URL (for example `https://f5.example.com`). F5 stores it canonically:
+   https, lowercase host, no path. Changing it signs every remote client out.
+2. Tunnel **only that port**, for example
+   `cloudflared tunnel --url http://127.0.0.1:<port>`. Never tunnel the app port.
+3. In ChatGPT: **Plugins → Add custom MCP server**, URL `<public URL>/mcp`, then **Create as
+   plugin** and enable it for the Dot.
+4. In F5, choose **Connect a client** (the window stays open for 10 minutes), then connect from
+   ChatGPT. F5 shows the client, where it returns, a 6-character code that also appears in the
+   browser, and the permissions and projects to grant. Check the codes match before approving.
+
+How it works: F5 is a minimal OAuth 2.1 authorization server (authorization code with PKCE S256
+and refresh; opaque tokens stored hashed; no OIDC). The issuer is exactly your public URL —
+nothing is taken from request headers. Clients are either client-metadata documents (an https
+`client_id` on a trusted host, default `chatgpt.com`) or dynamically registered with redirect
+URIs that exactly match the allowlist (default
+`https://chatgpt.com/connector_platform_oauth_redirect`; at most 20 clients and 10 registrations
+per hour). Outside the pairing window the browser sees "Open F5 first". At most one request
+waits at a time, and at most 10 authorization requests are accepted per hour.
+
+Access tokens last 15 minutes; refresh tokens rotate, with a 30-day family limit. Reusing a
+rotated refresh token revokes the family and fences the client's tasks. **Permissions** changes
+a client's scopes or projects and fences its in-progress task writes; **Revoke** deletes its
+tokens and pauses its tasks. F5 cannot check the mTLS client certificate ChatGPT presents,
+because TLS ends at your tunnel.
+
+F5's own outbound requests (fetching client metadata documents) go only to public addresses over
+https on port 443, resolve DNS on every request, never follow redirects or use proxy
+variables, and are limited to 10 seconds and 64 KiB.
+
+## Event notifications (MCP Events)
+
+> **Status:** implemented to this specification; not yet certified against a live ChatGPT Dot.
+
+Remote clients granted **Receive event notifications** (`f5.events`) can subscribe to webhooks.
+`server/discover` (protocol `2026-07-28`) advertises `events` only on the remote listener and
+only to such clients.
+
+| Event                       | Payload                                                     |
+| --------------------------- | ----------------------------------------------------------- |
+| `thread.turn_completed`     | `{threadId, turnId, status, summary≤500}`                   |
+| `thread.approval_requested` | `{threadId, kind, summary}` (agents still cannot answer)    |
+| `thread.input_requested`    | `{threadId}`                                                |
+| `tasks.available`           | `{tasks: [{taskId, title, status, project}]}` (and backlog) |
+| `task.updated`              | `{taskId, status, questionId?}`                             |
+
+- `events/subscribe {name, arguments, delivery: {mode: "webhook", url, secret}, cursor?, ttlSeconds?}`.
+  Thread events take `{threadIds?≤50}` and default to threads the client created; task events
+  cover only the client's tasks. `secret` is `whsec_` plus 24–64 base64 bytes. At most 8
+  subscriptions per client; the lifetime is at most 7 days and `refreshBefore` is an hour early.
+- Before activating, F5 POSTs a signed `{"type":"verification","challenge"}` and requires the
+  challenge echoed back (`-32015` with `data.reason` otherwise). A verified URL is remembered for
+  24 hours. Re-subscribing refreshes; a new secret is accepted and F5 signs with both for 24 hours.
+- Deliveries are Standard Webhooks requests (`webhook-id`, `webhook-timestamp`,
+  `webhook-signature`, plus `X-MCP-Subscription-Id`), one event per request, at least once, with
+  a stable id. Retries back off 1 s, 4 s, 16 s, 64 s (honoring `Retry-After` up to 5 minutes);
+  `410` deletes the subscription; `413` or five failures skip the event and mark the client
+  **Delivery failed** until the next success, which sends a backlog event.
+- A new subscription, a renewal after a gap, or a truncated cursor (older than 500 events or 24
+  hours) starts with one backlog `tasks.available`. **Notify again** in settings re-sends it.
+- An acknowledgment only means the notification arrived. Tasks change only through task tools.
+
+Client readiness in settings: **Linked** (no events permission), **Awaiting subscription**,
+**Ready**, **Subscription expired**, or **Delivery failed**. After connecting a Dot, ask it to
+monitor F5 events. Tasks queued before a subscription exists show "awaiting notification".
+
 ## Tools
 
 | Tool                  | Scope      | Behavior                                                                                                                |

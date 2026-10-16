@@ -283,6 +283,11 @@ import {
   AgentBridgeReplyToTaskInput,
   AgentBridgeStateChanged,
   AgentBridgeTaskControlInput,
+  AgentBridgeOpenPairingWindowInput,
+  AgentBridgeDecideAuthorizationInput,
+  AgentBridgeUpdateClientGrantInput,
+  AgentBridgeRevokeClientInput,
+  AgentBridgeRetryNotificationInput,
   AgentBridgeTaskInput,
 } from "./agentBridge";
 import {
@@ -574,6 +579,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.pauseTask, AgentBridgeTaskControlInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.resumeTask, AgentBridgeTaskControlInput),
   tagRequestBody(AGENT_BRIDGE_WS_METHODS.cancelTask, AgentBridgeTaskControlInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.openPairingWindow, AgentBridgeOpenPairingWindowInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.decideAuthorization, AgentBridgeDecideAuthorizationInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.updateClientGrant, AgentBridgeUpdateClientGrantInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.revokeClient, AgentBridgeRevokeClientInput),
+  tagRequestBody(AGENT_BRIDGE_WS_METHODS.retryNotification, AgentBridgeRetryNotificationInput),
   tagRequestBody(USAGE_WS_METHODS.consumeResetCredit, UsageConsumeResetCreditInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),

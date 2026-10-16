@@ -1,6 +1,8 @@
 import Migration0116 from "./Migrations/116_UsageAccountHistory.ts";
 import Migration0115 from "./Migrations/115_DeliveryHistoryEvidence.ts";
 import Migration0114 from "./Migrations/114_BotTasks.ts";
+import Migration0115 from "./Migrations/115_AgentBridgeOAuth.ts";
+import Migration0116 from "./Migrations/116_AgentBridgeEvents.ts";
 import Migration0113 from "./Migrations/113_AgentBridge.ts";
 import Migration0112 from "./Migrations/112_ProviderNativeCommandIds.ts";
 import Migration0111 from "./Migrations/111_ThreadBackgroundWorkIdentity.ts";
@@ -152,6 +154,8 @@ export const MIGRATIONS = {
   "116_UsageAccountHistory": Migration0116,
   "115_DeliveryHistoryEvidence": Migration0115,
   "114_BotTasks": Migration0114,
+  "115_AgentBridgeOAuth": Migration0115,
+  "116_AgentBridgeEvents": Migration0116,
   "113_AgentBridge": Migration0113,
   "112_ProviderNativeCommandIds": Migration0112,
   "111_ThreadBackgroundWorkIdentity": Migration0111,

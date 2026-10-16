@@ -78,6 +78,8 @@ export interface AgentBridgeCaller {
   readonly client: AgentBridgeClientRecord;
   /** Exposed projects intersected with the client's allowlist. */
   readonly visibleProjectIds: ReadonlySet<string>;
+  /** The OAuth refresh family behind a remote caller's access token. */
+  readonly tokenFamilyId?: string;
 }
 
 export interface AgentBridgeToolDefinition {

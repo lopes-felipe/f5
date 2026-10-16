@@ -24,6 +24,11 @@ export const AGENT_BRIDGE_WS_METHODS = {
   pauseTask: "agentBridge.pauseTask",
   resumeTask: "agentBridge.resumeTask",
   cancelTask: "agentBridge.cancelTask",
+  openPairingWindow: "agentBridge.openPairingWindow",
+  decideAuthorization: "agentBridge.decideAuthorization",
+  updateClientGrant: "agentBridge.updateClientGrant",
+  revokeClient: "agentBridge.revokeClient",
+  retryNotification: "agentBridge.retryNotification",
 } as const;
 
 export const AGENT_BRIDGE_WS_CHANNELS = {
@@ -39,6 +44,30 @@ export const AGENT_BRIDGE_LOCAL_CLIENT_ID = "local";
 export const AGENT_BRIDGE_LOCAL_CLIENT_NAME = "Local MCP client";
 export const AGENT_BRIDGE_CHATGPT_REDIRECT_URI =
   "https://chatgpt.com/connector_platform_oauth_redirect";
+/** How long "Connect a client" accepts OAuth authorization requests. */
+export const AGENT_BRIDGE_PAIRING_WINDOW_MS = 10 * 60 * 1000;
+/** Remote listener ports must be unprivileged. */
+export const AGENT_BRIDGE_REMOTE_MIN_PORT = 1024;
+
+/**
+ * Canonical public base URL: https, lowercase host, default port dropped, no
+ * path, query, fragment, credentials, or trailing slash. Returns null when the
+ * value cannot be one.
+ */
+export function canonicalizeAgentBridgePublicBaseUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return null;
+  if ((url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) return null;
+  return `https://${url.host.toLowerCase()}`;
+}
+
 /** Activity kind for the "Sent by … via F5 Agent Bridge" row. */
 export const AGENT_BRIDGE_TURN_SUBMITTED_ACTIVITY_KIND = "agent-bridge.turn-submitted";
 
@@ -92,6 +121,19 @@ export type AgentBridgeSettingsPatch = typeof AgentBridgeSettingsPatch.Type;
 export const AgentBridgeClientKind = Schema.Literals(["local", "cimd", "dcr"]);
 export type AgentBridgeClientKind = typeof AgentBridgeClientKind.Type;
 
+/**
+ * Whether a remote client will hear about new work. Authentication alone is
+ * never "ready": that needs an active event subscription.
+ */
+export const AgentBridgeClientReadiness = Schema.Literals([
+  "linked",
+  "awaiting-subscription",
+  "ready",
+  "expired",
+  "delivery-failed",
+]);
+export type AgentBridgeClientReadiness = typeof AgentBridgeClientReadiness.Type;
+
 export const AgentBridgeClient = Schema.Struct({
   id: TrimmedNonEmptyString,
   kind: AgentBridgeClientKind,
@@ -104,6 +146,12 @@ export const AgentBridgeClient = Schema.Struct({
   createdAt: IsoDateTime,
   lastUsedAt: Schema.NullOr(IsoDateTime),
   revokedAt: Schema.NullOr(IsoDateTime),
+  /** Host of a URL client id (client metadata document). */
+  clientIdHost: Schema.NullOr(Schema.String),
+  /** Hosts of the registered redirect URIs. */
+  callbackHosts: Schema.Array(Schema.String),
+  /** Null for the local client, which has no notifications. */
+  readiness: Schema.NullOr(AgentBridgeClientReadiness),
 });
 export type AgentBridgeClient = typeof AgentBridgeClient.Type;
 
@@ -125,10 +173,37 @@ export const AgentBridgeStdioSetup = Schema.Struct({
 });
 export type AgentBridgeStdioSetup = typeof AgentBridgeStdioSetup.Type;
 
+/** An OAuth authorization request waiting for a decision in F5. */
+export const AgentBridgePendingAuthorization = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  clientId: TrimmedNonEmptyString,
+  clientName: Schema.String,
+  clientKind: AgentBridgeClientKind,
+  redirectUri: Schema.String,
+  requestedScopes: Schema.Array(AgentBridgeScope),
+  /** Also shown on the browser page; confirm they match before approving. */
+  matchCode: Schema.String,
+  createdAt: IsoDateTime,
+});
+export type AgentBridgePendingAuthorization = typeof AgentBridgePendingAuthorization.Type;
+
+export const AgentBridgePairingState = Schema.Struct({
+  /** Authorization requests are accepted until this time; null when closed. */
+  openUntil: Schema.NullOr(IsoDateTime),
+  pending: Schema.NullOr(AgentBridgePendingAuthorization),
+});
+export type AgentBridgePairingState = typeof AgentBridgePairingState.Type;
+
 export const AgentBridgeState = Schema.Struct({
   revision: NonNegativeInt,
   enabled: Schema.Boolean,
   local: AgentBridgeListenerState,
+  remote: Schema.Struct({
+    ...AgentBridgeListenerState.fields,
+    /** The OAuth issuer (the canonical public base URL) while the listener runs. */
+    issuer: Schema.NullOr(Schema.String),
+  }),
+  pairing: AgentBridgePairingState,
   stdio: Schema.Struct({
     /** Present when this server runs inside the desktop app. */
     desktop: Schema.NullOr(AgentBridgeStdioSetup),
@@ -146,6 +221,35 @@ export type AgentBridgeStateChanged = typeof AgentBridgeStateChanged.Type;
 
 export const AgentBridgeGetStateInput = Schema.Struct({});
 export type AgentBridgeGetStateInput = typeof AgentBridgeGetStateInput.Type;
+
+export const AgentBridgeOpenPairingWindowInput = Schema.Struct({});
+export type AgentBridgeOpenPairingWindowInput = typeof AgentBridgeOpenPairingWindowInput.Type;
+
+export const AgentBridgeDecideAuthorizationInput = Schema.Struct({
+  requestId: TrimmedNonEmptyString,
+  approve: Schema.Boolean,
+  /** Granted scopes are the requested scopes intersected with these. */
+  scopes: Schema.Array(AgentBridgeScope),
+  /** Must be a subset of the exposed projects. */
+  projectIds: Schema.Array(ProjectId).check(Schema.isMaxLength(200)),
+});
+export type AgentBridgeDecideAuthorizationInput = typeof AgentBridgeDecideAuthorizationInput.Type;
+
+export const AgentBridgeUpdateClientGrantInput = Schema.Struct({
+  clientId: TrimmedNonEmptyString,
+  scopes: Schema.Array(AgentBridgeScope),
+  projectIds: Schema.Array(ProjectId).check(Schema.isMaxLength(200)),
+});
+export type AgentBridgeUpdateClientGrantInput = typeof AgentBridgeUpdateClientGrantInput.Type;
+
+export const AgentBridgeRevokeClientInput = Schema.Struct({ clientId: TrimmedNonEmptyString });
+export type AgentBridgeRevokeClientInput = typeof AgentBridgeRevokeClientInput.Type;
+
+/** Re-sends a backlog notification (queued tasks and unanswered updates) to a client. */
+export const AgentBridgeRetryNotificationInput = Schema.Struct({
+  clientId: TrimmedNonEmptyString,
+});
+export type AgentBridgeRetryNotificationInput = typeof AgentBridgeRetryNotificationInput.Type;
 
 // ── Task board (F5 → agent) ──────────────────────────────────────────
 

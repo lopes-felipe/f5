@@ -58,6 +58,19 @@ const STATUS_VARIANT: Record<
   cancelled: "secondary",
 };
 
+/**
+ * A queued task whose remote client has no working event subscription: the
+ * agent learns about it only when it next checks its tasks.
+ */
+export function awaitsNotification(
+  task: Pick<BotTask, "status" | "clientId">,
+  clients: ReadonlyArray<Pick<AgentBridgeClient, "id" | "readiness">>,
+): boolean {
+  if (task.status !== "queued") return false;
+  const readiness = clients.find((client) => client.id === task.clientId)?.readiness ?? null;
+  return readiness !== null && readiness !== "ready";
+}
+
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : "The request failed.";
 
@@ -558,6 +571,7 @@ export function BotsWorkspace(props: {
                 </div>
                 <p className="truncate text-2xs text-muted-foreground">
                   {task.clientName} · {describeContact(task.lastContactAt, now)}
+                  {awaitsNotification(task, clients) ? " · awaiting notification" : ""}
                 </p>
               </button>
             </li>

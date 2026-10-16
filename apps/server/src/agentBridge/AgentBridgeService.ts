@@ -1,30 +1,49 @@
 /**
- * Owns the Agent Bridge lifecycle: starts and stops the local listener as
- * settings change, answers `agentBridge.getState`, and publishes coalesced
- * `agentBridge.stateChanged` invalidations.
+ * Owns the Agent Bridge lifecycle: starts and stops the local and remote
+ * listeners as settings change, runs the remote OAuth server and pairing,
+ * manages client grants, answers `agentBridge.getState`, and publishes
+ * coalesced `agentBridge.stateChanged` invalidations.
  *
  * @module agentBridge/AgentBridgeService
  */
 import {
   AGENT_BRIDGE_LOCAL_CLIENT_ID,
+  AGENT_BRIDGE_REMOTE_MIN_PORT,
   AgentBridgeSettings as AgentBridgeSettingsSchema,
+  canonicalizeAgentBridgePublicBaseUrl,
   ProjectId,
   type AgentBridgeClient,
+  type AgentBridgeDecideAuthorizationInput,
   type AgentBridgeListenerState,
   type AgentBridgeSettings,
   type AgentBridgeState,
   type AgentBridgeStateChanged,
   type AgentBridgeStdioSetup,
+  type AgentBridgeUpdateClientGrantInput,
   type OrchestrationEvent,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { Clock, Duration, Effect, Schedule, Schema, Scope, Semaphore, Stream } from "effect";
+import { Clock, Data, Duration, Effect, Schedule, Schema, Scope, Semaphore, Stream } from "effect";
 
 import type { AgentBridgeHostShape } from "./AgentBridgeHost.ts";
-import { startLocalListener, type LocalListener } from "./AgentBridgeListeners.ts";
+import {
+  startLocalListener,
+  startMcpListener,
+  type LocalListener,
+  type McpListener,
+} from "./AgentBridgeListeners.ts";
 import type { AgentBridgeClientRecord, AgentBridgeStore } from "./AgentBridgeStore.ts";
 import type { BotTaskStore } from "./BotTaskStore.ts";
+import { makeAgentBridgeEvents, type SecretVault } from "./events/AgentBridgeEvents.ts";
+import type { EventStore } from "./events/EventStore.ts";
 import { agentBridgeLocalCredentialsPath } from "./localCredentials.ts";
+import {
+  makeOAuthServer,
+  OAuthDecisionError,
+  protectedResourceMetadataUrl,
+} from "./oauthServer.ts";
+import type { OAuthStore } from "./OAuthStore.ts";
+import { makeOutboundHttps, type OutboundHttps } from "./outboundHttps.ts";
 import { makeAgentBridgeLimiters } from "./rateLimits.ts";
 import {
   makeTaskOperator,
@@ -37,6 +56,11 @@ import { makeThreadTools, type AgentBridgeCaller } from "./threadTools.ts";
 export const AGENT_BRIDGE_STATE_COALESCE_MS = 400;
 const TOUCH_INTERVAL_MS = 60_000;
 const PRUNE_INTERVAL = Duration.hours(6);
+const SWEEP_INTERVAL = Duration.hours(1);
+
+export class AgentBridgeServiceError extends Data.TaggedError("AgentBridgeServiceError")<{
+  readonly message: string;
+}> {}
 
 /**
  * Deletes task progress and completed retry receipts past the 30-day
@@ -56,7 +80,40 @@ export const pruneAgentBridgeHistory = (input: {
 export interface AgentBridgeServiceShape {
   readonly getState: Effect.Effect<AgentBridgeState>;
   readonly tasks: TaskOperatorShape;
+  readonly openPairingWindow: Effect.Effect<AgentBridgeState, AgentBridgeServiceError>;
+  readonly decideAuthorization: (
+    input: AgentBridgeDecideAuthorizationInput,
+  ) => Effect.Effect<AgentBridgeState, AgentBridgeServiceError>;
+  readonly updateClientGrant: (
+    input: AgentBridgeUpdateClientGrantInput,
+  ) => Effect.Effect<AgentBridgeState, AgentBridgeServiceError>;
+  readonly revokeClient: (
+    clientId: string,
+  ) => Effect.Effect<AgentBridgeState, AgentBridgeServiceError>;
+  readonly retryNotification: (
+    clientId: string,
+  ) => Effect.Effect<AgentBridgeState, AgentBridgeServiceError>;
 }
+
+/** The remote listener's target: null when off, or why it cannot start. */
+export function desiredRemoteListener(
+  settings: AgentBridgeSettings,
+): { readonly port: number; readonly issuer: string } | { readonly error: string } | null {
+  if (!settings.enabled || !settings.remote.enabled) return null;
+  const issuer = canonicalizeAgentBridgePublicBaseUrl(settings.remote.publicBaseUrl);
+  if (!issuer) return { error: "Set the public https URL of your tunnel." };
+  if (settings.remote.port < AGENT_BRIDGE_REMOTE_MIN_PORT)
+    return { error: `Choose a port from ${AGENT_BRIDGE_REMOTE_MIN_PORT} to 65535.` };
+  return { port: settings.remote.port, issuer };
+}
+
+const hostOf = (value: string) => {
+  try {
+    return new URL(value).host;
+  } catch {
+    return null;
+  }
+};
 
 export interface AgentBridgeStdioSetups {
   readonly desktop: AgentBridgeStdioSetup | null;
@@ -113,6 +170,11 @@ export const makeAgentBridgeService = (input: {
   readonly host: AgentBridgeHostShape;
   readonly store: AgentBridgeStore;
   readonly tasks: BotTaskStore;
+  readonly oauth: OAuthStore;
+  readonly events: EventStore;
+  /** Holds webhook secrets; rows keep only references. */
+  readonly secrets: SecretVault;
+  readonly outbound?: OutboundHttps;
   readonly settingsChanges: Stream.Stream<ServerSettings>;
   readonly stateDir: string;
   readonly serverVersion: string;
@@ -151,7 +213,10 @@ export const makeAgentBridgeService = (input: {
         ),
       );
     };
+    // Workspace changes also wake the event delivery worker (set once it exists).
+    let wakeEvents = () => {};
     const invalidate = (affectedIds: ReadonlyArray<string>) => {
+      wakeEvents();
       for (const id of affectedIds) pendingIds.add(id);
       flushTimer ??= setTimeout(flush, AGENT_BRIDGE_STATE_COALESCE_MS);
     };
@@ -241,6 +306,140 @@ export const makeAgentBridgeService = (input: {
       Effect.forkScoped,
     );
 
+    // ── remote OAuth ──
+    let remoteListener: McpListener | null = null;
+    let remoteKey: string | null = null;
+    let remoteIssuer: string | null = null;
+    let remoteState: AgentBridgeListenerState = { status: "stopped", port: null, detail: null };
+    const fenceGrant = (clientId: string) =>
+      input.tasks.advanceEpochs(clientId).pipe(
+        Effect.tap((ids) => Effect.sync(() => invalidate([clientId, ...ids]))),
+        Effect.catch((error) =>
+          Effect.logWarning("agentBridge.tasks.fence.failed", { detail: error.message }),
+        ),
+      );
+    const outbound = input.outbound ?? makeOutboundHttps();
+    const events = makeAgentBridgeEvents({
+      store: input.events,
+      clients: store,
+      host,
+      secrets: input.secrets,
+      outbound,
+      visibleProjectIds: (client) => visibleProjectIdsFor(client, settings),
+      onChanged: invalidate,
+    });
+    wakeEvents = events.wake;
+    yield* events.run.pipe(Effect.forkScoped);
+    const oauthServer = makeOAuthServer({
+      store: input.oauth,
+      clients: store,
+      outbound,
+      config: () =>
+        remoteIssuer === null
+          ? null
+          : {
+              issuer: remoteIssuer,
+              allowedRedirectUris: settings.remote.allowedRedirectUris,
+              trustedClientMetadataHosts: settings.remote.trustedClientMetadataHosts,
+            },
+      onChanged: invalidate,
+      onGrantChanged: (clientId, reason) =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            if (reason === "reused")
+              yield* Effect.logWarning("agentBridge.oauth.refresh.reused", { clientId });
+            yield* fenceGrant(clientId);
+          }),
+        ),
+    });
+    const resolveRemoteCaller = async (token: string): Promise<AgentBridgeCaller | null> => {
+      if (!settings.enabled) return null;
+      const authenticated = await oauthServer.authenticate(token).catch(() => null);
+      if (!authenticated) return null;
+      const { client, familyId } = authenticated;
+      touch(client.id);
+      return {
+        client,
+        visibleProjectIds: visibleProjectIdsFor(client, settings),
+        tokenFamilyId: familyId,
+      };
+    };
+    const stopRemote = Effect.promise(async () => {
+      const current = remoteListener;
+      remoteListener = null;
+      remoteKey = null;
+      remoteIssuer = null;
+      oauthServer.reset();
+      if (current) await current.close();
+      remoteState = { status: "stopped", port: null, detail: null };
+    });
+    const startRemote = (target: { readonly port: number; readonly issuer: string }) =>
+      Effect.promise(async () => {
+        try {
+          remoteListener = await startMcpListener({
+            port: target.port,
+            authenticate: resolveRemoteCaller,
+            tools: () => tools,
+            serverVersion: input.serverVersion,
+            unauthorizedHeaders: {
+              "www-authenticate": `Bearer resource_metadata="${protectedResourceMetadataUrl(target.issuer)}"`,
+            },
+            allowedHosts: () => [new URL(target.issuer).host],
+            routes: oauthServer.handleRoute,
+            eventsCapability: events.capability,
+            events: events.handleMethod,
+          });
+          remoteKey = `${target.port} ${target.issuer}`;
+          remoteIssuer = target.issuer;
+          remoteState = { status: "running", port: remoteListener.port, detail: null };
+        } catch (cause) {
+          remoteState = {
+            status: "failed",
+            port: null,
+            detail: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+      });
+    const applyRemote = (previous: AgentBridgeSettings, next: AgentBridgeSettings) =>
+      Effect.gen(function* () {
+        const previousIssuer = canonicalizeAgentBridgePublicBaseUrl(previous.remote.publicBaseUrl);
+        const nextIssuer = canonicalizeAgentBridgePublicBaseUrl(next.remote.publicBaseUrl);
+        if (previousIssuer !== null && previousIssuer !== nextIssuer) {
+          // Tokens are bound to the issuer: a new public URL requires reauthorization.
+          yield* input.oauth.revokeAllTokens.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("agentBridge.oauth.revoke.failed", { detail: error.message }),
+            ),
+          );
+          yield* events.removeAll;
+          yield* Effect.logInfo("agentBridge.oauth.issuer.changed");
+        }
+        const target = desiredRemoteListener(next);
+        const key = target && "port" in target ? `${target.port} ${target.issuer}` : null;
+        if (remoteListener && remoteKey !== key) yield* stopRemote;
+        if (target === null) {
+          remoteState = { status: "stopped", port: null, detail: null };
+          return;
+        }
+        if ("error" in target) {
+          remoteState = { status: "failed", port: null, detail: target.error };
+          return;
+        }
+        if (!remoteListener) yield* startRemote(target);
+        if (remoteState.status === "failed")
+          yield* Effect.logWarning("agentBridge.remote.start.failed", {
+            detail: remoteState.detail,
+          });
+      });
+    yield* Effect.suspend(() => input.oauth.sweepExpired(Date.now())).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("agentBridge.oauth.sweep.failed", { detail: error.message }),
+      ),
+      Effect.andThen(events.sweep),
+      Effect.repeat(Schedule.spaced(SWEEP_INTERVAL)),
+      Effect.forkScoped,
+    );
+
     // ── local listener lifecycle ──
     const stopLocal = Effect.promise(async () => {
       const current = listener;
@@ -273,6 +472,7 @@ export const makeAgentBridgeService = (input: {
           settings = next;
           if (next.enabled && !listener) yield* startLocal;
           if (!next.enabled && listener) yield* stopLocal;
+          yield* applyRemote(previous, next);
           if (localState.status === "failed")
             yield* Effect.logWarning("agentBridge.local.start.failed", {
               detail: localState.detail,
@@ -286,14 +486,15 @@ export const makeAgentBridgeService = (input: {
         }),
       );
 
-    yield* Effect.addFinalizer(() => stopLocal);
+    yield* Effect.addFinalizer(() => Effect.andThen(stopLocal, stopRemote));
+    // The first application has no previous issuer to compare against.
     yield* apply(settings);
     yield* input.settingsChanges.pipe(
       Stream.runForEach((next) => apply(next.agentBridge)),
       Effect.forkScoped,
     );
 
-    const toClient = (record: AgentBridgeClientRecord): AgentBridgeClient => ({
+    const toClient = (record: AgentBridgeClientRecord): Omit<AgentBridgeClient, "readiness"> => ({
       id: record.id,
       kind: record.kind,
       name: record.name,
@@ -304,22 +505,114 @@ export const makeAgentBridgeService = (input: {
       createdAt: record.createdAt,
       lastUsedAt: record.lastUsedAt,
       revokedAt: record.revokedAt,
+      clientIdHost: record.kind === "cimd" ? hostOf(record.id) : null,
+      callbackHosts: [...new Set(record.redirectUris.map(hostOf).filter((host) => host !== null))],
     });
 
+    const getState = Effect.gen(function* () {
+      const [revision, records] = yield* Effect.all([
+        store.getRevision.pipe(Effect.orElseSucceed(() => 0)),
+        store.listClients.pipe(Effect.orElseSucceed(() => [])),
+      ]);
+      const clients = yield* Effect.forEach(records, (record) =>
+        events
+          .readiness(record)
+          .pipe(Effect.map((readiness) => ({ ...toClient(record), readiness }))),
+      );
+      return {
+        revision,
+        enabled: settings.enabled,
+        local: localState,
+        remote: { ...remoteState, issuer: remoteIssuer },
+        pairing: oauthServer.pairingState(),
+        stdio: input.stdio,
+        clients,
+      } satisfies AgentBridgeState;
+    });
+
+    const serviceError = (message: string) => new AgentBridgeServiceError({ message });
+    const storageError = Effect.mapError(() =>
+      serviceError("F5 could not update the client. Try again."),
+    );
+    const requireExposed = (projectIds: ReadonlyArray<string>) => {
+      const exposed = new Set<string>(settings.exposedProjectIds);
+      return projectIds.every((id) => exposed.has(id))
+        ? Effect.void
+        : Effect.fail(
+            serviceError("Only projects shared in Agent Bridge settings can be granted."),
+          );
+    };
+    const requireOAuthClient = (clientId: string) =>
+      Effect.gen(function* () {
+        if (clientId === AGENT_BRIDGE_LOCAL_CLIENT_ID)
+          return yield* serviceError(
+            "The local client always has every permission; turn the bridge off instead.",
+          );
+        const client = yield* store.getClient(clientId).pipe(storageError);
+        if (!client) return yield* serviceError("Client not found.");
+        return client;
+      });
+
     return {
-      getState: Effect.gen(function* () {
-        const [revision, clients] = yield* Effect.all([
-          store.getRevision.pipe(Effect.orElseSucceed(() => 0)),
-          store.listClients.pipe(Effect.orElseSucceed(() => [])),
-        ]);
-        return {
-          revision,
-          enabled: settings.enabled,
-          local: localState,
-          stdio: input.stdio,
-          clients: clients.map(toClient),
-        } satisfies AgentBridgeState;
-      }),
+      getState,
       tasks: taskOperator,
+      openPairingWindow: Effect.gen(function* () {
+        if (remoteState.status !== "running")
+          return yield* serviceError("Turn on remote access and check its status first.");
+        oauthServer.openPairingWindow();
+        return yield* getState;
+      }),
+      decideAuthorization: (decision) =>
+        Effect.gen(function* () {
+          if (decision.approve) yield* requireExposed(decision.projectIds);
+          yield* Effect.tryPromise({
+            try: () => oauthServer.decide(decision),
+            catch: (cause) =>
+              serviceError(
+                cause instanceof OAuthDecisionError
+                  ? cause.message
+                  : "F5 could not record the decision. Try again.",
+              ),
+          });
+          return yield* getState;
+        }),
+      updateClientGrant: (grant) =>
+        Effect.gen(function* () {
+          const client = yield* requireOAuthClient(grant.clientId);
+          if (client.revokedAt !== null)
+            return yield* serviceError("This client is revoked. Connect it again instead.");
+          if (grant.scopes.length === 0)
+            return yield* serviceError("Grant at least one permission, or revoke the client.");
+          yield* requireExposed(grant.projectIds);
+          yield* input.oauth
+            .setGrant({ clientId: client.id, scopes: grant.scopes, projectIds: grant.projectIds })
+            .pipe(storageError);
+          yield* fenceGrant(client.id);
+          invalidate([client.id]);
+          return yield* getState;
+        }),
+      retryNotification: (clientId) =>
+        Effect.gen(function* () {
+          const client = yield* requireOAuthClient(clientId);
+          const count = yield* events.retryNotification(client.id);
+          if (count === 0) return yield* serviceError("This client has no event subscription yet.");
+          invalidate([client.id]);
+          return yield* getState;
+        }),
+      revokeClient: (clientId) =>
+        Effect.gen(function* () {
+          const client = yield* requireOAuthClient(clientId);
+          yield* input.oauth.revokeClient(client.id, Date.now()).pipe(storageError);
+          yield* events.removeClient(client.id);
+          const paused = yield* input.tasks
+            .fenceTasks({
+              clientId: client.id,
+              reason: "The client was revoked.",
+              at: new Date().toISOString(),
+            })
+            .pipe(Effect.orElseSucceed(() => []));
+          invalidate([client.id, ...paused]);
+          return yield* getState;
+        }),
     };
   });
