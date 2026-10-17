@@ -75,6 +75,28 @@ export function ProvidersSettings() {
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateCheckError, setUpdateCheckError] = useState<string | null>(null);
+  const applyProviders = (providers: readonly ServerProvider[]) => {
+    queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+      existing ? { ...existing, providers } : existing,
+    );
+  };
+  const checkProviderUpdates = async (instanceId?: ProviderInstanceId) => {
+    const result = await ensureNativeApi().server.checkProviderUpdates(
+      instanceId ? { instanceId } : {},
+    );
+    applyProviders(result.providers);
+  };
+  const checkNow = () => {
+    setIsCheckingUpdates(true);
+    setUpdateCheckError(null);
+    void checkProviderUpdates()
+      .catch((error: unknown) =>
+        setUpdateCheckError(error instanceof Error ? error.message : String(error)),
+      )
+      .finally(() => setIsCheckingUpdates(false));
+  };
   const instancesByDriver = new Map<
     ProviderDriverKind,
     Array<[ProviderInstanceId, ProviderInstanceConfig]>
@@ -299,19 +321,31 @@ export function ProvidersSettings() {
 
         <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
           <div>
-            <p className="text-sm font-medium text-foreground">Check for provider updates</p>
+            <p className="text-sm font-medium text-foreground">
+              Automatically check for provider updates
+            </p>
             <p className="text-xs text-muted-foreground">
               Periodically check installed provider CLIs for newer versions.
             </p>
           </div>
-          <Switch
-            checked={unifiedSettings.enableProviderUpdateChecks}
-            onCheckedChange={(checked) =>
-              updateUnifiedSettings({ enableProviderUpdateChecks: Boolean(checked) })
-            }
-            aria-label="Check for provider updates"
-          />
+          <div className="flex shrink-0 items-center gap-2">
+            <Button size="xs" variant="outline" onClick={checkNow} disabled={isCheckingUpdates}>
+              {isCheckingUpdates ? "Checking…" : "Check now"}
+            </Button>
+            <Switch
+              checked={unifiedSettings.enableProviderUpdateChecks}
+              onCheckedChange={(checked) =>
+                updateUnifiedSettings({ enableProviderUpdateChecks: Boolean(checked) })
+              }
+              aria-label="Automatically check for provider updates"
+            />
+          </div>
         </div>
+        {updateCheckError ? (
+          <p role="alert" className="px-5 py-2 text-xs text-destructive">
+            {updateCheckError}
+          </p>
+        ) : null}
 
         <div>
           {providerInstanceRows.map((row) => {
@@ -334,6 +368,18 @@ export function ProvidersSettings() {
                 instance={row.instance}
                 driverOption={driverOption}
                 liveProvider={liveProvider}
+                providers={liveProviders}
+                onCheckProviderUpdates={async () => {
+                  await ensureNativeApi().server.refreshProviders({ instanceId: row.instanceId });
+                  await checkProviderUpdates(row.instanceId);
+                }}
+                onRunProviderUpdate={async () => {
+                  const result = await ensureNativeApi().server.runProviderUpdate({
+                    instanceId: row.instanceId,
+                  });
+                  applyProviders(result.providers);
+                  return result;
+                }}
                 isExpanded={openInstanceDetails[row.instanceId] ?? false}
                 onExpandedChange={(open) =>
                   setOpenInstanceDetails((existing) => ({

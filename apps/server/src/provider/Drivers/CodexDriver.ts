@@ -37,6 +37,7 @@ import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
 import {
@@ -476,6 +477,13 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnvironment,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity: codexContinuationIdentity(homeLayout),
         launchIdentity,
         displayName,

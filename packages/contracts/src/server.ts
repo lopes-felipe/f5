@@ -114,19 +114,46 @@ export const ServerProviderVersionAdvisoryStatus = Schema.Literals([
   "unknown",
   "current",
   "behind_latest",
+  "bundled",
+  "check_failed",
+  "manual",
 ]);
 export type ServerProviderVersionAdvisoryStatus = typeof ServerProviderVersionAdvisoryStatus.Type;
 
 export const ServerProviderUpdateCommand = Schema.Struct({
   executable: TrimmedNonEmptyString,
   args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
-  channel: Schema.Literals(["npm"]),
+  channel: Schema.Literals(["npm", "homebrew", "self-update"]),
+  shell: Schema.optional(Schema.Literals(["posix", "powershell"])),
+  pathPrepend: Schema.optional(TrimmedNonEmptyString),
   cwd: Schema.optional(TrimmedNonEmptyString),
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type ServerProviderUpdateCommand = typeof ServerProviderUpdateCommand.Type;
 
 export const ServerProviderVersionAdvisory = Schema.Struct({
+  installChannel: Schema.optional(
+    Schema.Literals(["bundled", "npm", "homebrew", "self-update", "unmanaged", "remote"]),
+  ),
+  executablePath: Schema.optional(Schema.String),
+  installKey: Schema.optional(Schema.String),
+  canRunUpdate: Schema.optional(Schema.Boolean),
+  updateAvailable: Schema.optional(Schema.Boolean),
+  blockedReason: Schema.optional(
+    Schema.Literals([
+      "windows",
+      "isolated_profile",
+      "unsupported_source",
+      "custom_registry",
+      "remote",
+    ]),
+  ),
+  sharedWith: Schema.optional(Schema.Array(ProviderInstanceId)),
+  activeUpdate: Schema.optional(
+    Schema.NullOr(Schema.Struct({ startedAt: IsoDateTime, targetVersion: Schema.String })),
+  ),
+  retryAt: Schema.optional(IsoDateTime),
+  failedAt: Schema.optional(IsoDateTime),
   status: ServerProviderVersionAdvisoryStatus,
   currentVersion: Schema.NullOr(TrimmedNonEmptyString),
   latestVersion: Schema.NullOr(ServerProviderLatestVersionString),
@@ -318,3 +345,22 @@ export const ServerConfigSettingsUpdatedPayload = Schema.Struct({
   settings: ServerSettings,
 });
 export type ServerConfigSettingsUpdatedPayload = typeof ServerConfigSettingsUpdatedPayload.Type;
+
+export const ServerCheckProviderUpdatesInput = Schema.Struct({
+  instanceId: Schema.optional(ProviderInstanceId),
+});
+export type ServerCheckProviderUpdatesInput = typeof ServerCheckProviderUpdatesInput.Type;
+export const ServerRunProviderUpdateInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ServerRunProviderUpdateInput = typeof ServerRunProviderUpdateInput.Type;
+export const ServerRunProviderUpdateResult = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  outcome: Schema.Literals(["updated", "unchanged", "unexpected_version", "unverified", "failed"]),
+  previousVersion: Schema.NullOr(Schema.String),
+  currentVersion: Schema.NullOr(Schema.String),
+  exitCode: Schema.NullOr(Schema.Int),
+  timedOut: Schema.Boolean,
+  output: Schema.String,
+  outputTruncated: Schema.Boolean,
+  providers: ServerProviders,
+});
+export type ServerRunProviderUpdateResult = typeof ServerRunProviderUpdateResult.Type;

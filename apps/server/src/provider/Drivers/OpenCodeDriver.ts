@@ -33,6 +33,7 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 
@@ -132,6 +133,14 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: processEnv,
+          instanceEnvironment: environment,
+          instanceId,
+          serverUrl: effectiveConfig.serverUrl,
+        }),
         continuationIdentity,
         displayName,
         accentColor,

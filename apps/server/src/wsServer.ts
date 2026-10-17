@@ -5390,10 +5390,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        yield* providerRegistry.refresh();
-        yield* providerUpdateAdvisor.refreshAdvisories({ force: true }).pipe(Effect.forkChild);
+        const { instanceId } = stripRequestTag(request.body);
+        if (instanceId) yield* providerRegistry.refreshInstance(instanceId);
+        else yield* providerRegistry.refresh();
         const providers = yield* providerAdvisoryProjection.getProviders;
         return { providers };
+      }
+
+      case WS_METHODS.serverCheckProviderUpdates: {
+        const body = stripRequestTag(request.body);
+        yield* providerUpdateAdvisor.refreshAdvisories({ mode: "explicit", ...body });
+        return { providers: yield* providerAdvisoryProjection.getProviders };
+      }
+
+      case WS_METHODS.serverRunProviderUpdate: {
+        const { instanceId } = stripRequestTag(request.body);
+        const result = yield* providerUpdateAdvisor
+          .runUpdate(instanceId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+        return { ...result, providers: yield* providerAdvisoryProjection.getProviders };
       }
 
       case WS_METHODS.serverGetProviderInventory: {

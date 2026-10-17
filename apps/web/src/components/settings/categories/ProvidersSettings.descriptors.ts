@@ -26,10 +26,10 @@ export const PROVIDERS_SETTINGS_DESCRIPTORS = [
   {
     id: "providers.updates",
     category: "providers",
-    label: "Check for provider updates",
+    label: "Automatically check for provider updates",
     description: "Refresh installed provider version and update information.",
     keywords: ["version", "upgrade", "cli"],
-    targetSelector: '[aria-label="Check for provider updates"]',
+    targetSelector: '[aria-label="Automatically check for provider updates"]',
   },
   {
     id: "providers.legacy-overrides",

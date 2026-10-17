@@ -123,6 +123,9 @@ import type {
   ServerHarnessValidationResult,
   ServerKeybindingMutationResult,
   ServerProviderUpdatedPayload,
+  ServerCheckProviderUpdatesInput,
+  ServerRunProviderUpdateInput,
+  ServerRunProviderUpdateResult,
   ServerRemoveKeybindingInput,
   ServerResetKeybindingsInput,
   ServerUpdateKeybindingInput,
@@ -827,7 +830,15 @@ export interface NativeApi {
     updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
     getProjectSettings: (input: { projectId: ProjectId }) => Promise<ProjectSettingsResult>;
     migrateClientSetting: (input: MigrateClientSettingInput) => Promise<MigrateClientSettingResult>;
-    refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
+    refreshProviders: (
+      input?: ServerCheckProviderUpdatesInput,
+    ) => Promise<ServerProviderUpdatedPayload>;
+    checkProviderUpdates: (
+      input?: ServerCheckProviderUpdatesInput,
+    ) => Promise<ServerProviderUpdatedPayload>;
+    runProviderUpdate: (
+      input: ServerRunProviderUpdateInput,
+    ) => Promise<ServerRunProviderUpdateResult>;
     validateHarnesses: (input?: {
       providerOptions?: ProviderStartOptions;
     }) => Promise<{ results: ReadonlyArray<ServerHarnessValidationResult> }>;

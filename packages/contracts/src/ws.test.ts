@@ -6,7 +6,11 @@ import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestra
 import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
 import { AGENT_BRIDGE_WS_CHANNELS } from "./agentBridge";
 import { PR_HUB_WS_CHANNELS, PR_HUB_WS_METHODS } from "./prHub";
-import { ServerValidateHarnessesResult } from "./server";
+import {
+  ServerProviderVersionAdvisory,
+  ServerRunProviderUpdateResult,
+  ServerValidateHarnessesResult,
+} from "./server";
 import {
   WebSocketRequest,
   WsResponse,
@@ -676,4 +680,72 @@ it("registers every declared push channel in both transport schemas", () => {
     const encoded = Schema.encodeSync(WsPush)(message!);
     assert.equal(Schema.decodeUnknownSync(WsPush)(encoded).channel, channel);
   }
+});
+
+it("decodes provider update requests without accepting browser commands", () => {
+  for (const body of [
+    { _tag: WS_METHODS.serverRefreshProviders, instanceId: "codex" },
+    { _tag: WS_METHODS.serverCheckProviderUpdates },
+    { _tag: WS_METHODS.serverCheckProviderUpdates, instanceId: "codex" },
+    { _tag: WS_METHODS.serverRunProviderUpdate, instanceId: "codex" },
+  ]) {
+    assert.deepStrictEqual<unknown>(
+      Schema.decodeUnknownSync(WebSocketRequest)({ id: "update", body }).body,
+      body,
+    );
+  }
+  const parsed = Schema.decodeUnknownSync(WebSocketRequest)({
+    id: "update",
+    body: { _tag: WS_METHODS.serverRunProviderUpdate, instanceId: "codex", command: "arbitrary" },
+  });
+  assert.deepStrictEqual<unknown>(parsed.body, {
+    _tag: WS_METHODS.serverRunProviderUpdate,
+    instanceId: "codex",
+  });
+});
+it("round-trips provider update progress and visible failure metadata", () => {
+  for (const status of ["bundled", "manual", "check_failed"] as const) {
+    const value = {
+      status,
+      currentVersion: "1.0.0",
+      latestVersion: "1.1.0",
+      updateCommand: {
+        executable: "/brew",
+        args: ["upgrade", "codex"],
+        channel: "homebrew",
+        shell: "posix",
+        pathPrepend: "/brew/bin",
+      },
+      checkedAt: "2026-10-17T00:00:00.000Z",
+      message: "Check failed",
+      retryAt: "2026-10-17T01:00:00.000Z",
+      failedAt: "2026-10-17T00:01:00.000Z",
+      installChannel: "homebrew",
+      executablePath: "/bin/codex",
+      installKey: "hash",
+      canRunUpdate: true,
+      updateAvailable: true,
+      sharedWith: ["other"],
+      activeUpdate: { startedAt: "2026-10-17T00:01:00.000Z", targetVersion: "1.1.0" },
+    };
+    assert.deepStrictEqual<unknown>(
+      Schema.decodeUnknownSync(ServerProviderVersionAdvisory)(value),
+      value,
+    );
+  }
+  const result = {
+    instanceId: "codex",
+    outcome: "failed",
+    previousVersion: "1.0.0",
+    currentVersion: null,
+    exitCode: null,
+    timedOut: false,
+    output: "could not start",
+    outputTruncated: false,
+    providers: [],
+  };
+  assert.deepStrictEqual<unknown>(
+    Schema.decodeUnknownSync(ServerRunProviderUpdateResult)(result),
+    result,
+  );
 });

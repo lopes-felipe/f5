@@ -5,9 +5,10 @@ import {
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ServerProvider,
+  type ServerRunProviderUpdateResult,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { page } from "vitest/browser";
+import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -60,44 +61,36 @@ function makeLiveProvider(overrides: Partial<ServerProvider> = {}): ServerProvid
   };
 }
 
-function renderCard(
-  overrides: {
-    readonly instance?: ProviderInstanceConfig;
-    readonly liveProvider?: ServerProvider;
-    readonly isExpanded?: boolean;
-    readonly onUpdate?: (instance: ProviderInstanceConfig) => void;
-    readonly dismissedProviderUpdateAdvisory?: string;
-    readonly onDismissProviderUpdateAdvisory?: (latestVersion: string) => void;
-  } = {},
-) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createTestRouter();
-  return render(
+function card(overrides: Partial<React.ComponentProps<typeof ProviderInstanceCard>> = {}) {
+  return (
     <ProviderInstanceCard
       instanceId={CODEX_INSTANCE_ID}
-      instance={overrides.instance ?? makeInstance()}
+      instance={makeInstance()}
       driverOption={CODEX_DRIVER_OPTION}
-      liveProvider={overrides.liveProvider ?? makeLiveProvider()}
-      isExpanded={overrides.isExpanded ?? false}
+      liveProvider={makeLiveProvider()}
+      isExpanded={false}
       onExpandedChange={noop}
-      onUpdate={overrides.onUpdate ?? noop}
-      dismissedProviderUpdateAdvisory={overrides.dismissedProviderUpdateAdvisory}
-      onDismissProviderUpdateAdvisory={overrides.onDismissProviderUpdateAdvisory}
+      onUpdate={noop}
       hiddenModels={[]}
       favoriteModels={[]}
       modelOrder={[]}
       onHiddenModelsChange={noop}
       onFavoriteModelsChange={noop}
       onModelOrderChange={noop}
-    />,
-    {
-      wrapper: ({ children }) => (
-        <QueryClientProvider client={queryClient}>
-          <TestRouterContext router={router}>{children}</TestRouterContext>
-        </QueryClientProvider>
-      ),
-    },
+      {...overrides}
+    />
   );
+}
+function renderCard(overrides: Partial<React.ComponentProps<typeof ProviderInstanceCard>> = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createTestRouter();
+  return render(card(overrides), {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>
+        <TestRouterContext router={router}>{children}</TestRouterContext>
+      </QueryClientProvider>
+    ),
+  });
 }
 
 describe("ProviderInstanceCard advisory", () => {
@@ -135,7 +128,7 @@ describe("ProviderInstanceCard advisory", () => {
     document.body.innerHTML = "";
   });
 
-  it("renders the update popover, copies the display command, and dismisses the latest version", async () => {
+  it("renders the update dialog, copies the display command, and dismisses the latest version", async () => {
     const onDismiss = vi.fn();
     const screen = await renderCard({
       onDismissProviderUpdateAdvisory: onDismiss,
@@ -144,13 +137,13 @@ describe("ProviderInstanceCard advisory", () => {
     try {
       await page.getByRole("button", { name: "Update available - view details" }).click();
 
-      expect(document.body.textContent ?? "").toContain("Update available");
-      expect(document.body.textContent ?? "").toContain("npm install command");
+      expect(document.body.textContent ?? "").toContain("Codex updates");
+      expect(document.body.textContent ?? "").toContain("Installed via");
 
       await vi.waitFor(() => {
-        const popup = document.querySelector('[data-slot="popover-popup"]');
+        const popup = document.querySelector('[data-slot="dialog-popup"]');
         expect(popup?.textContent ?? "").toContain("npm install -g @openai/codex@latest");
-        expect(popup?.getAttribute("class")?.includes("calc(100vw-1.5rem)")).toBe(true);
+        expect(popup?.getAttribute("class")?.includes("min-w-0")).toBe(true);
       });
 
       await page.getByRole("button", { name: "Copy update command" }).click();
@@ -160,7 +153,7 @@ describe("ProviderInstanceCard advisory", () => {
         );
       });
 
-      await page.getByRole("button", { name: "Dismiss" }).click();
+      await page.getByRole("button", { name: "Dismiss notification" }).click();
       expect(onDismiss).toHaveBeenCalledWith("0.2.0");
     } finally {
       await screen.unmount();
@@ -320,4 +313,233 @@ describe("ProviderInstanceCard advisory", () => {
       await screen.unmount();
     }
   });
+});
+
+const updateResult: ServerRunProviderUpdateResult = {
+  instanceId: CODEX_INSTANCE_ID,
+  outcome: "failed",
+  previousVersion: "0.1.0",
+  currentVersion: "0.1.0",
+  exitCode: 1,
+  timedOut: false,
+  output: "installer failure marker",
+  outputTruncated: true,
+  providers: [],
+};
+function withAdvisory(
+  fields: Partial<NonNullable<ServerProvider["versionAdvisory"]>>,
+): ServerProvider {
+  return makeLiveProvider({
+    versionAdvisory: {
+      ...makeLiveProvider().versionAdvisory!,
+      installChannel: "npm",
+      canRunUpdate: true,
+      ...fields,
+    },
+  });
+}
+
+describe("provider update execution", () => {
+  it("keeps a known update visible after a failed check without offering an unrunnable update", async () => {
+    const check = vi.fn(async () => {});
+    const screen = await renderCard({
+      liveProvider: withAdvisory({
+        status: "check_failed",
+        updateAvailable: true,
+        canRunUpdate: false,
+        message: "Rate limited",
+        retryAt: "2026-10-17T18:00:00Z",
+      }),
+      onCheckProviderUpdates: check,
+    });
+    try {
+      expect(document.body.textContent).toContain("Update check failed");
+      await page.getByRole("button", { name: "Update available - view details" }).click();
+      expect(document.body.textContent).toContain("Retry after");
+      expect(page.getByRole("button", { name: "Update to v0.2.0" }).query()).toBeNull();
+      await page.getByRole("button", { name: "Refresh and verify" }).click();
+      expect(check).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("runs one explicit update and keeps failure output until dismissed even after the advisory disappears", async () => {
+    let complete!: (result: ServerRunProviderUpdateResult) => void;
+    const onRun = vi.fn(
+      () =>
+        new Promise<ServerRunProviderUpdateResult>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const screen = await renderCard({ liveProvider: withAdvisory({}), onRunProviderUpdate: onRun });
+    try {
+      await page.getByRole("button", { name: "Update available - view details" }).click();
+      expect(document.body.textContent).toContain("Close any terminal sessions using this CLI.");
+      await page.getByRole("button", { name: "Update to v0.2.0" }).click();
+      await expect.element(page.getByText("Updating Codex…", { exact: true })).toBeVisible();
+      expect(onRun).toHaveBeenCalledTimes(1);
+      complete(updateResult);
+      await expect.element(page.getByText("Update failed (exit 1).")).toBeVisible();
+      const { versionAdvisory: _advisory, ...withoutAdvisory } = makeLiveProvider();
+      await screen.rerender(card({ liveProvider: withoutAdvisory }));
+      expect(document.body.textContent).toContain("installer failure marker");
+      expect(document.body.textContent).toContain("(earlier output truncated)");
+      await page.getByRole("button", { name: "Dismiss update result" }).click();
+      expect(document.body.textContent).not.toContain("installer failure marker");
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("shows server-owned progress after a remount", async () => {
+    const screen = await renderCard({
+      liveProvider: withAdvisory({
+        activeUpdate: { startedAt: "2026-10-17T00:00:00Z", targetVersion: "0.2.0" },
+      }),
+    });
+    try {
+      await expect.element(page.getByText("Updating Codex…", { exact: true })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+  for (const [outcome, message] of [
+    ["unchanged", "version is still v0.1.0"],
+    ["unexpected_version", "Installed v0.1.0, expected v0.2.0."],
+    ["unverified", "F5 couldn't confirm the new version"],
+  ] as const)
+    it(`explains ${outcome}`, async () => {
+      const screen = await renderCard({
+        liveProvider: withAdvisory({}),
+        onRunProviderUpdate: async () => ({ ...updateResult, outcome }),
+      });
+      try {
+        await page.getByRole("button", { name: "Update available - view details" }).click();
+        await page.getByRole("button", { name: "Update to v0.2.0" }).click();
+        await vi.waitFor(() => expect(document.body.textContent).toContain(message));
+      } finally {
+        await screen.unmount();
+      }
+    });
+  it("offers isolated profiles a copy command and Default-profile guidance", async () => {
+    const screen = await renderCard({
+      liveProvider: withAdvisory({ canRunUpdate: false, blockedReason: "isolated_profile" }),
+    });
+    try {
+      await page.getByRole("button", { name: "Update available - view details" }).click();
+      expect(document.body.textContent).toContain("Run provider updates from the Default profile.");
+      expect(page.getByRole("button", { name: "Copy update command" }).query()).not.toBeNull();
+      expect(page.getByRole("button", { name: "Update to v0.2.0" }).query()).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("keeps dismissed updates reachable and supports manual verification", async () => {
+    const check = vi.fn(async () => {});
+    const screen = await renderCard({
+      liveProvider: withAdvisory({
+        status: "manual",
+        installChannel: "unmanaged",
+        canRunUpdate: false,
+        updateCommand: null,
+        message: "Update using devbox, then verify.",
+      }),
+      dismissedProviderUpdateAdvisory: "0.2.0",
+      onCheckProviderUpdates: check,
+    });
+    try {
+      await page.getByRole("button", { name: "Codex update details" }).click();
+      expect(document.body.textContent).toContain("Update using devbox, then verify.");
+      await page.getByRole("button", { name: "Refresh and verify" }).click();
+      expect(check).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+  it("shows Bundled without an Update notification and links to F5 updates", async () => {
+    const screen = await renderCard({
+      liveProvider: withAdvisory({
+        status: "bundled",
+        installChannel: "bundled",
+        canRunUpdate: false,
+        updateCommand: null,
+        message: "Bundled with F5.",
+      }),
+    });
+    try {
+      expect(
+        page.getByRole("button", { name: "Update available - view details" }).query(),
+      ).toBeNull();
+      await page.getByRole("button", { name: "Codex update details" }).click();
+      await expect.element(page.getByRole("link", { name: "Open F5 updates" })).toBeVisible();
+      expect(
+        page.getByRole("link", { name: "Open F5 updates" }).element().getAttribute("href"),
+      ).toContain("about");
+    } finally {
+      await screen.unmount();
+    }
+  });
+});
+
+it("opens update details from the keyboard on a narrow screen", async () => {
+  await page.viewport(320, 640);
+  const screen = await renderCard({
+    liveProvider: withAdvisory({
+      executablePath: "/a/very/long/provider/installation/prefix/that/should/truncate/bin/codex",
+    }),
+  });
+  try {
+    (
+      page.getByRole("button", { name: "Update available - view details" }).element() as HTMLElement
+    ).focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByRole("dialog")).toBeVisible();
+    const bounds = page.getByRole("dialog").element().getBoundingClientRect();
+    expect(bounds.width).toBeLessThanOrEqual(320);
+    expect(bounds.left).toBeGreaterThanOrEqual(0);
+    await userEvent.keyboard("{Escape}");
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  } finally {
+    await screen.unmount();
+    await page.viewport(1280, 720);
+  }
+});
+it("shows the server's admission error", async () => {
+  const screen = await renderCard({
+    liveProvider: withAdvisory({}),
+    onRunProviderUpdate: async () => {
+      throw new Error("Codex has active work.");
+    },
+  });
+  try {
+    await page.getByRole("button", { name: "Update available - view details" }).click();
+    await page.getByRole("button", { name: "Update to v0.2.0" }).click();
+    await expect.element(page.getByText("Codex has active work.")).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
+});
+
+it("keeps server progress visible when the original update RPC disconnects", async () => {
+  const screen = await renderCard({
+    liveProvider: withAdvisory({}),
+    onRunProviderUpdate: async () => {
+      throw new Error("Connection lost.");
+    },
+  });
+  try {
+    await page.getByRole("button", { name: "Update available - view details" }).click();
+    await page.getByRole("button", { name: "Update to v0.2.0" }).click();
+    await expect.element(page.getByText("Connection lost.")).toBeVisible();
+    await screen.rerender(
+      card({
+        liveProvider: withAdvisory({
+          activeUpdate: { startedAt: "2026-10-17T00:00:00Z", targetVersion: "0.2.0" },
+        }),
+      }),
+    );
+    await expect.element(page.getByText("Updating Codex…", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Connection lost.")).toBeVisible();
+  } finally {
+    await screen.unmount();
+  }
 });

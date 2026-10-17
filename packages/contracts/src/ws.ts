@@ -184,6 +184,8 @@ import {
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
 import {
+  ServerCheckProviderUpdatesInput,
+  ServerRunProviderUpdateInput,
   ServerProviderAdvisoriesUpdatedPayload,
   ServerAddKeybindingInput,
   ServerConfigUpdatedPayload,
@@ -405,6 +407,8 @@ export const WS_METHODS = {
   serverGetProjectSettings: "server.getProjectSettings",
   serverMigrateClientSetting: "server.migrateClientSetting",
   serverRefreshProviders: "server.refreshProviders",
+  serverCheckProviderUpdates: "server.checkProviderUpdates",
+  serverRunProviderUpdate: "server.runProviderUpdate",
   serverValidateHarnesses: "server.validateHarnesses",
   serverGetProviderInventory: "server.getProviderInventory",
   serverUpsertKeybinding: "server.upsertKeybinding",
@@ -767,7 +771,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverGetProjectSettings, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[0]),
   tagRequestBody(WS_METHODS.serverMigrateClientSetting, MigrateClientSettingInput.members[1]),
-  tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverRefreshProviders, ServerCheckProviderUpdatesInput),
+  tagRequestBody(WS_METHODS.serverCheckProviderUpdates, ServerCheckProviderUpdatesInput),
+  tagRequestBody(WS_METHODS.serverRunProviderUpdate, ServerRunProviderUpdateInput),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverGetProviderInventory, ServerGetProviderInventoryInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),

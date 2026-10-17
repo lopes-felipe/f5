@@ -1,5 +1,8 @@
 "use client";
 
+import { ProviderUpdateDialog } from "./ProviderUpdateDialog";
+import { toastManager } from "../ui/toast";
+
 import type { CustomModelSetting } from "@t3tools/contracts";
 import {
   customModelSlug,
@@ -8,15 +11,7 @@ import {
 } from "@t3tools/shared/customModels";
 import { Link } from "@tanstack/react-router";
 
-import {
-  ArrowUpCircleIcon,
-  CheckIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  PlusIcon,
-  Trash2Icon,
-  XIcon,
-} from "lucide-react";
+import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   isProviderDriverKind,
@@ -26,6 +21,7 @@ import {
   type ProviderDriverKind,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerRunProviderUpdateResult,
 } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
@@ -36,11 +32,9 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
-import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInventorySection } from "./ProviderInventorySection";
@@ -48,8 +42,9 @@ import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapa
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   PROVIDER_STATUS_STYLES,
-  formatProviderUpdateCommand,
-  getProviderVersionAdvisoryPresentation,
+  formatProviderInstallChannel,
+  getProviderUpdateResultMessage,
+  hasProviderUpdateNotification,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
@@ -399,6 +394,9 @@ interface ProviderInstanceCardProps {
    * `exactOptionalPropertyTypes: true`, where an absent key and
    * `{ onDelete: undefined }` are treated as distinct shapes.
    */
+  readonly onRunProviderUpdate?: (() => Promise<ServerRunProviderUpdateResult>) | undefined;
+  readonly onCheckProviderUpdates?: (() => Promise<void>) | undefined;
+  readonly providers?: readonly ServerProvider[] | undefined;
   readonly onDelete?: (() => void) | undefined;
   /**
    * Optional outer reset button rendered next to the driver icon. Built-in
@@ -447,6 +445,9 @@ export function ProviderInstanceCard({
   onExpandedChange,
   onUpdate,
   onDelete,
+  onRunProviderUpdate,
+  onCheckProviderUpdates,
+  providers,
   dismissedProviderUpdateAdvisory,
   onDismissProviderUpdateAdvisory,
   headerAction,
@@ -473,13 +474,43 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
-  const versionAdvisory = enabled
-    ? getProviderVersionAdvisoryPresentation(liveProvider, dismissedProviderUpdateAdvisory)
-    : null;
-  const updateCommandDisplay = versionAdvisory
-    ? formatProviderUpdateCommand(versionAdvisory.updateCommand)
-    : null;
-  const { copyToClipboard, isCopied } = useCopyToClipboard<{ readonly providerName: string }>();
+  const [updateOperation, setUpdateOperation] = useState<{
+    running: boolean;
+    message: string;
+    output?: string;
+    outputTruncated?: boolean;
+  } | null>(null);
+  const runProviderUpdate = () => {
+    if (!onRunProviderUpdate || updateOperation?.running) return;
+    const advisory = liveProvider?.versionAdvisory;
+    setUpdateOperation({ running: true, message: `Updating ${displayName}…` });
+    void onRunProviderUpdate()
+      .then((result) => {
+        if (result.outcome === "updated") {
+          toastManager.add({
+            type: "success",
+            title: `${displayName} updated to v${result.currentVersion}`,
+          });
+          setUpdateOperation(null);
+        } else
+          setUpdateOperation({
+            running: false,
+            message: getProviderUpdateResultMessage(
+              result,
+              formatProviderInstallChannel(advisory?.installChannel),
+              advisory?.latestVersion ?? null,
+            ),
+            output: result.output,
+            outputTruncated: result.outputTruncated,
+          });
+      })
+      .catch((error: unknown) =>
+        setUpdateOperation({
+          running: false,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+  };
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
@@ -611,95 +642,21 @@ export function ProviderInstanceCard({
               {versionLabel ? (
                 <code className="text-xs text-muted-foreground">{versionLabel}</code>
               ) : null}
-              {versionAdvisory && updateCommandDisplay ? (
-                <Popover>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="outline"
-                        className="h-5 shrink-0 gap-1 rounded-full border-warning/50 px-1.5 text-2xs text-warning hover:text-warning"
-                        aria-label="Update available - view details"
-                      >
-                        <ArrowUpCircleIcon className="size-3" />
-                        Update
-                      </Button>
-                    }
-                  />
-                  <PopoverPopup
-                    side="bottom"
-                    align="start"
-                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
-                  >
-                    <div className="grid min-w-0 gap-3">
-                      <div className="grid gap-1">
-                        <p className="text-ui leading-tight font-semibold text-foreground">
-                          Update available
-                        </p>
-                        <p className="text-xs leading-snug text-muted-foreground">
-                          {versionAdvisory.message}
-                        </p>
-                      </div>
-                      <div className="grid gap-1.5">
-                        <p className="text-2xs font-medium text-muted-foreground">
-                          {versionAdvisory.updateCommand.channel} install command
-                        </p>
-                        <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-                          <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
-                            <code className="flex h-full w-max items-center pr-3 font-mono text-2xs whitespace-nowrap text-foreground">
-                              {updateCommandDisplay}
-                            </code>
-                          </ScrollArea>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  type="button"
-                                  size="icon-xs"
-                                  variant="ghost"
-                                  className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                                  onClick={() =>
-                                    copyToClipboard(updateCommandDisplay, {
-                                      providerName: displayName,
-                                    })
-                                  }
-                                  aria-label="Copy update command"
-                                >
-                                  {isCopied ? (
-                                    <CheckIcon className="size-3" />
-                                  ) : (
-                                    <CopyIcon className="size-3" />
-                                  )}
-                                </Button>
-                              }
-                            />
-                            <TooltipPopup side="top">
-                              {isCopied ? "Copied" : "Copy command"}
-                            </TooltipPopup>
-                          </Tooltip>
-                        </div>
-                      </div>
-                      <p className="text-xs leading-snug text-muted-foreground">
-                        If you installed via Homebrew or another channel, use that channel's upgrade
-                        command.
-                      </p>
-                      {onDismissProviderUpdateAdvisory ? (
-                        <Button
-                          type="button"
-                          size="xs"
-                          variant="ghost"
-                          className="justify-self-start text-muted-foreground"
-                          onClick={() =>
-                            onDismissProviderUpdateAdvisory(versionAdvisory.latestVersion)
-                          }
-                        >
-                          Dismiss
-                        </Button>
-                      ) : null}
-                    </div>
-                  </PopoverPopup>
-                </Popover>
+              {enabled &&
+              liveProvider?.versionAdvisory &&
+              liveProvider.versionAdvisory.status !== "unknown" ? (
+                <ProviderUpdateDialog
+                  advisory={liveProvider.versionAdvisory}
+                  displayName={displayName}
+                  providers={providers}
+                  showBadge={hasProviderUpdateNotification(
+                    liveProvider.versionAdvisory,
+                    dismissedProviderUpdateAdvisory,
+                  )}
+                  onRun={onRunProviderUpdate ? runProviderUpdate : undefined}
+                  onCheck={onCheckProviderUpdates}
+                  onDismiss={onDismissProviderUpdateAdvisory}
+                />
               ) : null}
               {headerAction ? (
                 <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
@@ -742,6 +699,50 @@ export function ProviderInstanceCard({
               )}
               {summary.detail ? <span>- {summary.detail}</span> : null}
             </p>
+            {liveProvider?.versionAdvisory?.status === "check_failed" ? (
+              <p className="text-xs text-muted-foreground">
+                Update check failed
+                {liveProvider.versionAdvisory.retryAt
+                  ? ` · retry after ${new Date(liveProvider.versionAdvisory.retryAt).toLocaleString()}`
+                  : ""}
+              </p>
+            ) : null}
+            {updateOperation || liveProvider?.versionAdvisory?.activeUpdate ? (
+              <div className="mt-2 grid min-w-0 gap-2 rounded-md border p-2 text-xs" role="status">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p>
+                      {liveProvider?.versionAdvisory?.activeUpdate
+                        ? `Updating ${displayName}…`
+                        : (updateOperation?.message ?? `Updating ${displayName}…`)}
+                    </p>
+                    {liveProvider?.versionAdvisory?.activeUpdate &&
+                    updateOperation &&
+                    !updateOperation.running ? (
+                      <p className="mt-1 text-muted-foreground">{updateOperation.message}</p>
+                    ) : null}
+                  </div>
+                  {updateOperation && !updateOperation.running ? (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() => setUpdateOperation(null)}
+                      aria-label="Dismiss update result"
+                    >
+                      Dismiss
+                    </Button>
+                  ) : null}
+                </div>
+                {updateOperation?.output ? (
+                  <ScrollArea className="max-h-48 min-w-0">
+                    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-2xs">
+                      {updateOperation.outputTruncated ? "(earlier output truncated)\n" : ""}
+                      {updateOperation.output}
+                    </pre>
+                  </ScrollArea>
+                ) : null}
+              </div>
+            ) : null}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
             <Button

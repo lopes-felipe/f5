@@ -3,12 +3,16 @@ import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/unstable/http";
 
-import { getProviderUpdateSource, lookupNpmLatestVersion } from "./providerUpdateLookup.ts";
+import {
+  extractProviderVersion,
+  compareProviderVersions,
+  NPM_UPDATE_SOURCES,
+  lookupLatestVersion,
+  lookupNpmLatestVersion,
+} from "./providerUpdateLookup.ts";
 
 function sourceForCodex() {
-  const source = getProviderUpdateSource(ProviderDriverKind.make("codex"));
-  assert.ok(source);
-  return source;
+  return { kind: "npm", pkg: "@openai/codex", tag: "latest" } as const;
 }
 
 function httpClientLayer(response: Response) {
@@ -33,20 +37,12 @@ describe("provider update lookup", () => {
       assert.deepStrictEqual(result, {
         _tag: "success",
         latestVersion: "1.2.3",
-        updateCommand: {
-          executable: "npm",
-          args: ["install", "-g", "@openai/codex@latest"],
-          channel: "npm",
-        },
       });
     }),
   );
 
   it("uses the verified OpenCode npm package name", () => {
-    const source = getProviderUpdateSource(ProviderDriverKind.make("opencode"));
-
-    assert.strictEqual(source?.packageName, "opencode-ai");
-    assert.deepStrictEqual(source?.updateCommand.args, ["install", "-g", "opencode-ai@latest"]);
+    assert.strictEqual(NPM_UPDATE_SOURCES.opencode, "opencode-ai");
   });
 
   it.effect("maps malformed 200 responses to parse failures", () =>
@@ -142,4 +138,131 @@ describe("provider update lookup", () => {
       }
     }),
   );
+});
+
+describe("source-specific lookups", () => {
+  it.effect("requests the selected npm channel", () =>
+    Effect.gen(function* () {
+      const client = HttpClient.make((request) => {
+        assert.strictEqual(
+          request.url,
+          "https://registry.npmjs.org/@anthropic-ai%2Fclaude-code/stable",
+        );
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, new Response('{"version":"1.2.3"}')),
+        );
+      });
+      assert.deepStrictEqual(
+        yield* lookupNpmLatestVersion({
+          kind: "npm",
+          pkg: "@anthropic-ai/claude-code",
+          tag: "stable",
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client)),
+        { _tag: "success", latestVersion: "1.2.3" },
+      );
+    }),
+  );
+  it.effect("reads cask versions with a comma suffix", () =>
+    lookupLatestVersion({ kind: "brew-api-cask", token: "codex" }).pipe(
+      Effect.provide(httpClientLayer(new Response('{"version":"1.2.3,123"}'))),
+      Effect.map((result) =>
+        assert.deepStrictEqual(result, { _tag: "success", latestVersion: "1.2.3" }),
+      ),
+    ),
+  );
+  it.effect("reads formula stable versions", () =>
+    lookupLatestVersion({ kind: "brew-api-formula", name: "opencode" }).pipe(
+      Effect.provide(httpClientLayer(new Response('{"versions":{"stable":"1.2.3"}}'))),
+      Effect.map((result) =>
+        assert.deepStrictEqual(result, { _tag: "success", latestVersion: "1.2.3" }),
+      ),
+    ),
+  );
+  it.effect("maps missing Homebrew versions", () =>
+    lookupLatestVersion({ kind: "brew-api-formula", name: "missing" }).pipe(
+      Effect.provide(httpClientLayer(new Response("missing", { status: 404 }))),
+      Effect.map((result) =>
+        assert.deepStrictEqual(result, { _tag: "failure", failure: { _tag: "not_found" } }),
+      ),
+    ),
+  );
+  for (const cask of [false, true])
+    it.effect(`reads local tap ${cask ? "cask" : "formula"} without updating it`, () =>
+      lookupLatestVersion(
+        { kind: "brew-local", brewExecutable: "/brew", ref: "custom/tap/cli", cask },
+        {
+          runProcess: async (_command, args, options) => {
+            assert.deepStrictEqual(args, [
+              "info",
+              "--json=v2",
+              ...(cask ? ["--cask"] : []),
+              "custom/tap/cli",
+            ]);
+            assert.strictEqual(options.env.HOMEBREW_NO_AUTO_UPDATE, "1");
+            return {
+              code: 0,
+              signal: null,
+              timedOut: false,
+              stderr: "",
+              stdout: JSON.stringify(
+                cask
+                  ? { casks: [{ version: "1.2.3,123" }] }
+                  : { formulae: [{ versions: { stable: "1.2.3" } }] },
+              ),
+            };
+          },
+        },
+      ).pipe(
+        Effect.provide(httpClientLayer(new Response(""))),
+        Effect.map((result) =>
+          assert.deepStrictEqual(result, { _tag: "success", latestVersion: "1.2.3" }),
+        ),
+      ),
+    );
+  it.effect("maps a failing brew info to parse", () =>
+    lookupLatestVersion(
+      { kind: "brew-local", brewExecutable: "/brew", ref: "custom/tap/cli", cask: false },
+      {
+        runProcess: async () => ({
+          code: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "{}",
+          stderr: "failed",
+        }),
+      },
+    ).pipe(
+      Effect.provide(httpClientLayer(new Response(""))),
+      Effect.map((result) => {
+        assert.strictEqual(result._tag, "failure");
+        if (result._tag === "failure") assert.strictEqual(result.failure._tag, "parse");
+      }),
+    ),
+  );
+  it("extracts prefixed probe versions and orders prereleases", () => {
+    assert.strictEqual(
+      extractProviderVersion(ProviderDriverKind.make("codex"), "codex-cli 1.2.3-beta.2"),
+      "1.2.3-beta.2",
+    );
+    assert.strictEqual(
+      extractProviderVersion(ProviderDriverKind.make("claudeAgent"), "2.3.4 (Claude Code)"),
+      "2.3.4",
+    );
+    assert.ok(compareProviderVersions("1.2.3", "1.2.3-beta.2") > 0);
+    assert.ok(compareProviderVersions("1.2.3-beta.10", "1.2.3-beta.2") > 0);
+  });
+});
+
+it("preserves the complete prerelease suffix without changing generic health-probe parsing", () => {
+  for (const driver of ["codex", "claudeAgent", "opencode"]) {
+    assert.strictEqual(
+      extractProviderVersion(ProviderDriverKind.make(driver), "CLI 1.0.0-beta-2"),
+      "1.0.0-beta-2",
+    );
+    assert.strictEqual(
+      extractProviderVersion(ProviderDriverKind.make(driver), "CLI v1.2-beta-2.10"),
+      "1.2.0-beta-2.10",
+    );
+  }
+  assert.ok(compareProviderVersions("1.0.0-beta-2", "1.0.0-beta-1") > 0);
 });

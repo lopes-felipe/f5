@@ -218,14 +218,6 @@ export function makeServerProviderLayer(): Layer.Layer<
     const providerRegistryLayer = ProviderRegistryLive.pipe(
       Layer.provide(providerInstanceRegistryLayer),
     );
-    const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
-      Layer.provide(providerRegistryLayer),
-      Layer.provide(serverSettingsLayer),
-    );
-    const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
-      Layer.provide(providerRegistryLayer),
-      Layer.provide(providerUpdateAdvisorLayer),
-    );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
     const codexControlClientRegistryLayer = CodexControlClientRegistryLive.pipe(
       Layer.provide(serverSettingsLayer),
@@ -245,6 +237,16 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
       Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
+    );
+    const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(providerInstanceRegistryLayer),
+      Layer.provide(providerServiceLayer),
+      Layer.provide(serverSettingsLayer),
+    );
+    const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(providerUpdateAdvisorLayer),
     );
     const harnessValidationLayer = HarnessValidationLive.pipe(
       Layer.provide(adapterRegistryLayer),

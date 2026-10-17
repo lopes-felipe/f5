@@ -83,6 +83,7 @@ it.live(
           });
           const failed = yield* registry.refreshInstance(id);
           expect(failed[0]?.models).toEqual([model]);
+          expect(failed[0]?.probeOutcome).toBe("success");
           expect(updates).toEqual([[model], [model]]);
           yield* Ref.set(raw, {
             ...initial,

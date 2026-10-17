@@ -56,6 +56,7 @@ import {
   type ProviderDriver,
   type ProviderInstance,
 } from "../ProviderDriver.ts";
+import { makeInstanceInstallTargetResolver } from "../providerInstallChannel.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import {
@@ -293,6 +294,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       return {
         instanceId,
         driverKind: DRIVER_KIND,
+        resolveInstallTarget: makeInstanceInstallTargetResolver({
+          driver: DRIVER_KIND,
+          binaryPath: effectiveConfig.binaryPath,
+          resolutionEnvironment: claudeProcessEnvironment,
+          claudeConfigDir: claudeProcessEnvironment.CLAUDE_CONFIG_DIR,
+          instanceEnvironment: environment,
+          instanceId,
+        }),
         continuationIdentity: {
           ...fallbackContinuationIdentity,
           continuationKey: continuationGroupKey,

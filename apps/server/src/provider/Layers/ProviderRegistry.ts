@@ -235,11 +235,16 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(
-    source.configurationFingerprint
-      ? { ...snapshot, configurationFingerprint: source.configurationFingerprint }
-      : snapshot,
-  );
+  // Every fresh source probe needs an explicit outcome, including catalog-aware drivers
+  // whose merge path can retain models independently of the executable health check.
+  return Effect.succeed({
+    ...snapshot,
+    probeOutcome: probeOutcome(snapshot),
+    probeOutcomeStartedAt: snapshot.probeOutcomeStartedAt ?? snapshot.checkedAt,
+    ...(source.configurationFingerprint
+      ? { configurationFingerprint: source.configurationFingerprint }
+      : {}),
+  });
 };
 
 /**

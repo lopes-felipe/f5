@@ -100,6 +100,17 @@ function quoteShellToken(token: string): string {
 }
 
 export function formatProviderUpdateCommand(command: ServerProviderUpdateCommand): string {
+  if (command.shell === "powershell") {
+    const quote = (token: string) => `'${token.replaceAll("'", "''")}'`;
+    const environment = Object.entries(command.env ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `$env:${key}=${quote(value)}; `)
+      .join("");
+    const pathPrefix = command.pathPrepend
+      ? `$env:PATH=${quote(command.pathPrepend + ";")}+$env:PATH; `
+      : "";
+    return `${pathPrefix}${command.cwd ? `Set-Location ${quote(command.cwd)}; ` : ""}${environment}& ${quote(command.executable)} ${command.args.map(quote).join(" ")}`;
+  }
   const commandTokens = [command.executable, ...command.args].map(quoteShellToken).join(" ");
   const envEntries = Object.entries(command.env ?? {}).sort(([left], [right]) =>
     left.localeCompare(right),
@@ -114,36 +125,72 @@ export function formatProviderUpdateCommand(command: ServerProviderUpdateCommand
               : quoteShellToken(`${key}=${value}`),
           )
           .join(" ")} `;
-  if (!command.cwd) return `${envPrefix}${commandTokens}`;
-  return `cd ${quoteShellToken(command.cwd)} && ${envPrefix}${commandTokens}`;
+  const pathPrefix = command.pathPrepend
+    ? `PATH=${quoteShellToken(command.pathPrepend)}:"$PATH" `
+    : "";
+  if (!command.cwd) return `${envPrefix}${pathPrefix}${commandTokens}`;
+  return `cd ${quoteShellToken(command.cwd)} && ${envPrefix}${pathPrefix}${commandTokens}`;
 }
 
-export function getProviderVersionAdvisoryPresentation(
-  provider: ServerProvider | undefined,
-  dismissedVersion: string | undefined,
-): {
-  readonly message: string;
-  readonly updateCommand: ServerProviderUpdateCommand;
-  readonly latestVersion: string;
-} | null {
-  const advisory = provider?.versionAdvisory;
-  if (
-    !advisory ||
-    advisory.status !== "behind_latest" ||
-    advisory.latestVersion === null ||
-    advisory.updateCommand === null ||
-    dismissedVersion === advisory.latestVersion
-  ) {
-    return null;
+export function formatProviderInstallChannel(
+  channel: import("@t3tools/contracts").ServerProviderVersionAdvisory["installChannel"],
+): string {
+  switch (channel) {
+    case "npm":
+      return "npm";
+    case "homebrew":
+      return "Homebrew";
+    case "self-update":
+      return "built-in updater";
+    case "bundled":
+      return "Bundled with F5";
+    case "remote":
+      return "a remote OpenCode server";
+    default:
+      return "an installer F5 doesn't recognize";
   }
+}
 
-  return {
-    message:
-      advisory.message ??
-      `Installed ${getProviderVersionLabel(advisory.currentVersion) ?? "unknown"} · latest ${
-        getProviderVersionLabel(advisory.latestVersion) ?? advisory.latestVersion
-      }`,
-    updateCommand: advisory.updateCommand,
-    latestVersion: advisory.latestVersion,
-  };
+export function formatProviderUpdateCheckAge(checkedAt: string | null, now = Date.now()): string {
+  if (!checkedAt) return "Not checked yet";
+  const minutes = Math.max(0, Math.floor((now - Date.parse(checkedAt)) / 60_000));
+  return minutes === 0
+    ? "Last checked just now"
+    : minutes < 60
+      ? `Last checked ${minutes}m ago`
+      : `Last checked ${Math.floor(minutes / 60)}h ago`;
+}
+
+export function getProviderUpdateResultMessage(
+  result: import("@t3tools/contracts").ServerRunProviderUpdateResult,
+  channel: string,
+  latest: string | null,
+): string {
+  switch (result.outcome) {
+    case "updated":
+      return `Updated to v${result.currentVersion}.`;
+    case "unchanged":
+      return `Update finished, but the version is still v${result.currentVersion ?? "unknown"}. ${channel} may not have published v${latest ?? "the latest release"} yet.`;
+    case "unexpected_version":
+      return `Installed v${result.currentVersion ?? "unknown"}, expected v${latest ?? "the requested release"}.`;
+    case "unverified":
+      return "The update finished, but F5 couldn't confirm the new version. Check the provider status.";
+    case "failed":
+      return `Update failed (${result.timedOut ? "timed out" : result.exitCode === null ? "could not start" : `exit ${result.exitCode}`}).`;
+  }
+}
+
+export function hasProviderUpdateNotification(
+  advisory: import("@t3tools/contracts").ServerProviderVersionAdvisory | undefined,
+  dismissedVersion?: string,
+): boolean {
+  return (
+    !!advisory?.latestVersion &&
+    (advisory.updateAvailable ??
+      (advisory.status === "behind_latest" || advisory.status === "manual")) &&
+    advisory.status !== "bundled" &&
+    advisory.status !== "current" &&
+    advisory.status !== "unknown" &&
+    advisory.latestVersion !== dismissedVersion
+  );
 }

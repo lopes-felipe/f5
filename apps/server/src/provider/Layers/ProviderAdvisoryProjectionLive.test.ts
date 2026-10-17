@@ -71,6 +71,7 @@ function advisorLayer(
     streamChanges,
     noteRegistryChanged: Effect.void,
     refreshAdvisories: () => Effect.void,
+    runUpdate: () => Effect.die("Unexpected provider update"),
   };
   return Layer.succeed(ProviderUpdateAdvisor, advisor);
 }

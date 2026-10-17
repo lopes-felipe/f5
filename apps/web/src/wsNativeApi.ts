@@ -697,7 +697,11 @@ export function createWsNativeApi(): NativeApi {
       migrateClientSetting: (input) =>
         transport.request(WS_METHODS.serverMigrateClientSetting, input),
       updateSettings: (input) => transport.request(WS_METHODS.serverUpdateSettings, input),
-      refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
+      refreshProviders: (input = {}) => transport.request(WS_METHODS.serverRefreshProviders, input),
+      checkProviderUpdates: (input = {}) =>
+        transport.request(WS_METHODS.serverCheckProviderUpdates, input),
+      runProviderUpdate: (input) =>
+        transport.request(WS_METHODS.serverRunProviderUpdate, input, { timeoutMs: 660_000 }),
       getProviderInventory: (input) =>
         transport.request(WS_METHODS.serverGetProviderInventory, input),
       validateHarnesses: (input) => transport.request(WS_METHODS.serverValidateHarnesses, input),

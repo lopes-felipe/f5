@@ -31,6 +31,7 @@ import type { Effect, Schema, Scope } from "effect";
 
 import type { AccountUsageCapability } from "../usage/accountUsage.ts";
 import type { TextGenerationShape } from "../git/Services/TextGeneration.ts";
+import type { ProviderInstallTarget } from "./providerInstallChannel.ts";
 import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
@@ -67,6 +68,7 @@ export interface ProviderInstance {
   readonly continuationIdentity: ProviderContinuationIdentity;
   /** Opaque server-side identity for executable, argv, and environment defaults. */
   readonly launchIdentity?: string;
+  readonly resolveInstallTarget?: () => ProviderInstallTarget | null;
   /** Stable identity for the complete decoded provider-instance configuration. */
   readonly configurationFingerprint?: string;
   readonly displayName: string | undefined;

@@ -107,6 +107,7 @@ import {
 } from "./provider/Services/ProviderRegistry.ts";
 import {
   ProviderUpdateAdvisor,
+  ProviderUpdateRunError,
   type ProviderUpdateAdvisorShape,
 } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import {
@@ -193,6 +194,7 @@ const defaultProviderUpdateAdvisorService: ProviderUpdateAdvisorShape = {
   streamChanges: Stream.empty,
   noteRegistryChanged: Effect.void,
   refreshAdvisories: () => Effect.void,
+  runUpdate: () => Effect.die("Unexpected provider update"),
 };
 
 const defaultProviderAdvisoryProjectionService: ProviderAdvisoryProjectionShape = {
@@ -888,6 +890,7 @@ describe("WebSocket Server", () => {
       staticDir?: string;
       providerLayer?: Layer.Layer<ProviderService, never>;
       providerInstanceRegistryLayer?: Layer.Layer<ProviderInstanceRegistry, never>;
+      providerUpdateAdvisor?: ProviderUpdateAdvisorShape;
       providerHealth?: ProviderHealthShape;
       harnessValidation?: HarnessValidationShape;
       open?: OpenShape;
@@ -911,7 +914,12 @@ describe("WebSocket Server", () => {
       makeProviderRuntimeTestLayer(
         options.providerLayer ?? Layer.succeed(ProviderService, defaultProviderService),
       ),
-      options.providerInstanceRegistryLayer ?? Layer.empty,
+      Layer.merge(
+        options.providerInstanceRegistryLayer ?? Layer.empty,
+        options.providerUpdateAdvisor
+          ? Layer.succeed(ProviderUpdateAdvisor, options.providerUpdateAdvisor)
+          : Layer.empty,
+      ),
     );
     const providerHealthLayer = Layer.succeed(
       ProviderHealth,
@@ -2535,6 +2543,88 @@ describe("WebSocket Server", () => {
         valueRedacted: true,
       },
     ]);
+  });
+
+  it("refreshes only the requested provider when verifying one installation", async () => {
+    const refresh = vi.spyOn(defaultProviderRegistryService, "refresh");
+    const refreshInstance = vi.spyOn(defaultProviderRegistryService, "refreshInstance");
+    try {
+      server = await createTestServer();
+      const addr = server.address();
+      const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
+      connections.push(ws);
+      const response = await sendRequest(ws, WS_METHODS.serverRefreshProviders, {
+        instanceId: "codex",
+      });
+      expect(response.error).toBeUndefined();
+      expect(refreshInstance).toHaveBeenCalledWith("codex");
+      expect(refresh).not.toHaveBeenCalled();
+    } finally {
+      refresh.mockRestore();
+      refreshInstance.mockRestore();
+    }
+  });
+
+  it("keeps health refresh independent and awaits explicit update checks", async () => {
+    let finished = false;
+    const refreshAdvisories = vi.fn<ProviderUpdateAdvisorShape["refreshAdvisories"]>(() =>
+      Effect.promise(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        finished = true;
+      }),
+    );
+    server = await createTestServer({
+      providerUpdateAdvisor: { ...defaultProviderUpdateAdvisorService, refreshAdvisories },
+    });
+    const addr = server.address();
+    const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
+    connections.push(ws);
+    const health = await sendRequest(ws, WS_METHODS.serverRefreshProviders);
+    expect(health.error).toBeUndefined();
+    expect(refreshAdvisories).not.toHaveBeenCalled();
+    const checked = await sendRequest(ws, WS_METHODS.serverCheckProviderUpdates, {
+      instanceId: "codex",
+    });
+    expect(checked.error).toBeUndefined();
+    expect(finished).toBe(true);
+    expect(refreshAdvisories).toHaveBeenCalledWith({ mode: "explicit", instanceId: "codex" });
+    expect(checked.result).toEqual({ providers: defaultProviderSnapshots });
+  });
+
+  it("returns provider update results with decorated providers and maps admission errors", async () => {
+    const result = {
+      instanceId: ProviderInstanceId.make("codex"),
+      outcome: "updated" as const,
+      previousVersion: "1.0.0",
+      currentVersion: "1.1.0",
+      exitCode: 0,
+      timedOut: false,
+      output: "installed",
+      outputTruncated: false,
+    };
+    let reject = false;
+    const runUpdate = vi.fn<ProviderUpdateAdvisorShape["runUpdate"]>(() =>
+      reject
+        ? Effect.fail(new ProviderUpdateRunError({ message: "Provider has active work." }))
+        : Effect.succeed(result),
+    );
+    server = await createTestServer({
+      providerUpdateAdvisor: { ...defaultProviderUpdateAdvisorService, runUpdate },
+    });
+    const addr = server.address();
+    const [ws] = await connectAndAwaitWelcome(typeof addr === "object" && addr ? addr.port : 0);
+    connections.push(ws);
+    const updated = await sendRequest(ws, WS_METHODS.serverRunProviderUpdate, {
+      instanceId: "codex",
+    });
+    expect(updated.error).toBeUndefined();
+    expect(updated.result).toEqual({ ...result, providers: defaultProviderSnapshots });
+    expect(runUpdate).toHaveBeenCalledWith("codex");
+    reject = true;
+    const refused = await sendRequest(ws, WS_METHODS.serverRunProviderUpdate, {
+      instanceId: "codex",
+    });
+    expect(refused.error).toMatchObject({ message: "Provider has active work." });
   });
 
   it("routes server.validateHarnesses through the harness validation service", async () => {
