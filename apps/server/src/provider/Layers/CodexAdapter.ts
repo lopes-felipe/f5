@@ -1,3 +1,8 @@
+import {
+  assertMcpRuntimeConfig,
+  assertMcpServerLimit,
+  MCP_RUNTIME_SERVER_LIMIT,
+} from "@t3tools/shared/mcpValidation";
 import type { ModelCapabilities } from "@t3tools/contracts";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
@@ -2497,6 +2502,19 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           input.providerOptions,
         );
         const baseProviderMcpServers = providerOptions?.mcpServers;
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(input.providerOptions?.mcpServers);
+            assertMcpRuntimeConfig(providerOptions?.mcpServers);
+            readCodexMcpOAuthCallbackConfig(providerOptions?.mcpServers);
+          },
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: String(cause),
+            }),
+        });
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
@@ -2562,6 +2580,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                   : {}),
               }
             : baseProviderMcpServers;
+        yield* Effect.try({
+          try: () => assertMcpServerLimit(providerMcpServers, MCP_RUNTIME_SERVER_LIMIT),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: String(cause),
+            }),
+        });
         const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
               try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
@@ -2893,47 +2920,66 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       Effect.sync(() => manager.getSessionDiscovery?.(threadId));
 
     const reloadMcpConfig: CodexAdapterShape["reloadMcpConfig"] = ({ threadId, mcpServers }) =>
-      Effect.tryPromise({
-        try: () => manager.reloadMcpConfig(threadId),
-        catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
-      }).pipe(
-        Effect.map((statuses) => {
-          const launched = launchedMcpConfigKeys.get(threadId);
-          if (
-            launched !== undefined &&
-            launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
-          ) {
-            return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
-          }
-          return summarizeMcpReload({
-            desired: Object.keys(filterEnabledMcpServers(mcpServers)),
-            observed: statuses?.flatMap((status) => {
-              const name = typeof status.name === "string" ? status.name : undefined;
-              if (!name) return [];
-              const text = (value: unknown) => (typeof value === "string" ? value : undefined);
-              const error = text(status.error);
-              return [
-                {
-                  name,
-                  status: codexObservedMcpStatus({
-                    ...(text(status.startupStatus)
-                      ? { startupStatus: text(status.startupStatus)! }
-                      : {}),
-                    ...(text(status.authStatus) ? { authStatus: text(status.authStatus)! } : {}),
-                    ...(error ? { error } : {}),
-                    hasTools:
-                      status.tools !== null &&
-                      typeof status.tools === "object" &&
-                      Object.keys(status.tools).length > 0,
-                  }),
-                  ...(error ? { error } : {}),
-                },
-              ];
+      Effect.try({
+        try: () => {
+          assertMcpRuntimeConfig(mcpServers);
+          readCodexMcpOAuthCallbackConfig(mcpServers);
+        },
+        catch: (cause) =>
+          new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "reloadMcpConfig",
+            issue: String(cause),
+          }),
+      })
+        .pipe(
+          Effect.flatMap(() =>
+            Effect.tryPromise({
+              try: () => manager.reloadMcpConfig(threadId),
+              catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
             }),
-            sameName: codexServerNamesMatch,
-          });
-        }),
-      );
+          ),
+        )
+        .pipe(
+          Effect.map((statuses) => {
+            const launched = launchedMcpConfigKeys.get(threadId);
+            if (
+              launched !== undefined &&
+              launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
+            ) {
+              return restartRequiredMcpReload(
+                "Codex fixes its MCP servers when the session starts.",
+              );
+            }
+            return summarizeMcpReload({
+              desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+              observed: statuses?.flatMap((status) => {
+                const name = typeof status.name === "string" ? status.name : undefined;
+                if (!name) return [];
+                const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+                const error = text(status.error);
+                return [
+                  {
+                    name,
+                    status: codexObservedMcpStatus({
+                      ...(text(status.startupStatus)
+                        ? { startupStatus: text(status.startupStatus)! }
+                        : {}),
+                      ...(text(status.authStatus) ? { authStatus: text(status.authStatus)! } : {}),
+                      ...(error ? { error } : {}),
+                      hasTools:
+                        status.tools !== null &&
+                        typeof status.tools === "object" &&
+                        Object.keys(status.tools).length > 0,
+                    }),
+                    ...(error ? { error } : {}),
+                  },
+                ];
+              }),
+              sameName: codexServerNamesMatch,
+            });
+          }),
+        );
 
     const stopAll: CodexAdapterShape["stopAll"] = () =>
       Effect.sync(() => {

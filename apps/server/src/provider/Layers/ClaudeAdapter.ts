@@ -1,3 +1,8 @@
+import {
+  assertMcpRuntimeConfig,
+  assertMcpServerLimit,
+  MCP_RUNTIME_SERVER_LIMIT,
+} from "@t3tools/shared/mcpValidation";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { makeAutomationRuntimeEventPreparer } from "../prepareAutomationRuntimeEvent";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
@@ -5985,6 +5990,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
 
+        yield* Effect.try({
+          try: () => assertMcpRuntimeConfig(input.providerOptions?.mcpServers),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: String(cause),
+            }),
+        });
         const startedAt = yield* nowIso;
         let resumeState = readClaudeResumeState(input.resumeCursor);
         const threadId = input.threadId;
@@ -7107,6 +7121,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         }
 
+        yield* Effect.try({
+          try: () => assertMcpServerLimit(queryOptions.mcpServers, MCP_RUNTIME_SERVER_LIMIT),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: String(cause),
+            }),
+        });
+
         if (existingContext && !existingContext.stopped)
           yield* stopSessionInternal(existingContext, { emitExitEvent: false });
 
@@ -7964,11 +7988,40 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       mcpServers,
     }) =>
       Effect.gen(function* () {
+        yield* Effect.try({
+          try: () => assertMcpRuntimeConfig(mcpServers),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "reloadMcpConfig",
+              issue: String(cause),
+            }),
+        });
         const context = yield* requireSession(threadId);
         const desired = (translateMcpForClaudeAgent(mcpServers) ?? {}) as Record<
           string,
           McpServerConfig
         >;
+        yield* Effect.try({
+          try: () =>
+            assertMcpServerLimit(
+              {
+                ...Object.fromEntries(
+                  Object.entries(context.queryOptions.mcpServers ?? {}).filter(
+                    ([name]) => !context.ownedMcpServerNames.has(name),
+                  ),
+                ),
+                ...desired,
+              },
+              MCP_RUNTIME_SERVER_LIMIT,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "reloadMcpConfig",
+              issue: String(cause),
+            }),
+        });
         const outcome = yield* Effect.tryPromise({
           try: () =>
             reconcileClaudeMcpServers({

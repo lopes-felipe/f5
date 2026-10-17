@@ -10,7 +10,12 @@ import {
 } from "@t3tools/contracts";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
 import { parseImportedServers } from "@t3tools/shared/mcpImport";
-import { MAX_SERVER_COUNT, normalizeMcpServersRecord } from "@t3tools/shared/mcpValidation";
+import {
+  MAX_SERVER_COUNT,
+  normalizeMcpServersRecord,
+  mcpServerNameKey,
+  validateMcpLayerWrite,
+} from "@t3tools/shared/mcpValidation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { ensureNativeApi } from "../../../nativeApi";
@@ -279,6 +284,14 @@ export function McpServersSettings(props: {
     try {
       const { name, server } = decodeDraftServer(draft);
       const nextServers = toWritableProjectServers(activeServers);
+      const collision = Object.keys(nextServers).find(
+        (other) =>
+          other !== editingServerName && mcpServerNameKey(other) === mcpServerNameKey(name),
+      );
+      if (collision)
+        throw new Error(
+          `Server '${collision}' already uses this name. Names are case-insensitive.`,
+        );
       if (
         editingServerName === null &&
         !nextServers[name] &&
@@ -290,7 +303,7 @@ export function McpServersSettings(props: {
         delete nextServers[editingServerName];
       }
       nextServers[name] = server;
-      const normalized = normalizeMcpServersRecord(nextServers);
+      const normalized = validateMcpLayerWrite(activeServers, nextServers);
       if (!normalized[name]) {
         throw new Error("The MCP server configuration is invalid.");
       }
@@ -326,9 +339,7 @@ export function McpServersSettings(props: {
         ...toWritableProjectServers(activeServers),
         ...imported,
       });
-      if (Object.keys(merged).length > MAX_SERVER_COUNT) {
-        throw new Error(`Import would exceed the ${MAX_SERVER_COUNT}-server scope limit.`);
-      }
+      validateMcpLayerWrite(activeServers, merged);
 
       setImportError(null);
       void persistScopeServers(merged)
@@ -388,6 +399,15 @@ export function McpServersSettings(props: {
       className="rounded-xl border border-border bg-card p-5"
       data-settings-search-target="tools.mcp"
     >
+      {(
+        (selectedScope === "common"
+          ? commonConfigQuery.data?.issues
+          : projectConfigQuery.data?.issues) ?? []
+      ).map((issue, index) => (
+        <p key={index} role="status" className="mb-2 text-xs text-warning-foreground">
+          {issue.message}
+        </p>
+      ))}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-sm font-medium text-foreground">MCP servers</h2>

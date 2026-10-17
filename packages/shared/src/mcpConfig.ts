@@ -20,7 +20,7 @@ function sortJsonForStableStringify(value: unknown): unknown {
   );
 }
 
-function stableMcpServersJson(servers: McpProjectServersConfig): string {
+export function stableMcpServersJson(servers: McpProjectServersConfig): string {
   return JSON.stringify(sortJsonForStableStringify(servers));
 }
 

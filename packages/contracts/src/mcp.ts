@@ -9,9 +9,18 @@ import { ServerProviderAuthStatus } from "./server";
 export const McpConfigScope = Schema.Literals(["common", "project"]);
 export type McpConfigScope = typeof McpConfigScope.Type;
 
+export const McpConfigIssue = Schema.Struct({
+  kind: Schema.Literals(["validation", "compatibility"]),
+  message: Schema.String,
+  serverName: Schema.optional(Schema.String),
+  projectIds: Schema.optional(Schema.Array(ProjectId)),
+});
+export type McpConfigIssue = typeof McpConfigIssue.Type;
+
 export const McpCommonConfigResult = Schema.Struct({
   version: Schema.optional(TrimmedNonEmptyString),
   servers: McpProjectServersConfig,
+  issues: Schema.optional(Schema.Array(McpConfigIssue)),
 });
 export type McpCommonConfigResult = typeof McpCommonConfigResult.Type;
 
@@ -19,6 +28,7 @@ export const McpProjectConfigResult = Schema.Struct({
   projectId: ProjectId,
   version: Schema.optional(TrimmedNonEmptyString),
   servers: McpProjectServersConfig,
+  issues: Schema.optional(Schema.Array(McpConfigIssue)),
 });
 export type McpProjectConfigResult = typeof McpProjectConfigResult.Type;
 
@@ -28,6 +38,7 @@ export const McpEffectiveConfigResult = Schema.Struct({
   projectVersion: Schema.optional(TrimmedNonEmptyString),
   effectiveVersion: TrimmedNonEmptyString,
   servers: McpProjectServersConfig,
+  issues: Schema.optional(Schema.Array(McpConfigIssue)),
 });
 export type McpEffectiveConfigResult = typeof McpEffectiveConfigResult.Type;
 

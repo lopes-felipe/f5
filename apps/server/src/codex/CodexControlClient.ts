@@ -1,3 +1,4 @@
+import { mergeCodexMcpStartupStatuses } from "./codexMcpServerStatus.ts";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
@@ -174,10 +175,6 @@ function asMcpServerStartupStatus(value: unknown): McpServerStartupStatus | unde
     default:
       return undefined;
   }
-}
-
-function normalizeMcpServerName(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 export function isMethodNotFoundError(error: unknown): boolean {
@@ -383,7 +380,7 @@ export class CodexControlClient extends EventEmitter<{
       return;
     }
 
-    this.mcpStartupStatuses.set(normalizeMcpServerName(name), {
+    this.mcpStartupStatuses.set(name.trim(), {
       name,
       startupStatus,
       ...(asTrimmedString(params?.error) ? { error: asTrimmedString(params?.error)! } : {}),
@@ -534,17 +531,8 @@ export class CodexControlClient extends EventEmitter<{
           isObject(entry),
         ) as ReadonlyArray<CodexControlMcpServerStatus>)
       : [];
-    const merged = data.map((status) => {
-      const startupStatus = this.mcpStartupStatuses.get(normalizeMcpServerName(status.name));
-      return startupStatus ? { ...status, ...startupStatus, name: status.name } : status;
-    });
-    const returnedNames = new Set(merged.map((status) => normalizeMcpServerName(status.name)));
-    const startupOnly = [...this.mcpStartupStatuses.values()].filter(
-      (status) => !returnedNames.has(normalizeMcpServerName(status.name)),
-    );
-
     return {
-      data: [...merged, ...startupOnly],
+      data: mergeCodexMcpStartupStatuses(data, [...this.mcpStartupStatuses.values()]),
       nextCursor: result.nextCursor === null ? null : (asTrimmedString(result.nextCursor) ?? null),
     };
   }

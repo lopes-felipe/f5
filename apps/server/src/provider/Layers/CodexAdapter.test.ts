@@ -255,6 +255,39 @@ const validationLayer = it.layer(
 );
 
 validationLayer("CodexAdapterLive validation", (it) => {
+  it.effect("rejects excessive MCP start and reload inputs before manager mutation", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const mcpServers = Object.fromEntries(
+        Array.from({ length: 33 }, (_, i) => [
+          `s${i}`,
+          { type: "stdio" as const, command: "node" },
+        ]),
+      );
+      validationManager.startSessionImpl.mockClear();
+      const reload = vi.spyOn(validationManager, "reloadMcpConfig");
+      try {
+        const started = yield* adapter
+          .startSession({
+            threadId: asThreadId("mcp-overflow"),
+            runtimeMode: "approval-required",
+            providerOptions: { mcpServers },
+          })
+          .pipe(Effect.result);
+        assert.equal(started._tag, "Failure");
+        assert.equal(validationManager.startSessionImpl.mock.calls.length, 0);
+        const reloaded = yield* adapter.reloadMcpConfig!({
+          threadId: asThreadId("mcp-overflow"),
+          mcpServers,
+        }).pipe(Effect.result);
+        assert.equal(reloaded._tag, "Failure");
+        assert.equal(reload.mock.calls.length, 0);
+      } finally {
+        reload.mockRestore();
+      }
+    }),
+  );
+
   it.effect("maps codex model options before starting a session", () =>
     Effect.gen(function* () {
       validationManager.startSessionImpl.mockClear();

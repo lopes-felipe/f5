@@ -1,3 +1,4 @@
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { type McpServerStartupStatus, ProjectId } from "@t3tools/contracts";
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -48,9 +49,7 @@ function asMcpStartupStatus(value: string): McpServerStartupStatus | undefined {
   }
 }
 
-export function normalizeMcpRuntimeDiagnosticName(name: string): string {
-  return name.trim().toLowerCase();
-}
+export const normalizeMcpRuntimeDiagnosticName = mcpServerNameKey;
 
 export function indexMcpRuntimeServerDiagnostics(
   diagnostics: ReadonlyArray<McpRuntimeServerDiagnostic>,

@@ -17,7 +17,7 @@ export function normalizeOptionalStringArray(
   const normalized = values
     .map((value) => normalizeOptionalString(value))
     .filter((value): value is string => value !== undefined);
-  return normalized.length > 0 ? normalized : undefined;
+  return normalized;
 }
 
 export function normalizeStringRecord(

@@ -1,5 +1,6 @@
 import {
   type CodexMcpServerEntry,
+  type McpConfigIssue,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpProjectConfigResult,
@@ -8,12 +9,19 @@ import {
   type McpReplaceProjectConfigRequest,
   ProjectId,
 } from "@t3tools/contracts";
+import {
+  assertMcpRuntimeConfig,
+  readMcpValidationIssues,
+  readMcpLayerNameConflicts,
+  validateMcpLayerWrite,
+  validateMcpLayerMerge,
+} from "@t3tools/shared/mcpValidation";
 import { computeEffectiveMcpConfigVersion, mergeMcpServerLayers } from "@t3tools/shared/mcpConfig";
 import {
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
-import { Effect, Layer, Option, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Option, Schema, Semaphore, ServiceMap } from "effect";
 
 import {
   ProjectMcpConfigRepository,
@@ -28,12 +36,14 @@ export interface StoredCommonMcpConfig {
 
 export interface StoredProjectMcpConfig {
   readonly scope: "project";
+  readonly projectName?: string;
   readonly projectId: ProjectId;
   readonly version?: string;
   readonly servers: McpProjectServersConfig;
 }
 
 export interface StoredEffectiveMcpConfig {
+  readonly issues?: ReadonlyArray<McpConfigIssue>;
   readonly projectId: ProjectId;
   readonly commonVersion?: string;
   readonly projectVersion?: string;
@@ -60,7 +70,10 @@ function readCodexMcpOAuthCallbackConfigOrError(servers: McpProjectServersConfig
   ProjectMcpConfigServiceError
 > {
   return Effect.try({
-    try: () => readCodexMcpOAuthCallbackConfig(servers),
+    try: () => {
+      assertMcpRuntimeConfig(servers);
+      return readCodexMcpOAuthCallbackConfig(servers);
+    },
     catch: (cause) =>
       new ProjectMcpConfigServiceError({
         code: "validation",
@@ -131,6 +144,7 @@ function rowToStoredProjectConfig(
   return {
     scope: "project",
     projectId,
+    ...(row?.projectName ? { projectName: row.projectName } : {}),
     ...(row?.version ? { version: row.version } : {}),
     servers: row?.servers ?? {},
   };
@@ -146,6 +160,70 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
         cause instanceof Error
           ? `${operation}: ${cause.message}`
           : `${operation}: failed to access persisted MCP config.`,
+    });
+
+  const writeLock = yield* Semaphore.make(1);
+  const validationError = (cause: unknown) =>
+    new ProjectMcpConfigServiceError({
+      code: "validation",
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  const listProjects = () =>
+    repository
+      .listByScope("project")
+      .pipe(Effect.mapError(toStorageError("Failed to list project MCP configs")));
+  const callbackIssue = (
+    servers: McpProjectServersConfig,
+    projectIds: ProjectId[],
+    projectNames: ReadonlyArray<string> = projectIds,
+  ): McpConfigIssue[] => {
+    try {
+      readCodexMcpOAuthCallbackConfig(servers);
+      return [];
+    } catch {
+      return [
+        {
+          kind: "compatibility",
+          projectIds,
+          message:
+            projectIds.length > 0
+              ? `This change conflicts with the Codex OAuth callback port/URL configured in ${projectIds.length} project(s): ${projectNames.join(", ")}.`
+              : "This configuration has conflicting Codex OAuth callback ports/URLs. Claude can still use it.",
+        },
+      ];
+    }
+  };
+  const commonIssues = (servers: McpProjectServersConfig) =>
+    Effect.gen(function* () {
+      const projects = yield* listProjects();
+      const affectedRows = projects.filter(
+        (row) =>
+          callbackIssue(mergeMcpServerLayers({ common: servers, project: row.servers }), [])
+            .length > 0,
+      );
+      const affected = affectedRows.flatMap((row) => (row.projectId ? [row.projectId] : []));
+      const affectedNames = affectedRows.flatMap((row) =>
+        row.projectId ? [row.projectName ?? row.projectId] : [],
+      );
+      return [
+        ...readMcpValidationIssues(servers),
+        ...projects.flatMap((row) =>
+          readMcpLayerNameConflicts(servers, row.servers).map((issue) => ({
+            ...issue,
+            projectIds: row.projectId ? [row.projectId] : [],
+          })),
+        ),
+        ...callbackIssue(servers, []),
+        ...(affected.length > 0
+          ? [
+              {
+                kind: "compatibility" as const,
+                projectIds: affected,
+                message: `This change conflicts with the Codex OAuth callback port/URL configured in ${affected.length} project(s): ${affectedNames.join(", ")}.`,
+              },
+            ]
+          : []),
+      ];
     });
 
   const readCommonStoredConfig: ProjectMcpConfigServiceShape["readCommonStoredConfig"] = () =>
@@ -167,108 +245,136 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
   const readEffectiveStoredConfig: ProjectMcpConfigServiceShape["readEffectiveStoredConfig"] = (
     projectId,
   ) =>
-    Effect.gen(function* () {
-      const [commonConfig, projectConfig] = yield* Effect.all([
-        readCommonStoredConfig(),
-        readProjectStoredConfig(projectId),
-      ]);
-      const servers = mergeMcpServerLayers({
-        common: commonConfig.servers,
-        project: projectConfig.servers,
-      });
-      return {
-        projectId,
-        ...(commonConfig.version ? { commonVersion: commonConfig.version } : {}),
-        ...(projectConfig.version ? { projectVersion: projectConfig.version } : {}),
-        effectiveVersion: computeEffectiveMcpConfigVersion(servers),
-        servers,
-      };
-    });
-
-  const readCommonConfig: ProjectMcpConfigServiceShape["readCommonConfig"] = () =>
-    readCommonStoredConfig().pipe(
-      Effect.map((stored) => ({
-        ...(stored.version ? { version: stored.version } : {}),
-        servers: stored.servers,
-      })),
+    writeLock.withPermits(1)(
+      Effect.gen(function* () {
+        const [commonConfig, projectConfig] = yield* Effect.all([
+          readCommonStoredConfig(),
+          readProjectStoredConfig(projectId),
+        ]);
+        const servers = mergeMcpServerLayers({
+          common: commonConfig.servers,
+          project: projectConfig.servers,
+        });
+        return {
+          projectId,
+          ...(commonConfig.version ? { commonVersion: commonConfig.version } : {}),
+          ...(projectConfig.version ? { projectVersion: projectConfig.version } : {}),
+          effectiveVersion: computeEffectiveMcpConfigVersion(servers),
+          servers,
+          issues: [
+            ...readMcpValidationIssues(commonConfig.servers),
+            ...readMcpValidationIssues(projectConfig.servers),
+            ...readMcpLayerNameConflicts(commonConfig.servers, projectConfig.servers),
+            ...callbackIssue(servers, [projectId], [projectConfig.projectName ?? projectId]),
+          ],
+        };
+      }),
     );
 
-  const replaceCommonConfig: ProjectMcpConfigServiceShape["replaceCommonConfig"] = (input) =>
+  const readCommonConfig: ProjectMcpConfigServiceShape["readCommonConfig"] = () =>
     Effect.gen(function* () {
-      const version = crypto.randomUUID();
-      const updatedAt = new Date().toISOString();
-      const saved = yield* repository
-        .replaceIfVersionMatches({
-          scope: "common",
-          projectId: null,
-          expectedVersion: input.expectedVersion ?? null,
-          nextVersion: version,
-          servers: input.servers,
-          updatedAt,
-        })
-        .pipe(Effect.mapError(toStorageError("Failed to save common MCP config")));
-
-      if (Option.isNone(saved)) {
-        return yield* new ProjectMcpConfigServiceError({
-          code: "conflict",
-          message: "MCP configuration changed since this page loaded. Refresh and try again.",
-        });
-      }
-
+      const stored = yield* readCommonStoredConfig();
       return {
-        version,
-        servers: saved.value.servers,
+        ...(stored.version ? { version: stored.version } : {}),
+        servers: stored.servers,
+        issues: yield* commonIssues(stored.servers),
       };
     });
 
   const readProjectConfig: ProjectMcpConfigServiceShape["readProjectConfig"] = (projectId) =>
-    readProjectStoredConfig(projectId).pipe(
-      Effect.map((stored) => ({
+    Effect.gen(function* () {
+      const stored = yield* readProjectStoredConfig(projectId);
+      const common = yield* readCommonStoredConfig();
+      const merged = mergeMcpServerLayers({ common: common.servers, project: stored.servers });
+      return {
         projectId,
         ...(stored.version ? { version: stored.version } : {}),
         servers: stored.servers,
-      })),
-    );
-
-  const replaceProjectConfig: ProjectMcpConfigServiceShape["replaceProjectConfig"] = (input) =>
-    Effect.gen(function* () {
-      const version = crypto.randomUUID();
-      const updatedAt = new Date().toISOString();
-      const saved = yield* repository
-        .replaceIfVersionMatches({
-          scope: "project",
-          projectId: input.projectId,
-          expectedVersion: input.expectedVersion ?? null,
-          nextVersion: version,
-          servers: input.servers,
-          updatedAt,
-        })
-        .pipe(Effect.mapError(toStorageError("Failed to save project MCP config")));
-
-      if (Option.isNone(saved)) {
-        return yield* new ProjectMcpConfigServiceError({
-          code: "conflict",
-          message: "MCP configuration changed since this page loaded. Refresh and try again.",
-        });
-      }
-
-      return {
-        projectId: input.projectId,
-        version,
-        servers: saved.value.servers,
+        issues: [
+          ...readMcpValidationIssues(stored.servers),
+          ...readMcpLayerNameConflicts(common.servers, stored.servers),
+          ...callbackIssue(merged, [projectId], [stored.projectName ?? projectId]),
+        ],
       };
     });
 
-  const readEffectiveConfig: ProjectMcpConfigServiceShape["readEffectiveConfig"] = (projectId) =>
-    readEffectiveStoredConfig(projectId).pipe(
-      Effect.map((stored) => ({
-        projectId,
-        ...(stored.commonVersion ? { commonVersion: stored.commonVersion } : {}),
-        ...(stored.projectVersion ? { projectVersion: stored.projectVersion } : {}),
-        effectiveVersion: stored.effectiveVersion,
-        servers: stored.servers,
-      })),
+  const replace = (input: ReplaceCommonMcpConfigInput | ReplaceProjectMcpConfigInput) =>
+    writeLock.withPermits(1)(
+      repository
+        .withTransaction(
+          Effect.gen(function* () {
+            const projectId = "projectId" in input ? input.projectId : undefined;
+            const base = projectId
+              ? yield* readProjectStoredConfig(projectId)
+              : yield* readCommonStoredConfig();
+            if ((base.version ?? null) !== (input.expectedVersion ?? null))
+              return yield* new ProjectMcpConfigServiceError({
+                code: "conflict",
+                message: "MCP configuration changed since this page loaded. Refresh and try again.",
+              });
+            const servers = yield* Effect.try({
+              try: () => validateMcpLayerWrite(base.servers, input.servers),
+              catch: validationError,
+            });
+            if (projectId) {
+              const common = yield* readCommonStoredConfig();
+              yield* Effect.try({
+                try: () =>
+                  validateMcpLayerMerge({
+                    common: common.servers,
+                    project: servers,
+                    baseCommon: common.servers,
+                    baseProject: base.servers,
+                  }),
+                catch: validationError,
+              });
+            } else {
+              const projects = yield* listProjects();
+              for (const row of projects)
+                yield* Effect.try({
+                  try: () =>
+                    validateMcpLayerMerge({
+                      common: servers,
+                      project: row.servers,
+                      baseCommon: base.servers,
+                      baseProject: row.servers,
+                    }),
+                  catch: validationError,
+                });
+            }
+            const saved = yield* repository
+              .replaceIfVersionMatches({
+                scope: projectId ? "project" : "common",
+                projectId: projectId ?? null,
+                expectedVersion: input.expectedVersion ?? null,
+                nextVersion: crypto.randomUUID(),
+                servers,
+                updatedAt: new Date().toISOString(),
+              })
+              .pipe(Effect.mapError(toStorageError("Failed to save MCP config")));
+            if (Option.isNone(saved))
+              return yield* new ProjectMcpConfigServiceError({
+                code: "conflict",
+                message: "MCP configuration changed since this page loaded. Refresh and try again.",
+              });
+            return projectId ? yield* readProjectConfig(projectId) : yield* readCommonConfig();
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            Schema.is(ProjectMcpConfigServiceError)(error)
+              ? error
+              : toStorageError("Failed to save MCP config")(error),
+          ),
+        ),
     );
+  const replaceCommonConfig: ProjectMcpConfigServiceShape["replaceCommonConfig"] = (input) =>
+    replace(input);
+  const replaceProjectConfig: ProjectMcpConfigServiceShape["replaceProjectConfig"] = (input) =>
+    replace(input).pipe(Effect.map((result) => ({ ...result, projectId: input.projectId })));
+
+  const readEffectiveConfig: ProjectMcpConfigServiceShape["readEffectiveConfig"] = (projectId) =>
+    readEffectiveStoredConfig(projectId);
 
   const readCodexServers: ProjectMcpConfigServiceShape["readCodexServers"] = (projectId) =>
     readEffectiveStoredConfig(projectId).pipe(

@@ -1,6 +1,6 @@
 import {
-  McpServerDefinition,
-  McpProjectServersConfig,
+  McpServerWriteDefinition,
+  type McpProjectServersConfig,
   type McpProjectConfigResult,
   type McpServerTransportType,
 } from "@t3tools/contracts";
@@ -10,6 +10,7 @@ import { normalizeServerName, trimToUndefined } from "@t3tools/shared/mcpValidat
 export type TransportType = McpServerTransportType;
 
 export type ServerDraft = {
+  readonly original?: { readonly name: string; readonly server: McpProjectServersConfig[string] };
   readonly name: string;
   readonly type: TransportType;
   readonly enabled: boolean;
@@ -20,7 +21,7 @@ export type ServerDraft = {
   readonly url: string;
   readonly headers: string;
   readonly bearerTokenEnvVar: string;
-  readonly supportsParallelToolCalls: boolean;
+  readonly supportsParallelToolCalls: "default" | "enabled" | "disabled";
   readonly startupTimeoutSec: string;
   readonly toolTimeoutSec: string;
   readonly enabledTools: string;
@@ -44,7 +45,7 @@ export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     url: "",
     headers: "",
     bearerTokenEnvVar: "",
-    supportsParallelToolCalls: false,
+    supportsParallelToolCalls: "default",
     startupTimeoutSec: "",
     toolTimeoutSec: "",
     enabledTools: "",
@@ -60,7 +61,7 @@ export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
 export function toWritableProjectServers(
   servers: McpProjectConfigResult["servers"] | McpProjectServersConfig,
 ): Record<string, McpProjectServersConfig[string]> {
-  return { ...Schema.decodeUnknownSync(McpProjectServersConfig)(servers) };
+  return { ...servers };
 }
 
 function formatStringArray(values: ReadonlyArray<string> | undefined): string {
@@ -93,7 +94,7 @@ function parseStringRecordInput(value: string, label: string): Record<string, st
     return undefined;
   }
 
-  const parsed: Record<string, string> = {};
+  const parsed = Object.create(null) as Record<string, string>;
   for (const line of lines) {
     const separatorIndex = line.indexOf("=");
     if (separatorIndex <= 0) {
@@ -106,7 +107,7 @@ function parseStringRecordInput(value: string, label: string): Record<string, st
     }
     parsed[key] = entryValue;
   }
-  return Object.keys(parsed).length > 0 ? parsed : undefined;
+  return Object.keys(parsed).length > 0 ? { ...parsed } : undefined;
 }
 
 function parseOptionalIntegerInput(value: string, label: string): number | undefined {
@@ -158,17 +159,23 @@ export function draftFromServer(
   server: McpProjectServersConfig[string],
 ): ServerDraft {
   return {
+    original: { name, server },
     name,
     type: server.type,
     enabled: server.enabled !== false,
     command: server.type === "stdio" ? server.command : "",
-    args: server.type === "stdio" ? formatStringArray(server.args) : "",
+    args: server.type === "stdio" && server.args !== undefined ? JSON.stringify(server.args) : "",
     env: server.type === "stdio" ? formatStringRecord(server.env) : "",
     cwd: server.type === "stdio" ? (server.cwd ?? "") : "",
     url: server.type !== "stdio" ? server.url : "",
     headers: server.type !== "stdio" ? formatStringRecord(server.headers) : "",
     bearerTokenEnvVar: server.bearerTokenEnvVar ?? "",
-    supportsParallelToolCalls: server.supportsParallelToolCalls === true,
+    supportsParallelToolCalls:
+      server.supportsParallelToolCalls === undefined
+        ? "default"
+        : server.supportsParallelToolCalls
+          ? "enabled"
+          : "disabled",
     startupTimeoutSec:
       server.startupTimeoutSec !== undefined ? String(server.startupTimeoutSec) : "",
     toolTimeoutSec: server.toolTimeoutSec !== undefined ? String(server.toolTimeoutSec) : "",
@@ -215,7 +222,9 @@ export function decodeDraftServer(draft: ServerDraft): {
     ...(oauthClientId ? { oauthClientId } : {}),
     ...(oauthCallbackPort !== undefined ? { oauthCallbackPort } : {}),
     ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
-    ...(draft.supportsParallelToolCalls ? { supportsParallelToolCalls: true } : {}),
+    ...(draft.supportsParallelToolCalls !== "default"
+      ? { supportsParallelToolCalls: draft.supportsParallelToolCalls === "enabled" }
+      : {}),
     ...(startupTimeoutSec !== undefined ? { startupTimeoutSec } : {}),
     ...(toolTimeoutSec !== undefined ? { toolTimeoutSec } : {}),
     ...(enabledTools ? { enabledTools } : {}),
@@ -229,7 +238,13 @@ export function decodeDraftServer(draft: ServerDraft): {
       ? {
           type: "stdio" as const,
           command: draft.command,
-          ...(parseStringArrayInput(draft.args) ? { args: parseStringArrayInput(draft.args) } : {}),
+          ...(draft.args !== ""
+            ? {
+                args: draft.args.trimStart().startsWith("[")
+                  ? (JSON.parse(draft.args) as unknown)
+                  : draft.args.split(/\r?\n/u),
+              }
+            : {}),
           ...(parseStringRecordInput(draft.env, "Environment")
             ? { env: parseStringRecordInput(draft.env, "Environment") }
             : {}),
@@ -245,8 +260,19 @@ export function decodeDraftServer(draft: ServerDraft): {
           ...advanced,
         };
 
-  return {
-    name,
-    server: Schema.decodeUnknownSync(McpServerDefinition)(candidate),
-  };
+  const writable = { ...candidate } as Record<string, unknown>;
+  if (draft.original && draft.type === draft.original.server.type) {
+    const originalDraft = draftFromServer(draft.original.name, draft.original.server);
+    for (const key of Object.keys({ ...draft.original.server, ...candidate })) {
+      if (
+        key in draft &&
+        draft[key as keyof ServerDraft] === originalDraft[key as keyof ServerDraft]
+      ) {
+        const value = (draft.original.server as unknown as Record<string, unknown>)[key];
+        if (value === undefined) delete writable[key];
+        else writable[key] = value;
+      }
+    }
+  }
+  return { name, server: Schema.decodeUnknownSync(McpServerWriteDefinition)(writable) };
 }

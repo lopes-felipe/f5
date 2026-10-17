@@ -1,3 +1,5 @@
+import { assertMcpRuntimeConfig } from "@t3tools/shared/mcpValidation";
+import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
 import { DeliveryAttemptContext } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
@@ -818,6 +820,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           projectMcpServers: resolvedProjectMcp?.servers,
         });
 
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(resumedProviderOptions?.mcpServers);
+            if (input.binding.provider === "codex")
+              readCodexMcpOAuthCallbackConfig(resumedProviderOptions?.mcpServers);
+          },
+          catch: (cause) => toValidationError(input.operation, String(cause)),
+        });
+
         const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
         const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
           input.binding.provider,
@@ -1141,6 +1152,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           payload: rawInput,
         });
 
+        yield* Effect.try({
+          try: () => assertMcpRuntimeConfig(parsed.providerOptions?.mcpServers),
+          catch: (cause) => toValidationError("ProviderService.startSession", String(cause)),
+        });
         const requestedInstanceId = resolveStartInstanceId(parsed);
         yield* Effect.annotateCurrentSpan({
           "provider.operation": "start-session",
@@ -1257,6 +1272,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               projectMcpServers: resolvedProjectMcp?.servers,
             }),
           };
+          yield* Effect.try({
+            try: () => {
+              assertMcpRuntimeConfig(adapterInput.providerOptions?.mcpServers);
+              if (resolvedProvider === "codex")
+                readCodexMcpOAuthCallbackConfig(adapterInput.providerOptions?.mcpServers);
+            },
+            catch: (cause) => toValidationError("ProviderService.startSession", String(cause)),
+          });
           const launchFingerprint = computeProviderLaunchFingerprint({
             provider: resolvedProvider,
             providerInstanceId: requestedInstanceId,
@@ -2518,6 +2541,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               ),
             ),
           );
+
+        yield* Effect.try({
+          try: () => {
+            assertMcpRuntimeConfig(currentProjectMcp.servers);
+            if (input.provider === "codex")
+              readCodexMcpOAuthCallbackConfig(currentProjectMcp.servers);
+          },
+          catch: (cause) =>
+            toValidationError("ProviderService.reloadMcpConfigForProject", String(cause)),
+        });
 
         // `reached` is false when the reload request itself failed, so the
         // session may not hold the new config at all.

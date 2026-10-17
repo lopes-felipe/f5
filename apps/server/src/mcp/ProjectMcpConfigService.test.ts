@@ -1,4 +1,6 @@
-import { ProjectId } from "@t3tools/contracts";
+import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { ProjectMcpConfigRepositoryLive } from "../persistence/Layers/ProjectMcpConfigs.ts";
+import { type McpProjectServersConfig, ProjectId } from "@t3tools/contracts";
 import { Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -17,6 +19,10 @@ function makeRepositoryLayer() {
   const rows = new Map<string, ProjectMcpConfigRecord>();
 
   const repository: ProjectMcpConfigRepositoryShape = {
+    listByScope: (scope) =>
+      Effect.sync(() => [...rows.values()].filter((row) => row.scope === scope)),
+    withTransaction: (effect) => effect,
+
     get: ({ scope, projectId }) =>
       Effect.succeed(
         rows.has(scopeKey(scope, projectId))
@@ -57,9 +63,9 @@ function makeRepositoryLayer() {
   };
 }
 
-async function runServiceEffect<T, E>(
+async function runServiceEffect<T, E, RepositoryError>(
   effect: Effect.Effect<T, E, ProjectMcpConfigService>,
-  repositoryLayer: Layer.Layer<ProjectMcpConfigRepository>,
+  repositoryLayer: Layer.Layer<ProjectMcpConfigRepository, RepositoryError>,
 ) {
   const layer = ProjectMcpConfigServiceLive.pipe(Layer.provideMerge(repositoryLayer));
   return await Effect.runPromise(effect.pipe(Effect.provide(layer)));
@@ -419,4 +425,183 @@ describe("ProjectMcpConfigService", () => {
     expect(stored.version).toBe(saved.version);
     expect(stored.servers.filesystem?.command).toBe("npx");
   });
+});
+
+describe("configuration write validation", () => {
+  const projectId = ProjectId.makeUnsafe("repair-project");
+  const stdio = { type: "stdio" as const, command: "node" };
+
+  it("rejects layer overflow on the server and preserves all 32 effective entries", async () => {
+    const { layer } = makeRepositoryLayer();
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const servers = Object.fromEntries(
+          Array.from({ length: 17 }, (_, i) => [`common-${i}`, stdio]),
+        );
+        const overflow = yield* service.replaceCommonConfig({ servers }).pipe(Effect.result);
+        expect(overflow._tag).toBe("Failure");
+        expect((yield* service.readCommonConfig()).version).toBeUndefined();
+        delete servers["common-16"];
+        yield* service.replaceCommonConfig({ servers });
+        yield* service.replaceProjectConfig({
+          projectId,
+          servers: Object.fromEntries(
+            Array.from({ length: 16 }, (_, i) => [`project-${i}`, stdio]),
+          ),
+        });
+        expect(Object.keys((yield* service.readEffectiveConfig(projectId)).servers)).toHaveLength(
+          32,
+        );
+      }),
+      layer,
+    );
+  });
+
+  it("keeps legacy-invalid entries during edits, removals, and repairs without rewriting args", async () => {
+    const { layer, rows } = makeRepositoryLayer();
+    const servers = {
+      ...Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`legacy-${i}`, stdio])),
+      broken: { type: "http" as const, url: "old-invalid-url" },
+    };
+    rows.set(scopeKey("project", projectId), {
+      scope: "project",
+      projectId,
+      version: "legacy",
+      servers,
+      updatedAt: new Date().toISOString(),
+    });
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const edited: McpProjectServersConfig = {
+          ...servers,
+          "legacy-16": {
+            ...stdio,
+            args: ["", "  space  "],
+            supportsParallelToolCalls: false,
+            startupTimeoutSec: 0,
+          },
+        };
+        const saved = yield* service.replaceProjectConfig({
+          projectId,
+          expectedVersion: "legacy",
+          servers: edited,
+        });
+        expect(saved.servers.broken).toEqual(servers.broken);
+        expect(saved.servers["legacy-16"]).toEqual(edited["legacy-16"]);
+        expect(saved.issues).toEqual(
+          expect.arrayContaining([expect.objectContaining({ serverName: "broken" })]),
+        );
+        const invalid = yield* service
+          .replaceProjectConfig({
+            projectId,
+            expectedVersion: saved.version,
+            servers: { ...edited, broken: { type: "http", url: "new-invalid-url" } },
+          })
+          .pipe(Effect.result);
+        expect(invalid._tag).toBe("Failure");
+        const removed = { ...edited };
+        delete removed["legacy-0"];
+        const repaired = yield* service.replaceProjectConfig({
+          projectId,
+          expectedVersion: saved.version,
+          servers: { ...removed, broken: { type: "http", url: "http://localhost:3000/mcp" } },
+        });
+        expect(Object.keys(repaired.servers)).toHaveLength(17);
+        expect(repaired.servers.broken?.url).toBe("http://localhost:3000/mcp");
+      }),
+      layer,
+    );
+  });
+
+  it("serializes common and project writes that would introduce a cross-layer alias", async () => {
+    const { layer } = makeRepositoryLayer();
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        const results = yield* Effect.all(
+          [
+            service.replaceCommonConfig({ servers: { GitHub: stdio } }).pipe(Effect.result),
+            service
+              .replaceProjectConfig({ projectId, servers: { github: stdio } })
+              .pipe(Effect.result),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
+        expect(results.filter((result) => result._tag === "Failure")).toHaveLength(1);
+        for (const result of results)
+          if (result._tag === "Failure") expect(result.failure.code).toBe("validation");
+      }),
+      layer,
+    );
+  });
+
+  it("warns about cross-layer OAuth conflicts, names affected projects, and keeps Claude config readable", async () => {
+    const { layer, rows } = makeRepositoryLayer();
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        yield* service.replaceProjectConfig({
+          projectId,
+          servers: {
+            project: { type: "http", url: "http://localhost/mcp", oauthCallbackPort: 3001 },
+          },
+        });
+        const key = scopeKey("project", projectId);
+        rows.set(key, { ...rows.get(key)!, projectName: "Docs workspace" });
+        const saved = yield* service.replaceCommonConfig({
+          servers: {
+            common: { type: "http", url: "http://localhost/mcp", oauthCallbackPort: 3002 },
+          },
+        });
+        expect(saved.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "compatibility",
+              projectIds: [projectId],
+              message: expect.stringContaining("1 project(s): Docs workspace"),
+            }),
+          ]),
+        );
+        expect(
+          Object.keys((yield* service.readEffectiveStoredConfig(projectId)).servers),
+        ).toHaveLength(2);
+        const codex = yield* service.readCodexServers(projectId).pipe(Effect.result);
+        expect(codex._tag).toBe("Failure");
+        const project = yield* service.readProjectConfig(projectId);
+        expect(project.issues?.some((issue) => issue.kind === "compatibility")).toBe(true);
+      }),
+      layer,
+    );
+  });
+});
+
+it("serializes cross-layer validation inside real SQLite transactions", async () => {
+  const projectId = ProjectId.makeUnsafe("transaction-project");
+  await runServiceEffect(
+    Effect.gen(function* () {
+      const service = yield* ProjectMcpConfigService;
+      const results = yield* Effect.all(
+        [
+          service
+            .replaceCommonConfig({ servers: { GitHub: { type: "stdio", command: "node" } } })
+            .pipe(Effect.result),
+          service
+            .replaceProjectConfig({
+              projectId,
+              servers: { github: { type: "stdio", command: "node" } },
+            })
+            .pipe(Effect.result),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
+      expect(results.filter((result) => result._tag === "Failure")).toHaveLength(1);
+      const effective = yield* service.readEffectiveConfig(projectId);
+      expect(Object.keys(effective.servers)).toHaveLength(1);
+    }),
+    ProjectMcpConfigRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+  );
 });

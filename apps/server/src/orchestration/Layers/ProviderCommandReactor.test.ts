@@ -11,7 +11,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { McpReloadResult, ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
+import type {
+  McpProjectServersConfig,
+  McpReloadResult,
+  ProviderRuntimeEvent,
+  ProviderSession,
+} from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   CommandId,
@@ -185,6 +190,7 @@ describe("ProviderCommandReactor", () => {
   });
 
   async function createHarness(input?: {
+    readonly mcpServers?: McpProjectServersConfig;
     readonly realCursorBinary?: string;
     readonly settings?: Partial<ServerSettings>;
     readonly stateDir?: string;
@@ -578,7 +584,7 @@ describe("ProviderCommandReactor", () => {
           commonVersion: "mcp-version-test",
           projectVersion: "mcp-version-test",
           effectiveVersion: "mcp-version-test",
-          servers: {},
+          servers: input?.mcpServers ?? {},
         }),
       readCommonConfig: () =>
         Effect.succeed({
@@ -2427,6 +2433,38 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       resumeCursor: { opaque: "live-newer-cursor" },
     });
+  });
+
+  it("reports conflicted Codex targets and continues applying to valid Claude targets", async () => {
+    const harness = await createHarness({
+      mcpServers: {
+        first: { type: "http", url: "http://localhost/first", oauthCallbackPort: 3001 },
+        second: { type: "http", url: "http://localhost/second", oauthCallbackPort: 3002 },
+      },
+    });
+    const projectId = asProjectId("project-1");
+    for (const provider of ["codex", "claudeAgent"] as const) {
+      const threadId = ThreadId.makeUnsafe(`apply-${provider}`);
+      await Effect.runPromise(harness.startSession(threadId, { threadId, projectId, provider }));
+      harness.upsertBinding({ ...harness.getBinding(threadId)!, mcpEffectiveConfigVersion: "old" });
+    }
+    harness.mcpReload.result = { converged: true, restartRequired: false, servers: [], errors: [] };
+    const result = await Effect.runPromise(
+      harness.reactor.applyMcpConfigToLiveSessions({ scope: "common" }),
+    );
+    expect(result.codexReloaded).toBe(0);
+    expect(result.claudeReconciled).toBe(1);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        provider: "codex",
+        threadId: "apply-codex",
+        errors: [
+          expect.objectContaining({ message: expect.stringContaining("conflicting ports") }),
+        ],
+      }),
+    ]);
+    expect(harness.reloadMcpConfigForProject).toHaveBeenCalledTimes(1);
+    expect(harness.reloadMcpConfigForProject.mock.calls[0]?.[0].provider).toBe("claudeAgent");
   });
 
   describe("Claude MCP apply", () => {

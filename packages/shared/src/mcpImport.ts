@@ -4,10 +4,23 @@ import {
   type McpServerTransportType as TransportType,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
+import { parse as parseToml } from "smol-toml";
 
-import { normalizeMcpServersRecord } from "./mcpValidation";
+import { normalizeServerName, mcpServerNameKey } from "./mcpValidation";
 
-// This intentionally retains the basic TOML reader; replacing it is a separate behavior change.
+function normalizeImportedNames(servers: McpProjectServersConfig): McpProjectServersConfig {
+  const names = new Set<string>();
+  return Object.fromEntries(
+    Object.entries(servers).map(([rawName, server]) => {
+      const name = normalizeServerName(rawName);
+      if (!name) throw new Error("Server name is required and must be 128 characters or fewer.");
+      const key = mcpServerNameKey(name);
+      if (names.has(key)) throw new Error(`Conflicting imported MCP server name '${name}'.`);
+      names.add(key);
+      return [name, server];
+    }),
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -32,7 +45,11 @@ function readImportedStringArray(value: unknown): string[] | undefined {
   const parsed = value
     .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
     .filter((entry) => entry.length > 0);
-  return parsed.length > 0 ? parsed : undefined;
+  return parsed;
+}
+
+function readImportedArgs(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((arg) => typeof arg === "string") ? value : undefined;
 }
 
 function readImportedStringRecord(value: unknown): Record<string, string> | undefined {
@@ -106,9 +123,7 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
       ? {
           type,
           command: readImportedString(value.command),
-          ...(readImportedStringArray(value.args)
-            ? { args: readImportedStringArray(value.args) }
-            : {}),
+          ...(readImportedArgs(value.args) ? { args: readImportedArgs(value.args) } : {}),
           ...(readImportedStringRecord(value.env)
             ? { env: readImportedStringRecord(value.env) }
             : {}),
@@ -117,8 +132,8 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
       : {
           type,
           url: readImportedString(value.url),
-          ...(readImportedStringRecord(value.headers)
-            ? { headers: readImportedStringRecord(value.headers) }
+          ...(readImportedStringRecord(value.headers ?? value.http_headers)
+            ? { headers: readImportedStringRecord(value.headers ?? value.http_headers) }
             : {}),
         };
 
@@ -153,7 +168,7 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
           }
         : {}),
       ...((readImportedBoolean(value.supportsParallelToolCalls) ??
-      readImportedBoolean(value.supports_parallel_tool_calls))
+        readImportedBoolean(value.supports_parallel_tool_calls)) !== undefined
         ? {
             supportsParallelToolCalls:
               readImportedBoolean(value.supportsParallelToolCalls) ??
@@ -161,14 +176,15 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
           }
         : {}),
       ...((readImportedInteger(value.startupTimeoutSec) ??
-      readImportedInteger(value.startup_timeout_sec))
+        readImportedInteger(value.startup_timeout_sec)) !== undefined
         ? {
             startupTimeoutSec:
               readImportedInteger(value.startupTimeoutSec) ??
               readImportedInteger(value.startup_timeout_sec),
           }
         : {}),
-      ...((readImportedInteger(value.toolTimeoutSec) ?? readImportedInteger(value.tool_timeout_sec))
+      ...((readImportedInteger(value.toolTimeoutSec) ??
+        readImportedInteger(value.tool_timeout_sec)) !== undefined
         ? {
             toolTimeoutSec:
               readImportedInteger(value.toolTimeoutSec) ??
@@ -246,160 +262,16 @@ function hasImportedServerOauthCallbackUrl(value: Record<string, unknown>): bool
   );
 }
 
-function stripTomlComment(line: string): string {
-  let currentQuote: '"' | "'" | null = null;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if ((character === '"' || character === "'") && line[index - 1] !== "\\") {
-      currentQuote = currentQuote === character ? null : (currentQuote ?? character);
-      continue;
-    }
-    if (character === "#" && currentQuote === null) {
-      return line.slice(0, index);
-    }
-  }
-  return line;
-}
-
-function parseTomlString(value: string): string {
-  if (value.startsWith('"')) {
-    return JSON.parse(value) as string;
-  }
-  return value.slice(1, -1);
-}
-
-function splitTomlArrayItems(value: string): string[] {
-  const items: string[] = [];
-  let current = "";
-  let currentQuote: '"' | "'" | null = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if ((character === '"' || character === "'") && value[index - 1] !== "\\") {
-      currentQuote = currentQuote === character ? null : (currentQuote ?? character);
-      current += character;
-      continue;
-    }
-    if (character === "," && currentQuote === null) {
-      items.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  if (current.trim().length > 0) {
-    items.push(current.trim());
-  }
-  return items;
-}
-
-function parseTomlValue(value: string): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return parseTomlString(trimmed);
-  }
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    const inner = trimmed.slice(1, -1).trim();
-    if (!inner) {
-      return [];
-    }
-    return splitTomlArrayItems(inner).map((entry) => parseTomlValue(entry));
-  }
-  if (trimmed === "true") {
-    return true;
-  }
-  if (trimmed === "false") {
-    return false;
-  }
-  if (/^-?\d+$/u.test(trimmed)) {
-    return Number.parseInt(trimmed, 10);
-  }
-  return trimmed;
-}
-
 function parseCodexTomlServers(text: string): McpProjectServersConfig {
-  const parsed: Record<string, Record<string, unknown>> = {};
-  let currentSection: { serverName: string; kind: "root" | "env" | "headers" | "oauth" } | null =
-    null;
-  let topLevelOauthCallbackPort: number | undefined;
-  let topLevelOauthCallbackUrl: string | undefined;
-
-  for (const rawLine of text.split(/\r?\n/u)) {
-    const line = stripTomlComment(rawLine).trim();
-    if (!line) {
-      continue;
-    }
-
-    const sectionMatch = /^\[(.+)\]$/u.exec(line);
-    if (sectionMatch) {
-      const rawSection = sectionMatch[1]?.trim();
-      const serverMatch = rawSection
-        ? /^mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^.]+))(?:\.(env|headers|oauth))?$/u.exec(
-            rawSection,
-          )
-        : null;
-      currentSection = serverMatch
-        ? {
-            serverName:
-              serverMatch[1]?.trim() || serverMatch[2]?.trim() || serverMatch[3]?.trim() || "",
-            kind:
-              serverMatch[4] === "env" || serverMatch[4] === "headers" || serverMatch[4] === "oauth"
-                ? serverMatch[4]
-                : "root",
-          }
-        : null;
-      continue;
-    }
-
-    const separatorIndex = line.indexOf("=");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-
-    const key = line.slice(0, separatorIndex).trim();
-    const rawValue = line.slice(separatorIndex + 1);
-    if (!key) {
-      continue;
-    }
-
-    if (!currentSection) {
-      if (key === "mcp_oauth_callback_port") {
-        const parsedValue = parseTomlValue(rawValue);
-        if (typeof parsedValue === "number") {
-          topLevelOauthCallbackPort = parsedValue;
-        }
-      }
-      if (key === "mcp_oauth_callback_url") {
-        const parsedValue = parseTomlValue(rawValue);
-        if (typeof parsedValue === "string" && parsedValue.trim().length > 0) {
-          topLevelOauthCallbackUrl = parsedValue.trim();
-        }
-      }
-      continue;
-    }
-
-    const server = (parsed[currentSection.serverName] ??= {});
-    if (currentSection.kind === "root") {
-      server[key] = parseTomlValue(rawValue);
-      continue;
-    }
-
-    const nestedKey = currentSection.kind;
-    const nested = isRecord(server[nestedKey]) ? server[nestedKey] : {};
-    const parsedValue = parseTomlValue(rawValue);
-    nested[key] = currentSection.kind === "oauth" ? parsedValue : String(parsedValue ?? "");
-    server[nestedKey] = nested;
-  }
-
-  return normalizeMcpServersRecord(
+  const document = parseToml(text);
+  const parsed = isRecord(document.mcp_servers) ? document.mcp_servers : {};
+  const topLevelOauthCallbackPort = readImportedInteger(document.mcp_oauth_callback_port);
+  const topLevelOauthCallbackUrl = readImportedString(document.mcp_oauth_callback_url);
+  return normalizeImportedNames(
     Object.fromEntries(
       Object.entries(parsed)
         .map(([name, value]) => {
+          if (!isRecord(value)) return null;
           const shouldApplyTopLevelOauthCallback = canUseTopLevelOauthCallback(value);
           const decoded = decodeImportedServer({
             ...value,
@@ -436,7 +308,7 @@ function parseJsonServers(text: string): McpProjectServersConfig {
     return {};
   }
 
-  return normalizeMcpServersRecord(
+  return normalizeImportedNames(
     Object.fromEntries(
       Object.entries(root)
         .map(([name, value]) => {

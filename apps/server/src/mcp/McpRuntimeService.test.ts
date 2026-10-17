@@ -351,6 +351,34 @@ describe("McpRuntimeService", () => {
     ),
   );
 
+  it.effect("keeps ambiguous provider names visible as conflicts without assigning readiness", () =>
+    Effect.gen(function* () {
+      const service = yield* McpRuntimeService;
+      const result = yield* service.getServerStatuses({ provider: "codex", projectId });
+      assert.equal(result.statuses[0]?.state, "unknown");
+      assert.equal(result.statuses[0]?.toolCount, 0);
+      assert.include(result.statuses[0]?.message, "GitHub, github");
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({
+          servers: { GitHub: { type: "http", url: "http://localhost/mcp" } },
+          controlStatuses: [
+            { name: "GitHub", startupStatus: "ready", toolCount: 3 },
+            { name: "github", startupStatus: "failed" },
+          ],
+          runtimeDiagnostics: [
+            { name: "github", status: "ready", createdAt: new Date().toISOString() },
+          ],
+          spawnerLayer: mockSpawnerLayer((args) =>
+            args.join(" ").endsWith("--version")
+              ? { stdout: "codex 1.2.3\n", stderr: "", code: 0 }
+              : { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 },
+          ),
+        }),
+      ),
+    ),
+  );
+
   it.effect("uses Codex startup failures over authenticated MCP control status", () =>
     Effect.gen(function* () {
       const service = yield* McpRuntimeService;

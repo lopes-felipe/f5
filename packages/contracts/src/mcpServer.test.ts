@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
-import { McpServerDefinition } from "./mcpServer";
+import { McpServerDefinition, McpServerWriteDefinition } from "./mcpServer";
 
 const decodeMcpServerDefinition = Schema.decodeUnknownSync(McpServerDefinition);
 
@@ -64,9 +64,17 @@ describe("McpServerDefinition", () => {
     ).toThrow();
   });
 
-  it("rejects invalid OAuth callback URLs", () => {
-    expect(() =>
+  it("rejects invalid OAuth callback URLs on writes and keeps legacy values readable", () => {
+    expect(
       decodeMcpServerDefinition({
+        type: "http",
+        url: "legacy-url",
+        oauthCallbackUrl: "legacy-callback",
+      }),
+    ).toMatchObject({ url: "legacy-url", oauthCallbackUrl: "legacy-callback" });
+    const decodeWrite = Schema.decodeUnknownSync(McpServerWriteDefinition);
+    expect(() =>
+      decodeWrite({
         type: "http",
         url: "https://example.test/mcp",
         oauthCallbackUrl: "not-a-url",
@@ -74,7 +82,7 @@ describe("McpServerDefinition", () => {
     ).toThrow();
 
     expect(() =>
-      decodeMcpServerDefinition({
+      decodeWrite({
         type: "http",
         url: "https://example.test/mcp",
         oauthCallbackUrl: "ftp://127.0.0.1/callback",
@@ -82,7 +90,7 @@ describe("McpServerDefinition", () => {
     ).toThrow();
 
     expect(() =>
-      decodeMcpServerDefinition({
+      decodeWrite({
         type: "http",
         url: "https://example.test/mcp",
         oauthCallbackUrl: "http://[unterminated",

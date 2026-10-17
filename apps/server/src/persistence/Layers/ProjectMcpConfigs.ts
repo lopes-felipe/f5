@@ -54,15 +54,42 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
     execute: ({ scopeKey }) =>
       sql`
         SELECT
-          scope,
-          project_id AS "projectId",
-          version,
-          servers_json AS "servers",
-          updated_at AS "updatedAt"
-        FROM project_mcp_configs
-        WHERE scope_key = ${scopeKey}
+          c.scope,
+          c.project_id AS "projectId",
+          p.title AS "projectName",
+          c.version,
+          c.servers_json AS "servers",
+          c.updated_at AS "updatedAt"
+        FROM project_mcp_configs c LEFT JOIN projection_projects p ON p.project_id = c.project_id
+        WHERE c.scope_key = ${scopeKey}
       `,
   });
+
+  const listRows = SqlSchema.findAll({
+    Request: Schema.Literals(["common", "project"]),
+    Result: ProjectMcpConfigDbRowSchema,
+    execute: (scope) => sql`
+      SELECT c.scope, c.project_id AS "projectId", p.title AS "projectName", c.version, c.servers_json AS "servers", c.updated_at AS "updatedAt"
+      FROM project_mcp_configs c LEFT JOIN projection_projects p ON p.project_id = c.project_id WHERE c.scope = ${scope}
+    `,
+  });
+  const listByScope: ProjectMcpConfigRepositoryShape["listByScope"] = (scope) =>
+    listRows(scope).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectMcpConfigRepository.listByScope:query",
+          "ProjectMcpConfigRepository.listByScope:decodeRow",
+        ),
+      ),
+    );
+  const withTransaction: ProjectMcpConfigRepositoryShape["withTransaction"] = (effect) =>
+    sql
+      .withTransaction(effect)
+      .pipe(
+        Effect.catchTag("SqlError", (cause) =>
+          Effect.fail(toPersistenceSqlError("ProjectMcpConfigRepository.transaction")(cause)),
+        ),
+      );
 
   const replaceProjectMcpConfigRow = SqlSchema.findOneOption({
     Request: ReplaceProjectMcpConfigDbRequestSchema,
@@ -152,6 +179,8 @@ const makeProjectMcpConfigRepository = Effect.gen(function* () {
     );
 
   return {
+    listByScope,
+    withTransaction,
     get,
     replaceIfVersionMatches,
   } satisfies ProjectMcpConfigRepositoryShape;

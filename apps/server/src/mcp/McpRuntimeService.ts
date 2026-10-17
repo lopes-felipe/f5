@@ -1,3 +1,4 @@
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome";
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import { ServerSettingsService } from "../serverSettings";
@@ -755,15 +756,28 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         support: providerStatus.support,
         ...(providerStatus.supportMessage ? { supportMessage: providerStatus.supportMessage } : {}),
         configVersion: effectiveConfig.effectiveVersion,
-        statuses: orderedServers.map(([name, server]) =>
-          mapCodexServerStatus(
+        statuses: orderedServers.map(([name, server]) => {
+          const matches = controlStatuses.filter(
+            (status) => mcpServerNameKey(status.name) === mcpServerNameKey(name),
+          );
+          if (matches.length > 1)
+            return {
+              name,
+              state: "unknown" as const,
+              authStatus: "unknown" as const,
+              toolCount: 0,
+              resourceCount: 0,
+              resourceTemplateCount: 0,
+              message: `Provider reports conflicting MCP names: ${matches.map((status) => status.name).join(", ")}. No observation can be assigned to this configured server.`,
+            };
+          return mapCodexServerStatus(
             name,
             server,
             findCodexServerStatusByName(controlStatuses, name),
             providerStatus,
             runtimeDiagnosticsByName.get(normalizeMcpRuntimeDiagnosticName(name)),
-          ),
-        ),
+          );
+        }),
       } satisfies McpServerStatusesResult;
     });
 

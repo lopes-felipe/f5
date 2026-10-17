@@ -6,8 +6,10 @@ export type McpServerTransportType = typeof McpServerTransportType.Type;
 
 const McpStringRecord = Schema.Record(TrimmedNonEmptyString, Schema.String);
 const McpStringArray = Schema.Array(TrimmedNonEmptyString);
+export const McpArgArray = Schema.Array(Schema.String);
+export type McpArgArray = typeof McpArgArray.Type;
 const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
-const McpHttpUrl = TrimmedNonEmptyString.check(
+export const McpHttpUrl = TrimmedNonEmptyString.check(
   Schema.makeFilter((value: string) => {
     try {
       const url = new URL(value);
@@ -30,14 +32,14 @@ const McpCommonServerFields = {
   scopes: Schema.optional(McpStringArray),
   oauthClientId: Schema.optional(TrimmedNonEmptyString),
   oauthCallbackPort: Schema.optional(McpPort),
-  oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  oauthCallbackUrl: Schema.optional(TrimmedNonEmptyString),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
 };
 
 const McpStdioServerDefinition = Schema.Struct({
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
   cwd: Schema.optional(TrimmedNonEmptyString),
   url: UnsupportedMcpField,
@@ -62,13 +64,32 @@ export const McpServerDefinition = Schema.Union([
 ]);
 export type McpServerDefinition = typeof McpServerDefinition.Type;
 
-export const McpProjectServersConfig = Schema.Record(TrimmedNonEmptyString, McpServerDefinition);
+export const McpProjectServersConfig = Schema.Record(Schema.String, McpServerDefinition);
 export type McpProjectServersConfig = typeof McpProjectServersConfig.Type;
+
+// Writes validate changed entries; persisted decoding remains lenient for legacy repair.
+export const McpServerWriteDefinition = Schema.Union([
+  McpStdioServerDefinition.mapFields((fields) => ({
+    ...fields,
+    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  })),
+  McpRemoteServerDefinition.mapFields((fields) => ({
+    ...fields,
+    url: McpHttpUrl,
+    oauthCallbackUrl: Schema.optional(McpHttpUrl),
+  })),
+]);
+export type McpServerWriteDefinition = typeof McpServerWriteDefinition.Type;
+export const McpProjectServersWriteConfig = Schema.Record(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  McpServerWriteDefinition,
+);
+export type McpProjectServersWriteConfig = typeof McpProjectServersWriteConfig.Type;
 
 const ClaudeAgentStdioMcpServerConfig = Schema.Struct({
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
   cwd: Schema.optional(TrimmedNonEmptyString),
 });
@@ -104,7 +125,7 @@ const CodexMcpServerCommonFields = {
 const CodexStdioMcpServerEntry = Schema.Struct({
   type: Schema.Literal("stdio"),
   command: TrimmedNonEmptyString,
-  args: Schema.optional(McpStringArray),
+  args: Schema.optional(McpArgArray),
   env: Schema.optional(McpStringRecord),
   cwd: Schema.optional(TrimmedNonEmptyString),
   url: UnsupportedMcpField,

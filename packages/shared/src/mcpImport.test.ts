@@ -127,7 +127,7 @@ describe("existing import behavior", () => {
       shell: {
         type: "stdio",
         command: "node",
-        args: ["first", "second"],
+        args: [" first ", "", "second"],
         enabled: false,
         env: { TOKEN: "value" },
       },
@@ -135,7 +135,7 @@ describe("existing import behavior", () => {
     });
   });
 
-  it("retains current dropping of optional false, zero, and empty lists", () => {
+  it("preserves optional false, zero, and empty lists", () => {
     expect(
       parseImportedServers(
         JSON.stringify({
@@ -148,7 +148,16 @@ describe("existing import behavior", () => {
           },
         }),
       ),
-    ).toEqual({ docs: { type: "stdio", command: "node" } });
+    ).toEqual({
+      docs: {
+        type: "stdio",
+        command: "node",
+        supportsParallelToolCalls: false,
+        startupTimeoutSec: 0,
+        toolTimeoutSec: 0,
+        enabledTools: [],
+      },
+    });
   });
 
   it("reads basic TOML arrays, quoted names, comments, and nested tables", () => {
@@ -158,7 +167,7 @@ describe("existing import behavior", () => {
 command = "node" # comment
 args = ["first,second", 'third']
 [mcp_servers."team.docs".env]
-PORT = 3000
+PORT = "3000"
 [mcp_servers.remote]
 url = "https://example.test/mcp#fragment"
 [mcp_servers.remote.headers]
@@ -179,18 +188,50 @@ Authorization = "Bearer example"
     });
   });
 
-  it("characterizes known silent truncation after sixteen imports (Phase 1a fix)", () => {
+  it("preserves every imported server after sixteen", () => {
     const servers = Object.fromEntries(
       Array.from({ length: 17 }, (_, index) => [` server-${index} `, { command: "node" }]),
     );
     const imported = parseImportedServers(JSON.stringify(servers));
     expect(Object.keys(imported)).toEqual(
-      Array.from({ length: 16 }, (_, index) => `server-${index}`),
+      Array.from({ length: 17 }, (_, index) => `server-${index}`),
     );
   });
 
   it("returns no entries for empty input and still reports malformed JSON", () => {
     expect(parseImportedServers("  ")).toEqual({});
     expect(() => parseImportedServers('{"mcpServers":')).toThrow();
+  });
+});
+
+describe("full TOML parsing", () => {
+  it("preserves multiline arguments, inline tables, empty values, and http_headers", () => {
+    expect(
+      parseImportedServers(`
+[mcp_servers.shell]
+command = "node"
+args = [
+  "", "  spaces  ",
+  """line one
+line two""",
+]
+env = { TOKEN = " a=b " }
+[mcp_servers.remote]
+url = "http://localhost:3000/mcp"
+http_headers = { Authorization = "Bearer token" }
+`),
+    ).toEqual({
+      shell: {
+        type: "stdio",
+        command: "node",
+        args: ["", "  spaces  ", "line one\nline two"],
+        env: { TOKEN: " a=b " },
+      },
+      remote: {
+        type: "http",
+        url: "http://localhost:3000/mcp",
+        headers: { Authorization: "Bearer token" },
+      },
+    });
   });
 });

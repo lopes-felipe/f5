@@ -1,3 +1,4 @@
+import { normalizeServerName } from "./mcpValidation";
 import type {
   ClaudeAgentMcpServerConfig,
   CodexMcpServerEntry,
@@ -59,14 +60,6 @@ export interface CodexMcpOAuthCallbackConfig {
   readonly url?: string;
 }
 
-function normalizeMcpEntryName(value: string): string | undefined {
-  const normalized = normalizeOptionalString(value);
-  if (!normalized || normalized.length > 128) {
-    return undefined;
-  }
-  return normalized;
-}
-
 function normalizeCommonEntry(entry: McpServerDefinition): {
   readonly command?: string;
   readonly args?: string[];
@@ -90,9 +83,7 @@ function normalizeCommonEntry(entry: McpServerDefinition): {
     ...(normalizeOptionalString(entry.command)
       ? { command: normalizeOptionalString(entry.command)! }
       : {}),
-    ...(normalizeOptionalStringArray(entry.args)
-      ? { args: normalizeOptionalStringArray(entry.args)! }
-      : {}),
+    ...(entry.args !== undefined ? { args: [...entry.args] } : {}),
     ...(normalizeStringRecord(entry.env) ? { env: normalizeStringRecord(entry.env)! } : {}),
     ...(normalizeOptionalString(entry.cwd) ? { cwd: normalizeOptionalString(entry.cwd)! } : {}),
     ...(normalizeOptionalString(entry.url) ? { url: normalizeOptionalString(entry.url)! } : {}),
@@ -144,7 +135,7 @@ function toEntries(servers: McpProjectServersConfig | null | undefined): McpServ
   }
   return Object.entries(servers)
     .map(([name, definition]) => {
-      const normalizedName = normalizeMcpEntryName(name);
+      const normalizedName = normalizeServerName(name);
       if (!normalizedName || !definition || typeof definition !== "object") {
         return null;
       }
@@ -164,7 +155,7 @@ export function filterEnabledMcpServers(
 export function translateMcpForClaudeAgent(
   servers: McpProjectServersConfig | null | undefined,
 ): Record<string, ClaudeAgentMcpServerConfig> | undefined {
-  const translated: Record<string, ClaudeAgentMcpServerConfig> = {};
+  const translated = Object.create(null) as Record<string, ClaudeAgentMcpServerConfig>;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
     const normalized = normalizeCommonEntry(definition);
     if (definition.type === "stdio") {
@@ -190,13 +181,13 @@ export function translateMcpForClaudeAgent(
     };
   }
 
-  return Object.keys(translated).length > 0 ? translated : undefined;
+  return Object.keys(translated).length > 0 ? { ...translated } : undefined;
 }
 
 export function translateMcpForCodex(
   servers: McpProjectServersConfig | null | undefined,
 ): Record<string, CodexMcpServerEntry> | undefined {
-  const translated: Record<string, CodexMcpServerEntry> = {};
+  const translated = Object.create(null) as Record<string, CodexMcpServerEntry>;
   for (const [name, definition] of Object.entries(filterEnabledMcpServers(servers))) {
     const normalized = normalizeCommonEntry(definition);
     const shared = {
@@ -251,7 +242,7 @@ export function translateMcpForCodex(
     };
   }
 
-  return Object.keys(translated).length > 0 ? translated : undefined;
+  return Object.keys(translated).length > 0 ? { ...translated } : undefined;
 }
 
 export function readCodexMcpOAuthCallbackPort(

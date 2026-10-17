@@ -490,7 +490,7 @@ describe("McpServersSettings", () => {
           projectId: PROJECT_ID,
           expectedVersion: "project-v1",
           servers: {
-            "project-server": { type: "stdio", command: "updated-command", enabled: true },
+            "project-server": { type: "stdio", command: "updated-command" },
           },
         });
       });
@@ -581,7 +581,7 @@ describe("McpServersSettings", () => {
           projectId: PROJECT_ID,
           expectedVersion: "project-v1",
           servers: {
-            "renamed-server": { type: "stdio", command: "project-command", enabled: true },
+            "renamed-server": { type: "stdio", command: "project-command" },
             untouched: otherServer,
           },
         });
@@ -629,7 +629,6 @@ describe("McpServersSettings", () => {
             "renamed-server": {
               type: "stdio",
               command: "retry-command",
-              enabled: true,
               startupTimeoutSec: 30,
             },
           },
@@ -728,7 +727,101 @@ describe("McpServersSettings", () => {
     }
   });
 
-  it("characterizes known import overflow truncation without an error (Phase 1a fix)", async () => {
+  it("preserves all entries while editing, toggling, removing, and importing in an oversized legacy layer", async () => {
+    const mocks = createNativeApiMock();
+    const servers = Object.fromEntries(
+      Array.from({ length: 18 }, (_, i) => [
+        `legacy-${String(i).padStart(2, "0")}`,
+        { type: "stdio" as const, command: "node", args: ["", "  spaces  "] },
+      ]),
+    );
+    mocks.getProjectConfig.mockResolvedValue({ ...projectConfig, servers });
+    const { screen, queryClient } = await renderSettings();
+    try {
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("Project servers (18/16)"),
+      );
+      await page.getByRole("button", { name: "Edit", exact: true }).last().click();
+      await page.getByRole("textbox", { name: "Command", exact: true }).fill("updated");
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await vi.waitFor(() =>
+        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            servers: { ...servers, "legacy-17": { ...servers["legacy-17"], command: "updated" } },
+          }),
+        ),
+      );
+      await page.getByRole("switch", { name: "Enable MCP server legacy-17", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            servers: {
+              ...servers,
+              "legacy-17": { ...servers["legacy-17"], command: "updated", enabled: false },
+            },
+          }),
+        ),
+      );
+      await page.getByRole("button", { name: "Remove", exact: true }).last().click();
+      const remaining = { ...servers };
+      delete remaining["legacy-17"];
+      await vi.waitFor(() =>
+        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+          expect.objectContaining({ servers: remaining }),
+        ),
+      );
+      const importInput = page.getByPlaceholder(
+        '{"mcpServers":{"filesystem":{"type":"stdio","command":"npx","args":["@modelcontextprotocol/server-filesystem"]}}}',
+      );
+      await importInput.fill(
+        JSON.stringify({ mcpServers: { "legacy-16": { command: "imported", args: [] } } }),
+      );
+      await page.getByRole("button", { name: "Import", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            servers: {
+              ...remaining,
+              "legacy-16": { type: "stdio", command: "imported", args: [] },
+            },
+          }),
+        ),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("saves explicit disabled parallel tool calls", async () => {
+    const mocks = createNativeApiMock();
+    const { screen, queryClient } = await renderSettings();
+    try {
+      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await page.getByRole("button", { name: /Codex-only options/ }).click();
+      await page
+        .getByRole("combobox", { name: "Supports parallel tool calls" })
+        .selectOptions("disabled");
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await vi.waitFor(() =>
+        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            servers: {
+              "project-server": {
+                ...projectConfig.servers["project-server"],
+                supportsParallelToolCalls: false,
+              },
+            },
+          }),
+        ),
+      );
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("rejects import overflow without saving or clearing pasted text", async () => {
     const mocks = createNativeApiMock();
     const existingServers = {
       ...projectConfig.servers,
@@ -756,15 +849,13 @@ describe("McpServersSettings", () => {
       );
       await page.getByRole("button", { name: "Import", exact: true }).click();
       await vi.waitFor(() => {
-        expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith({
-          projectId: PROJECT_ID,
-          expectedVersion: "project-v1",
-          servers: { ...existingServers, first: { type: "stdio", command: "first-command" } },
-        });
-        expect(document.body.textContent).toContain("Project servers (16/16)");
+        expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain(
+          "You can save at most 16 MCP servers per scope.",
+        );
+        expect(document.body.textContent).toContain("Project servers (15/16)");
       });
-      expect(document.body.textContent).not.toContain("Import would exceed");
-      await expect.element(importInput).toHaveValue("");
+      await expect.element(importInput).not.toHaveValue("");
     } finally {
       queryClient.clear();
       await screen.unmount();

@@ -1,3 +1,5 @@
+import { assertMcpRuntimeConfig } from "@t3tools/shared/mcpValidation";
+import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation";
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readProjectSettings } from "../../project/projectSettings";
@@ -769,6 +771,23 @@ const make = Effect.gen(function* () {
         (project) => project.id === thread.projectId && project.deletedAt === null,
       );
 
+      const currentProjectMcpSnapshot = project
+        ? yield* projectMcpConfigService.readEffectiveStoredConfig(project.id)
+        : undefined;
+      yield* Effect.try({
+        try: () => {
+          assertMcpRuntimeConfig(effectiveStartConfig.providerOptions?.mcpServers);
+          assertMcpRuntimeConfig(currentProjectMcpSnapshot?.servers);
+          if ((preferredProvider ?? currentProvider) === "codex")
+            readCodexMcpOAuthCallbackConfig(
+              currentProjectMcpSnapshot?.servers ??
+                effectiveStartConfig.providerOptions?.mcpServers,
+            );
+        },
+        catch: (cause) =>
+          new ProjectMcpConfigServiceError({ code: "validation", message: String(cause) }),
+      });
+
       const resolveActiveSession = (threadId: ThreadId) =>
         providerService
           .listSessions()
@@ -995,18 +1014,7 @@ const make = Effect.gen(function* () {
           currentProvider !== undefined &&
           effectiveStartConfig.providerOptionsSource === "command" &&
           !areProviderStartOptionsEqual(previousProviderOptions, requestedProviderOptions);
-        const currentProjectMcpVersion = project
-          ? yield* projectMcpConfigService.readEffectiveStoredConfig(project.id).pipe(
-              Effect.map((config) => config.effectiveVersion),
-              Effect.catch((error) =>
-                Effect.logWarning("provider command reactor could not read project MCP config", {
-                  threadId,
-                  projectId: project.id,
-                  detail: error.message,
-                }).pipe(Effect.as(null)),
-              ),
-            )
-          : null;
+        const currentProjectMcpVersion = currentProjectMcpSnapshot?.effectiveVersion ?? null;
         const shouldRestartForProjectMcpChange =
           currentProvider !== undefined &&
           (persistedBinding?.mcpEffectiveConfigVersion ?? null) !== currentProjectMcpVersion;
@@ -2161,6 +2169,21 @@ const make = Effect.gen(function* () {
           }
 
           const effectiveConfig = yield* readEffectiveConfigForProject(binding.projectId);
+          if (binding.provider === "codex") {
+            const compatibility = yield* Effect.try({
+              try: () => readCodexMcpOAuthCallbackConfig(effectiveConfig.servers),
+              catch: (cause) => String(cause),
+            }).pipe(Effect.result);
+            if (compatibility._tag === "Failure") {
+              recordFailure(binding.threadId, "codex", {
+                converged: false,
+                restartRequired: false,
+                servers: [],
+                errors: [{ message: compatibility.failure }],
+              });
+              continue;
+            }
+          }
           // A session whose last reload of this version did not converge is
           // retried: the user may have fixed the server since.
           if (
