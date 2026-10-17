@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { ComputerBackendSelection } from "./computerAutomation";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
@@ -47,7 +48,7 @@ export const ProviderSession = Schema.Struct({
   providerInstanceId: Schema.optional(ProviderInstanceId),
   status: ProviderSessionStatus,
   runtimeMode: RuntimeMode,
-  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  cwd: Schema.optional(FilesystemPath),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   threadId: ThreadId,
   resumeCursor: Schema.optional(Schema.Unknown),
@@ -69,7 +70,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   projectId: Schema.optional(ProjectId),
   provider: Schema.optional(ProviderKind),
   providerInstanceId: Schema.optional(ProviderInstanceId),
-  cwd: Schema.optional(TrimmedNonEmptyStringSchema),
+  cwd: Schema.optional(FilesystemPath),
   projectTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   threadTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   turnCount: Schema.optional(NonNegativeInt),

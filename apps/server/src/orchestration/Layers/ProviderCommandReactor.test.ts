@@ -1,3 +1,5 @@
+import { makeFakeGitCore } from "../../git/testDoubles.ts";
+import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import { makeProviderServiceLive } from "../../provider/Layers/ProviderService";
 import { makeCursorAdapter } from "../../provider/Layers/CursorAdapter";
 import { ProviderAdapterRegistry } from "../../provider/Services/ProviderAdapterRegistry";
@@ -426,6 +428,7 @@ describe("ProviderCommandReactor", () => {
     const ensureWorktree = vi.fn<GitCoreShape["ensureWorktree"]>((input) =>
       Effect.sync(() => {
         fs.mkdirSync(input.path, { recursive: true });
+        return { recreated: true };
       }),
     );
     const renameBranch = vi.fn((input: unknown) =>
@@ -550,7 +553,55 @@ describe("ProviderCommandReactor", () => {
         )
       : Layer.empty;
 
+    let readWorkspaceModel: OrchestrationEngineShape["getReadModel"] = () =>
+      Effect.die("workspace model not ready");
+    const workspaceGit = makeFakeGitCore({
+      renameBranch,
+      ensureWorktree,
+      resolveCommonDir: () => Effect.promise(() => canonicalWorktreePath(workspaceRoot)),
+      listWorktrees: () =>
+        Effect.gen(function* () {
+          const model = yield* readWorkspaceModel();
+          return yield* Effect.forEach(
+            model.threads.filter((thread) => thread.worktreePath),
+            (thread) =>
+              Effect.promise(async () => ({
+                path: thread.worktreePath!,
+                canonicalPath: await canonicalWorktreePath(thread.worktreePath!),
+                headSha: "abc",
+                branch: thread.branch,
+                bare: false,
+                detached: false,
+                locked: null,
+                prunable: null,
+                isMain: false,
+              })),
+          );
+        }),
+      inspectCheckout: (cwd) =>
+        Effect.gen(function* () {
+          const model = yield* readWorkspaceModel();
+          const thread = model.threads.find((thread) => thread.worktreePath === cwd);
+          return {
+            canonicalRoot: yield* Effect.promise(() => canonicalWorktreePath(cwd)),
+            commonDir: yield* Effect.promise(() => canonicalWorktreePath(workspaceRoot)),
+            registration: null,
+            headSha: "abc",
+            branch: thread?.branch ?? null,
+            operation: null,
+            hasTrackedChanges: false,
+            hasUntrackedChanges: false,
+            ignoredEntries: [],
+            ignoredTruncated: false,
+            upstreamRef: null,
+            upstreamSha: null,
+            aheadCount: null,
+          };
+        }),
+    }).service;
+    const workspaceGitLayer = Layer.succeed(GitCore, workspaceGit);
     const orchestrationLayer = OrchestrationEngineLive.pipe(
+      Layer.provide(workspaceGitLayer),
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
       Layer.provide(OrchestrationEventStoreLive),
@@ -641,9 +692,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(projectMcpLayer),
       Layer.provideMerge(providerLayer),
       Layer.provideMerge(Layer.succeed(ProviderSessionDirectory, providerSessionDirectory)),
-      Layer.provideMerge(
-        Layer.succeed(GitCore, { renameBranch, ensureWorktree } as unknown as GitCoreShape),
-      ),
+      Layer.provideMerge(workspaceGitLayer),
       Layer.provideMerge(
         Layer.succeed(TextGeneration, {
           generateBranchName,
@@ -657,6 +706,7 @@ describe("ProviderCommandReactor", () => {
     const runtime = ManagedRuntime.make(layer);
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+    readWorkspaceModel = engine.getReadModel;
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     if (input?.orphanedTitleRegenerationBeforeStart) {
       await Effect.runPromise(
@@ -3230,7 +3280,10 @@ describe("ProviderCommandReactor", () => {
           createdAt: now,
         },
         orchestrationEngine: harness.engine,
+        rollbackWorktree: () => Effect.die("unexpected rollback"),
         git: {
+          resolveCommit: () => Effect.die("unexpected resolve"),
+          resolveCommonDir: () => Effect.die("unexpected resolve"),
           createWorktree: () => Effect.die("unexpected worktree creation"),
           fetchRemoteBranchCommit: () => Effect.die("unexpected remote base fetch"),
           hasRemote: () => Effect.die("unexpected remote probe"),

@@ -27,6 +27,10 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Worktree safety Release 1 uses version 23 (the preceding version was 22). It adds
+`worktrees.inspect`, `worktrees.remove`, `worktrees.threadState`, and `worktrees.recover`,
+removes public force removal, and preserves filesystem paths without trimming.
+
 The authenticated `GET /api/bootstrap` response and WebSocket welcome advertise
 current capabilities, upload support, and global send limits. Today
 image attachments retain the existing eight-image, 10 MiB/image and 120,000-character

@@ -103,6 +103,12 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
     const core = await Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(coreLayer)));
 
     return {
+      listWorktrees: (cwd) => core.listWorktrees(cwd),
+      inspectCheckout: (path, options) => core.inspectCheckout(path, options),
+      clearMissingRegistration: (cwd, path) => core.clearMissingRegistration(cwd, path),
+      fastForwardTo: (cwd, sha) => core.fastForwardTo(cwd, sha),
+      initializeWorktreeSubmodules: (path, policy) =>
+        core.initializeWorktreeSubmodules(path, policy),
       ensureWorktree: (input) => core.ensureWorktree(input),
       branchExists: (cwd, branch) => core.branchExists(cwd, branch),
       status: (input) => core.status(input),
@@ -520,6 +526,88 @@ it.layer(TestLayer)("git integration", (it) => {
         expect((yield* core.pushCurrentBranch(cwd, null).pipe(Effect.result))._tag).toBe("Failure");
         yield* fs.remove(lockPath);
         expect((yield* core.statusDetails(cwd)).hasWorkingTreeChanges).toBe(true);
+      }),
+    );
+
+    it.effect("preserves whitespace paths and verifies the exact checkout identity", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const core = yield* GitCore;
+        const target = path.join(cwd, "linked space \n");
+        yield* core.createWorktree({
+          cwd,
+          branch: initialBranch,
+          newBranch: "lossless",
+          path: target,
+        });
+        const entry = (yield* core.listWorktrees(cwd)).find((entry) => entry.branch === "lossless");
+        expect(entry?.path).toBe(yield* (yield* FileSystem.FileSystem).realPath(target));
+        expect((yield* core.inspectCheckout(target)).canonicalRoot).toBe(entry?.canonicalPath);
+        expect(yield* core.ensureWorktree({ cwd, path: target, branch: "lossless" })).toEqual({
+          recreated: false,
+        });
+        expect(
+          (yield* core
+            .ensureWorktree({ cwd, path: target, branch: initialBranch })
+            .pipe(Effect.exit))._tag,
+        ).toBe("Failure");
+        const plain = path.join(cwd, "ordinary");
+        yield* (yield* FileSystem.FileSystem).makeDirectory(plain);
+        expect(
+          (yield* core.ensureWorktree({ cwd, path: plain, branch: "lossless" }).pipe(Effect.exit))
+            ._tag,
+        ).toBe("Failure");
+        const other = yield* makeTmpDir();
+        yield* initRepoWithCommit(other);
+        expect(
+          (yield* core
+            .ensureWorktree({ cwd: other, path: target, branch: "lossless" })
+            .pipe(Effect.exit))._tag,
+        ).toBe("Failure");
+        yield* core.removeWorktree({ cwd, path: target });
+      }),
+    );
+
+    it.effect("recreates only managed missing checkouts and refuses ignored secrets", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const core = yield* GitCore;
+        const created = yield* core.createWorktree({
+          cwd,
+          branch: initialBranch,
+          newBranch: "recreate-safe",
+          path: null,
+        });
+        const target = created.worktree.path;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(target, { recursive: true });
+        expect(
+          yield* core.ensureWorktree({
+            cwd,
+            path: target,
+            branch: "recreate-safe",
+            submodules: "none",
+          }),
+        ).toEqual({ recreated: true });
+        yield* writeTextFile(path.join(cwd, ".git", "info", "exclude"), ".env\nnode_modules/\n");
+        yield* writeTextFile(path.join(target, ".env"), "LOCAL=secret\n");
+        expect(
+          (yield* core.removeWorktree({ cwd, path: target, force: true }).pipe(Effect.exit))._tag,
+        ).toBe("Failure");
+        expect(yield* fs.exists(path.join(target, ".env"))).toBe(true);
+        yield* fs.remove(path.join(target, ".env"));
+        yield* core.removeWorktree({ cwd, path: target });
+        expect(
+          (yield* core
+            .ensureWorktree({
+              cwd,
+              path: path.join(cwd, "outside-managed"),
+              branch: "recreate-safe",
+            })
+            .pipe(Effect.exit))._tag,
+        ).toBe("Failure");
       }),
     );
 
@@ -1656,33 +1744,37 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
-    it.effect("removeGitWorktree force removes a dirty worktree", () =>
-      Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+    it.effect(
+      "refuses dirty worktree removal even through the internal compatibility force input",
+      () =>
+        Effect.gen(function* () {
+          const tmp = yield* makeTmpDir();
+          yield* initRepoWithCommit(tmp);
 
-        const wtPath = path.join(tmp, "wt-dirty-dir");
-        const currentBranch = (yield* listGitBranches({ cwd: tmp })).branches.find(
-          (b) => b.current,
-        )!.name;
+          const wtPath = path.join(tmp, "wt-dirty-dir");
+          const currentBranch = (yield* listGitBranches({ cwd: tmp })).branches.find(
+            (b) => b.current,
+          )!.name;
 
-        yield* createGitWorktree({
-          cwd: tmp,
-          branch: currentBranch,
-          newBranch: "wt-dirty",
-          path: wtPath,
-        });
-        expect(existsSync(wtPath)).toBe(true);
+          yield* createGitWorktree({
+            cwd: tmp,
+            branch: currentBranch,
+            newBranch: "wt-dirty",
+            path: wtPath,
+          });
+          expect(existsSync(wtPath)).toBe(true);
 
-        yield* writeTextFile(path.join(wtPath, "README.md"), "dirty change\n");
+          yield* writeTextFile(path.join(wtPath, "README.md"), "dirty change\n");
 
-        const failedRemove = yield* Effect.result(removeGitWorktree({ cwd: tmp, path: wtPath }));
-        expect(failedRemove._tag).toBe("Failure");
-        expect(existsSync(wtPath)).toBe(true);
+          const failedRemove = yield* Effect.result(removeGitWorktree({ cwd: tmp, path: wtPath }));
+          expect(failedRemove._tag).toBe("Failure");
+          expect(existsSync(wtPath)).toBe(true);
 
-        yield* removeGitWorktree({ cwd: tmp, path: wtPath, force: true });
-        expect(existsSync(wtPath)).toBe(false);
-      }),
+          expect(
+            (yield* Effect.result(removeGitWorktree({ cwd: tmp, path: wtPath, force: true })))._tag,
+          ).toBe("Failure");
+          expect(existsSync(wtPath)).toBe(true);
+        }),
     );
   });
 
@@ -2311,7 +2403,7 @@ it.layer(TestLayer)("git integration", (it) => {
         }
         const message = removeResult.failure.message;
         expect(message).toContain("git worktree remove");
-        expect(message).toContain(`cwd: ${tmp}`);
+        expect(message).toContain(tmp);
         expect(message).toContain(missingWorktreePath);
       }),
     );

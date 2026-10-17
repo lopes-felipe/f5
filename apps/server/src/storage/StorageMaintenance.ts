@@ -1,3 +1,12 @@
+import {
+  evaluateWorktreeRemoval,
+  removeWorktreeSafely,
+  readWorktreeClaims,
+  stopDeletedWorktreeClaims,
+} from "../project/worktreeClaims.ts";
+import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import { TerminalManager } from "../terminal/Services/Manager.ts";
+import { stripPathTerminator } from "../git/worktreeList.ts";
 import { withAttachmentRetentionLease } from "./attachmentRetention.ts";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs/promises";
@@ -72,8 +81,6 @@ export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
 const TYPED_CONFIRM_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 const WORKTREE_SCAN_MAX_DEPTH = 4;
 const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
-const LEGACY_WORKTREE_DIRECT_DELETE_DETAIL =
-  "Git metadata is missing; directory will be deleted directly.";
 
 export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMaintenanceError>()(
   "StorageMaintenanceError",
@@ -550,7 +557,7 @@ async function resolveWorktreeRemoveCwd(targetPath: string): Promise<string | nu
   }
 
   const gitFile = await FS.readFile(gitPath, "utf8");
-  const match = /^gitdir:\s*(.+)\s*$/m.exec(gitFile);
+  const match = /^gitdir: ([\s\S]+)$/.exec(stripPathTerminator(gitFile));
   if (!match) {
     return null;
   }
@@ -558,7 +565,7 @@ async function resolveWorktreeRemoveCwd(targetPath: string): Promise<string | nu
   const gitDir = Path.resolve(targetPath, match[1]!);
   const commonDirFile = Path.join(gitDir, "commondir");
   const commonDir = (await safeLstat(commonDirFile))?.isFile()
-    ? Path.resolve(gitDir, (await FS.readFile(commonDirFile, "utf8")).trim())
+    ? Path.resolve(gitDir, stripPathTerminator(await FS.readFile(commonDirFile, "utf8")))
     : Path.dirname(Path.dirname(gitDir));
   if (Path.basename(commonDir) !== ".git") {
     return null;
@@ -586,6 +593,14 @@ async function loadStatfs(): Promise<
 }
 
 const makeStorageMaintenance = Effect.gen(function* () {
+  const removalServices = yield* Effect.services<
+    | GitCore
+    | ServerConfig
+    | OrchestrationEngineService
+    | ProviderService
+    | TerminalManager
+    | NextTurnQueueStore
+  >();
   const sql = yield* SqlClient.SqlClient;
   const config = yield* ServerConfig;
   const engine = yield* OrchestrationEngineService;
@@ -661,29 +676,21 @@ const makeStorageMaintenance = Effect.gen(function* () {
         };
       }
 
-      const statusExit = yield* Effect.exit(git.status({ cwd: input.targetPath }));
-      if (Exit.isFailure(statusExit)) {
-        warnings.push(warningFor(input.targetPath, Cause.pretty(statusExit.cause)));
+      const gate = yield* evaluateWorktreeRemoval({
+        projectCwd: commandCwd,
+        path: input.targetPath,
+        policy: {
+          kind: input.metadataOperation.includes("legacy") ? "legacyCleanup" : "storageMaintenance",
+          ownThreadId: null,
+        },
+      }).pipe(Effect.provideServices(removalServices));
+      if (gate.blockedReasons.length)
         return {
           commandCwd,
-          disabledReason: "Git status could not be read.",
+          disabledReason:
+            gate.blockedReasons.join("; ") || "Deleted thread processes must be stopped first.",
           warnings,
         };
-      }
-      if (statusExit.value.hasWorkingTreeChanges) {
-        return {
-          commandCwd,
-          disabledReason: "Worktree has uncommitted changes.",
-          warnings,
-        };
-      }
-      if (statusExit.value.aheadCount > 0) {
-        return {
-          commandCwd,
-          disabledReason: "Worktree has unpushed commits.",
-          warnings,
-        };
-      }
 
       return {
         commandCwd,
@@ -1205,13 +1212,6 @@ const makeStorageMaintenance = Effect.gen(function* () {
           metadataOperation: "StorageMaintenance.inspect.legacyT3Worktrees.cwd",
           metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
         });
-        if (readiness.disabledReason === GIT_WORKTREE_METADATA_UNRESOLVED) {
-          enrichedTargets.push({
-            ...target,
-            detail: LEGACY_WORKTREE_DIRECT_DELETE_DETAIL,
-          });
-          continue;
-        }
         warnings.push(...readiness.warnings);
         enrichedTargets.push(
           readiness.disabledReason
@@ -2383,71 +2383,6 @@ const makeStorageMaintenance = Effect.gen(function* () {
       return { deletedThreadIds, warnings };
     });
 
-  const clearArchivedWorktreeReferences = (
-    request: StorageCleanupRequest,
-    context: StorageCleanupContext | undefined,
-    category: StorageCleanupCategoryUsage | undefined,
-    selectedTargetIds: ReadonlySet<string> | undefined,
-  ) =>
-    Effect.gen(function* () {
-      const warnings: StoragePathWarning[] = [];
-      if (!category || !selectedTargetIds || selectedTargetIds.size === 0) {
-        return warnings;
-      }
-
-      const selectedTargets = category.targets.filter(
-        (target) => selectedTargetIds.has(target.id) && target.safeToDelete && target.path,
-      );
-      const allThreads = yield* queryThreadRows();
-      let completedTargets = 0;
-      for (const target of selectedTargets) {
-        const targetPath = target.path;
-        if (!targetPath || checkCancelled(request.operationId)) {
-          break;
-        }
-        yield* publishProgress(request, context, {
-          categoryId: "inactiveF5Worktrees",
-          phase: "unlinking",
-          message: `Clearing archived references for ${target.label}`,
-          completedTargets,
-          totalTargets: selectedTargets.length,
-        });
-
-        const archivedReferences = allThreads.filter(
-          (thread) =>
-            thread.deletedAt === null &&
-            thread.archivedAt !== null &&
-            thread.worktreePath !== null &&
-            pathsOverlap(targetPath, thread.worktreePath),
-        );
-        for (const thread of archivedReferences) {
-          const clearExit = yield* Effect.exit(
-            engine.dispatch({
-              type: "thread.meta.update",
-              commandId: CommandId.makeUnsafe(
-                `server:storage-worktree-clear:${Crypto.randomUUID()}`,
-              ),
-              threadId: thread.threadId,
-              worktreePath: null,
-              expectedArchivedAt: thread.archivedAt!,
-              expectedWorktreePath: thread.worktreePath,
-            }),
-          );
-          if (Exit.isFailure(clearExit)) {
-            warnings.push(
-              warningFor(
-                targetPath,
-                `Skipped reference clear for ${thread.threadId}: ${Cause.pretty(clearExit.cause)}`,
-              ),
-            );
-          }
-        }
-        completedTargets += 1;
-      }
-
-      return warnings;
-    });
-
   const cleanF5Worktrees = (
     request: StorageCleanupRequest,
     context: StorageCleanupContext | undefined,
@@ -2531,28 +2466,32 @@ const makeStorageMaintenance = Effect.gen(function* () {
         // The reference re-check and the removal run under the worktree
         // lifecycle lock, so a send, terminal open or recreation that claims
         // the path meanwhile is seen before anything is removed.
+        const before = yield* Effect.tryPromise({
+          try: () => recursiveSize(targetPath),
+          catch: (cause) =>
+            new StorageMaintenanceError({
+              operation: "StorageMaintenance.cleanup.inactiveF5Worktrees.size",
+              message: "Failed to size F5 worktree before deletion.",
+              cause,
+            }),
+        });
+        const claims = yield* readWorktreeClaims(targetPath).pipe(
+          Effect.provideServices(removalServices),
+        );
+        yield* stopDeletedWorktreeClaims(claims.deletedThreadIds).pipe(
+          Effect.provideServices(removalServices),
+          Effect.mapError(
+            (cause) =>
+              new StorageMaintenanceError({
+                operation: "stopDeletedClaims",
+                message: "Could not stop deleted conversation processes.",
+                cause,
+              }),
+          ),
+        );
         const outcome = yield* withWorktreeLifecycleLock(
           targetPath,
           Effect.gen(function* () {
-            const allThreads = yield* queryThreadRows();
-            const remainingReferences = allThreads.filter(
-              (thread) =>
-                thread.deletedAt === null &&
-                thread.worktreePath !== null &&
-                pathsOverlap(targetPath, thread.worktreePath),
-            );
-            if (remainingReferences.length > 0) {
-              return {
-                kind: "skipped" as const,
-                warnings: [
-                  warningFor(
-                    targetPath,
-                    "Skipped because a thread still references this worktree.",
-                  ),
-                ],
-              };
-            }
-
             const readiness = yield* inspectWorktreeRemovalReadiness({
               targetPath,
               metadataOperation: "StorageMaintenance.cleanup.inactiveF5Worktrees.cwd",
@@ -2571,21 +2510,19 @@ const makeStorageMaintenance = Effect.gen(function* () {
               };
             }
 
-            const before = yield* Effect.tryPromise({
-              try: () => recursiveSize(targetPath),
-              catch: (cause) =>
-                new StorageMaintenanceError({
-                  operation: "StorageMaintenance.cleanup.inactiveF5Worktrees.size",
-                  message: "Failed to size F5 worktree before deletion.",
-                  cause,
-                }),
-            });
             const removeExit = yield* Effect.exit(
-              git.removeWorktree({
-                cwd: readiness.commandCwd,
+              removeWorktreeSafely({
+                projectCwd: readiness.commandCwd,
                 path: targetPath,
-                force: false,
-              }),
+                policy: { kind: "storageMaintenance", ownThreadId: null },
+              }).pipe(
+                Effect.provideServices(removalServices),
+                Effect.flatMap((result) =>
+                  result.blockedReasons.length
+                    ? Effect.fail(new Error(result.blockedReasons.join("; ")))
+                    : Effect.void,
+                ),
+              ),
             );
             if (Exit.isFailure(removeExit)) {
               return {
@@ -2967,11 +2904,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
             metadataOperation: "StorageMaintenance.cleanup.legacyT3Worktrees.cwd",
             metadataDisabledReason: GIT_WORKTREE_METADATA_UNRESOLVED,
           });
-          const removeDirectly = readiness.disabledReason === GIT_WORKTREE_METADATA_UNRESOLVED;
-          if (!removeDirectly) {
-            warnings.push(...readiness.warnings);
-          }
-          if (!removeDirectly && (readiness.disabledReason || !readiness.commandCwd)) {
+          warnings.push(...readiness.warnings);
+          if (readiness.disabledReason || !readiness.commandCwd) {
             warnings.push(
               warningFor(targetPath, readiness.disabledReason ?? GIT_WORKTREE_METADATA_UNRESOLVED),
             );
@@ -2987,46 +2921,39 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 cause,
               }),
           });
-          if (removeDirectly) {
-            const deletion = yield* Effect.tryPromise({
-              try: () =>
-                removeTreeIfSafe({
-                  path: targetPath,
-                  allowedRoot,
-                  recursive: true,
-                }),
-              catch: (cause) =>
-                new StorageMaintenanceError({
-                  operation: "StorageMaintenance.cleanup.legacyT3Worktrees.directDelete",
-                  message: "Failed to delete legacy worktree directory.",
-                  cause,
-                }),
-            });
-            if (deletion.warning) {
-              warnings.push(deletion.warning);
-            } else {
-              perTargetReclaimed.push({
-                id: target.id,
-                path: targetPath,
-                reclaimedBytes: before.bytes,
-              });
-            }
-            completedTargets += 1;
-            continue;
-          }
-
           const commandCwd = readiness.commandCwd;
           if (!commandCwd) {
             warnings.push(warningFor(targetPath, GIT_WORKTREE_METADATA_UNRESOLVED));
             completedTargets += 1;
             continue;
           }
+          const claims = yield* readWorktreeClaims(targetPath).pipe(
+            Effect.provideServices(removalServices),
+          );
+          yield* stopDeletedWorktreeClaims(claims.deletedThreadIds).pipe(
+            Effect.provideServices(removalServices),
+            Effect.mapError(
+              (cause) =>
+                new StorageMaintenanceError({
+                  operation: "stopDeletedClaims",
+                  message: "Could not stop deleted conversation processes.",
+                  cause,
+                }),
+            ),
+          );
           const exit = yield* Effect.exit(
-            git.removeWorktree({
-              cwd: commandCwd,
+            removeWorktreeSafely({
+              projectCwd: commandCwd,
               path: targetPath,
-              force: false,
-            }),
+              policy: { kind: "legacyCleanup", ownThreadId: null },
+            }).pipe(
+              Effect.provideServices(removalServices),
+              Effect.flatMap((result) =>
+                result.blockedReasons.length
+                  ? Effect.fail(new Error(result.blockedReasons.join("; ")))
+                  : Effect.void,
+              ),
+            ),
           );
           if (Exit.isFailure(exit)) {
             warnings.push(
@@ -3101,14 +3028,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
             new Date(Date.now() - ARCHIVED_THREAD_RETENTION_MS).toISOString(),
           )
         : { deletedThreadIds: [] as ThreadId[], warnings: [] as StoragePathWarning[] };
-      const f5WorktreeReferenceWarnings = categoryIds.includes("inactiveF5Worktrees")
-        ? yield* clearArchivedWorktreeReferences(
-            request,
-            context,
-            requestedCategoryById.get("inactiveF5Worktrees"),
-            targetSelections.get("inactiveF5Worktrees"),
-          )
-        : [];
+      const f5WorktreeReferenceWarnings: StoragePathWarning[] = [];
       const lockScope = yield* engine.acquireMaintenanceLock();
       activeOperationId = request.operationId;
       return yield* Effect.gen(function* () {

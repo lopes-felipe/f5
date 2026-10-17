@@ -1,39 +1,19 @@
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
+import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
+import { Option } from "effect";
 import { GitCore } from "../../git/Services/GitCore.ts";
-/**
- * WorktreeStartupCleanup - Clear stale `worktreePath` projections at startup.
- *
- * Threads persist a `worktreePath` that the UI repeatedly polls for git
- * status. When a user removes that worktree directory outside of the app
- * (e.g. `rm -rf`), the projection keeps pointing at a missing path and every
- * polled git command spams the logs with ENOENT failures.
- *
- * This helper walks the read model once after the orchestration runtime is
- * ready, verifies each thread's `worktreePath` exists on disk, and dispatches
- * a `thread.meta.update` with `worktreePath: null` only when the branch is also gone.
- * Recoverable worktrees retain their path for recreation on the next send.
- * Running the cleanup through the orchestration engine (rather than mutating
- * the projection row directly) keeps the event log as the source of truth so
- * the projection remains reproducible via replay.
- *
- * @module WorktreeStartupCleanup
- */
+/** Preserve missing workspaces; only deleted projects lose their workspace reference. */
 import { CommandId } from "@t3tools/contracts";
 import { Cause, Effect, FileSystem } from "effect";
 
 import type { OrchestrationEngineShape } from "../Services/OrchestrationEngine.ts";
 
-/**
- * Clear a missing worktree path only when its branch is also gone.
- *
- * Safe to run once per process startup after the orchestration runtime is
- * ready. Errors dispatching individual updates are logged and swallowed so a
- * single failure does not abort the sweep.
- */
 export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup")(function* (
   orchestrationEngine: OrchestrationEngineShape,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const git = yield* GitCore;
+  const queue = yield* Effect.serviceOption(NextTurnQueueStore);
   const readModel = yield* orchestrationEngine.getReadModel();
 
   const candidates = readModel.threads.filter(
@@ -69,24 +49,44 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
         worktreePath,
         cause: probe.cause instanceof Error ? probe.cause.message : String(probe.cause),
       });
-      continue;
-    }
-    if (probe.exists) {
+      if (Option.isSome(queue))
+        yield* queue.value
+          .setPaused({
+            threadId: thread.id,
+            paused: true,
+            reasonCode: "worktree_missing",
+            detail: "The recorded workspace could not be inspected. Recover it before sending.",
+          })
+          .pipe(Effect.ignore);
       continue;
     }
 
     const project = readModel.projects.find((entry) => entry.id === thread.projectId);
-    if (project && !project.deletedAt && thread.branch) {
-      const branchExists = yield* git.branchExists(project.workspaceRoot, thread.branch).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("preserving missing worktree; branch probe failed", {
-            threadId: thread.id,
-            worktreePath,
-            error: String(error),
-          }).pipe(Effect.as(true)),
-        ),
-      );
-      if (branchExists) continue;
+    if (!project || project.deletedAt === null) {
+      const readiness = project
+        ? yield* assertWorktreeReady(
+            git,
+            { projectCwd: project.workspaceRoot, worktreePath, branch: thread.branch },
+            true,
+          ).pipe(Effect.exit)
+        : null;
+      if (readiness === null || readiness._tag === "Failure") {
+        if (Option.isSome(queue))
+          yield* queue.value
+            .setPaused({
+              threadId: thread.id,
+              paused: true,
+              reasonCode: "worktree_missing",
+              detail: "The recorded worktree requires recovery.",
+            })
+            .pipe(Effect.ignore);
+      }
+      if (!probe.exists || readiness === null || readiness._tag === "Failure")
+        yield* Effect.logInfo("preserving recorded worktree for recovery", {
+          threadId: thread.id,
+          worktreePath,
+        });
+      continue;
     }
 
     yield* Effect.logInfo("clearing stale worktree projection", {

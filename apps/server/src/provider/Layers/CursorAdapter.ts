@@ -554,7 +554,7 @@ export function makeCursorAdapter(
               issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
             });
           }
-          if (!input.cwd?.trim()) {
+          if (!input.cwd) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
@@ -562,7 +562,7 @@ export function makeCursorAdapter(
             });
           }
 
-          const cwd = nodePath.resolve(input.cwd.trim());
+          const cwd = nodePath.resolve(input.cwd);
           const cursorModelSelection = resolveCursorModelSelection({
             boundInstanceId,
             model: input.model,

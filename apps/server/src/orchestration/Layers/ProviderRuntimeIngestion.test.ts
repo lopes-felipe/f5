@@ -1080,7 +1080,7 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   it.each([true, false, "probe-error"] as const)(
-    "retains a missing worktree unless the branch is known to be gone: %s",
+    "retains a missing worktree for explicit recovery: %s",
     async (branchExists) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
@@ -1114,14 +1114,14 @@ describe("ProviderRuntimeIngestion", () => {
       );
       const model = await Effect.runPromise(harness.engine.getReadModel());
       expect(model.threads.find((thread) => thread.id === threadId)?.worktreePath).toBe(
-        branchExists ? missingPath : null,
+        missingPath,
       );
       expect(git.calls.branchExists).toHaveLength(1);
     },
   );
 
   it.each(["no-branch", "no-project", "deleted-project"] as const)(
-    "clears an unrecoverable missing worktree: %s",
+    "clears missing worktree references only for deleted projects: %s",
     async (scenario) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
@@ -1155,7 +1155,11 @@ describe("ProviderRuntimeIngestion", () => {
         ),
       );
       const updated = await Effect.runPromise(harness.engine.getReadModel());
-      expect(updated.threads.find((thread) => thread.id === threadId)?.worktreePath).toBeNull();
+      expect(updated.threads.find((thread) => thread.id === threadId)?.worktreePath).toBe(
+        scenario === "deleted-project"
+          ? null
+          : model.threads.find((thread) => thread.id === threadId)?.worktreePath,
+      );
       expect(git.calls.branchExists).toHaveLength(0);
     },
   );

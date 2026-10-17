@@ -1,3 +1,4 @@
+import { WorktreeManagerLive } from "./project/Layers/WorktreeManager.ts";
 import {
   ComputerAutomationBroker,
   ComputerAutomationBrokerLive,
@@ -238,6 +239,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
       recordTerminalEvent: providerTerminalEventRepository.record,
     }).pipe(
+      Layer.provide(makeServerGitLayers().gitLayer),
       Layer.provide(adapterRegistryLayer),
       Layer.provide(providerRegistryLayer),
       Layer.provide(serverSettingsLayer),
@@ -365,6 +367,7 @@ export function makeServerOrchestrationRuntimeLayer() {
   const usageServiceLayer = UsageServiceLive.pipe(Layer.provide(ServerSecretStoreLive));
   const { gitLayer, checkpointDiffQueryLayer } = makeServerGitLayers();
   const orchestrationLayer = OrchestrationEngineLive.pipe(
+    Layer.provideMerge(gitLayer),
     Layer.provide(NextTurnQueueStoreLive),
     Layer.provide(projectionSnapshotQueryLayer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -474,6 +477,11 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(nextTurnQueueDispatcherLayer),
     Layer.provideMerge(gitLayer),
   );
+  const worktreeManagerLayer = WorktreeManagerLive.pipe(
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(worktreeSetupGateLayer),
+    Layer.provideMerge(gitLayer),
+  );
   const storageCleanupWorkerLayer = StorageCleanupWorkerLive.pipe(
     Layer.provideMerge(nextTurnQueueDispatcherLayer),
     Layer.provideMerge(gitLayer),
@@ -497,6 +505,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     providerTurnDeliveryWorkerLayer,
     worktreeSetupLayer,
     storageCleanupWorkerLayer,
+    worktreeManagerLayer,
     defaultBranchAutoPullLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

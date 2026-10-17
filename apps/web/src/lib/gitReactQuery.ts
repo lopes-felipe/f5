@@ -188,10 +188,10 @@ export function gitPullMutationOptions(input: { cwd: string | null; queryClient:
 
 export function gitRemoveWorktreeMutationOptions(input: { queryClient: QueryClient }) {
   return mutationOptions({
-    mutationFn: async ({ cwd, path, force }: { cwd: string; path: string; force?: boolean }) => {
+    mutationFn: async ({ cwd, path }: { cwd: string; path: string }) => {
       const api = ensureNativeApi();
       if (!cwd) throw new Error("Git worktree removal is unavailable.");
-      return api.git.removeWorktree({ cwd, path, force });
+      return api.git.removeWorktree({ cwd, path });
     },
     mutationKey: ["git", "mutation", "remove-worktree"] as const,
     onSettled: async (_data, _error, variables) => {

@@ -1,5 +1,12 @@
 import { Schema } from "effect";
 
+/** A filesystem path is opaque: never trim whitespace or accept NUL. */
+export const FilesystemPath = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isPattern(/^[^\0]+$/),
+);
+export type FilesystemPath = typeof FilesystemPath.Type;
+
 export const TrimmedString = Schema.Trim;
 export const TrimmedNonEmptyString = TrimmedString.check(Schema.isNonEmpty());
 

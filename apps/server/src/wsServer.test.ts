@@ -1869,6 +1869,9 @@ describe("WebSocket Server", () => {
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
+      const worktreeManagerModule = await vi.importActual<
+        typeof import("./project/Services/WorktreeManager.ts")
+      >("./project/Services/WorktreeManager.ts");
       const worktreeSetupModule = await vi.importActual<
         typeof import("./project/Services/WorktreeSetup.ts")
       >("./project/Services/WorktreeSetup.ts");
@@ -1930,6 +1933,7 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(worktreeManagerModule.WorktreeManager, {} as never),
         Layer.succeed(worktreeSetupModule.WorktreeSetup, {
           startup: Effect.void,
           changes: Stream.empty,
@@ -2111,6 +2115,9 @@ describe("WebSocket Server", () => {
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
+      const worktreeManagerModule = await vi.importActual<
+        typeof import("./project/Services/WorktreeManager.ts")
+      >("./project/Services/WorktreeManager.ts");
       const worktreeSetupModule = await vi.importActual<
         typeof import("./project/Services/WorktreeSetup.ts")
       >("./project/Services/WorktreeSetup.ts");
@@ -2236,6 +2243,7 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(worktreeManagerModule.WorktreeManager, {} as never),
         Layer.succeed(worktreeSetupModule.WorktreeSetup, {
           startup: Effect.void,
           changes: Stream.empty,
@@ -4354,6 +4362,17 @@ describe("WebSocket Server", () => {
         for (const worktree of worktrees) expect(worktree && fs.existsSync(worktree)).toBe(true);
       });
 
+      it("rejects manual removal from an unknown project cwd", async () => {
+        const repo = makeGitRepo("t3code-ws-removal-project-");
+        const ws = await startServer({ repo, sentTurns: [] });
+        await createProject(ws, repo);
+        const result = await sendRequest(ws, WS_METHODS.gitRemoveWorktree, {
+          cwd: path.join(repo, "unknown"),
+          path: path.join(repo, "untouched"),
+        });
+        expect(result.error?.message).toContain("Unknown project");
+      });
+
       it("cancel mid-setup removes the clean worktree and the branch it created", async () => {
         const repo = makeGitRepo("t3code-ws-setup-cancel-clean-");
         const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
@@ -4416,7 +4435,7 @@ describe("WebSocket Server", () => {
         });
         const settled = (cancelled.result as { snapshot: WorktreeSetupSnapshot }).snapshot;
         expect(settled.phase).toBe("cancelled_kept");
-        expect(settled.error).toContain("may contain changes");
+        expect(settled.error).toContain("uncommitted");
         expect(fs.existsSync(path.join(running!.worktreePath!, "generated.txt"))).toBe(true);
         expect(branchExists(repo, "f5/thread-cancel-kept")).toBe(true);
         const queue = (

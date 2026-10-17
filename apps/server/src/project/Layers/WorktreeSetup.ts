@@ -46,7 +46,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { TerminalManager } from "../../terminal/Services/Manager.ts";
 import { isDefinitelyUncommittedDispatchError } from "../../wsServer/bootstrapTurnStart.ts";
 import { startOwnedSetupScript, type OwnedSetupScript } from "../ownedSetupScript.ts";
-import { foreignClaims, ignoredFilesBlockRemoval, readWorktreeClaims } from "../worktreeClaims.ts";
+import { removeWorktreeSafely } from "../worktreeClaims.ts";
 import {
   WorktreeSetup,
   WorktreeSetupError,
@@ -62,7 +62,6 @@ const TURN_ACCEPT_POLL_MS = 250;
 
 const SETUP_INTERRUPTED_BY_RESTART =
   "Worktree setup was interrupted by a server restart. Nothing was removed.";
-const CANCELLED_KEPT_DETAIL = "Setup cancelled; worktree kept because it may contain changes.";
 
 interface Tracked {
   snapshot: WorktreeSetupSnapshot;
@@ -205,7 +204,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   };
 
   /** Writes the current snapshot as the thread's worktree-setup activity. */
-  const persistNow = (threadId: ThreadId): Effect.Effect<void> =>
+  const persistNow = (threadId: ThreadId, required = false): Effect.Effect<void> =>
     persistLock(threadId).withPermits(1)(
       Effect.gen(function* () {
         const entry = tracked.get(threadId);
@@ -234,12 +233,14 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       }).pipe(
         // The thread may already be gone after a discard; the record is best effort.
         Effect.catchCause((cause) =>
-          Cause.hasInterruptsOnly(cause)
-            ? Effect.interrupt
-            : Effect.logDebug("worktree setup activity write skipped", {
-                threadId,
-                cause: Cause.pretty(cause),
-              }),
+          required
+            ? Effect.failCause(cause).pipe(Effect.orDie)
+            : Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logDebug("worktree setup activity write skipped", {
+                  threadId,
+                  cause: Cause.pretty(cause),
+                }),
         ),
       ),
     );
@@ -304,13 +305,14 @@ export const makeWorktreeSetup = Effect.gen(function* () {
   const commit = (
     threadId: ThreadId,
     mutate: (snapshot: WorktreeSetupSnapshot) => WorktreeSetupSnapshot,
+    required = false,
   ) =>
     Effect.gen(function* () {
       const entry = tracked.get(threadId);
       if (!entry) return null;
       entry.snapshot = { ...mutate(entry.snapshot), sequence: entry.snapshot.sequence + 1 };
       schedule(threadId, true);
-      yield* persistNow(threadId);
+      yield* persistNow(threadId, required);
       return entry.snapshot;
     });
 
@@ -419,9 +421,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
     });
 
   /**
-   * The setup program. Fetch, checkout and submodules run under the worktree
-   * lifecycle lock; the setup script runs outside it so a long install never
-   * blocks cleanup decisions on other paths or the queue worker.
+   * Only checkout takes lifecycle locks. Fetch, submodules and setup scripts run
+   * outside them; the persisted setup path and queue token protect ownership.
    */
   const runSetup = (threadId: ThreadId, token: string): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -436,199 +437,196 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           branch: request.branch,
         });
 
-      yield* withWorktreeLifecycleLock(
-        worktreePath,
-        Effect.gen(function* () {
-          const alreadyPrepared =
-            initial.createdWorktree &&
-            existsSync(worktreePath) &&
-            (yield* git.statusDetails(worktreePath).pipe(
-              Effect.map((status) => status.branch === request.branch),
-              Effect.orElseSucceed(() => false),
-            ));
-          if (alreadyPrepared) {
-            update(threadId, (snapshot) =>
-              ["fetch", "checkout", "submodules"].reduce(
-                (next, id) =>
-                  stageStatus(next, id as WorktreeSetupStageId, "skipped", "already prepared"),
-                snapshot,
-              ),
-            );
-          } else {
-            update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "running"));
-            const hasRemote = yield* git
-              .hasRemote(request.projectCwd)
-              .pipe(Effect.orElseSucceed(() => false));
-            let baseRef: string = request.baseBranch;
-            if (hasRemote) {
-              const remote = yield* git
-                .fetchRemoteBranchCommit({
-                  cwd: request.projectCwd,
-                  branch: request.baseBranch,
-                  allowMissingBranch: true,
-                })
-                .pipe(
-                  // The raw git error is internal and unreadable in the card; log it
-                  // and show the user what actually happened instead.
-                  Effect.catch((error) =>
-                    Effect.logWarning("worktree setup could not fetch the remote base branch", {
-                      threadId,
-                      baseBranch: request.baseBranch,
-                      error: error.message,
-                    }).pipe(
-                      Effect.andThen(
-                        Effect.sync(() => {
-                          update(threadId, (snapshot) =>
-                            stageStatus(
-                              snapshot,
-                              "fetch",
-                              "warning",
-                              `Couldn't reach the remote; using local ${request.baseBranch}`,
-                            ),
-                          );
-                          return null;
-                        }),
-                      ),
+      yield* commit(threadId, (snapshot) => ({ ...snapshot, worktreePath }), true);
+      yield* Effect.gen(function* () {
+        const alreadyPrepared =
+          initial.createdWorktree &&
+          existsSync(worktreePath) &&
+          (yield* git.statusDetails(worktreePath).pipe(
+            Effect.map((status) => status.branch === request.branch),
+            Effect.orElseSucceed(() => false),
+          ));
+        if (alreadyPrepared) {
+          update(threadId, (snapshot) =>
+            ["fetch", "checkout", "submodules"].reduce(
+              (next, id) =>
+                stageStatus(next, id as WorktreeSetupStageId, "skipped", "already prepared"),
+              snapshot,
+            ),
+          );
+        } else {
+          update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "running"));
+          const hasRemote = yield* git
+            .hasRemote(request.projectCwd)
+            .pipe(Effect.orElseSucceed(() => false));
+          let baseRef: string = request.baseBranch;
+          if (hasRemote) {
+            const remote = yield* git
+              .fetchRemoteBranchCommit({
+                cwd: request.projectCwd,
+                branch: request.baseBranch,
+                allowMissingBranch: true,
+              })
+              .pipe(
+                // The raw git error is internal and unreadable in the card; log it
+                // and show the user what actually happened instead.
+                Effect.catch((error) =>
+                  Effect.logWarning("worktree setup could not fetch the remote base branch", {
+                    threadId,
+                    baseBranch: request.baseBranch,
+                    error: error.message,
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        update(threadId, (snapshot) =>
+                          stageStatus(
+                            snapshot,
+                            "fetch",
+                            "warning",
+                            `Couldn't reach the remote; using local ${request.baseBranch}`,
+                          ),
+                        );
+                        return null;
+                      }),
                     ),
                   ),
-                );
-              if (remote) {
-                baseRef = remote.commit;
-                update(threadId, (snapshot) =>
-                  stageStatus(
-                    snapshot,
-                    "fetch",
-                    "done",
-                    `${remote.refName} at ${remote.commit.slice(0, 7)}`,
-                  ),
-                );
-              } else if (
-                tracked.get(threadId)?.snapshot.stages.find((stage) => stage.id === "fetch")
-                  ?.status === "running"
-              ) {
-                update(threadId, (snapshot) =>
-                  stageStatus(
-                    snapshot,
-                    "fetch",
-                    "warning",
-                    `${request.baseBranch} is not on the remote; using the local branch`,
-                  ),
-                );
-              }
-            } else {
+                ),
+              );
+            if (remote) {
+              baseRef = remote.commit;
               update(threadId, (snapshot) =>
-                stageStatus(snapshot, "fetch", "skipped", "no remote"),
+                stageStatus(
+                  snapshot,
+                  "fetch",
+                  "done",
+                  `${remote.refName} at ${remote.commit.slice(0, 7)}`,
+                ),
+              );
+            } else if (
+              tracked.get(threadId)?.snapshot.stages.find((stage) => stage.id === "fetch")
+                ?.status === "running"
+            ) {
+              update(threadId, (snapshot) =>
+                stageStatus(
+                  snapshot,
+                  "fetch",
+                  "warning",
+                  `${request.baseBranch} is not on the remote; using the local branch`,
+                ),
               );
             }
+          } else {
+            update(threadId, (snapshot) => stageStatus(snapshot, "fetch", "skipped", "no remote"));
+          }
 
-            const baseSha = yield* git.resolveCommit(request.projectCwd, baseRef);
-            if (baseSha === null) {
-              return yield* new WorktreeSetupError({
-                message: `Base branch ${request.baseBranch} has no commit to start from.`,
-              });
-            }
-            update(threadId, (snapshot) => ({ ...snapshot, baseRef, baseSha }));
-            const submodules = yield* resolveSubmodules(
-              project?.id ?? null,
-              request.projectCwd,
-              baseSha,
-            );
-            const branchExists = yield* git.branchExists(request.projectCwd, request.branch);
-            update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
-            let checkoutTotal: number | null = null;
-            yield* git.createWorktree({
-              cwd: request.projectCwd,
-              branch: branchExists ? request.branch : request.baseBranch,
-              ...(branchExists ? {} : { baseRefName: baseSha, newBranch: request.branch }),
-              path: worktreePath,
-              ...(submodules !== undefined ? { submodules } : {}),
-              progress: {
-                onWorktreeClaimed: (path) =>
-                  update(threadId, (snapshot) => ({
-                    ...snapshot,
-                    worktreePath: path,
-                    createdWorktree: true,
-                    createdBranch: snapshot.createdBranch || !branchExists,
-                  })),
-                onCheckoutProgress: ({ percent, completed, total }) => {
-                  checkoutTotal = total;
-                  update(threadId, (snapshot) =>
-                    withStage(snapshot, "checkout", (stage) => ({
-                      ...stage,
-                      percent,
-                      detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
-                    })),
-                  );
-                },
-                onSubmodulesStarted: () =>
-                  update(threadId, (snapshot) =>
-                    stageStatus(
-                      stageStatus(
-                        snapshot,
-                        "checkout",
-                        "done",
-                        checkoutTotal === null
-                          ? null
-                          : `${checkoutTotal.toLocaleString("en-US")} files`,
-                      ),
-                      "submodules",
-                      "running",
-                    ),
-                  ),
-                onSubmoduleLine: (line) => {
-                  const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
-                  if (submodulePath)
-                    update(threadId, (snapshot) =>
-                      withStage(snapshot, "submodules", (stage) => ({
-                        ...stage,
-                        detail: clamp(submodulePath, WORKTREE_SETUP_DETAIL_MAX_LENGTH),
-                      })),
-                    );
-                },
-                onSubmodulesFinished: ({ status, detail }) =>
-                  update(threadId, (snapshot) =>
-                    stageStatus(snapshot, "submodules", status, detail),
-                  ),
-              },
-            });
-            update(threadId, (snapshot) => {
-              let next: WorktreeSetupSnapshot = {
-                ...snapshot,
-                worktreePath,
-                createdWorktree: true,
-                createdBranch: snapshot.createdBranch || !branchExists,
-              };
-              const checkout = next.stages.find((stage) => stage.id === "checkout");
-              if (checkout?.status === "running") {
-                next = withStage(
-                  stageStatus(
-                    next,
-                    "checkout",
-                    "done",
-                    checkoutTotal === null
-                      ? null
-                      : `${checkoutTotal.toLocaleString("en-US")} files`,
-                  ),
-                  "checkout",
-                  (stage) => ({ ...stage, percent: 100 }),
-                );
-              }
-              const submodulesStage = next.stages.find((stage) => stage.id === "submodules");
-              if (submodulesStage?.status === "pending") {
-                next = stageStatus(next, "submodules", "skipped", "none");
-              }
-              return next;
+          const baseSha = yield* git.resolveCommit(request.projectCwd, baseRef);
+          if (baseSha === null) {
+            return yield* new WorktreeSetupError({
+              message: `Base branch ${request.baseBranch} has no commit to start from.`,
             });
           }
-          yield* engine.dispatch({
-            type: "thread.meta.update",
-            commandId: serverCommandId("meta"),
+          const creationCommonDir = yield* git.resolveCommonDir(request.projectCwd);
+          yield* commit(
             threadId,
-            branch: request.branch,
-            worktreePath,
+            (snapshot) => ({ ...snapshot, baseRef, baseSha, creationCommonDir }),
+            true,
+          );
+          const submodules = yield* resolveSubmodules(
+            project?.id ?? null,
+            request.projectCwd,
+            baseSha,
+          );
+          const branchExists = yield* git.branchExists(request.projectCwd, request.branch);
+          update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
+          let checkoutTotal: number | null = null;
+          yield* git.createWorktree({
+            cwd: request.projectCwd,
+            branch: branchExists ? request.branch : request.baseBranch,
+            ...(branchExists ? {} : { baseRefName: baseSha, newBranch: request.branch }),
+            path: worktreePath,
+            ...(submodules !== undefined ? { submodules } : {}),
+            progress: {
+              onWorktreeClaimed: (path) =>
+                update(threadId, (snapshot) => ({
+                  ...snapshot,
+                  worktreePath: path,
+                  createdWorktree: true,
+                  createdBranch: snapshot.createdBranch || !branchExists,
+                })),
+              onCheckoutProgress: ({ percent, completed, total }) => {
+                checkoutTotal = total;
+                update(threadId, (snapshot) =>
+                  withStage(snapshot, "checkout", (stage) => ({
+                    ...stage,
+                    percent,
+                    detail: `${completed.toLocaleString("en-US")} / ${total.toLocaleString("en-US")} files`,
+                  })),
+                );
+              },
+              onSubmodulesStarted: () =>
+                update(threadId, (snapshot) =>
+                  stageStatus(
+                    stageStatus(
+                      snapshot,
+                      "checkout",
+                      "done",
+                      checkoutTotal === null
+                        ? null
+                        : `${checkoutTotal.toLocaleString("en-US")} files`,
+                    ),
+                    "submodules",
+                    "running",
+                  ),
+                ),
+              onSubmoduleLine: (line) => {
+                const submodulePath = /Submodule path '([^']+)'/.exec(line)?.[1];
+                if (submodulePath)
+                  update(threadId, (snapshot) =>
+                    withStage(snapshot, "submodules", (stage) => ({
+                      ...stage,
+                      detail: clamp(submodulePath, WORKTREE_SETUP_DETAIL_MAX_LENGTH),
+                    })),
+                  );
+              },
+              onSubmodulesFinished: ({ status, detail }) =>
+                update(threadId, (snapshot) => stageStatus(snapshot, "submodules", status, detail)),
+            },
           });
-        }),
-      );
+          update(threadId, (snapshot) => {
+            let next: WorktreeSetupSnapshot = {
+              ...snapshot,
+              worktreePath,
+              createdWorktree: true,
+              createdBranch: snapshot.createdBranch || !branchExists,
+            };
+            const checkout = next.stages.find((stage) => stage.id === "checkout");
+            if (checkout?.status === "running") {
+              next = withStage(
+                stageStatus(
+                  next,
+                  "checkout",
+                  "done",
+                  checkoutTotal === null ? null : `${checkoutTotal.toLocaleString("en-US")} files`,
+                ),
+                "checkout",
+                (stage) => ({ ...stage, percent: 100 }),
+              );
+            }
+            const submodulesStage = next.stages.find((stage) => stage.id === "submodules");
+            if (submodulesStage?.status === "pending") {
+              next = stageStatus(next, "submodules", "skipped", "none");
+            }
+            return next;
+          });
+        }
+        yield* engine.dispatch({
+          type: "thread.meta.update",
+          commandId: serverCommandId("meta"),
+          threadId,
+          branch: request.branch,
+          worktreePath,
+        });
+      });
 
       // Setup script, as an owned process.
       const script = request.runSetupScript && project ? setupProjectScript(project.scripts) : null;
@@ -779,35 +777,26 @@ export const makeWorktreeSetup = Effect.gen(function* () {
       return yield* withWorktreeLifecycleLock(
         worktreePath,
         Effect.gen(function* () {
-          if (existsSync(worktreePath)) {
-            const status = yield* git.statusDetails(worktreePath).pipe(Effect.option);
-            if (Option.isNone(status) || status.value.hasWorkingTreeChanges) {
-              return { kept: CANCELLED_KEPT_DETAIL };
-            }
-            // `git status` hides ignored files, which `worktree remove` would delete.
-            const ignored = yield* ignoredFilesBlockRemoval(git, worktreePath);
-            if (ignored !== null) {
-              return { kept: `Setup cancelled; worktree kept because it has ${ignored}.` };
-            }
-            const claims = yield* readWorktreeClaims(worktreePath).pipe(
-              Effect.provideServices(services),
-            );
-            // foreignClaims ignores this thread's own session, but an agent
-            // that started without writing files still needs its worktree.
-            if (claims.sessions.some((session) => session.threadId === snapshot.threadId)) {
-              return { kept: "Setup cancelled; worktree kept because the agent session uses it." };
-            }
-            const foreign = foreignClaims(claims, snapshot.threadId);
-            if (foreign.length > 0) {
-              return { kept: `Setup cancelled; worktree kept because ${foreign.join(", ")}.` };
-            }
-            const removed = yield* git
-              .removeWorktree({ cwd: request.projectCwd, path: worktreePath, force: false })
-              .pipe(Effect.exit);
-            if (removed._tag === "Failure") {
-              return { kept: `Setup cancelled; worktree kept: ${Cause.pretty(removed.cause)}` };
-            }
-          }
+          const result = yield* removeWorktreeSafely({
+            projectCwd: request.projectCwd,
+            path: worktreePath,
+            policy: {
+              kind: "ownedRollback",
+              ownThreadId: snapshot.threadId,
+              ...(snapshot.baseSha && snapshot.creationCommonDir
+                ? {
+                    ownedCreation: {
+                      path: worktreePath,
+                      commonDir: snapshot.creationCommonDir,
+                      baseSha: snapshot.baseSha,
+                      created: snapshot.createdWorktree,
+                    },
+                  }
+                : {}),
+            },
+          }).pipe(Effect.provideServices(services));
+          if (result.blockedReasons.length)
+            return { kept: `Setup cancelled; worktree kept: ${result.blockedReasons.join("; ")}` };
           if (snapshot.createdBranch && snapshot.baseSha !== null) {
             const deleted = yield* git
               .deleteBranchIfAt({
@@ -825,7 +814,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           return { kept: null as string | null };
         }),
       ).pipe(
-        Effect.catchTag("RepositoryLifecycleError", (error) =>
+        Effect.catch((error) =>
           Effect.succeed({ kept: `Setup cancelled; worktree kept: ${error.message}` }),
         ),
       );

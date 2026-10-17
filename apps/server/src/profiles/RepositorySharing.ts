@@ -1,3 +1,4 @@
+import { stripPathTerminator } from "../git/worktreeList.ts";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import type { ProfileSummary } from "@t3tools/contracts";
@@ -40,7 +41,7 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
       ? marker
       : Path.resolve(
           workspaceRoot,
-          (await FS.readFile(marker, "utf8")).replace(/^gitdir:\s*/i, "").trim(),
+          stripPathTerminator(await FS.readFile(marker, "utf8")).replace(/^gitdir: /i, ""),
         );
     const common = await FS.readFile(Path.join(gitDir, "commondir"), "utf8").catch(
       (error: NodeJS.ErrnoException) => {
@@ -48,7 +49,7 @@ export async function canonicalGitCommonDirectory(workspaceRoot: string): Promis
         throw error;
       },
     );
-    return await FS.realpath(Path.resolve(gitDir, common.trim()));
+    return await FS.realpath(Path.resolve(gitDir, stripPathTerminator(common)));
   } catch {
     return null;
   }

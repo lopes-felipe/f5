@@ -1,3 +1,7 @@
+import { makeFakeGitCore } from "../git/testDoubles.ts";
+import { canonicalWorktreePath } from "../git/worktreePaths.ts";
+import { NextTurnQueueStoreLive } from "../nextTurnQueue/Layers/NextTurnQueueStore.ts";
+import { TerminalManager, type TerminalManagerShape } from "../terminal/Services/Manager.ts";
 import * as NodeFS from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -66,35 +70,90 @@ function makeCheckpointStoreStub(): CheckpointStoreShape {
   } as unknown as CheckpointStoreShape;
 }
 
+const metadataWorktrees = new Map<string, string[]>();
+
 function makeGitCoreStub(input?: {
   readonly removeWorktree?: GitCoreShape["removeWorktree"];
   readonly status?: GitCoreShape["status"];
 }): GitCoreShape {
-  return {
-    status:
-      input?.status ??
-      ((request) =>
-        Effect.succeed({
-          branch: "main",
-          hasWorkingTreeChanges: request.cwd.includes("feature-dirty"),
-          workingTree: { files: [], insertions: 0, deletions: 0 },
-          hasUpstream: false,
-          aheadCount: request.cwd.includes("feature-ahead") ? 1 : 0,
-          behindCount: 0,
-          pr: null,
-        })),
+  const status: GitCoreShape["status"] =
+    input?.status ??
+    ((request) =>
+      Effect.succeed({
+        branch: "feature",
+        hasWorkingTreeChanges: request.cwd.includes("feature-dirty"),
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: true,
+        aheadCount: request.cwd.includes("feature-ahead") ? 1 : 0,
+        behindCount: 0,
+        pr: null,
+        changeRequest: null,
+      }));
+  return makeFakeGitCore({
+    status,
+    listWorktrees: (cwd) =>
+      Effect.tryPromise(async () =>
+        Promise.all(
+          (metadataWorktrees.get(cwd) ?? []).map(async (path) => ({
+            path,
+            canonicalPath: await canonicalWorktreePath(path),
+            headSha: "abc123",
+            branch: "feature",
+            bare: false,
+            detached: false,
+            locked: null,
+            prunable: null,
+            isMain: false,
+          })),
+        ),
+      ).pipe(Effect.orDie),
+    resolveCommonDir: (cwd) =>
+      Effect.promise(() => canonicalWorktreePath(NodePath.join(cwd, ".git"))),
+    inspectCheckout: (cwd) =>
+      Effect.gen(function* () {
+        const state = yield* status({ cwd });
+        const root = [...metadataWorktrees].find(([, paths]) => paths.includes(cwd))?.[0] ?? cwd;
+        return {
+          canonicalRoot: yield* Effect.promise(() => canonicalWorktreePath(cwd)),
+          commonDir: yield* Effect.promise(() =>
+            canonicalWorktreePath(NodePath.join(root, ".git")),
+          ),
+          registration: null,
+          headSha: "abc123",
+          branch: "feature",
+          operation: null,
+          hasTrackedChanges: state.hasWorkingTreeChanges,
+          hasUntrackedChanges: false,
+          ignoredEntries: [],
+          ignoredTruncated: false,
+          upstreamRef: "origin/feature",
+          upstreamSha: "abc123",
+          aheadCount: state.aheadCount,
+        };
+      }),
     removeWorktree:
       input?.removeWorktree ??
       ((request) =>
         Effect.promise(() => NodeFS.rm(request.path, { recursive: true, force: true }))),
-  } as unknown as GitCoreShape;
+  }).service;
 }
 
 function makeOrchestrationEngineStub(input?: {
   readonly dispatch?: OrchestrationEngineShape["dispatch"];
 }): OrchestrationEngineShape {
   return {
-    getReadModel: () => Effect.succeed({} as never),
+    getReadModel: () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const projects =
+          yield* sql`SELECT project_id AS id, workspace_root AS "workspaceRoot", deleted_at AS "deletedAt" FROM projection_projects`;
+        const threads =
+          yield* sql`SELECT thread_id AS id, project_id AS "projectId", worktree_path AS "worktreePath", archived_at AS "archivedAt", deleted_at AS "deletedAt" FROM projection_threads`;
+        return {
+          projects,
+          threads: threads.map((thread) => ({ ...thread, session: null, activities: [] })),
+        } as never;
+      }),
     readEvents: () => Stream.empty,
     dispatch:
       input?.dispatch ??
@@ -149,6 +208,12 @@ function makeStorageTestLayer(input?: {
       )
     : StorageMaintenanceLive;
   return maintenance.pipe(
+    Layer.provideMerge(NextTurnQueueStoreLive),
+    Layer.provideMerge(
+      Layer.succeed(TerminalManager, {
+        listSessions: Effect.succeed([]),
+      } as unknown as TerminalManagerShape),
+    ),
     Layer.provideMerge(OrchestrationEventStoreLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(
@@ -191,6 +256,10 @@ async function writeGitWorktreeMetadata(input: {
   readonly worktreePath: string;
   readonly mainWorktreePath: string;
 }) {
+  metadataWorktrees.set(input.mainWorktreePath, [
+    ...(metadataWorktrees.get(input.mainWorktreePath) ?? []),
+    input.worktreePath,
+  ]);
   const gitDir = NodePath.join(input.mainWorktreePath, ".git");
   const worktreeGitDir = NodePath.join(gitDir, "worktrees", NodePath.basename(input.worktreePath));
   await NodeFS.mkdir(input.worktreePath, { recursive: true });
@@ -566,7 +635,10 @@ layer("StorageMaintenance", (it) => {
 
         assert.equal(cleanTarget?.safeToDelete, true);
         assert.equal(dirtyTarget?.safeToDelete, false);
-        assert.equal(dirtyTarget?.disabledReason, "Worktree has uncommitted changes.");
+        assert.equal(
+          dirtyTarget?.disabledReason,
+          "it has uncommitted changes (including untracked files)",
+        );
 
         const result = yield* storage.cleanup({
           operationId: "operation-legacy-dirty-worktree",
@@ -584,7 +656,7 @@ layer("StorageMaintenance", (it) => {
           result.results[0]?.warnings.some(
             (warning) =>
               warning.path === dirtyWorktreePath &&
-              warning.reason === "Worktree has uncommitted changes.",
+              warning.reason === "it has uncommitted changes (including untracked files)",
           ),
           true,
         );
@@ -592,7 +664,7 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
-  it.effect("reclaims legacy worktree directories when parent Git metadata is missing", () =>
+  it.effect("retains legacy worktree directories when parent Git metadata is missing", () =>
     withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
@@ -611,25 +683,23 @@ layer("StorageMaintenance", (it) => {
         const worktrees = report.categories.find((category) => category.id === "legacyT3Worktrees");
         const target = worktrees?.targets.find((entry) => entry.path === worktreePath);
 
-        assert.equal(target?.safeToDelete, true);
-        assert.equal(target?.disabledReason, undefined);
-        assert.equal(
-          target?.detail,
-          "Git metadata is missing; directory will be deleted directly.",
-        );
+        assert.equal(target?.safeToDelete, false);
+        assert.equal(target?.disabledReason, "Git worktree metadata could not be resolved.");
 
-        const result = yield* storage.cleanup({
-          operationId: "operation-legacy-missing-metadata-worktree",
-          scanId: report.scanId,
-          confirmationNonce: report.confirmationNonce,
-          categoryIds: ["legacyT3Worktrees"],
-          targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [target!.id] }],
-          confirmationText: "DELETE",
-          options: { vacuumAfterDeletes: false },
-        });
+        const result = yield* storage
+          .cleanup({
+            operationId: "operation-legacy-missing-metadata-worktree",
+            scanId: report.scanId,
+            confirmationNonce: report.confirmationNonce,
+            categoryIds: ["legacyT3Worktrees"],
+            targetSelections: [{ categoryId: "legacyT3Worktrees", targetIds: [target!.id] }],
+            confirmationText: "DELETE",
+            options: { vacuumAfterDeletes: false },
+          })
+          .pipe(Effect.exit);
 
-        assert.equal(result.results[0]?.status, "Cleaned");
-        assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), false);
+        assert.equal(result._tag, "Failure");
+        assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), true);
       }),
     ),
   );
@@ -704,7 +774,7 @@ layer("StorageMaintenance", (it) => {
     ),
   );
 
-  it.effect("removes clean archived F5 worktrees after clearing thread references", () =>
+  it.effect("removes clean archived F5 worktrees while preserving thread references", () =>
     withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
@@ -746,7 +816,7 @@ layer("StorageMaintenance", (it) => {
         `;
 
         assert.equal(result.results[0]?.status, "Cleaned");
-        assert.equal(rows[0]?.worktreePath, null);
+        assert.equal(rows[0]?.worktreePath, worktreePath);
         assert.equal(yield* Effect.promise(() => pathExists(worktreePath)), false);
       }),
     ),
@@ -769,7 +839,10 @@ layer("StorageMaintenance", (it) => {
         const target = category?.targets.find((entry) => entry.path === worktreePath);
 
         assert.equal(target?.safeToDelete, false);
-        assert.equal(target?.disabledReason, "Worktree has uncommitted changes.");
+        assert.equal(
+          target?.disabledReason,
+          "it has uncommitted changes (including untracked files)",
+        );
       }),
     ),
   );
@@ -791,7 +864,7 @@ layer("StorageMaintenance", (it) => {
         const target = category?.targets.find((entry) => entry.path === worktreePath);
 
         assert.equal(target?.safeToDelete, false);
-        assert.equal(target?.disabledReason, "Worktree has unpushed commits.");
+        assert.equal(target?.disabledReason, "unpushed commits could not be ruled out");
       }),
     ),
   );

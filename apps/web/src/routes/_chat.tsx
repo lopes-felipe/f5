@@ -1,3 +1,4 @@
+import { WorktreeRemovalDialogHost } from "../components/WorktreeRemovalDialog";
 import { ComputerAccessInbox } from "../components/ComputerAccessCard";
 import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
 import { useSnapShotRouting } from "../hooks/useSnapShotRouting";
@@ -141,6 +142,7 @@ function ChatRouteLayout() {
         <ComputerAccessInbox />
         <ComputerUseBanner />
         <WorkflowCreateDialogHost />
+        <WorktreeRemovalDialogHost />
       </CommandPalette>
     </SidebarProvider>
   );

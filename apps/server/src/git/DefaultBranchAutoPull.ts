@@ -118,7 +118,16 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
   const blockReason = (candidate: Candidate) =>
     Effect.gen(function* () {
       const root = candidate.root;
-      const details = yield* git.statusDetails(root);
+      const inspection = yield* git.inspectCheckout(root);
+      const details = {
+        branch: inspection.branch,
+        upstreamRef: inspection.upstreamRef,
+        hasUpstream: inspection.upstreamSha !== null,
+        hasWorkingTreeChanges: inspection.hasTrackedChanges || inspection.hasUntrackedChanges,
+        aheadCount: inspection.aheadCount ?? 1,
+        behindCount: 0,
+      };
+
       if (details.branch === null) return { reason: "HEAD is detached", details };
       const defaultBranch = yield* git.readDefaultBranch(root);
       if (defaultBranch === null) return { reason: "no default branch is known", details };
@@ -135,6 +144,16 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
         return { reason: "the branch has commits its upstream lacks", details };
       }
       const claims = yield* readWorktreeClaims(root).pipe(Effect.provideServices(services));
+      if (yield* rootTurnInFlight(candidate))
+        return { reason: "an agent turn is starting or running in the project root", details };
+      if (
+        claims.unknown ||
+        claims.queuedThreadIds.length > 0 ||
+        claims.activeThreadIds.length > 0 ||
+        claims.terminals.length > 0 ||
+        claims.setupThreadIds.length > 0
+      )
+        return { reason: "workspace usage blocks automatic pull", details };
       if (claims.sessions.length > 0) {
         return { reason: "an agent session is open in the project root", details };
       }
@@ -181,6 +200,18 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
 
   const pull = (operationId: string, candidate: Candidate) =>
     Effect.gen(function* () {
+      const initial = yield* git.inspectCheckout(candidate.root);
+      if (!initial.branch) return toTarget(candidate, "HEAD is detached", 0);
+      const remote = yield* git.readConfigValue(candidate.root, `branch.${initial.branch}.remote`);
+      const merge = yield* git.readConfigValue(candidate.root, `branch.${initial.branch}.merge`);
+      if (!remote || !merge || remote === ".")
+        return toTarget(candidate, "No remote upstream is configured", 0);
+      const fetched = yield* git.fetchRemoteBranchCommit({
+        cwd: candidate.root,
+        branch: merge.replace(/^refs\/heads\//, ""),
+        remoteName: remote,
+      });
+      if (!fetched) return toTarget(candidate, "Upstream branch is unavailable", 0);
       const commonDir = yield* git.resolveCommonDir(candidate.root);
       return yield* withWorktreeLifecycleLock(
         candidate.root,
@@ -191,10 +222,17 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
             const { reason } = yield* blockReason(candidate);
             if (reason !== null) return toTarget(candidate, reason, 0);
             const before = yield* git.resolveCommit(candidate.root, "HEAD");
-            const result = yield* git.pullCurrentBranch(candidate.root);
-            if (result.status === "skipped_up_to_date") {
+            const current = yield* git.inspectCheckout(candidate.root);
+            if (
+              current.branch !== initial.branch ||
+              current.upstreamSha !== fetched.commit ||
+              current.upstreamRef !== initial.upstreamRef
+            )
+              return toTarget(candidate, "Upstream identity changed during inspection", 0);
+            if (before === fetched.commit) {
               return { ...toTarget(candidate, null, 0), reason: "already up to date" };
             }
+            yield* git.fastForwardTo(candidate.root, fetched.commit);
             const after = yield* git.resolveCommit(candidate.root, "HEAD");
             yield* recordStorageAutomationAudit({
               operationId,
@@ -204,9 +242,9 @@ export const makeDefaultBranchAutoPull = Effect.gen(function* () {
               beforeRef: before,
               afterRef: after,
               result: "pulled",
-              reason: `fast-forwarded ${result.branch}`,
+              reason: `fast-forwarded ${initial.branch}`,
             }).pipe(Effect.provideServices(sqlServices));
-            return { ...toTarget(candidate, null, 0), reason: `fast-forwarded ${result.branch}` };
+            return { ...toTarget(candidate, null, 0), reason: `fast-forwarded ${initial.branch}` };
           }),
           { mode: "background" },
         ),

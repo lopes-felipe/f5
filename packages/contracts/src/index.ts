@@ -56,3 +56,5 @@ export * from "./usageLimit";
 export * from "./runtimeInfo";
 
 export * from "./workflowSummary";
+
+export * from "./worktrees";

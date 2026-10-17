@@ -1,3 +1,5 @@
+import { lstat as inspectPath } from "node:fs/promises";
+import { parseWorktreeListPorcelain, stripPathTerminator } from "../worktreeList.ts";
 import { networkFailureDetail } from "../networkFailureDetail.ts";
 import {
   withWorktreeLifecycleLock,
@@ -13,7 +15,18 @@ import {
   resolve as resolvePath,
 } from "node:path";
 
-import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref, Schema } from "effect";
+import {
+  Cache,
+  Data,
+  Duration,
+  Effect,
+  Exit,
+  FileSystem,
+  Layer,
+  Ref,
+  Schema,
+  Semaphore,
+} from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
@@ -28,6 +41,8 @@ import {
 } from "../remoteRefs.ts";
 import { ServerConfig } from "../../config.ts";
 import { canonicalWorktreePath, resolveDefaultWorktreePath } from "../worktreePaths.ts";
+
+const inspectionSemaphore = Semaphore.makeUnsafe(4);
 
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
@@ -388,7 +403,7 @@ const makeGitCore = Effect.gen(function* () {
           ],
           { concurrency: "unbounded" },
         );
-        const commonDirValue = commonDirStdout.trim();
+        const commonDirValue = stripPathTerminator(commonDirStdout);
         const commonDir =
           commonDirValue.length === 0
             ? cwd
@@ -440,13 +455,18 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const dotGitPath = resolvePath(cwd, ".git");
       const dotGitContents = yield* readOptionalFile(dotGitPath);
-      const gitDirValue = dotGitContents?.match(/^gitdir:\s*(.+)\s*$/im)?.[1]?.trim();
+      const gitDirValue = dotGitContents?.startsWith("gitdir: ")
+        ? stripPathTerminator(dotGitContents).slice(8)
+        : undefined;
       const gitDir = gitDirValue
         ? isAbsolutePath(gitDirValue)
           ? gitDirValue
           : resolvePath(cwd, gitDirValue)
         : dotGitPath;
-      const commonDirValue = (yield* readOptionalFile(resolvePath(gitDir, "commondir")))?.trim();
+      const commonDirValue = (yield* readOptionalFile(resolvePath(gitDir, "commondir")))?.replace(
+        /\n$/,
+        "",
+      );
       const commonDir = commonDirValue
         ? isAbsolutePath(commonDirValue)
           ? commonDirValue
@@ -872,7 +892,7 @@ const makeGitCore = Effect.gen(function* () {
       );
       if (index.code === 0 && index.stdout.trim()) {
         const locked = yield* fileSystem
-          .exists(`${resolvePath(cwd, index.stdout.trim())}.lock`)
+          .exists(`${resolvePath(cwd, stripPathTerminator(index.stdout))}.lock`)
           .pipe(
             Effect.mapError((cause) =>
               createGitCommandError(
@@ -1037,115 +1057,147 @@ const makeGitCore = Effect.gen(function* () {
       return result;
     });
 
+  const checkoutExists = (path: string) =>
+    Effect.tryPromise({
+      try: async () => {
+        try {
+          await inspectPath(path);
+          return true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+          throw error;
+        }
+      },
+      catch: (cause) =>
+        createGitCommandError(
+          "GitCore.inspectPath",
+          path,
+          [],
+          "Cannot inspect checkout directory.",
+          cause,
+        ),
+    });
+
+  const canonicalPath = (value: string) =>
+    Effect.tryPromise({
+      try: () => canonicalWorktreePath(value),
+      catch: (cause) =>
+        createGitCommandError(
+          "GitCore.identity",
+          value,
+          [],
+          "Cannot resolve checkout identity.",
+          cause,
+        ),
+    });
+
+  const listWorktrees: GitCoreShape["listWorktrees"] = (cwd) =>
+    runGitStdout("GitCore.listWorktrees", cwd, ["worktree", "list", "--porcelain", "-z"]).pipe(
+      Effect.flatMap((stdout) =>
+        Effect.forEach(
+          parseWorktreeListPorcelain(stdout),
+          (entry) =>
+            inspectionSemaphore
+              .withPermits(1)(canonicalPath(entry.path))
+              .pipe(Effect.map((canonicalPath) => ({ ...entry, canonicalPath }))),
+          { concurrency: 4 },
+        ),
+      ),
+    );
+
   const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
     withWorktreeLifecycleLock(
       input.path,
-      Effect.gen(function* () {
-        if (yield* fileSystem.exists(input.path)) return;
-        const target = yield* Effect.tryPromise(() => canonicalWorktreePath(input.path));
-        const managedRoot = yield* Effect.tryPromise(() => canonicalWorktreePath(worktreesDir));
-        const relative = relativePath(managedRoot, target);
-        if (
-          !isAbsolutePath(input.path) ||
-          !relative ||
-          relative === ".." ||
-          relative.startsWith("../") ||
-          relative.startsWith("..\\") ||
-          isAbsolutePath(relative)
-        ) {
-          return yield* createGitCommandError(
-            "GitCore.ensureWorktree",
-            input.cwd,
-            [],
-            "Missing worktrees can only be recreated inside this profile's managed worktrees directory.",
-          );
-        }
-        const common = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
-          "rev-parse",
-          "--path-format=absolute",
-          "--git-common-dir",
-        ]);
-        yield* withRepositoryLifecycleLock(
-          baseDir,
-          common.trim(),
-          Effect.gen(function* () {
-            if (yield* fileSystem.exists(input.path)) return;
-            if (!(yield* branchExists(input.cwd, input.branch))) {
+      withRepositoryLock(
+        "GitCore.ensureWorktree",
+        input.cwd,
+        Effect.gen(function* () {
+          const target = yield* canonicalPath(input.path);
+          const entries = yield* listWorktrees(input.cwd);
+          const registration = entries.find((entry) => entry.canonicalPath === target);
+          if (yield* checkoutExists(input.path)) {
+            const inspected = yield* inspectCheckout(input.path);
+            const common = yield* canonicalPath(yield* resolveCommonDir(input.cwd));
+            if (
+              !registration ||
+              registration.isMain ||
+              inspected.canonicalRoot !== target ||
+              inspected.commonDir !== common ||
+              inspected.branch !== input.branch ||
+              registration.branch !== input.branch
+            ) {
               return yield* createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
                 [],
-                `Worktree branch ${input.branch} is missing.`,
+                "The target is not the registered checkout of the expected repository and branch.",
               );
             }
-            const listing = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
-              "worktree",
-              "list",
-              "--porcelain",
-              "-z",
-            ]);
-            let checkedOutAt = "";
-            let isTarget = false;
-            let targetRegistered = false;
-            let targetBranchMatches = false;
-            for (const field of listing.split("\0")) {
-              if (field.startsWith("worktree ")) {
-                checkedOutAt = field.slice(9);
-                isTarget =
-                  (yield* Effect.tryPromise(() => canonicalWorktreePath(checkedOutAt))) === target;
-                targetRegistered ||= isTarget;
-              }
-              if (isTarget && field === `branch refs/heads/${input.branch}`)
-                targetBranchMatches = true;
-              if (
-                isTarget &&
-                field.startsWith("branch ") &&
-                field !== `branch refs/heads/${input.branch}`
-              ) {
-                return yield* createGitCommandError(
-                  "GitCore.ensureWorktree",
-                  input.cwd,
-                  [],
-                  "The missing worktree is registered to a different branch.",
-                );
-              }
-              if (!isTarget && field === `branch refs/heads/${input.branch}`) {
-                return yield* createGitCommandError(
-                  "GitCore.ensureWorktree",
-                  input.cwd,
-                  [],
-                  `Branch ${input.branch} is checked out at ${checkedOutAt}.`,
-                );
-              }
-            }
-            if (yield* fileSystem.exists(input.path)) return;
-            if (targetRegistered) {
-              if (!targetBranchMatches) {
-                return yield* createGitCommandError(
-                  "GitCore.ensureWorktree",
-                  input.cwd,
-                  [],
-                  "The missing worktree registration does not match the requested branch.",
-                );
-              }
-              yield* executeGit(
-                "GitCore.ensureWorktree",
-                input.cwd,
-                ["worktree", "remove", "--force", "--", input.path],
-                { timeoutMs: 300_000 },
-              );
-            }
-            yield* executeGit(
+            return { recreated: false };
+          }
+          const managedRoot = yield* canonicalPath(worktreesDir);
+          const relative = relativePath(managedRoot, target);
+          if (
+            !isAbsolutePath(input.path) ||
+            !relative ||
+            relative === ".." ||
+            relative.startsWith("../") ||
+            relative.startsWith("..\\") ||
+            isAbsolutePath(relative)
+          ) {
+            return yield* createGitCommandError(
               "GitCore.ensureWorktree",
               input.cwd,
-              ["worktree", "add", "--", input.path, input.branch],
-              { timeoutMs: 300_000 },
+              [],
+              "Missing worktrees can only be recreated inside this profile's managed worktrees directory.",
             );
-            yield* initializeSubmodules(input.path, input.submodules);
-          }),
-        );
-      }),
+          }
+          if (!(yield* branchExists(input.cwd, input.branch))) {
+            return yield* createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              `Worktree branch ${input.branch} is missing.`,
+            );
+          }
+          if (
+            registration &&
+            (registration.branch !== input.branch ||
+              registration.isMain ||
+              registration.locked !== null)
+          ) {
+            return yield* createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              "The missing worktree registration does not match the requested branch or is locked.",
+            );
+          }
+          const other = entries.find(
+            (entry) => entry.canonicalPath !== target && entry.branch === input.branch,
+          );
+          if (other)
+            return yield* createGitCommandError(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              [],
+              `Branch ${input.branch} is checked out at ${other.path}.`,
+            );
+          yield* clearMissingRegistrationUnlocked(input.cwd, input.path);
+          yield* executeGit(
+            "GitCore.ensureWorktree",
+            input.cwd,
+            ["worktree", "add", "--", input.path, input.branch],
+            { timeoutMs: 300_000 },
+          );
+          return { recreated: true };
+        }),
+      ),
     ).pipe(
+      // Submodule initialization may fetch; never hold lifecycle locks while it runs.
+      Effect.tap((result) =>
+        result.recreated ? initializeSubmodules(input.path, input.submodules) : Effect.void,
+      ),
       Effect.mapError((error) =>
         Schema.is(GitCommandError)(error)
           ? error
@@ -1558,15 +1610,7 @@ const makeGitCore = Effect.gen(function* () {
       const [worktreeList, remoteBranchResult, staticMetadata, branchLastCommit] =
         yield* Effect.all(
           [
-            executeGit(
-              "GitCore.listBranches.worktreeList",
-              input.cwd,
-              ["worktree", "list", "--porcelain"],
-              {
-                timeoutMs: 5_000,
-                allowNonZeroExit: true,
-              },
-            ),
+            listWorktrees(input.cwd),
             remoteBranchResultEffect,
             staticMetadataEffect,
             branchRecencyPromise,
@@ -1584,22 +1628,16 @@ const makeGitCore = Effect.gen(function* () {
         staticMetadata.primaryRemoteName === "origin" ? staticMetadata.defaultBranchName : null;
 
       const worktreeMap = new Map<string, string>();
-      if (worktreeList.code === 0) {
-        let currentPath: string | null = null;
-        for (const line of worktreeList.stdout.split("\n")) {
-          if (line.startsWith("worktree ")) {
-            const candidatePath = line.slice("worktree ".length);
-            const exists = yield* fileSystem.stat(candidatePath).pipe(
-              Effect.map(() => true),
-              Effect.catch(() => Effect.succeed(false)),
-            );
-            currentPath = exists ? candidatePath : null;
-          } else if (line.startsWith("branch refs/heads/") && currentPath) {
-            worktreeMap.set(line.slice("branch refs/heads/".length), currentPath);
-          } else if (line === "") {
-            currentPath = null;
-          }
-        }
+      const present = yield* Effect.forEach(
+        worktreeList,
+        (entry) =>
+          inspectionSemaphore
+            .withPermits(1)(checkoutExists(entry.path))
+            .pipe(Effect.map((exists) => (exists ? entry : null))),
+        { concurrency: 4 },
+      );
+      for (const entry of present) {
+        if (entry?.branch) worktreeMap.set(entry.branch, entry.path);
       }
 
       const localBranches = localBranchResult.stdout
@@ -1722,7 +1760,7 @@ const makeGitCore = Effect.gen(function* () {
       "rev-parse",
       "--path-format=absolute",
       "--git-common-dir",
-    ]).pipe(Effect.map((stdout) => stdout.trim()));
+    ]).pipe(Effect.map((stdout) => stripPathTerminator(stdout)));
 
   /** Runs a shared-repository mutation under the cross-profile lock for `cwd`'s repository. */
   const withRepositoryLock = <A>(
@@ -1824,7 +1862,6 @@ const makeGitCore = Effect.gen(function* () {
         // A successful add made this a worktree of the repository, even in a
         // directory that existed (empty) beforehand.
         claim();
-        yield* initializeSubmodules(worktreePath, input.submodules, progress);
       });
       yield* withWorktreeLifecycleLock(
         worktreePath,
@@ -1837,6 +1874,7 @@ const makeGitCore = Effect.gen(function* () {
         ),
       );
 
+      yield* initializeSubmodules(worktreePath, input.submodules, input.progress);
       return {
         worktree: {
           path: worktreePath,
@@ -1868,24 +1906,126 @@ const makeGitCore = Effect.gen(function* () {
   ] as const;
 
   const readOperationInProgress: GitCoreShape["readOperationInProgress"] = (cwd) =>
-    runGitStdout("GitCore.readOperationInProgress", cwd, [
-      "rev-parse",
-      "--path-format=absolute",
-      ...OPERATION_MARKERS.flatMap(([marker]) => ["--git-path", marker]),
-    ]).pipe(
-      Effect.flatMap((stdout) => {
-        const paths = stdout.split("\n").map((line) => line.trim());
-        return Effect.forEach(OPERATION_MARKERS, ([, operation], index) => {
-          const markerPath = paths[index];
-          return markerPath
-            ? fileSystem.exists(markerPath).pipe(
-                Effect.orElseSucceed(() => true),
-                Effect.map((present) => (present ? operation : null)),
-              )
-            : Effect.succeed(null);
-        });
+    Effect.forEach(
+      OPERATION_MARKERS,
+      ([marker, operation]) =>
+        runGitStdout("GitCore.readOperationInProgress", cwd, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-path",
+          marker,
+        ]).pipe(
+          Effect.flatMap((stdout) => fileSystem.exists(stripPathTerminator(stdout))),
+          Effect.map((present) => (present ? operation : null)),
+          Effect.mapError((error) =>
+            Schema.is(GitCommandError)(error)
+              ? error
+              : createGitCommandError(
+                  "GitCore.readOperationInProgress",
+                  cwd,
+                  [],
+                  "Cannot inspect operation markers.",
+                  error,
+                ),
+          ),
+        ),
+      { concurrency: 4 },
+    ).pipe(Effect.map((found) => found.find((operation) => operation !== null) ?? null));
+
+  const inspectCheckout: GitCoreShape["inspectCheckout"] = (cwd, options) =>
+    inspectionSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const root = yield* runGitStdout("GitCore.inspectCheckout", cwd, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--show-toplevel",
+        ]);
+        const canonicalRoot = yield* canonicalPath(stripPathTerminator(root));
+        const commonDir = yield* canonicalPath(yield* resolveCommonDir(cwd));
+        // Avoid recursively acquiring the inspection semaphore while listing registrations.
+        const listed = parseWorktreeListPorcelain(
+          yield* runGitStdout("GitCore.inspectCheckout", cwd, [
+            "worktree",
+            "list",
+            "--porcelain",
+            "-z",
+          ]),
+        );
+        const entries = yield* Effect.forEach(listed, (entry) =>
+          canonicalPath(entry.path).pipe(
+            Effect.map((canonicalPath) => ({ ...entry, canonicalPath })),
+          ),
+        );
+        const symbolic = yield* executeGit(
+          "GitCore.inspectCheckout",
+          cwd,
+          ["symbolic-ref", "--quiet", "--short", "HEAD"],
+          { allowNonZeroExit: true },
+        );
+        if (symbolic.code !== 0 && symbolic.code !== 1)
+          return yield* createGitCommandError(
+            "GitCore.inspectCheckout",
+            cwd,
+            [],
+            "Cannot inspect symbolic HEAD.",
+          );
+        const status = (yield* executeGit(
+          "GitCore.inspectCheckout",
+          cwd,
+          ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+          { timeoutMs: 5_000 },
+        )).stdout;
+        let hasTrackedChanges = false;
+        let hasUntrackedChanges = false;
+        const records = status.split("\0");
+        for (let i = 0; i < records.length; i++) {
+          const record = records[i]!;
+          if (!record) continue;
+          if (record.startsWith("??")) hasUntrackedChanges = true;
+          else {
+            hasTrackedChanges = true;
+            if (/^[RC]|^.[RC]/.test(record)) i++;
+          }
+        }
+        const ignored = yield* listIgnoredEntries(cwd);
+        const upstream = yield* executeGit(
+          "GitCore.inspectCheckout",
+          cwd,
+          ["rev-parse", "--symbolic-full-name", "@{upstream}"],
+          { allowNonZeroExit: true },
+        );
+        const upstreamRef = upstream.code === 0 ? stripPathTerminator(upstream.stdout) : null;
+        const upstreamSha = upstreamRef ? yield* resolveCommit(cwd, upstreamRef) : null;
+        const aheadSha = options?.aheadOf
+          ? yield* resolveCommit(cwd, options.aheadOf)
+          : upstreamSha;
+        const aheadCount = aheadSha
+          ? Number(
+              stripPathTerminator(
+                yield* runGitStdout("GitCore.inspectCheckout", cwd, [
+                  "rev-list",
+                  "--count",
+                  `${aheadSha}..HEAD`,
+                ]),
+              ),
+            )
+          : null;
+        return {
+          canonicalRoot,
+          commonDir,
+          registration: entries.find((entry) => entry.canonicalPath === canonicalRoot) ?? null,
+          headSha: yield* resolveCommit(cwd, "HEAD"),
+          branch: symbolic.code === 0 ? stripPathTerminator(symbolic.stdout) : null,
+          operation: yield* readOperationInProgress(cwd),
+          hasTrackedChanges,
+          hasUntrackedChanges,
+          ignoredEntries: ignored.entries,
+          ignoredTruncated: ignored.truncated,
+          upstreamRef,
+          upstreamSha,
+          aheadCount,
+        };
       }),
-      Effect.map((found) => found.find((operation) => operation !== null) ?? null),
     );
 
   const isAncestor: GitCoreShape["isAncestor"] = (cwd, ancestor, descendant) =>
@@ -2094,74 +2234,96 @@ const makeGitCore = Effect.gen(function* () {
       input.branch,
     ]);
 
+  const clearMissingRegistrationUnlocked = (cwd: string, path: string) =>
+    Effect.gen(function* () {
+      if (yield* checkoutExists(path))
+        return yield* createGitCommandError(
+          "GitCore.clearMissingRegistration",
+          cwd,
+          [],
+          "The checkout still exists.",
+        );
+      const target = yield* canonicalPath(path);
+      const entry = (yield* listWorktrees(cwd)).find((entry) => entry.canonicalPath === target);
+      if (!entry) return;
+      if (entry.isMain || entry.locked !== null)
+        return yield* createGitCommandError(
+          "GitCore.clearMissingRegistration",
+          cwd,
+          [],
+          "The registration is primary or locked.",
+        );
+      if (yield* checkoutExists(entry.path))
+        return yield* createGitCommandError(
+          "GitCore.clearMissingRegistration",
+          cwd,
+          [],
+          "The checkout appeared during inspection.",
+        );
+      yield* executeGit("GitCore.clearMissingRegistration", cwd, [
+        "worktree",
+        "remove",
+        "--force",
+        "--",
+        entry.path,
+      ]);
+    });
+  const clearMissingRegistration: GitCoreShape["clearMissingRegistration"] = (cwd, path) =>
+    withWorktreeLifecycleLock(
+      path,
+      withRepositoryLock(
+        "GitCore.clearMissingRegistration",
+        cwd,
+        clearMissingRegistrationUnlocked(cwd, path),
+      ),
+    ).pipe(
+      Effect.mapError((error) =>
+        Schema.is(GitCommandError)(error)
+          ? error
+          : createGitCommandError("GitCore.clearMissingRegistration", cwd, [], error.message),
+      ),
+    );
+
   const removeWorktreeUnlocked = (input: Parameters<GitCoreShape["removeWorktree"]>[0]) =>
     Effect.gen(function* () {
-      if (
-        !(yield* fileSystem
-          .exists(resolvePath(input.cwd, input.path))
-          .pipe(
-            Effect.mapError((cause) =>
-              createGitCommandError(
-                "GitCore.removeWorktree",
-                input.cwd,
-                ["worktree", "remove", input.path],
-                "Cannot inspect worktree directory.",
-                cause,
-              ),
-            ),
-          ))
-      ) {
-        const listed = yield* runGitStdout("GitCore.removeWorktree.list", input.cwd, [
-          "worktree",
-          "list",
-          "--porcelain",
-          "-z",
-        ]);
-        const requestedPath = yield* Effect.tryPromise({
-          try: () => canonicalWorktreePath(resolvePath(input.cwd, input.path)),
-          catch: (cause) =>
-            createGitCommandError(
-              "GitCore.removeWorktree",
-              input.cwd,
-              ["worktree", "remove"],
-              "Cannot resolve the missing worktree path.",
-              cause,
-            ),
-        });
-        const registered = listed
-          .split("\0")
-          .some(
-            (field) =>
-              field.startsWith("worktree ") &&
-              resolvePath(input.cwd, field.slice(9)) === requestedPath,
-          );
-        if (!registered) return;
-        yield* executeGit(
-          "GitCore.removeWorktree.missing",
+      const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
+      const entry = (yield* listWorktrees(input.cwd)).find(
+        (entry) => entry.canonicalPath === target,
+      );
+      if (!(yield* checkoutExists(target)))
+        return yield* clearMissingRegistrationUnlocked(input.cwd, target);
+      if (!entry || entry.isMain || entry.locked !== null)
+        return yield* createGitCommandError(
+          "GitCore.removeWorktree",
           input.cwd,
-          ["worktree", "remove", "--force", "--", input.path],
-          { timeoutMs: 300_000 },
+          ["worktree", "remove", "--", input.path],
+          `The target ${input.path} is not an unlocked linked worktree.`,
         );
-        return;
+      const inspection = yield* inspectCheckout(target);
+      const expectedCommon = yield* resolveCommonDir(input.cwd).pipe(Effect.flatMap(canonicalPath));
+      if (
+        inspection.commonDir !== expectedCommon ||
+        inspection.canonicalRoot !== target ||
+        inspection.registration?.canonicalPath !== target ||
+        inspection.branch === null ||
+        inspection.operation !== null ||
+        inspection.hasTrackedChanges ||
+        inspection.hasUntrackedChanges ||
+        inspection.ignoredTruncated ||
+        inspection.ignoredEntries.some((entry) => !/(^|\/)node_modules\/?$/.test(entry))
+      ) {
+        return yield* createGitCommandError(
+          "GitCore.removeWorktree",
+          input.cwd,
+          ["worktree", "remove", "--", input.path],
+          "Checkout identity, local changes, or protected ignored files prevent removal.",
+        );
       }
-      const args = ["worktree", "remove"];
-      if (input.force) {
-        args.push("--force");
-      }
-      args.push(input.path);
-      yield* executeGit("GitCore.removeWorktree", input.cwd, args, {
-        timeoutMs: 300_000,
-        fallbackErrorMessage: "git worktree remove failed",
-      }).pipe(
-        Effect.mapError((error) =>
-          createGitCommandError(
-            "GitCore.removeWorktree",
-            input.cwd,
-            args,
-            `${commandLabel(args)} failed (cwd: ${input.cwd}): ${error instanceof Error ? error.message : String(error)}`,
-            error,
-          ),
-        ),
+      yield* executeGit(
+        "GitCore.removeWorktree",
+        input.cwd,
+        ["worktree", "remove", "--", entry.path],
+        { timeoutMs: 300_000 },
       );
     });
 
@@ -2324,6 +2486,16 @@ const makeGitCore = Effect.gen(function* () {
   return {
     status,
     ensureWorktree,
+    fastForwardTo: (cwd, sha) =>
+      withRepositoryLock(
+        "GitCore.fastForwardTo",
+        cwd,
+        runGit("GitCore.fastForwardTo", cwd, ["merge", "--ff-only", "--", sha]),
+      ),
+    initializeWorktreeSubmodules: (path, policy) => initializeSubmodules(path, policy),
+    listWorktrees,
+    inspectCheckout,
+    clearMissingRegistration,
     branchExists,
     statusDetails,
     prepareCommitContext,

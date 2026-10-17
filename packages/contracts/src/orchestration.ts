@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import {
   PlanningWorkflowSummary,
   CodeReviewWorkflowSummary,
@@ -346,7 +347,7 @@ export type ProjectSkill = typeof ProjectSkill.Type;
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
-  workspaceRoot: TrimmedNonEmptyString,
+  workspaceRoot: FilesystemPath,
   defaultModel: Schema.NullOr(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
@@ -538,7 +539,7 @@ const CommandExecutionRecordFields = {
   turnId: TurnId,
   providerItemId: Schema.NullOr(ProviderItemId),
   command: TrimmedNonEmptyString,
-  cwd: Schema.optional(TrimmedNonEmptyString),
+  cwd: Schema.optional(FilesystemPath),
   title: Schema.NullOr(TrimmedNonEmptyString),
   status: OrchestrationCommandExecutionStatus,
   detail: Schema.NullOr(Schema.String),
@@ -674,7 +675,7 @@ export const OrchestrationSession = Schema.Struct({
 export type OrchestrationSession = typeof OrchestrationSession.Type;
 
 export const OrchestrationCheckpointFile = Schema.Struct({
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   kind: TrimmedNonEmptyString,
   additions: NonNegativeInt,
   deletions: NonNegativeInt,
@@ -961,7 +962,7 @@ export const OrchestrationThread = Schema.Struct({
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(FilesystemPath),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
@@ -1043,7 +1044,7 @@ export const ProjectCreateCommand = Schema.Struct({
   commandId: CommandId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
-  workspaceRoot: TrimmedNonEmptyString,
+  workspaceRoot: FilesystemPath,
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(ModelSelection),
   defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
@@ -1056,7 +1057,7 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
@@ -1120,7 +1121,7 @@ const ProjectWorkflowCreateCommand = Schema.Struct({
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
   requirementPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
-  plansDirectory: TrimmedNonEmptyString,
+  plansDirectory: FilesystemPath,
   templateId: Schema.optional(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(() => "builtin.planning.dual"),
   ),
@@ -1245,7 +1246,7 @@ const ThreadCreateCommand = Schema.Struct({
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(FilesystemPath),
   threadReferences: Schema.optional(Schema.Array(ThreadReference)),
   createdAt: IsoDateTime,
 });
@@ -1255,7 +1256,7 @@ const ThreadDeleteCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   expectedArchivedAt: Schema.optional(IsoDateTime),
-  expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  expectedWorktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -1317,10 +1318,10 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  expectedWorktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
 }).check(
   Schema.makeFilter(
     (input) =>
@@ -1360,13 +1361,13 @@ export const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   branch: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(FilesystemPath),
   createdAt: IsoDateTime,
 });
 export type ThreadTurnStartBootstrapCreateThread = typeof ThreadTurnStartBootstrapCreateThread.Type;
 
 export const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
-  projectCwd: TrimmedNonEmptyString,
+  projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: Schema.optional(TrimmedNonEmptyString),
   /**
@@ -1940,7 +1941,7 @@ export const OrchestrationActorKind = Schema.Literals(["client", "server", "prov
 export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
-  workspaceRoot: TrimmedNonEmptyString,
+  workspaceRoot: FilesystemPath,
   defaultModel: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
@@ -1957,7 +1958,7 @@ export const ProjectCreatedPayload = Schema.Struct({
 export const ProjectMetaUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  workspaceRoot: Schema.optional(FilesystemPath),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
@@ -2053,7 +2054,7 @@ export const ThreadCreatedPayload = Schema.Struct({
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
   branch: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  worktreePath: Schema.NullOr(FilesystemPath),
   threadReferences: Schema.optional(Schema.Array(ThreadReference)).pipe(
     Schema.withDecodingDefault(() => []),
   ),
@@ -2128,7 +2129,7 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)),
   updatedAt: IsoDateTime,
 });
 
@@ -3047,7 +3048,7 @@ export const OrchestrationCreateWorkflowInput = Schema.Struct({
   ...PlanningWorkflowCreateFields,
   templateId: Schema.optional(TrimmedNonEmptyString),
   templateVersion: Schema.optional(Schema.Int),
-  plansDirectory: Schema.optional(TrimmedNonEmptyString),
+  plansDirectory: Schema.optional(FilesystemPath),
   documentType: Schema.optional(WorkflowDocumentType),
 });
 export type OrchestrationCreateWorkflowInput = typeof OrchestrationCreateWorkflowInput.Type;

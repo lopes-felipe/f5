@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -24,7 +25,7 @@ export const EditorId = Schema.Literals(EDITORS.map((e) => e.id));
 export type EditorId = typeof EditorId.Type;
 
 export const OpenInEditorInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   editor: EditorId,
 });
 export type OpenInEditorInput = typeof OpenInEditorInput.Type;

@@ -1,3 +1,5 @@
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
+import { readProjectSettings } from "../../project/projectSettings.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -123,6 +125,7 @@ function storageError(cause: unknown): NextTurnQueueStorageError {
 
 export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const store = yield* NextTurnQueueStore;
+  const worktreeSettings = yield* Effect.serviceOption(ServerSettingsService);
   const scope = yield* Effect.scope;
   const secretsOption = yield* Effect.serviceOption(ServerSecretStore);
   const protectedFingerprint = (config: import("@t3tools/contracts").ProviderInstanceConfig) => {
@@ -183,7 +186,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     );
 
-  const readGate = (item: NextTurnQueueItem, recreate = false) =>
+  const readGate = (item: NextTurnQueueItem, recreate = false, requireExisting = false) =>
     Effect.gen(function* () {
       if (hasNativeOperationReservation(item.threadId))
         return {
@@ -278,21 +281,33 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         worktreeExists: thread?.branch ? null : worktreeExists,
         worktreeSetup: yield* readWorktreeSetupGate(item.threadId, queue.state.worktreeBlockToken),
       });
-      if (gate.kind !== "ready" || worktreeExists !== false || !thread?.worktreePath) return gate;
+      if (gate.kind !== "ready" || !thread?.worktreePath) return gate;
       const model = yield* engine.getReadModel();
       const project = model.projects.find((entry) => entry.id === thread.projectId);
-      if (!project || !thread.branch)
-        return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
+      if (!project) return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
       return yield* Effect.gen(function* () {
-        if (!(yield* git.branchExists(project.workspaceRoot, thread.branch!))) {
+        yield* assertWorktreeReady(
+          git,
+          {
+            projectCwd: project.workspaceRoot,
+            worktreePath: thread.worktreePath,
+            branch: thread.branch,
+          },
+          !requireExisting,
+        );
+        if (thread.branch && !(yield* git.branchExists(project.workspaceRoot, thread.branch))) {
           return {
             kind: "autoPause" as const,
             reasonCode: "worktree_missing" as const,
             detail: `Worktree branch ${thread.branch} is missing.`,
           };
         }
-        if (recreate)
+        if (recreate && thread.branch)
           yield* git.ensureWorktree({
+            submodules: Option.isSome(worktreeSettings)
+              ? (yield* readProjectSettings(yield* worktreeSettings.value.getSettings, project))
+                  .settings.worktreeSubmodules
+              : "none",
             cwd: project.workspaceRoot,
             path: thread.worktreePath!,
             branch: thread.branch!,
@@ -564,7 +579,10 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               (project) => project.id === thread.projectId,
             )?.workspaceRoot ?? null)
           : null);
-      const start = startFromGate(item);
+      // Recreation may initialize submodules from the network; finish before taking the acceptance lock.
+      const preparedRevision = (yield* store.listByThread(threadId)).state.revision;
+      const preparedGate = yield* readGate(item, true);
+      const start = startFromGate(item, preparedGate, preparedRevision);
       yield* lockPath
         ? withWorktreeLifecycleLock(lockPath, start).pipe(
             Effect.catchTag("RepositoryLifecycleError", (error) =>
@@ -574,11 +592,15 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         : start;
     });
 
-  const startFromGate = (item: NextTurnQueueItem): Effect.Effect<void, NextTurnQueueError> =>
+  const startFromGate = (
+    item: NextTurnQueueItem,
+    preparedGate: Awaited<Effect.Success<ReturnType<typeof readGate>>>,
+    expectedRevision: number,
+  ): Effect.Effect<void, NextTurnQueueError> =>
     Effect.gen(function* () {
       const threadId = item.threadId;
-      const expectedRevision = (yield* store.listByThread(threadId)).state.revision;
-      const gate = yield* readGate(item, true);
+      const gate =
+        preparedGate.kind === "ready" ? yield* readGate(item, false, true) : preparedGate;
       if (gate.kind === "drop") {
         if (item.scheduleReason === "usage_limit_reset" && gate.reasonCode !== "thread_deleted") {
           yield* store.softDelete({ itemId: item.itemId });

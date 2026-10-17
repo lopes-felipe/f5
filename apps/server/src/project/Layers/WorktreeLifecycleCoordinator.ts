@@ -170,3 +170,17 @@ export function pathContains(parent: string, child: string): boolean {
     (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
   );
 }
+
+/** Acquire multiple checkout locks in canonical order; repository lock always comes later. */
+export function withWorktreeLifecycleLocks<A, E, R>(
+  paths: ReadonlyArray<string>,
+  action: Effect.Effect<A, E, R>,
+) {
+  return Effect.gen(function* () {
+    const keys = [...new Set(yield* Effect.forEach(paths, worktreeLockKey))].sort();
+    return yield* keys.reduceRight(
+      (next, key) => withWorktreeLifecycleLock(key, next),
+      action as Effect.Effect<A, E | RepositoryLifecycleError, R>,
+    );
+  });
+}

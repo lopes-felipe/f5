@@ -1,4 +1,11 @@
 import {
+  WorktreesInspectInput,
+  WorktreesRemoveInput,
+  WorktreesThreadStateInput,
+  WorktreesRecoverInput,
+} from "./worktrees";
+import { FilesystemPath } from "./baseSchemas";
+import {
   ComputerAccessRequested,
   ComputerGrant,
   ComputerActivity,
@@ -446,6 +453,10 @@ export const WS_METHODS = {
   nextTurnQueueDiscardDelivery: "nextTurnQueue.discardDelivery",
 
   // Background worktree setup for a new thread's first send
+  worktreesInspect: "worktrees.inspect",
+  worktreesRemove: "worktrees.remove",
+  worktreesThreadState: "worktrees.threadState",
+  worktreesRecover: "worktrees.recover",
   worktreeSetupSubscribe: "worktreeSetup.subscribe",
   worktreeSetupCancel: "worktreeSetup.cancel",
   worktreeSetupRetry: "worktreeSetup.retry",
@@ -816,6 +827,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.nextTurnQueueRecheckDelivery, NextTurnQueueRecheckDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueRetryDelivery, NextTurnQueueRetryDeliveryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueDiscardDelivery, NextTurnQueueDiscardDeliveryInput),
+  tagRequestBody(WS_METHODS.worktreesInspect, WorktreesInspectInput),
+  tagRequestBody(WS_METHODS.worktreesRemove, WorktreesRemoveInput),
+  tagRequestBody(WS_METHODS.worktreesThreadState, WorktreesThreadStateInput),
+  tagRequestBody(WS_METHODS.worktreesRecover, WorktreesRecoverInput),
   tagRequestBody(WS_METHODS.worktreeSetupSubscribe, WorktreeSetupThreadInput),
   tagRequestBody(WS_METHODS.worktreeSetupCancel, WorktreeSetupThreadInput),
   tagRequestBody(WS_METHODS.worktreeSetupRetry, WorktreeSetupThreadInput),
@@ -946,7 +961,7 @@ export const WsWelcomePayload = Schema.Struct({
   bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
   profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   projectName: TrimmedNonEmptyString,
   bootstrapProjectId: Schema.optional(ProjectId),
   bootstrapThreadId: Schema.optional(ThreadId),

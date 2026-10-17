@@ -36,6 +36,11 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "pushCurrentBranch",
       "branchExists",
       "ensureWorktree",
+      "fastForwardTo",
+      "initializeWorktreeSubmodules",
+      "listWorktrees",
+      "inspectCheckout",
+      "clearMissingRegistration",
       "readRangeContext",
       "readDefaultBranch",
       "readConfigValue",
@@ -69,8 +74,28 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
 
   const implementations: GitCoreShape = {
     cloneRepository: () => Effect.void,
+    fastForwardTo: () => Effect.void,
+    initializeWorktreeSubmodules: () => Effect.void,
     branchExists: () => Effect.succeed(true),
-    ensureWorktree: () => Effect.void,
+    ensureWorktree: () => Effect.succeed({ recreated: false }),
+    listWorktrees: () => Effect.succeed([]),
+    clearMissingRegistration: () => Effect.void,
+    inspectCheckout: (path) =>
+      Effect.succeed({
+        canonicalRoot: path,
+        commonDir: `${path}/.git`,
+        registration: null,
+        headSha: "abc123",
+        branch: "feature/test",
+        operation: null,
+        hasTrackedChanges: false,
+        hasUntrackedChanges: false,
+        ignoredEntries: [],
+        ignoredTruncated: false,
+        upstreamRef: null,
+        upstreamSha: null,
+        aheadCount: null,
+      }),
     status: (_input) =>
       Effect.succeed({
         ...DEFAULT_STATUS_DETAILS,
@@ -142,6 +167,26 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
   };
 
   const service: GitCoreShape = {
+    fastForwardTo: (cwd, sha) => {
+      record("fastForwardTo", [cwd, sha]);
+      return implementations.fastForwardTo(cwd, sha);
+    },
+    initializeWorktreeSubmodules: (path, policy) => {
+      record("initializeWorktreeSubmodules", [path, policy]);
+      return implementations.initializeWorktreeSubmodules(path, policy);
+    },
+    listWorktrees: (cwd) => {
+      record("listWorktrees", [cwd]);
+      return implementations.listWorktrees(cwd);
+    },
+    inspectCheckout: (path, options) => {
+      record("inspectCheckout", [path, options]);
+      return implementations.inspectCheckout(path, options);
+    },
+    clearMissingRegistration: (cwd, path) => {
+      record("clearMissingRegistration", [cwd, path]);
+      return implementations.clearMissingRegistration(cwd, path);
+    },
     cloneRepository: (input) => {
       record("cloneRepository", [input]);
       return implementations.cloneRepository(input);

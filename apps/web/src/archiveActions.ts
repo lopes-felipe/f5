@@ -1,3 +1,7 @@
+import {
+  useWorktreeRemovalDialogStore,
+  type WorktreeRemovalRow,
+} from "./worktreeRemovalDialogStore";
 import { recordThreadUndo } from "./threadUndo";
 import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
 import {
@@ -13,7 +17,7 @@ import { readNativeApi } from "./nativeApi";
 import { useRightPanelStore } from "./rightPanelStore";
 import type { Project, Thread } from "./types";
 import { toastManager } from "./components/ui/toast";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "./worktreeCleanup";
+import { getOrphanedWorktreePathForThread } from "./worktreeCleanup";
 
 export type WorkflowArchiveKind = "planning" | "codeReview" | "investigation";
 export type WorkflowArchiveId = PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId;
@@ -169,11 +173,6 @@ export async function deleteThreadWithCleanup(input: {
   readonly clearTerminalState: (threadId: ThreadId) => void;
   readonly navigateToThread: (threadId: ThreadId) => void;
   readonly navigateHome: () => void;
-  readonly removeWorktree: (input: {
-    readonly cwd: string;
-    readonly path: string;
-    readonly force: boolean;
-  }) => Promise<unknown>;
 }): Promise<void> {
   const result = await deleteThreadsWithCleanup({ ...input, threadIds: [input.threadId] });
   if (result.failures[0]) throw result.failures[0].error;
@@ -236,28 +235,15 @@ export async function deleteThreadsWithCleanup(
     else input.navigateHome();
   }
   const checkedPaths = new Set<string>();
+  const removalRows: WorktreeRemovalRow[] = [];
   for (const threadId of succeeded) {
     const thread = input.threads.find((entry) => entry.id === threadId)!;
     const project = input.projects.find((entry) => entry.id === thread.projectId);
     const orphanedPath = getOrphanedWorktreePathForThread([...survivors(), thread], threadId);
     if (!project || !orphanedPath || checkedPaths.has(orphanedPath)) continue;
     checkedPaths.add(orphanedPath);
-    const displayPath = formatWorktreePathForDisplay(orphanedPath);
-    try {
-      const confirmed = await api.dialogs.confirm(
-        `No surviving thread is linked to this worktree:\n${displayPath}\n\nDelete the worktree too?`,
-      );
-      // A thread may have been created or linked while the confirmation was open.
-      if (!confirmed || !getOrphanedWorktreePathForThread([...survivors(), thread], threadId))
-        continue;
-      await input.removeWorktree({ cwd: project.cwd, path: orphanedPath, force: false });
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Threads deleted, but worktree removal failed",
-        description: `Could not remove ${displayPath}. ${error instanceof Error ? error.message : "Unknown error removing worktree."}`,
-      });
-    }
+    removalRows.push({ projectId: project.id, path: orphanedPath });
   }
+  await useWorktreeRemovalDialogStore.getState().request(removalRows);
   return { succeeded, failures };
 }

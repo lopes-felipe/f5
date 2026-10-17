@@ -671,11 +671,13 @@ it("redacts remote output from failed fetches while explaining the cause", async
   }
 });
 
-it("allows five minutes for worktree removal", async () => {
+it("refuses to remove an unregistered directory", async () => {
   const scripted = makeScriptedGitService();
   const core = await makeCore(scripted.service);
-  await Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() }));
-  expect(scripted.calls.find((call) => call.args[1] === "remove")?.timeoutMs).toBe(300_000);
+  await expect(
+    Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() })),
+  ).rejects.toThrow("not an unlocked linked worktree");
+  expect(scripted.calls.some((call) => call.args[1] === "remove")).toBe(false);
 });
 
 it("returns missing worktree branches without running git", async () => {

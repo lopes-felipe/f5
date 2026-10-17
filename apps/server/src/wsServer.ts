@@ -1,3 +1,7 @@
+import { assertWorktreeReady } from "./project/worktreeReadiness.ts";
+import { removeWorktreeSafely } from "./project/worktreeClaims.ts";
+import { WorktreeManager, type WorktreeManagerShape } from "./project/Services/WorktreeManager.ts";
+import { canonicalWorktreePath } from "./git/worktreePaths.ts";
 import { ProjectionProjectRepository } from "./persistence/Services/ProjectionProjects";
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
 import {
@@ -426,7 +430,7 @@ function validateWorkspaceRelativeTarget(params: {
   { requestedAbsolutePath: string; relativePath: string; workspaceAbsolutePath: string },
   RouteRequestError
 > {
-  const normalizedInputPath = params.relativePath.trim();
+  const normalizedInputPath = params.relativePath;
   if (params.path.isAbsolute(normalizedInputPath)) {
     return Effect.fail(
       new RouteRequestError({
@@ -875,6 +879,7 @@ interface OrchestrationRuntimeServices {
   readonly storageMaintenance: StorageMaintenanceShape;
   readonly nextTurnQueueDispatcher: NextTurnQueueDispatcherShape;
   readonly worktreeSetup: WorktreeSetupShape;
+  readonly worktreeManager: WorktreeManagerShape;
   readonly storageCleanupWorker: StorageCleanupWorkerShape;
   readonly defaultBranchAutoPull: DefaultBranchAutoPullShape;
 }
@@ -1330,7 +1335,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* readiness.markKeybindingsReady;
 
   const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
-    const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
+    const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot));
     const workspaceStat = yield* fileSystem
       .stat(normalizedWorkspaceRoot)
       .pipe(Effect.catch(() => Effect.succeed(null)));
@@ -1552,6 +1557,37 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       command: prepared.command,
       orchestrationEngine: input.orchestrationEngine,
       git: { ...git, createWorktree: createConfiguredWorktree },
+      rollbackWorktree: (receipt) =>
+        removeWorktreeSafely({
+          projectCwd: receipt.cwd,
+          path: receipt.path,
+          policy: {
+            kind: "ownedRollback",
+            ownThreadId: prepared.command.threadId,
+            ownedCreation: { ...receipt, created: true },
+          },
+        }).pipe(
+          Effect.provideService(GitCore, git),
+          Effect.provideService(ServerConfig, serverConfig),
+          Effect.provideService(OrchestrationEngineService, input.orchestrationEngine),
+          Effect.provideService(NextTurnQueueStore, nextTurnQueueStore),
+          Effect.provideService(TerminalManager, terminalManager),
+          Effect.provideService(ProviderService, providerService),
+          Effect.flatMap((result) =>
+            result.blockedReasons.length
+              ? Effect.fail(new Error(`Worktree retained: ${result.blockedReasons.join("; ")}`))
+              : Effect.void,
+          ),
+          Effect.mapError(
+            (error) =>
+              new GitCommandError({
+                operation: "bootstrap.rollback",
+                cwd: receipt.cwd,
+                command: "worktree remove",
+                detail: error.message,
+              }),
+          ),
+        ),
       ...(prepared.attachmentIngress.attachments.length > 0
         ? {
             persistAttachments: persistPreparedAttachmentIngress(prepared.attachmentIngress).pipe(
@@ -2517,6 +2553,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         NextTurnQueueDispatcher,
       );
+      const worktreeManager = ServiceMap.get(orchestrationRuntimeServices, WorktreeManager);
       const worktreeSetup = ServiceMap.get(orchestrationRuntimeServices, WorktreeSetup);
       const storageCleanupWorker = ServiceMap.get(
         orchestrationRuntimeServices,
@@ -2652,6 +2689,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         nextTurnQueueDispatcher,
         worktreeSetup,
         storageCleanupWorker,
+        worktreeManager,
         projectSkillSyncService,
         defaultBranchAutoPull,
       }).pipe(Effect.orDie);
@@ -2964,6 +3002,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               .pipe(Effect.mapError(mapNextTurnQueueRouteError)),
           };
         }
+      }
+      const workspaceModel = yield* orchestrationEngine.getReadModel();
+      const workspaceThread = workspaceModel.threads.find(
+        (thread) => thread.id === body.command.threadId,
+      );
+      if (workspaceThread?.worktreePath) {
+        const project = workspaceModel.projects.find(
+          (project) => project.id === workspaceThread.projectId && project.deletedAt === null,
+        );
+        if (!project)
+          return yield* new RouteRequestError({
+            message: "Workspace identity cannot be verified.",
+          });
+        yield* assertWorktreeReady(
+          git,
+          {
+            projectCwd: project.workspaceRoot,
+            worktreePath: workspaceThread.worktreePath,
+            branch: workspaceThread.branch,
+          },
+          body.intent !== "steer",
+        ).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }
       const command = yield* normalizeDispatchCommand({
         command: body.command,
@@ -4689,7 +4749,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitRemoveWorktree: {
         const body = stripRequestTag(request.body);
-        return yield* git.removeWorktree(body);
+        const { worktreeManager, orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(body.cwd));
+        const projects = (yield* orchestrationEngine.getReadModel()).projects.filter(
+          (project) => project.deletedAt === null,
+        );
+        let projectId: ProjectId | undefined;
+        for (const project of projects) {
+          if (
+            (yield* Effect.tryPromise(() => canonicalWorktreePath(project.workspaceRoot))) ===
+            canonical
+          ) {
+            projectId = project.id;
+            break;
+          }
+        }
+        if (!projectId) return yield* Effect.fail(new Error("Unknown project"));
+        const preview = yield* worktreeManager.inspect({ projectId, path: body.path });
+        const result = yield* worktreeManager.remove({
+          projectId,
+          path: body.path,
+          deleteBranch: false,
+          expectedHead: preview.headSha,
+        });
+        if (!result.removed)
+          return yield* Effect.fail(
+            new Error(result.blockedReasons.join("; ") || "Worktree was not removed."),
+          );
+        return;
       }
 
       case WS_METHODS.gitCreateBranch: {
@@ -5593,6 +5680,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { entries, scheduledBackupStatus };
       }
 
+      case WS_METHODS.worktreesInspect: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager.inspect(request.body);
+      }
+      case WS_METHODS.worktreesRemove: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager.remove(request.body);
+      }
+      case WS_METHODS.worktreesThreadState: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager.threadState(request.body);
+      }
+      case WS_METHODS.worktreesRecover: {
+        const { worktreeManager } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* worktreeManager.recover(request.body);
+      }
       case WS_METHODS.worktreeSetupSubscribe: {
         const body = stripRequestTag(request.body);
         const { worktreeSetup } = yield* awaitOrchestrationRuntimeForRoute;

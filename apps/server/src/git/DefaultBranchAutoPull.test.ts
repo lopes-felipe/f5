@@ -81,7 +81,7 @@ describe("DefaultBranchAutoPull", { timeout: 60_000 }, () => {
               projectId: "project-1",
               threadId: null,
               action: "pull",
-              reason: "1 commit(s) behind as of the last fetch",
+              reason: "checks for new upstream commits",
             },
           ]);
           expect(git(repo.root, "rev-parse", "HEAD")).toBe(before);

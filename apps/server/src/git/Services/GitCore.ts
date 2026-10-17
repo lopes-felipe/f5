@@ -17,10 +17,37 @@ import type {
   GitListBranchesInput,
   GitListBranchesResult,
   GitPullResult,
-  GitRemoveWorktreeInput,
   GitStatusInput,
   GitStatusResult,
 } from "@t3tools/contracts";
+
+import type { WorktreeListEntry } from "../worktreeList.ts";
+
+export interface RegisteredWorktree extends WorktreeListEntry {
+  readonly canonicalPath: string;
+}
+export interface CheckoutInspection {
+  readonly canonicalRoot: string;
+  readonly commonDir: string;
+  readonly registration: RegisteredWorktree | null;
+  readonly headSha: string | null;
+  readonly branch: string | null;
+  readonly operation: "merge" | "rebase" | "cherry-pick" | "revert" | "bisect" | null;
+  readonly hasTrackedChanges: boolean;
+  readonly hasUntrackedChanges: boolean;
+  readonly ignoredEntries: ReadonlyArray<string>;
+  readonly ignoredTruncated: boolean;
+  readonly upstreamRef: string | null;
+  readonly upstreamSha: string | null;
+  readonly aheadCount: number | null;
+}
+
+/** Internal compatibility input; force is never honored for an existing checkout. */
+export interface InternalRemoveWorktreeInput {
+  readonly cwd: string;
+  readonly path: string;
+  readonly force?: boolean;
+}
 
 import type { GitCommandError } from "../Errors.ts";
 
@@ -127,6 +154,17 @@ export interface GitWorktreeProgress {
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
 export interface GitCoreShape {
+  readonly listWorktrees: (
+    cwd: string,
+  ) => Effect.Effect<ReadonlyArray<RegisteredWorktree>, GitCommandError>;
+  readonly inspectCheckout: (
+    path: string,
+    options?: { aheadOf?: string },
+  ) => Effect.Effect<CheckoutInspection, GitCommandError>;
+  readonly clearMissingRegistration: (
+    cwd: string,
+    path: string,
+  ) => Effect.Effect<void, GitCommandError>;
   /**
    * Read Git status for a repository.
    */
@@ -138,7 +176,12 @@ export interface GitCoreShape {
     cwd: string;
     path: string;
     branch: string;
-  }) => Effect.Effect<void, GitCommandError>;
+  }) => Effect.Effect<{ recreated: boolean }, GitCommandError>;
+  readonly fastForwardTo: (cwd: string, sha: string) => Effect.Effect<void, GitCommandError>;
+  readonly initializeWorktreeSubmodules: (
+    path: string,
+    policy: import("@t3tools/contracts").WorktreeSubmodules,
+  ) => Effect.Effect<void, GitCommandError>;
   readonly branchExists: (cwd: string, branch: string) => Effect.Effect<boolean, GitCommandError>;
   /** Read detailed status without the polling cache, for mutation decisions. */
   readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
@@ -307,7 +350,9 @@ export interface GitCoreShape {
   /**
    * Remove an existing worktree.
    */
-  readonly removeWorktree: (input: GitRemoveWorktreeInput) => Effect.Effect<void, GitCommandError>;
+  readonly removeWorktree: (
+    input: InternalRemoveWorktreeInput,
+  ) => Effect.Effect<void, GitCommandError>;
 
   /**
    * Rename an existing local branch.

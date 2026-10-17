@@ -58,6 +58,14 @@ export interface UsageResumeLedger {
   previousTarget?: string | null;
 }
 export interface NextTurnQueueStoreShape {
+  readonly readWorkspaceClaims: (threadIds: ReadonlyArray<ThreadId>) => Effect.Effect<
+    ReadonlyArray<{
+      readonly threadId: ThreadId;
+      readonly hasQueuedWork: boolean;
+      readonly worktreeBlockToken: string | null;
+    }>,
+    NextTurnQueueError
+  >;
   readonly scheduleUsageLimitResume: (input: {
     command: ThreadTurnStartCommand;
     itemId: CommandId;

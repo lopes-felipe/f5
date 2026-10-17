@@ -1,3 +1,5 @@
+import { flushSync } from "react-dom";
+import { WorktreeMissingBanner } from "./chat/WorktreeMissingBanner";
 import { pickPreferredModel } from "../providerModels";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
@@ -6956,6 +6958,29 @@ export default function ChatView({
       ),
     });
   }
+  if (
+    activeThread.error &&
+    isLocalDraftThread &&
+    envMode === "worktree" &&
+    !activeThread.worktreePath
+  ) {
+    threadNotices.push({
+      id: "worktree-isolation-recovery",
+      content: (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isPendingTurnDispatchBlocked}
+          onClick={() => {
+            flushSync(() => onEnvModeChange("local"));
+            void onSendRef.current?.();
+          }}
+        >
+          Send in project checkout
+        </Button>
+      ),
+    });
+  }
   if (activeThread.session?.provider === "claudeAgent") {
     threadNotices.push({
       id: "transcript-repair",
@@ -7387,6 +7412,13 @@ export default function ChatView({
                     {threadNotices.length > 0 ? (
                       <ThreadNoticeStack notices={threadNotices} />
                     ) : null}
+                    {isServerThread && (
+                      <WorktreeMissingBanner
+                        threadId={threadId}
+                        worktreePath={activeThread?.worktreePath}
+                        branch={activeThread?.branch}
+                      />
+                    )}
                     {isServerThread &&
                     worktreeSetup &&
                     shouldShowWorktreeSetupCard(worktreeSetup, {

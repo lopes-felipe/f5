@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -36,7 +37,7 @@ export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionIn
 
 export const TerminalOpenInput = Schema.Struct({
   ...TerminalSessionInput.fields,
-  cwd: TrimmedNonEmptyStringSchema,
+  cwd: FilesystemPath,
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   env: Schema.optional(TerminalEnvSchema),
@@ -61,7 +62,7 @@ export type TerminalClearInput = Schema.Codec.Encoded<typeof TerminalClearInput>
 
 export const TerminalRestartInput = Schema.Struct({
   ...TerminalSessionInput.fields,
-  cwd: TrimmedNonEmptyStringSchema,
+  cwd: FilesystemPath,
   cols: TerminalColsSchema,
   rows: TerminalRowsSchema,
   env: Schema.optional(TerminalEnvSchema),
@@ -90,7 +91,7 @@ export const TerminalSessionSnapshot = Schema.Struct({
   ...TerminalRevisionFields,
   threadId: Schema.String.check(Schema.isNonEmpty()),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
-  cwd: Schema.String.check(Schema.isNonEmpty()),
+  cwd: FilesystemPath,
   status: TerminalSessionStatus,
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   history: Schema.String,

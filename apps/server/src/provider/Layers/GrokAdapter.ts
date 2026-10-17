@@ -470,7 +470,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
             });
           }
-          if (!input.cwd?.trim()) {
+          if (!input.cwd) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
@@ -478,7 +478,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             });
           }
 
-          const cwd = nodePath.resolve(input.cwd.trim());
+          const cwd = nodePath.resolve(input.cwd);
           const grokModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);

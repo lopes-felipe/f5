@@ -461,6 +461,24 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     });
 
   const store: NextTurnQueueStoreShape = {
+    readWorkspaceClaims: (threadIds) =>
+      Effect.gen(function* () {
+        if (threadIds.length === 0) return [];
+        const queued = yield* sql<{
+          threadId: string;
+        }>`SELECT DISTINCT thread_id AS "threadId" FROM next_turn_queue WHERE deleted_at IS NULL AND ${sql.in("thread_id", threadIds)} UNION SELECT DISTINCT thread_id AS "threadId" FROM next_turn_queue_quarantine WHERE ${sql.in("thread_id", threadIds)}`;
+        const states = yield* sql<{
+          threadId: string;
+          token: string | null;
+        }>`SELECT thread_id AS "threadId", worktree_block_token AS token FROM next_turn_queue_state WHERE ${sql.in("thread_id", threadIds)}`;
+        const queuedIds = new Set(queued.map((row) => row.threadId));
+        const tokens = new Map(states.map((row) => [row.threadId, row.token]));
+        return threadIds.map((threadId) => ({
+          threadId,
+          hasQueuedWork: queuedIds.has(threadId),
+          worktreeBlockToken: tokens.get(threadId) ?? null,
+        }));
+      }).pipe(Effect.mapError(normalizeError)),
     listByThread: (threadId) => listByThread(threadId).pipe(Effect.mapError(normalizeError)),
 
     listActionableThreadIds: sql<{ readonly threadId: string }>`

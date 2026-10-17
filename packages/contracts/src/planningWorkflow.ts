@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
@@ -165,7 +166,7 @@ export const WorkflowImplementation = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
-  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+  worktreePath: Schema.optional(Schema.NullOr(FilesystemPath)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   runtimeMode: Schema.optional(
@@ -269,7 +270,7 @@ export const PlanningWorkflow = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   requirementPrompt: TrimmedNonEmptyString,
-  plansDirectory: TrimmedNonEmptyString,
+  plansDirectory: FilesystemPath,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   branchA: WorkflowBranch,
   branchB: WorkflowBranch,

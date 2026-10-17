@@ -551,6 +551,7 @@ export function buildFirstSendBootstrap(input: {
         projectCwd: input.projectCwd,
         baseBranch: input.baseBranchForWorktree,
         branch: buildTemporaryWorktreeBranchName(),
+        requireWorktree: true,
       }
     : undefined;
 

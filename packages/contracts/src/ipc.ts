@@ -1,4 +1,14 @@
 import type {
+  WorktreesInspectInput,
+  WorktreesInspectResult,
+  WorktreesRemoveInput,
+  WorktreesRemoveResult,
+  WorktreesThreadStateInput,
+  WorktreesThreadStateResult,
+  WorktreesRecoverInput,
+  WorktreesRecoverResult,
+} from "./worktrees";
+import type {
   ComputerAccessPush,
   ComputerAccessSettled,
   ComputerGrantsChanged,
@@ -910,6 +920,12 @@ export interface NativeApi {
     discardDelivery: (input: NextTurnQueueDiscardDeliveryInput) => Promise<NextTurnQueueSnapshot>;
     onUpdated: (callback: (payload: NextTurnQueueSnapshot) => void) => () => void;
     onSummaryUpdated: (callback: (payload: NextTurnQueueSummary) => void) => () => void;
+  };
+  worktrees: {
+    inspect: (input: WorktreesInspectInput) => Promise<WorktreesInspectResult>;
+    remove: (input: WorktreesRemoveInput) => Promise<WorktreesRemoveResult>;
+    threadState: (input: WorktreesThreadStateInput) => Promise<WorktreesThreadStateResult>;
+    recover: (input: WorktreesRecoverInput) => Promise<WorktreesRecoverResult>;
   };
   worktreeSetup: {
     /** Current snapshot (null when nothing is tracked); updates arrive on `onUpdated`. */

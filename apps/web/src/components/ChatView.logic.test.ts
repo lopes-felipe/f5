@@ -1066,6 +1066,7 @@ describe("buildFirstSendBootstrap", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
       },
       prepareWorktree: {
+        requireWorktree: true,
         projectCwd: "/repo/project",
         baseBranch: "main",
         branch: "t3code/1234abcd",
@@ -1096,6 +1097,7 @@ describe("buildFirstSendBootstrap", () => {
       }),
     ).toEqual({
       prepareWorktree: {
+        requireWorktree: true,
         projectCwd: "/repo/project",
         baseBranch: "main",
         branch: "t3code/abcddcba",

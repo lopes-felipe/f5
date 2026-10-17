@@ -1,3 +1,4 @@
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readProjectSettings } from "../../project/projectSettings";
@@ -665,6 +666,17 @@ const make = Effect.gen(function* () {
         persistedBinding,
         desiredRuntimeMode,
       } = sessionContext;
+      if (thread.worktreePath) {
+        const project = (yield* orchestrationEngine.getReadModel()).projects.find(
+          (entry) => entry.id === thread.projectId,
+        );
+        if (!project) return yield* Effect.fail(new Error("Unknown project"));
+        yield* assertWorktreeReady(git, {
+          projectCwd: project.workspaceRoot,
+          worktreePath: thread.worktreePath,
+          branch: thread.branch,
+        });
+      }
       const instructionContext: Partial<SharedInstructionInput> = {
         ...baseInstructionContext,
         ...(options?.workflowExecutionProfile
@@ -1626,6 +1638,29 @@ const make = Effect.gen(function* () {
           )
         : undefined;
     if (event.type === "thread.turn-steer-requested") {
+      const project = (yield* orchestrationEngine.getReadModel()).projects.find(
+        (entry) => entry.id === thread.projectId,
+      );
+      if (!project)
+        return yield* new ProviderTurnDeliveryError({
+          certainty: "not_sent",
+          retryable: false,
+          detail: "Unknown project",
+        });
+      yield* assertWorktreeReady(git, {
+        projectCwd: project.workspaceRoot,
+        worktreePath: thread.worktreePath,
+        branch: thread.branch,
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: false,
+              detail: error.message,
+            }),
+        ),
+      );
       return yield* providerService.sendTurn({
         threadId: thread.id,
         ...(event.commandId ? { deliveryId: event.commandId } : {}),

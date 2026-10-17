@@ -9,7 +9,6 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { isArchivedWorkflow } from "@t3tools/shared/workflowArchive";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArchiveRestoreIcon,
@@ -31,7 +30,6 @@ import {
 import { useAppSettings } from "../../../appSettings";
 import { useComposerDraftStore } from "../../../composerDraftStore";
 import { isArchivedThread } from "../../../lib/threadOrdering";
-import { gitRemoveWorktreeMutationOptions } from "../../../lib/gitReactQuery";
 import { readNativeApi } from "../../../nativeApi";
 import { useStore } from "../../../store";
 import { useTerminalStateStore } from "../../../terminalStateStore";
@@ -153,8 +151,6 @@ export function ArchiveSettings() {
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
   const { settings } = useAppSettings();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const [query, setQuery] = useState("");
   const [selectedKeys, setSelectedKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(() => new Set());
@@ -258,7 +254,6 @@ export function ArchiveSettings() {
         navigateHome: () => {
           void navigate({ to: "/", replace: true });
         },
-        removeWorktree: (input) => removeWorktreeMutation.mutateAsync(input),
       });
     },
     [
@@ -267,7 +262,7 @@ export function ArchiveSettings() {
       clearTerminalState,
       navigate,
       projects,
-      removeWorktreeMutation,
+
       routeThreadId,
     ],
   );

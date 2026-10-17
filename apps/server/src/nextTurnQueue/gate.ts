@@ -70,7 +70,10 @@ export function resolveNextTurnQueueGate(input: {
     return {
       kind: "autoPause",
       reasonCode: "worktree_missing",
-      detail: `Worktree '${input.thread.worktreePath}' is missing.`,
+      detail:
+        input.thread.branch === null
+          ? "This thread's worktree is gone. Recreate it or continue in the project checkout."
+          : `Worktree '${input.thread.worktreePath}' is missing.`,
     };
   }
   if (

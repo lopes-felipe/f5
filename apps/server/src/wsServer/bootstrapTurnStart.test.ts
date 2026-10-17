@@ -138,8 +138,15 @@ function makeDependencies(input?: {
   };
   const git: Pick<
     GitCoreShape,
-    "createWorktree" | "fetchRemoteBranchCommit" | "hasRemote" | "removeWorktree"
+    | "createWorktree"
+    | "fetchRemoteBranchCommit"
+    | "hasRemote"
+    | "removeWorktree"
+    | "resolveCommit"
+    | "resolveCommonDir"
   > = {
+    resolveCommit: () => Effect.succeed("0123456789abcdef0123456789abcdef01234567"),
+    resolveCommonDir: () => Effect.succeed("/repo/project/.git"),
     createWorktree:
       input?.createWorktree ??
       (() =>
@@ -176,6 +183,8 @@ function makeDependencies(input?: {
 
   return {
     orchestrationEngine,
+    rollbackWorktree: (receipt: { cwd: string; path: string }) =>
+      git.removeWorktree({ cwd: receipt.cwd, path: receipt.path }),
     git,
     projectSetupScriptRunner,
   };
@@ -811,7 +820,6 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(removeWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       path: "/repo/project/.worktrees/thread-1",
-      force: true,
     });
   });
 
@@ -854,7 +862,6 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(removeWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       path: "/repo/project/.worktrees/thread-1",
-      force: true,
     });
   });
 
@@ -951,7 +958,6 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(removeWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       path: "/repo/project/.worktrees/thread-1",
-      force: true,
     });
   });
 
@@ -1070,7 +1076,6 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(removeWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       path: "/repo/project/.worktrees/thread-1",
-      force: true,
     });
   });
 

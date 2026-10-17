@@ -207,9 +207,9 @@ describe("StorageCleanupWorker", { timeout: 60_000 }, () => {
             thread({ id: "thread-2", projectId: "project-1", worktreePath, branch: "feature" }),
           );
           const shared = yield* worker.runOnce;
-          expect(shared.every((entry) => entry.action === "skip")).toBe(true);
-          expect(shared[0]!.reason).toContain("used by 1 other thread(s)");
-          expect(yield* Effect.promise(() => exists(worktreePath))).toBe(true);
+          expect(shared[0]!.action).toBe("remove");
+          expect(world.threads[1]?.worktreePath).toBe(worktreePath);
+          expect(yield* Effect.promise(() => exists(worktreePath))).toBe(false);
         }),
       ),
     );
@@ -352,14 +352,16 @@ describe("StorageCleanupWorker races (lifecycle lock)", { timeout: 60_000 }, () 
     );
   });
 
-  it("keeps a worktree a second thread started sharing while cleanup waited", async () => {
-    await expectKept(
-      ({ world, worktreePath }) =>
+  it("allows a new idle linked conversation while preserving its recorded path", async () => {
+    const { results, kept } = await Effect.runPromise(
+      raceCleanup(({ world, worktreePath }) =>
         world.threads.push(
           thread({ id: "thread-2", projectId: "project-1", worktreePath, branch: "feature" }),
         ),
-      "used by 1 other thread(s)",
+      ),
     );
+    expect(results[0]).toMatchObject({ action: "remove" });
+    expect(kept).toBe(false);
   });
 
   it("keeps a worktree whose HEAD moved (recreation or new work) while cleanup waited", async () => {

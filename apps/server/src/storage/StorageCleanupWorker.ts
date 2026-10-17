@@ -30,9 +30,10 @@ import {
 } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { readProjectSettings } from "../project/projectSettings.ts";
 import {
-  foreignClaims,
-  ignoredFilesBlockRemoval,
+  evaluateWorktreeRemoval,
   readWorktreeClaims,
+  stopDeletedWorktreeClaims,
+  removeWorktreeSafely,
 } from "../project/worktreeClaims.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
@@ -155,6 +156,8 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
     | ProviderService
     | NextTurnQueueStore
     | SqlClient.SqlClient
+    | GitCore
+    | ServerConfig
   >();
   const config = yield* ServerConfig;
   const settingsService = yield* ServerSettingsService;
@@ -192,31 +195,17 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
   /** Safety checks shared by the dry run and the re-check under the lock. */
   const safetyBlock = (thread: OrchestrationThread, worktreePath: string) =>
     Effect.gen(function* () {
-      if (thread.deletedAt === null) {
-        const session = thread.session;
-        if (
-          session &&
-          (session.activeTurnId !== null ||
-            session.status === "starting" ||
-            session.status === "running")
-        ) {
-          return "the thread is working";
-        }
-      }
-      const claims = yield* readWorktreeClaims(worktreePath).pipe(Effect.provideServices(services));
-      if (claims.queuedThreadIds.includes(thread.id)) return "the thread has queued turns";
-      if (claims.sessions.some((session) => session.threadId === thread.id)) {
-        return "an agent session is open in it";
-      }
-      const foreign = foreignClaims(claims, thread.id);
-      if (foreign.length > 0) return foreign.join(", ");
-      const status = yield* git.statusDetails(worktreePath).pipe(Effect.option);
-      if (Option.isNone(status)) return "git status could not be read";
-      if (status.value.hasWorkingTreeChanges) return "it has uncommitted changes";
-      // Removing a detached worktree drops its HEAD reflog, which can leave
-      // commits that no branch contains unreachable.
-      if (status.value.branch === null) return "HEAD is detached";
-      return yield* ignoredFilesBlockRemoval(git, worktreePath);
+      const model = yield* engine.getReadModel();
+      const project = model.projects.find((entry) => entry.id === thread.projectId);
+      if (!project) return "Unknown project";
+      const result = yield* evaluateWorktreeRemoval({
+        projectCwd: project.workspaceRoot,
+        path: worktreePath,
+        policy: { kind: "autoCleanup", ownThreadId: thread.id },
+      }).pipe(Effect.provideServices(services));
+      if (result.deletedThreadClaims.length)
+        return "deleted thread processes must be stopped first";
+      return result.blockedReasons.length ? result.blockedReasons.join(", ") : null;
     });
 
   const evaluate = (input: {
@@ -377,6 +366,12 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
         (entry) => entry.id === evaluation.target.threadId,
       );
       if (!thread) return evaluation.target;
+      const claims = yield* readWorktreeClaims(evaluation.worktreePath).pipe(
+        Effect.provideServices(services),
+      );
+      yield* stopDeletedWorktreeClaims(claims.deletedThreadIds).pipe(
+        Effect.provideServices(services),
+      );
       const commonDir = yield* git.resolveCommonDir(evaluation.projectRoot);
       return yield* withWorktreeLifecycleLock(
         evaluation.worktreePath,
@@ -404,11 +399,13 @@ export const makeStorageCleanupWorker = Effect.gen(function* () {
               });
               return skip(evaluation.target, `${evaluation.target.reason}, but ${reason}`);
             }
-            yield* git.removeWorktree({
-              cwd: evaluation.projectRoot,
+            const removed = yield* removeWorktreeSafely({
+              projectCwd: evaluation.projectRoot,
               path: evaluation.worktreePath,
-              force: false,
-            });
+              policy: { kind: "autoCleanup", ownThreadId: thread.id },
+            }).pipe(Effect.provideServices(services));
+            if (removed.blockedReasons.length)
+              return skip(evaluation.target, removed.blockedReasons.join("; "));
             yield* recordStorageAutomationAudit({
               operationId,
               job: "worktree-cleanup",

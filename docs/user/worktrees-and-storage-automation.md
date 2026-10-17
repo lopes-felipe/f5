@@ -46,8 +46,10 @@ startup, after a thread is deleted and when these settings change. It can remove
 
 A worktree is never removed when it has uncommitted or untracked changes, ignored files other than
 `node_modules/` (for example `.env`), a detached HEAD, an open terminal or agent session, queued
-turns, or another thread using it. Each check is repeated right before removal, and removal never
-forces. The branch is always kept and the thread keeps its worktree path, so the next message
+turns, or an active or pending turn in another conversation using it. Unreadable identity, claims,
+locked registrations, and an in-progress Git operation also block removal. Idle conversations,
+including archived ones, may remain linked. Each check is repeated right before removal, and removal
+never forces. Automatic cleanup always keeps the branch and recorded worktree path, so the next message
 recreates the worktree. Worktrees outside this profile's worktrees directory, and any directory
 containing a project root, are ignored.
 
@@ -107,3 +109,34 @@ Credential-free exports redact OpenCode passwords and sensitive provider environ
 values from settings. When credential export is explicitly selected, settings and
 secret files are encrypted with the supplied password. Old interrupted daily partial
 files are removed before the next scheduled check.
+
+## Manual removal and missing workspaces
+
+Deleting conversations opens one removal dialog for all orphaned worktrees. The dialog inspects
+current Git state and usage, disables unsafe rows, and lists idle linked conversations that will
+recreate their checkout on their next send. **Keep all** leaves every remaining checkout intact.
+Removal rechecks HEAD and usage under lifecycle locks; a changed checkout is retained with a reason.
+
+Branch deletion is optional. It is selected by default only when the branch is merged. A branch
+that is pushed or whose configured upstream has disappeared can also be selected. Default branches,
+branches checked out elsewhere, and branches or paths referenced by non-deleted conversations cannot
+be deleted. Branch deletion compares the inspected commit again before changing the ref.
+
+A missing worktree never silently moves a conversation into the shared project checkout. When its
+branch still exists, the next send can recreate the registered checkout in this profile's managed
+worktrees directory. A missing branch, different repository or checkout, or unreadable identity
+blocks execution. Archive and delete remain available.
+
+The recovery controls offer **Recreate now** when the original branch survives, **Recreate from the
+default branch** when it does not, and **Continue in project checkout** as an explicit alternative.
+Recovery stops an idle provider session before switching the reference. Recreation resolves the
+project's submodule setting and runs its opted-in worktree setup script before releasing queued
+work. It resumes only a queue paused for a missing worktree; manual pauses remain in place.
+
+Cancel and bootstrap rollback use the same file protection rules as manual removal. Ignored files
+created by setup, such as `.env` or a local database, keep the checkout on disk and are reported as
+retained artifacts. Legacy directories with unresolved Git metadata are also retained.
+
+Paths are preserved exactly, including leading or trailing whitespace and embedded newlines.
+Previously trimmed persisted paths cannot be reconstructed; identity verification refuses unsafe
+operations on them.

@@ -49,6 +49,8 @@ type BootstrapObservedStage =
 interface BootstrapCreatedWorktree {
   readonly cwd: string;
   readonly path: string;
+  readonly commonDir: string;
+  readonly baseSha: string;
 }
 interface BootstrapPreviousThreadMeta {
   readonly branch: string | null;
@@ -69,9 +71,17 @@ interface BootstrapTurnStartBaseDependencies {
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
   readonly git: Pick<
     GitCoreShape,
-    "createWorktree" | "fetchRemoteBranchCommit" | "hasRemote" | "removeWorktree"
+    | "createWorktree"
+    | "fetchRemoteBranchCommit"
+    | "hasRemote"
+    | "removeWorktree"
+    | "resolveCommit"
+    | "resolveCommonDir"
   >;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
+  readonly rollbackWorktree: (
+    input: BootstrapCreatedWorktree,
+  ) => Effect.Effect<void, GitCommandError>;
   readonly worktreesDir?: string | undefined;
   /**
    * Reports how a failed bootstrap left the thread it was asked to create:
@@ -323,11 +333,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             const removeWorktree = yield* runCleanupStep(
               error,
               "worktree removal",
-              input.git.removeWorktree({
-                cwd: createdWorktree.cwd,
-                path: createdWorktree.path,
-                force: true,
-              }),
+              input.rollbackWorktree(createdWorktree),
             );
             if (!removeWorktree.ok) {
               return yield* removeWorktree.error;
@@ -380,11 +386,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             const removeWorktree = yield* runCleanupStep(
               error,
               "worktree removal",
-              input.git.removeWorktree({
-                cwd: createdWorktree.cwd,
-                path: createdWorktree.path,
-                force: true,
-              }),
+              input.rollbackWorktree(createdWorktree),
             );
             if (!removeWorktree.ok) {
               return yield* removeWorktree.error;
@@ -397,11 +399,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           const removeWorktree = yield* runCleanupStep(
             error,
             "worktree removal",
-            input.git.removeWorktree({
-              cwd: createdWorktree.cwd,
-              path: createdWorktree.path,
-              force: true,
-            }),
+            input.rollbackWorktree(createdWorktree),
           );
           if (!removeWorktree.ok) {
             return yield* removeWorktree.error;
@@ -519,6 +517,20 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
               }),
             )
           : null;
+        const commonDir = yield* input.git.resolveCommonDir(bootstrap.prepareWorktree.projectCwd);
+        const baseSha =
+          remoteBase?.commit ??
+          (yield* input.git.resolveCommit(
+            bootstrap.prepareWorktree.projectCwd,
+            bootstrap.prepareWorktree.baseBranch,
+          ));
+        if (!baseSha)
+          return yield* new GitCommandError({
+            operation: "bootstrap",
+            cwd: bootstrap.prepareWorktree.projectCwd,
+            command: "rev-parse",
+            detail: "The worktree base is unavailable.",
+          });
         const worktree = yield* observeBootstrapStage(
           "worktree-create",
           input.git.createWorktree({
@@ -541,6 +553,8 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
         createdWorktree = {
           cwd: bootstrap.prepareWorktree.projectCwd,
           path: worktree.worktree.path,
+          commonDir,
+          baseSha,
         };
         yield* annotateBootstrapSpan();
 

@@ -760,6 +760,12 @@ export function createWsNativeApi(): NativeApi {
       getDiskSpace: (input = {}) => transport.request(WS_METHODS.storageGetDiskSpace, input),
       onDiskSpaceUpdated: (callback) => onStorageDiskSpaceUpdated(callback),
     },
+    worktrees: {
+      inspect: (input) => transport.request(WS_METHODS.worktreesInspect, input),
+      remove: (input) => transport.request(WS_METHODS.worktreesRemove, input),
+      threadState: (input) => transport.request(WS_METHODS.worktreesThreadState, input),
+      recover: (input) => transport.request(WS_METHODS.worktreesRecover, input),
+    },
     worktreeSetup: {
       subscribe: (input) => transport.request(WS_METHODS.worktreeSetupSubscribe, input),
       cancel: (input) => transport.request(WS_METHODS.worktreeSetupCancel, input),

@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import {
   NonNegativeInt,
@@ -71,7 +72,7 @@ const PROJECT_AUTHORIZE_ENTRY_PATH_MAX_LENGTH = 512;
 const Sha256HexString = TrimmedNonEmptyString.check(Schema.isPattern(/^[0-9a-f]{64}$/));
 
 export const ProjectSearchEntriesInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
 });
@@ -80,7 +81,7 @@ export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
 const ProjectEntryKind = Schema.Literals(["file", "directory"]);
 
 export const ProjectEntry = Schema.Struct({
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   kind: ProjectEntryKind,
   parentPath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -117,7 +118,7 @@ export const ProjectContentMatchRange = Schema.Struct({
 export type ProjectContentMatchRange = typeof ProjectContentMatchRange.Type;
 
 export const ProjectContentMatch = Schema.Struct({
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   lineNumber: PositiveInt,
   lineContent: Schema.String.check(Schema.isMaxLength(8 * 1024)),
   matchRanges: Schema.Array(ProjectContentMatchRange).check(Schema.isMaxLength(256)),
@@ -147,7 +148,7 @@ export const ProjectCancelContentSearchResult = Schema.Struct({
 export type ProjectCancelContentSearchResult = typeof ProjectCancelContentSearchResult.Type;
 
 export const ProjectListEntriesInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   limit: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_LIST_ENTRIES_MAX_LIMIT)),
   ),
@@ -155,7 +156,7 @@ export const ProjectListEntriesInput = Schema.Struct({
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 
 export const ProjectListDirectoryInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   relativePath: TrimmedString,
   includeIgnored: Schema.optional(Schema.Boolean),
   limit: Schema.optional(
@@ -172,7 +173,7 @@ export const ProjectListEntriesResult = Schema.Struct({
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
 export const ProjectWriteFileInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
   condition: Schema.Union([
@@ -200,7 +201,7 @@ export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 export const PROJECT_WATCHED_PATHS_MAX = 512;
 
 export const ProjectSetWatchedPathsInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   files: Schema.Array(Schema.String).check(Schema.isMaxLength(PROJECT_WATCHED_PATHS_MAX)),
   directories: Schema.Array(Schema.String).check(Schema.isMaxLength(PROJECT_WATCHED_PATHS_MAX)),
 });
@@ -234,7 +235,7 @@ export type ProjectWatchedPathsChangedPayload = typeof ProjectWatchedPathsChange
 export const PROJECT_READ_FILE_MAX_SIZE = 2 * 1024 * 1024; // 2MB
 
 export const ProjectReadFileInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
 });
 export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
@@ -251,7 +252,7 @@ export const ProjectReadFileResult = Schema.Struct({
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 
 export const ProjectAuthorizeEntryInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  cwd: FilesystemPath,
   relativePath: TrimmedNonEmptyString.check(
     Schema.isMaxLength(PROJECT_AUTHORIZE_ENTRY_PATH_MAX_LENGTH),
   ),

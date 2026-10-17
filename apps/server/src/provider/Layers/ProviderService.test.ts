@@ -1,3 +1,4 @@
+import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { withProviderThreadAccess } from "../providerThreadAccess.ts";
 import { Deferred } from "effect";
 import { ServerSettingsService } from "../../serverSettings";
@@ -698,6 +699,13 @@ it.effect("answers form requests a new session opens while it is still starting"
       })
       .pipe(Effect.forkChild);
     yield* Deferred.await(opened);
+    const starting = (yield* service.listSessions()).find(
+      (session) => session.threadId === threadId,
+    );
+    assert.equal(starting?.status, "connecting");
+    assert.equal(starting?.cwd, process.cwd());
+    // Startup is claimed, but provider waits never hold the path lifecycle lock.
+    yield* withWorktreeLifecycleLock(process.cwd(), Effect.void).pipe(Effect.timeout("1 second"));
 
     for (const [requestId, action] of [
       ["startup-submit", "accept"],
@@ -2685,7 +2693,7 @@ it.effect("does not settle an admitted send after its binding disappears", () =>
         .pipe(Effect.flip);
       assert.equal(error._tag, "ProviderTurnDeliveryError");
       assert.equal(reads, 3);
-      assert.equal(fake.sendTurn.mock.calls.length, 1);
+      assert.equal(fake.sendTurn.mock.calls.length, 0);
     } finally {
       spy.mockRestore();
     }

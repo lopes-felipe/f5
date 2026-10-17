@@ -12,90 +12,98 @@ import { ServerConfig } from "../../../src/config.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-it("recreates a missing worktree once for concurrent callers without moving its branch", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-recovery-"));
-  const repo = path.join(root, "repo"),
-    target = path.join(root, "worktrees", "worktree");
-  const layer = GitCoreLive.pipe(
-    Layer.provide(GitServiceLive),
-    Layer.provide(ServerConfig.layerTest(process.cwd(), path.join(root, "userdata"))),
-    Layer.provide(NodeServices.layer),
-  );
-  const run = <A, E>(operation: Effect.Effect<A, E, GitCore>) =>
-    Effect.runPromise(operation.pipe(Effect.provide(layer)));
-  try {
-    fs.mkdirSync(repo);
-    git(repo, "init", "--initial-branch=main");
-    git(
-      repo,
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.test",
-      "commit",
-      "--allow-empty",
-      "-m",
-      "base",
+it.each(["directory", "symlink"])(
+  "recreates a missing worktree through a %s root once for concurrent callers without moving its branch",
+  async (rootKind) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-recovery-"));
+    const repo = path.join(root, "repo"),
+      target = path.join(root, "worktrees", "worktree");
+    const layer = GitCoreLive.pipe(
+      Layer.provide(GitServiceLive),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), path.join(root, "userdata"))),
+      Layer.provide(NodeServices.layer),
     );
-    git(repo, "worktree", "add", "-b", "feature", target);
-    const other = path.join(root, "unmounted");
-    git(repo, "worktree", "add", "-b", "other", other);
-    const otherAdmin = git(other, "rev-parse", "--absolute-git-dir");
-    const otherIndex = fs.readFileSync(path.join(otherAdmin, "index"));
-    fs.rmSync(other, { recursive: true });
-    const before = git(repo, "rev-parse", "feature");
-    fs.rmSync(target, { recursive: true });
-    await run(
-      Effect.gen(function* () {
-        const core = yield* GitCore;
-        yield* Effect.all(
-          [
-            core.ensureWorktree({ cwd: repo, path: target, branch: "feature" }),
-            core.ensureWorktree({ cwd: repo, path: target, branch: "feature" }),
-          ],
-          { concurrency: 2 },
-        );
-      }),
-    );
-    expect(git(repo, "worktree", "list", "--porcelain")).toContain(other);
-    expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
-    await expect(
-      run(
-        Effect.flatMap(Effect.service(GitCore), (core) =>
-          core.ensureWorktree({ cwd: repo, path: path.join(root, "outside"), branch: "other" }),
-        ),
-      ),
-    ).rejects.toThrow(/managed worktrees/);
-    expect(fs.existsSync(path.join(root, "outside"))).toBe(false);
-    await expect(
-      run(
-        Effect.flatMap(Effect.service(GitCore), (core) =>
-          core.ensureWorktree({
-            cwd: repo,
-            path: path.relative(process.cwd(), path.join(root, "worktrees", "relative")),
-            branch: "other",
-          }),
-        ),
-      ),
-    ).rejects.toThrow(/managed worktrees/);
-    expect(git(target, "rev-parse", "HEAD")).toBe(before);
-    expect(git(target, "branch", "--show-current")).toBe("feature");
-    fs.rmSync(target, { recursive: true });
-    const elsewhere = path.join(root, "elsewhere");
-    git(repo, "worktree", "add", "--force", elsewhere, "feature");
-    await expect(
-      run(
+    const run = <A, E>(operation: Effect.Effect<A, E, GitCore>) =>
+      Effect.runPromise(operation.pipe(Effect.provide(layer)));
+    try {
+      if (rootKind === "symlink") {
+        fs.mkdirSync(path.join(root, "physical"));
+        fs.symlinkSync(path.join(root, "physical"), path.join(root, "worktrees"), "junction");
+      }
+      fs.mkdirSync(repo);
+      git(repo, "init", "--initial-branch=main");
+      git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "base",
+      );
+      git(repo, "worktree", "add", "-b", "feature", target);
+      const other = path.join(root, "unmounted");
+      git(repo, "worktree", "add", "-b", "other", other);
+      const otherAdmin = git(other, "rev-parse", "--absolute-git-dir");
+      const otherIndex = fs.readFileSync(path.join(otherAdmin, "index"));
+      fs.rmSync(other, { recursive: true });
+      const registeredTarget = fs.realpathSync(target);
+      const before = git(repo, "rev-parse", "feature");
+      fs.rmSync(target, { recursive: true });
+      await run(
         Effect.gen(function* () {
           const core = yield* GitCore;
-          yield* core.ensureWorktree({ cwd: repo, path: target, branch: "feature" });
+          yield* Effect.all(
+            [
+              core.ensureWorktree({ cwd: repo, path: target, branch: "feature" }),
+              core.ensureWorktree({ cwd: repo, path: target, branch: "feature" }),
+            ],
+            { concurrency: 2 },
+          );
         }),
-      ),
-    ).rejects.toThrow(/checked out at/);
-    expect(fs.existsSync(target)).toBe(false);
-    expect(git(repo, "worktree", "list", "--porcelain")).toContain(target);
-    expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
-    expect(git(elsewhere, "rev-parse", "HEAD")).toBe(before);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+      );
+      expect(git(repo, "worktree", "list", "--porcelain")).toContain(other);
+      expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
+      await expect(
+        run(
+          Effect.flatMap(Effect.service(GitCore), (core) =>
+            core.ensureWorktree({ cwd: repo, path: path.join(root, "outside"), branch: "other" }),
+          ),
+        ),
+      ).rejects.toThrow(/managed worktrees/);
+      expect(fs.existsSync(path.join(root, "outside"))).toBe(false);
+      await expect(
+        run(
+          Effect.flatMap(Effect.service(GitCore), (core) =>
+            core.ensureWorktree({
+              cwd: repo,
+              path: path.relative(process.cwd(), path.join(root, "worktrees", "relative")),
+              branch: "other",
+            }),
+          ),
+        ),
+      ).rejects.toThrow(/managed worktrees/);
+      expect(git(target, "rev-parse", "HEAD")).toBe(before);
+      expect(git(target, "branch", "--show-current")).toBe("feature");
+      fs.rmSync(target, { recursive: true });
+      const elsewhere = path.join(root, "elsewhere");
+      git(repo, "worktree", "add", "--force", elsewhere, "feature");
+      await expect(
+        run(
+          Effect.gen(function* () {
+            const core = yield* GitCore;
+            yield* core.ensureWorktree({ cwd: repo, path: target, branch: "feature" });
+          }),
+        ),
+      ).rejects.toThrow(/checked out at/);
+      expect(fs.existsSync(target)).toBe(false);
+      expect(git(repo, "worktree", "list", "--porcelain")).toContain(registeredTarget);
+      expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
+      expect(git(elsewhere, "rev-parse", "HEAD")).toBe(before);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

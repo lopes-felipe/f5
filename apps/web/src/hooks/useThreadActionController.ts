@@ -1,12 +1,10 @@
 import { type ThreadId } from "@t3tools/contracts";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 
 import { useAppSettings } from "~/appSettings";
 import { deleteThreadsWithCleanup, setThreadArchived } from "~/archiveActions";
 import { useComposerDraftStore } from "~/composerDraftStore";
-import { gitRemoveWorktreeMutationOptions } from "~/lib/gitReactQuery";
 import { isSnoozedThread } from "~/lib/threadOrdering";
 import { resolveSnoozePreset } from "~/lib/snoozePresets";
 import { newCommandId } from "~/lib/utils";
@@ -106,8 +104,6 @@ export function useThreadActionController(input: {
   const markThreadUnread = useStore((state) => state.markThreadUnread);
   const { settings } = useAppSettings();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const clearComposerDraftForThread = useComposerDraftStore((state) => state.clearThreadDraft);
   const clearProjectDraftThreadById = useComposerDraftStore(
     (state) => state.clearProjectDraftThreadById,
@@ -216,7 +212,6 @@ export function useThreadActionController(input: {
         navigateHome: () => {
           void navigate({ to: "/", replace: true });
         },
-        removeWorktree: (removeInput) => removeWorktreeMutation.mutateAsync(removeInput),
       });
     },
     [
@@ -226,7 +221,6 @@ export function useThreadActionController(input: {
       input.activeThreadId,
       navigate,
       projects,
-      removeWorktreeMutation,
     ],
   );
 

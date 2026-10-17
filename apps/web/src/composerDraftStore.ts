@@ -532,7 +532,7 @@ function normalizeDraftWorkspaceKey(input?: {
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode | null;
 }): string {
-  const worktreePath = typeof input?.worktreePath === "string" ? input.worktreePath.trim() : "";
+  const worktreePath = typeof input?.worktreePath === "string" ? input.worktreePath : "";
   if (worktreePath.length > 0) {
     return `worktree:${worktreePath}`;
   }
@@ -3048,7 +3048,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           id: randomUUID(),
           sourceThreadId: threadId,
           sourceProjectId: projectId,
-          sourceWorkspaceRoot: workspaceRoot?.trim() || null,
+          sourceWorkspaceRoot: workspaceRoot || null,
           createdAt: new Date().toISOString(),
           preview: composerDraftPreview(sourceDraft),
           draft: {

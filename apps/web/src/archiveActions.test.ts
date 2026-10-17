@@ -5,7 +5,12 @@ import { deleteThreadsWithCleanup } from "./archiveActions";
 import { createComposerMention } from "./composer-editor-mentions";
 import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
 
-const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), confirm: vi.fn(), close: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  dispatch: vi.fn(),
+  confirm: vi.fn(),
+  close: vi.fn(),
+  request: vi.fn(),
+}));
 vi.mock("./nativeApi", () => ({
   readNativeApi: () => ({
     orchestration: { dispatchCommand: mocks.dispatch },
@@ -13,10 +18,14 @@ vi.mock("./nativeApi", () => ({
     terminal: { close: mocks.close },
   }),
 }));
+vi.mock("./worktreeRemovalDialogStore", () => ({
+  useWorktreeRemovalDialogStore: { getState: () => ({ request: mocks.request }) },
+}));
 vi.mock("./components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 
 function harness(order: string[]) {
   mocks.dispatch.mockReset();
+  mocks.request.mockReset().mockResolvedValue(undefined);
   mocks.confirm.mockReset().mockResolvedValue(true);
   mocks.close.mockReset().mockResolvedValue(undefined);
   const threads = ["a", "b"].map(
@@ -85,23 +94,22 @@ describe("bulk deletion cleanup", () => {
       return true;
     });
     await deleteThreadsWithCleanup(input);
-    expect(mocks.confirm).toHaveBeenCalledTimes(1);
-    expect(input.removeWorktree).toHaveBeenCalledWith({
-      cwd: "/repo",
-      path: "/repo/worktree",
-      force: false,
-    });
+    expect(mocks.confirm).not.toHaveBeenCalled();
+    expect(mocks.request).toHaveBeenCalledWith([{ projectId: "project", path: "/repo/worktree" }]);
   });
-  it("rechecks surviving threads after the worktree confirmation", async () => {
-    const input = harness(["a", "b"]);
-    let current = input.threads;
-    mocks.dispatch.mockResolvedValue(undefined);
-    mocks.confirm.mockImplementation(async () => {
-      current = [...current, { ...current[0]!, id: ThreadId.makeUnsafe("new-thread") }];
-      return true;
+  it("batches three deleted conversations and two orphan worktrees into one dialog", async () => {
+    const input = harness(["a", "b", "c"]);
+    input.threads.push({
+      ...input.threads[0]!,
+      id: ThreadId.makeUnsafe("c"),
+      worktreePath: "/repo/second",
     });
-    await deleteThreadsWithCleanup({ ...input, getThreads: () => current });
-    expect(mocks.confirm).toHaveBeenCalledTimes(1);
-    expect(input.removeWorktree).not.toHaveBeenCalled();
+    mocks.dispatch.mockResolvedValue(undefined);
+    await deleteThreadsWithCleanup(input);
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request).toHaveBeenCalledWith([
+      { projectId: "project", path: "/repo/worktree" },
+      { projectId: "project", path: "/repo/second" },
+    ]);
   });
 });

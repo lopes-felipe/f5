@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import {
   IsoDateTime,
@@ -228,7 +229,7 @@ export type DiskSpaceVolumeRole = typeof DiskSpaceVolumeRole.Type;
 
 export const DiskSpaceVolume = Schema.Struct({
   /** One watched path on the volume; others on the same volume are folded in. */
-  path: TrimmedNonEmptyString,
+  path: FilesystemPath,
   roles: Schema.Array(DiskSpaceVolumeRole),
   freeBytes: NonNegativeInt,
   totalBytes: NonNegativeInt,

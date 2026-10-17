@@ -1,3 +1,5 @@
+import * as fs from "node:fs/promises";
+import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { OrchestrationThread } from "@t3tools/contracts";
 import path from "node:path";
@@ -550,7 +552,40 @@ layer("NextTurnQueueDispatcher", (it) => {
 
 for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] as const) {
   it.effect(`handles a missing worktree before queue dispatch: ${scenario}`, () => {
+    const target = path.join(os.tmpdir(), `f5-missing-${crypto.randomUUID()}`);
+    const registration = () =>
+      Effect.promise(async () => ({
+        path: target,
+        canonicalPath: await canonicalWorktreePath(target),
+        branch: "feature",
+        headSha: "abc123",
+        bare: false,
+        detached: false,
+        locked: null,
+        prunable: null,
+        isMain: false,
+      }));
     const git = makeFakeGitCore({
+      listWorktrees: () => registration().pipe(Effect.map((entry) => [entry])),
+      inspectCheckout: () =>
+        Effect.gen(function* () {
+          const entry = yield* registration();
+          return {
+            canonicalRoot: entry.canonicalPath,
+            commonDir: yield* Effect.promise(() => canonicalWorktreePath(`${process.cwd()}/.git`)),
+            registration: entry,
+            headSha: "abc123",
+            branch: "feature",
+            operation: null,
+            hasTrackedChanges: false,
+            hasUntrackedChanges: false,
+            ignoredEntries: [],
+            ignoredTruncated: false,
+            upstreamRef: null,
+            upstreamSha: null,
+            aheadCount: null,
+          };
+        }),
       branchExists: () => Effect.succeed(scenario !== "missing-ref"),
       ensureWorktree: () =>
         scenario === "checked-out-elsewhere"
@@ -562,7 +597,9 @@ for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] a
                 detail: "Branch feature is checked out at another-worktree.",
               }),
             )
-          : Effect.void,
+          : Effect.promise(() => fs.mkdir(target, { recursive: true })).pipe(
+              Effect.as({ recreated: true }),
+            ),
     });
     return Effect.gen(function* () {
       dispatched.length = 0;
@@ -586,9 +623,8 @@ for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] a
           assert.match(queue.state.pauseDetail ?? "", /checked out at/);
       }
     }).pipe(
-      Effect.provide(
-        makeTestLayer(git.service, path.join(os.tmpdir(), `f5-missing-${crypto.randomUUID()}`)),
-      ),
+      Effect.provide(makeTestLayer(git.service, target)),
+      Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),
     );
   });
 }

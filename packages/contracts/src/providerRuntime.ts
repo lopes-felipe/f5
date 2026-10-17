@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { RuntimeUsageLimit } from "./usageLimit";
 import { Schema } from "effect";
 import {
@@ -660,7 +661,7 @@ export type ModelReroutedPayload = typeof ModelReroutedPayload.Type;
 const ConfigWarningPayload = Schema.Struct({
   summary: TrimmedNonEmptyStringSchema,
   details: Schema.optional(TrimmedNonEmptyStringSchema),
-  path: Schema.optional(TrimmedNonEmptyStringSchema),
+  path: Schema.optional(FilesystemPath),
   range: Schema.optional(Schema.Unknown),
 });
 export type ConfigWarningPayload = typeof ConfigWarningPayload.Type;

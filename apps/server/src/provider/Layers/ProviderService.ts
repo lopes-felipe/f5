@@ -1,3 +1,7 @@
+import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
 import { DeliveryAttemptContext } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
@@ -335,6 +339,51 @@ function toInstructionContextFromSessionStartInput(
 const makeProviderService = (options?: ProviderServiceLiveOptions) =>
   Effect.gen(function* () {
     const nativeScope = yield* Effect.scope;
+    const workspaceGit = yield* Effect.serviceOption(GitCore);
+    const workspaceSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const checkWorkspace = (threadId: ThreadId, sessionCwd?: string) =>
+      Effect.gen(function* () {
+        if (Option.isNone(workspaceSql)) return;
+        const rows = yield* workspaceSql.value<{
+          worktreePath: string | null;
+          branch: string | null;
+          projectCwd: string | null;
+        }>`SELECT t.worktree_path AS "worktreePath", t.branch AS "branch", p.workspace_root AS "projectCwd" FROM projection_threads t LEFT JOIN projection_projects p ON p.project_id = t.project_id WHERE t.thread_id = ${threadId}`;
+        const blocks = yield* workspaceSql.value<{
+          token: string | null;
+        }>`SELECT worktree_block_token AS token FROM next_turn_queue_state WHERE thread_id = ${threadId}`;
+        if (blocks[0]?.token)
+          return yield* Effect.fail(
+            new Error("Workspace preparation must finish before provider delivery."),
+          );
+        const row = rows[0];
+        if (!row?.worktreePath) return;
+        if (!row.projectCwd || Option.isNone(workspaceGit))
+          return yield* Effect.fail(new Error("Workspace identity cannot be verified."));
+        if (sessionCwd === undefined)
+          return yield* Effect.fail(
+            new Error("The provider session workspace cannot be verified."),
+          );
+        if (
+          (yield* Effect.tryPromise(() => canonicalWorktreePath(sessionCwd))) !==
+          (yield* Effect.tryPromise(() => canonicalWorktreePath(row.worktreePath!)))
+        )
+          return yield* Effect.fail(
+            new Error(
+              "The provider session is attached to a different workspace. Restart the session before sending.",
+            ),
+          );
+        yield* assertWorktreeReady(workspaceGit.value, {
+          projectCwd: row.projectCwd,
+          worktreePath: row.worktreePath,
+          branch: row.branch,
+        });
+      }).pipe(
+        Effect.mapError(
+          (error) => new ProviderValidationError({ operation: "workspace", issue: error.message }),
+        ),
+      );
+
     const historyRuntimeId = randomUUID();
     const submissionTokens = new Map<ThreadId, symbol>();
     interface SubmissionCompletion {
@@ -384,19 +433,51 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       : undefined;
     const startingSessions = new Map<
       ThreadId,
-      { readonly generation: number; readonly adapter: ProviderAdapterShape<ProviderAdapterError> }
+      {
+        readonly generation: number;
+        readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+        readonly session: ProviderSession;
+      }
     >();
     const whileStarting = <A, E, R>(
       threadId: ThreadId,
       generation: number,
       adapter: ProviderAdapterShape<ProviderAdapterError>,
+      workspace: Pick<ProviderSession, "cwd" | "runtimeMode" | "providerInstanceId">,
       effect: Effect.Effect<A, E, R>,
-    ) =>
-      Effect.acquireUseRelease(
-        Effect.sync(() => startingSessions.set(threadId, { generation, adapter })),
+    ) => {
+      const reserve = checkWorkspace(threadId, workspace.cwd).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const at = new Date().toISOString();
+            startingSessions.set(threadId, {
+              generation,
+              adapter,
+              session: {
+                threadId,
+                provider: adapter.provider,
+                ...workspace,
+                status: "connecting",
+                createdAt: at,
+                updatedAt: at,
+              },
+            });
+          }),
+        ),
+      );
+      return Effect.acquireUseRelease(
+        workspace.cwd
+          ? withWorktreeLifecycleLock(workspace.cwd, reserve).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ProviderValidationError({ operation: "workspace", issue: error.message }),
+              ),
+            )
+          : reserve,
         () => effect,
         () => Effect.sync(() => startingSessions.delete(threadId)),
       );
+    };
 
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Effect.succeed(event).pipe(
@@ -924,6 +1005,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
           );
         }
+        yield* checkWorkspace(input.binding.threadId, persistedCwd);
         if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
         const resumedGeneration = readPersistedSessionGeneration(input.binding.runtimePayload) + 1;
         // Covers the binding write, as in startSession.
@@ -931,6 +1013,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           input.binding.threadId,
           resumedGeneration,
           adapter,
+          {
+            cwd: persistedCwd,
+            runtimeMode: recoveredRuntimeMode,
+            providerInstanceId: bindingInstanceId,
+          },
           Effect.gen(function* () {
             if (hasNativeOperationReservation(input.binding.threadId))
               return yield* toValidationError(
@@ -1277,6 +1364,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId,
             currentInstanceId: requestedInstanceId,
           });
+          yield* checkWorkspace(threadId, adapterInput.cwd);
           if (adapterInput.cwd) yield* ensureWorkspaceDirectory(adapterInput.cwd);
           // Generations only grow per thread, across instance switches too, so a
           // browser can never mistake a new session for the one it looked at.
@@ -1288,6 +1376,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId,
             sessionGeneration,
             adapter,
+            {
+              cwd: adapterInput.cwd,
+              runtimeMode: adapterInput.runtimeMode,
+              providerInstanceId: requestedInstanceId,
+            },
             Effect.gen(function* () {
               const session = yield* adapter.startSession(adapterInput);
               if (session.provider !== adapter.provider) {
@@ -1769,6 +1862,31 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 detail: "The provider session changed before dispatch.",
               });
           }
+          const deliveryBinding = yield* directory.getBinding(input.threadId);
+          if (
+            Option.isNone(deliveryBinding) ||
+            readPersistedSessionGeneration(deliveryBinding.value.runtimePayload) !== generation
+          )
+            return yield* new ProviderTurnDeliveryError({
+              certainty: "not_sent",
+              retryable: false,
+              detail: "The provider session changed before dispatch.",
+            });
+          yield* checkWorkspace(
+            input.threadId,
+            Option.isSome(deliveryBinding)
+              ? readPersistedCwd(deliveryBinding.value.runtimePayload)
+              : undefined,
+          ).pipe(
+            Effect.mapError(
+              (error) =>
+                new ProviderTurnDeliveryError({
+                  certainty: "not_sent",
+                  retryable: false,
+                  detail: error.message,
+                }),
+            ),
+          );
           const turn = yield* input.expectedTurnId !== undefined
             ? routed.adapter.steerTurn!({
                 ...input,
@@ -2171,6 +2289,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const listSessions: ProviderServiceShape["listSessions"] = () =>
       Effect.gen(function* () {
+        const startingAtInspection = new Map(startingSessions);
         const currentAdapters = yield* getAdapterEntries;
         const sessionsByProvider = yield* Effect.forEach(currentAdapters, ([instanceId, adapter]) =>
           adapter.listSessions().pipe(
@@ -2182,7 +2301,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ),
           ),
         );
-        const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
+        const activeSessions: ProviderSession[] = sessionsByProvider.flatMap(
+          (sessions) => sessions,
+        );
+        for (const [threadId, starting] of new Map([
+          ...startingAtInspection,
+          ...startingSessions,
+        ])) {
+          if (
+            !activeSessions.some(
+              (session) => session.threadId === threadId && session.status !== "closed",
+            )
+          )
+            activeSessions.push(starting.session);
+        }
         const persistedBindings = yield* directory.listThreadIds().pipe(
           Effect.flatMap((threadIds) =>
             Effect.forEach(

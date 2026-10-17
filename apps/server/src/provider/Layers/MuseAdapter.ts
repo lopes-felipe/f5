@@ -1227,7 +1227,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
                 `${input.runtimeMode} is not available for Muse Code.`,
             });
           }
-          if (!input.cwd?.trim()) {
+          if (!input.cwd) {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "startSession",
@@ -1235,7 +1235,7 @@ export function makeMuseAdapter(museSettings: MuseSettings, options?: MuseAdapte
             });
           }
           const runtimeMode = input.runtimeMode;
-          const cwd = nodePath.resolve(input.cwd.trim());
+          const cwd = nodePath.resolve(input.cwd);
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing, { exitKind: "graceful" });

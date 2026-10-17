@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 import {
   IsoDateTime,
@@ -34,7 +35,7 @@ export const NativeOperationCommand = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("fork"),
     targetThreadId: ThreadId,
-    cwd: TrimmedNonEmptyString,
+    cwd: FilesystemPath,
     beforeTurnId: Schema.optional(TrimmedNonEmptyString),
   }),
   Schema.Struct({

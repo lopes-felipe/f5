@@ -1,3 +1,5 @@
+import { assertWorktreeReady } from "../../project/worktreeReadiness.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
 import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { canonicalRequestHash } from "../../nextTurnQueue/canonicalRequestHash.ts";
@@ -103,6 +105,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const workspaceGit = yield* Effect.serviceOption(GitCore);
   const maintenanceLock = yield* makeStorageMaintenanceLock;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const diskSpaceMonitor = yield* Effect.serviceOption(DiskSpaceMonitor);
@@ -290,6 +293,48 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               commandType: command.type,
               detail: "That rewind identifier belongs to a different request.",
             });
+        }
+        if (
+          envelope.command.type === "thread.turn.start" ||
+          envelope.command.type === "thread.turn.steer"
+        ) {
+          const command = envelope.command;
+          const thread = readModel.threads.find((entry) => entry.id === command.threadId);
+          if (
+            Option.isSome(queueStore) &&
+            (yield* queueStore.value.listByThread(command.threadId)).state.worktreeBlockToken
+          )
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: "Workspace preparation is still in progress. Wait for it to finish.",
+            });
+          if (thread?.worktreePath) {
+            const project = readModel.projects.find(
+              (entry) => entry.id === thread.projectId && entry.deletedAt === null,
+            );
+            if (!project || Option.isNone(workspaceGit))
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "Workspace identity cannot be verified.",
+              });
+            yield* assertWorktreeReady(
+              workspaceGit.value,
+              {
+                projectCwd: project.workspaceRoot,
+                worktreePath: thread.worktreePath,
+                branch: thread.branch,
+              },
+              command.type === "thread.turn.start",
+            ).pipe(
+              Effect.mapError(
+                (error) =>
+                  new OrchestrationCommandInvariantError({
+                    commandType: command.type,
+                    detail: error.message,
+                  }),
+              ),
+            );
+          }
         }
         const eventBase = yield* decideOrchestrationCommand({
           command: envelope.command,

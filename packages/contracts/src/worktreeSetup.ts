@@ -1,3 +1,4 @@
+import { FilesystemPath } from "./baseSchemas";
 import { Schema } from "effect";
 
 import {
@@ -82,7 +83,7 @@ export type WorktreeSetupPhase = typeof WorktreeSetupPhase.Type;
 
 /** What the first send asked for; enough to retry after a restart. */
 export const WorktreeSetupRequest = Schema.Struct({
-  projectCwd: TrimmedNonEmptyString,
+  projectCwd: FilesystemPath,
   baseBranch: TrimmedNonEmptyString,
   branch: TrimmedNonEmptyString,
   runSetupScript: Schema.Boolean,
@@ -104,7 +105,9 @@ export const WorktreeSetupSnapshot = Schema.Struct({
   baseRef: Schema.NullOr(TrimmedNonEmptyString),
   /** Commit the new branch was created at; branch deletion requires it to be unchanged. */
   baseSha: Schema.NullOr(TrimmedNonEmptyString),
-  worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+  /** Repository identity recorded before checkout; absent legacy snapshots cannot prove deletion ownership. */
+  creationCommonDir: Schema.optional(FilesystemPath),
+  worktreePath: Schema.NullOr(FilesystemPath),
   /** True once this setup created the branch, so cancel may delete it. */
   createdBranch: Schema.Boolean,
   /** True once git registered the worktree directory for this setup. */
