@@ -20,6 +20,10 @@ concurrency:
   cancel-in-progress: false
 jobs:
   preflight:
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.preflight.outputs.version }}
@@ -162,49 +166,17 @@ jobs:
             !release-artifacts/builder-effective-config.yaml
   build-cli:
     needs: preflight
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { os: macos-latest, target: darwin-arm64 }
-          - { os: ubuntu-latest, target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-    runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      VERSION: ${{ needs.preflight.outputs.version }}
-      TARGET: ${{ matrix.target }}
-    steps:
-      - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24.13.1
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.3.9
-      - run: bun install --frozen-lockfile
-      - id: runtime
-        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ steps.runtime.outputs.version }}
-      - run: node scripts/update-release-package-versions.ts "$VERSION"
-      - run: node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
-      - run: node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cli-${{ matrix.target }}
-          path: release-cli/*
-  # Windows CLI archives and the installed-upgrade rehearsal; pull requests run it too.
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      version: ${{ needs.preflight.outputs.version }}
+  # All CLI archives are built above; the unsigned installed-upgrade rehearsal remains mandatory.
   windows:
     needs: preflight
     uses: ./.github/workflows/windows-release-checks.yml
     with:
       version: ${{ needs.preflight.outputs.version }}
       channel: ${{ needs.preflight.outputs.channel }}
+      check-cli: false
   assemble:
     needs: [preflight, build-desktop, build-cli, windows]
     runs-on: ubuntu-latest

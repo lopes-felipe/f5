@@ -8,6 +8,8 @@ import * as net from "node:net";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { cliTarget, parseRelease, sha256File, tarExecutable } from "@t3tools/shared/cliRelease";
+import { stopChild, waitForChild } from "./lib/child-lifecycle.ts";
+import { writeCiProcessDiagnostics } from "./lib/ci-process-diagnostics.ts";
 const exec = promisify(execFile);
 const [archive, manifestFile] = process.argv.slice(2);
 if (!archive || !manifestFile) throw new Error("Usage: cli-archive-smoke.ts ARCHIVE MANIFEST");
@@ -21,6 +23,9 @@ if (
   throw new Error("Smoke archive integrity/architecture mismatch.");
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), "f5-cli-smoke-"));
 let child: ReturnType<typeof spawn> | undefined;
+let failure: unknown;
+let startupError: unknown;
+let logs = "";
 try {
   await exec(tarExecutable(), ["-xzf", path.resolve(archive), "-C", directory]);
   const runtime = path.join(directory, `f5-${release.version}-${artifact.target}`);
@@ -76,12 +81,14 @@ try {
     ],
     { env, cwd: directory, stdio: ["ignore", log.fd, log.fd] },
   );
-  child.once("error", (error) => {
-    console.error(error.message);
+  // Install both observations before any startup awaits, including a failed spawn.
+  void waitForChild(child).catch((error: unknown) => {
+    startupError = error;
   });
   await log.close();
   let ready = false;
   for (let attempt = 0; attempt < 120; attempt++) {
+    if (startupError) throw startupError;
     if (child.exitCode !== null || child.signalCode !== null)
       throw new Error(
         "Standalone server exited: " +
@@ -125,17 +132,17 @@ try {
     throw new Error("Standalone backup download is incomplete.");
   await fs.writeFile(path.join(directory, "standalone.f5backup"), backupBytes);
   console.log(
-    `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY, native search and backup maintenance. Artifacts: ${directory}`,
+    `Standalone clean-PATH smoke passed for ${artifact.target}: server, migrations, web assets, native PTY, native search and backup maintenance.`,
   );
+} catch (error) {
+  failure = error;
+  throw error;
 } finally {
-  if (child && child.exitCode === null && child.signalCode === null) {
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => child!.kill("SIGKILL"), 5000);
-      child!.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      child!.kill("SIGTERM");
-    });
+  await stopChild(child);
+  logs = await fs.readFile(path.join(directory, "server.log"), "utf8").catch(() => "");
+  try {
+    writeCiProcessDiagnostics("cli-archive-smoke", logs, failure, [directory]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }

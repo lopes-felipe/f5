@@ -1,0 +1,135 @@
+name: Distribution checks
+on:
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      channel: ${{ steps.metadata.outputs.channel }}
+    steps:
+      - name: Require main
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo '::error::Distribution checks require main'
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - id: metadata
+        shell: bash
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from 'node:fs';
+          import { versionToken } from './packages/shared/src/cliRelease.ts';
+          import { releasePackageFiles } from './scripts/update-release-package-versions.ts';
+          const desktop = JSON.parse(readFileSync('apps/desktop/package.json', 'utf8'));
+          const version = versionToken(desktop.version);
+          if (releasePackageFiles.some(file => JSON.parse(readFileSync(file, 'utf8')).version !== version)) throw new Error('Release manifests disagree');
+          console.log('version=' + version);
+          console.log('channel=' + (version.includes('-beta.') ? 'beta' : 'latest'));
+          JS
+  build-cli:
+    needs: metadata
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+  windows:
+    needs: metadata
+    uses: ./.github/workflows/windows-release-checks.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+      channel: ${{ needs.metadata.outputs.channel }}
+      check-cli: false
+  linux-appimage:
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ needs.metadata.outputs.channel }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          bun run build:desktop
+          node scripts/build-desktop-artifact.ts --skip-build --platform linux --arch x64 --target AppImage --build-version "$VERSION" --output-dir distribution-linux
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distribution-linux-appimage-${{ github.run_attempt }}
+          path: |
+            distribution-linux/*
+            !distribution-linux/builder-debug.yml
+            !distribution-linux/builder-effective-config.yaml
+          retention-days: 7
+          if-no-files-found: ignore
+  dependency-audit:
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Audit high and critical advisories
+        env:
+          F5_CI_ARTIFACT_DIR: ${{ runner.temp }}/distribution-audit
+        run: node scripts/ci-dependency-audit.ts
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distribution-dependency-audit-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/distribution-audit
+          retention-days: 7
+          if-no-files-found: ignore
+  scheduled-status:
+    needs: [metadata, build-cli, windows, linux-appimage, dependency-audit]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      issues: write
+    steps:
+      - name: Reconcile scheduled validation failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='[CI] Scheduled validation failing'
+          issue="$(gh issue list --state open --search 'in:title "[CI] Scheduled validation failing"' --json number,title --jq '[.[] | select(.title == "[CI] Scheduled validation failing")][0].number // empty')"
+          marker="<!-- distribution:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
+          body="Scheduled validation failed at $GITHUB_SHA: $RUN_URL (attempt $GITHUB_RUN_ATTEMPT). $marker"
+          if [[ -z "$issue" ]]; then
+            gh issue create --title "$title" --body "$body"
+          else
+            comments="$(gh api --paginate "repos/$GH_REPO/issues/$issue/comments" --jq '.[].body')"
+            original="$(gh issue view "$issue" --json body --jq .body)"
+            if [[ "$comments" != *"$marker"* && "$original" != *"$marker"* ]]; then
+              gh issue comment "$issue" --body "$body"
+            fi
+          fi

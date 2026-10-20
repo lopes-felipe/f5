@@ -13,28 +13,45 @@ import { parseRelease } from "@t3tools/shared/cliRelease";
 import { stageRelease } from "../src/distribution/installation";
 import { installLauncher } from "../src/distribution/commands";
 import { managedChild } from "../src/distribution/handoff";
+import { stopChild, waitForChild } from "../../../scripts/lib/child-lifecycle.ts";
+import { writeCiProcessDiagnostics } from "../../../scripts/lib/ci-process-diagnostics.ts";
 const archive = process.env.F5_CLI_SMOKE_ARCHIVE,
   manifest = process.env.F5_CLI_SMOKE_MANIFEST;
+const required = process.env.F5_REQUIRE_ARCHIVE_INTEGRATION === "1";
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
-it.skipIf(!archive || !manifest)(
+it.skipIf(!required && (!archive || !manifest))(
   "stages a real immutable archive and keeps its trial inactive until the correlated launcher decision",
   async () => {
+    if (!archive || !manifest)
+      throw new Error(
+        "Mandatory archive integration requires F5_CLI_SMOKE_ARCHIVE and F5_CLI_SMOKE_MANIFEST",
+      );
+    for (const file of [archive, manifest]) {
+      await fs.access(file);
+      if (!(await fs.stat(file)).isFile()) throw new Error(`Archive input is not a file: ${file}`);
+    }
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "f5-archive-integration-"));
     const state = path.join(root, "state");
-    const release = parseRelease(JSON.parse(await fs.readFile(manifest!, "utf8")));
     const realFetch = globalThis.fetch;
-    vi.stubGlobal("fetch", () =>
-      Promise.resolve(
-        new Response(Readable.toWeb(createReadStream(archive!)) as ReadableStream<Uint8Array>),
-      ),
-    );
     let child: ReturnType<typeof managedChild> | undefined;
+    let supervisor: ReturnType<typeof spawn> | undefined;
+    let failure: unknown;
+    let startupError: unknown;
+    let supervisorExit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+    let logs = "";
     try {
+      const release = parseRelease(JSON.parse(await fs.readFile(manifest, "utf8")));
+      vi.stubGlobal("fetch", () =>
+        Promise.resolve(
+          new Response(Readable.toWeb(createReadStream(archive)) as ReadableStream<Uint8Array>),
+        ),
+      );
       await stageRelease(root, release);
       await installLauncher(root, release.version);
+      logs += "Archive staged and launcher installed.\n";
       // Native preflight must not consume bytes from the real network during this fixture.
       vi.stubGlobal("fetch", realFetch);
       const port = await new Promise<number>((resolve, reject) => {
@@ -57,7 +74,12 @@ it.skipIf(!archive || !manifest)(
         { id, version: release.version, outcome: "committed" },
         true,
       );
+      void waitForChild(child.process).catch((error: unknown) => {
+        startupError = error;
+      });
       await child.prepared;
+      if (startupError) throw startupError;
+      logs += "Trial prepared without opening HTTP.\n";
       await expect(
         fetch(`http://127.0.0.1:${port}/api/bootstrap`, { signal: AbortSignal.timeout(1000) }),
       ).rejects.toThrow();
@@ -71,6 +93,7 @@ it.skipIf(!archive || !manifest)(
       expect(bootstrap).toMatchObject({
         update: { id, outcome: "committed", version: release.version },
       });
+      logs += "Correlated activation passed.\n";
       await child.stop();
       child = undefined;
       await atomicJson(path.join(root, "current.json"), {
@@ -78,7 +101,7 @@ it.skipIf(!archive || !manifest)(
         version: release.version,
         target: cliTarget(),
       });
-      const supervisor = spawn(
+      supervisor = spawn(
         path.join(root, "launcher-v1", process.platform === "win32" ? "node.exe" : "node"),
         [
           path.join(root, "launcher-v1", "launcher.cjs"),
@@ -89,12 +112,31 @@ it.skipIf(!archive || !manifest)(
           "--host",
           "127.0.0.1",
         ],
-        { stdio: "inherit", env: process.env },
+        { stdio: ["ignore", "pipe", "pipe"], env: process.env },
+      );
+      const appendLog = (chunk: Buffer) => {
+        logs = (logs + chunk.toString()).slice(-65_536);
+      };
+      supervisor.stdout?.on("data", appendLog);
+      supervisor.stderr?.on("data", appendLog);
+      // Observe before polling, including an early exit or failed spawn.
+      void waitForChild(supervisor).then(
+        (exit) => {
+          supervisorExit = exit;
+        },
+        (error: unknown) => {
+          startupError = error;
+        },
       );
       try {
         await expect
           .poll(
             async () => {
+              if (startupError) throw startupError;
+              if (supervisorExit)
+                throw new Error(
+                  `Supervisor exited during startup: ${JSON.stringify(supervisorExit)}`,
+                );
               try {
                 return (
                   await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
@@ -119,14 +161,23 @@ it.skipIf(!archive || !manifest)(
           .toBe(true);
         expect((await fetch(`http://127.0.0.1:${port}/api/bootstrap`)).ok).toBe(true);
       } finally {
-        const exited = new Promise<void>((resolve) => supervisor.once("exit", () => resolve()));
-        supervisor.kill("SIGTERM");
-        await exited;
+        await stopChild(supervisor);
       }
-      console.log(`Real archive staging/activation smoke passed. Isolated artifacts: ${root}`);
+      console.log("Real archive staging/activation smoke passed.");
+    } catch (error) {
+      failure = error;
+      throw error;
     } finally {
-      await child?.stop();
-      await fs.rm(root, { recursive: true, force: true });
+      try {
+        await stopChild(supervisor);
+        await stopChild(child?.process);
+      } finally {
+        try {
+          writeCiProcessDiagnostics("archive-integration", logs, failure, [root]);
+        } finally {
+          await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        }
+      }
     }
   },
   120_000,

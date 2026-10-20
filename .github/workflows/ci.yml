@@ -22,14 +22,45 @@ jobs:
       pull-requests: read
     outputs:
       heavy: ${{ github.event_name != 'pull_request' || steps.paths.outputs.code == 'true' }}
+      packaging: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.paths.outputs.packaging == 'true' }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: paths
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
+          base: ${{ github.event_name == 'push' && github.event.before || github.base_ref }}
           predicate-quantifier: some-with-excludes
           filters: |
             code: ['**', '!**/*.md', '!docs/**']
+            packaging:
+              - .github/workflows/release.yml
+              - .github/workflows/windows-release-checks.yml
+              - apps/desktop/**
+              - apps/server/package.json
+              - apps/server/src/distribution/**
+              - apps/server/tsdown*.ts
+              - assets/**
+              - bun.lock
+              - package.json
+              - packages/shared/src/cliRelease.ts
+              - packages/shared/src/windowsPath.ts
+              - scripts/build-cli-archive.ts
+              - scripts/build-computer-helper.ts
+              - scripts/build-desktop-artifact.ts
+              - scripts/cli-archive-smoke.ts
+              - scripts/lib/**
+              - scripts/update-release-package-versions.ts
+              - scripts/verify-staged-lockfile.ts
+              - scripts/windows-update-rehearsal.ts
+              - .github/workflows/ci.yml
+              - .github/workflows/build-cli.yml
+              - .github/workflows/distribution-checks.yml
+              - apps/server/integration/standaloneArchive.integration.test.ts
+              - scripts/release-preflight.ts
   static:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -629,6 +660,10 @@ jobs:
           if-no-files-found: ignore
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  windows-release-checks:
+    needs: changes
+    if: needs.changes.outputs.packaging == 'true'
+    uses: ./.github/workflows/windows-release-checks.yml
   ci-result:
     name: CI result
     runs-on: ubuntu-latest
@@ -646,6 +681,7 @@ jobs:
         windows-build,
         macos-profiles,
         macos-suite,
+        windows-release-checks,
       ]
     steps:
       - name: Require every job verdict

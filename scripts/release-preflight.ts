@@ -3,6 +3,7 @@ import { readFileSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { compareCliReleaseVersions, versionToken } from "@t3tools/shared/cliRelease";
 import { releasePackageFiles } from "./update-release-package-versions.ts";
+import { assertReleaseCi } from "./lib/release-ci.ts";
 import {
   assertReleaseProfileAllowed,
   desktopBuildMatrix,
@@ -25,6 +26,11 @@ const profile = resolveReleaseProfile({
 const releases = fetchReleaseSummaries(process.env.GITHUB_REPOSITORY!);
 // Dry runs check the lock too, so a profile the tag would reject fails before tagging.
 assertReleaseProfileAllowed(profile, releases);
+assertReleaseCi({
+  repository: process.env.GITHUB_REPOSITORY!,
+  git: (args) => run("git", args),
+  api: (path) => JSON.parse(run("gh", ["api", path])),
+});
 let version: string;
 if (dryRun) {
   if (ref !== "main") throw new Error("Dry runs require main");
@@ -35,15 +41,6 @@ if (dryRun) {
   for (const file of releasePackageFiles)
     if (JSON.parse(readFileSync(file, "utf8")).version !== version)
       throw new Error(`Version mismatch: ${file}`);
-  const sha = run("git", ["rev-parse", "HEAD"]);
-  run("git", ["merge-base", "--is-ancestor", sha, "origin/main"]);
-  const runs = JSON.parse(
-    run("gh", [
-      "api",
-      `repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&status=success`,
-    ]),
-  ) as { workflow_runs: unknown[] };
-  if (!runs.workflow_runs.length) throw new Error("No successful CI push run for release SHA");
   for (const release of releases)
     if (
       !release.draft &&

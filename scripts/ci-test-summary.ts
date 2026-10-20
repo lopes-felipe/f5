@@ -22,6 +22,7 @@ export const inventories: Record<string, SuiteIdentity[]> = {
   "server-unit-2": [suite("server-unit-2")],
   browser: [suite("web-browser")],
   "macos-profiles": [suite("macos-profiles")],
+  "archive-integration": [suite("archive-integration")],
 };
 
 export type Verdict = "passed" | "failed" | "skipped" | "incomplete";
@@ -142,10 +143,22 @@ export function summarize(directory: string, expected: SuiteIdentity[]): SuiteSu
   const results = expected.map((identity) => {
     const file = reportPath(identity);
     try {
-      return classifyReport(
+      const result = classifyReport(
         JSON.parse(readFileSync(join(directory, file), "utf8")),
         `${identity.packageName}/${identity.event}`,
       );
+      if (
+        identity.packageName === "suites" &&
+        identity.event === "archive-integration" &&
+        result.verdict === "passed" &&
+        (result.passed !== 1 || result.skipped !== 0)
+      )
+        return {
+          ...result,
+          verdict: "incomplete" as const,
+          detail: "Archive integration requires exactly one passed test and zero skips",
+        };
+      return result;
     } catch {
       return {
         name: file,

@@ -1,0 +1,140 @@
+name: Build CLI archives
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: ""
+      windows-only:
+        description: Keep the packaging PR checks limited to the two Windows targets
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.metadata.outputs.matrix }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - id: metadata
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          WINDOWS_ONLY: ${{ inputs.windows-only }}
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import { readFileSync } from 'node:fs';
+          import { versionToken } from './packages/shared/src/cliRelease.ts';
+          const targets = [
+            { os: 'macos-latest', target: 'darwin-arm64' },
+            { os: 'ubuntu-latest', target: 'linux-x64' },
+            { os: 'ubuntu-24.04-arm', target: 'linux-arm64' },
+            { os: 'windows-latest', target: 'win32-x64' },
+            // Bun 1.3.9 has no native Windows ARM64 build.
+            { os: 'windows-11-arm', target: 'win32-arm64', bun: '1.3.11' },
+          ];
+          const version = versionToken(process.env.INPUT_VERSION || JSON.parse(readFileSync('apps/desktop/package.json', 'utf8')).version.split('-')[0] + '-check.' + process.env.GITHUB_RUN_NUMBER);
+          console.log('version=' + version);
+          console.log('matrix=' + JSON.stringify({ include: targets.filter(t => process.env.WINDOWS_ONLY !== 'true' || t.target.startsWith('win32-')) }));
+          JS
+  archive:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.metadata.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      VITEST_MAX_WORKERS: "2"
+    steps:
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+        with:
+          bun-version: ${{ matrix.bun || '' }}
+      - name: Prepare report and diagnostic paths
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          printf 'F5_CI_REPORT_DIR=%s/cli-reports/%s\n' "$RUNNER_TEMP" "$TARGET" >> "$GITHUB_ENV"
+          printf 'F5_CI_ARTIFACT_DIR=%s/cli-diagnostics/%s\n' "$RUNNER_TEMP" "$TARGET" >> "$GITHUB_ENV"
+      - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts --prepare
+      - id: runtime
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        with:
+          node-version: ${{ steps.runtime.outputs.version }}
+      - name: Build immutable CLI archive
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node scripts/update-release-package-versions.ts "$VERSION"
+          node scripts/build-cli-archive.ts --target "$TARGET" --output release-cli
+      - id: paths
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node --input-type=module <<'JS' >> "$GITHUB_OUTPUT"
+          import { resolve } from 'node:path';
+          const stem = 'release-cli/f5-' + process.env.VERSION + '-' + process.env.TARGET;
+          console.log('archive=' + resolve(stem + '.tar.gz'));
+          console.log('manifest=' + resolve(stem + '.json'));
+          JS
+      - name: Clean-PATH archive smoke
+        if: ${{ !cancelled() && steps.paths.outcome == 'success' }}
+        env:
+          ARCHIVE: ${{ steps.paths.outputs.archive }}
+          MANIFEST: ${{ steps.paths.outputs.manifest }}
+        run: node scripts/cli-archive-smoke.ts "$ARCHIVE" "$MANIFEST"
+      - name: Mandatory real archive integration
+        if: ${{ !cancelled() && steps.paths.outcome == 'success' }}
+        env:
+          F5_CLI_SMOKE_ARCHIVE: ${{ steps.paths.outputs.archive }}
+          F5_CLI_SMOKE_MANIFEST: ${{ steps.paths.outputs.manifest }}
+          F5_REQUIRE_ARCHIVE_INTEGRATION: "1"
+          F5_CI_SUITE_ID: archive-integration
+        run: bun run --cwd apps/server test:file integration/standaloneArchive.integration.test.ts
+      - name: Require exactly one passed integration and zero skips
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/ci-test-summary.ts archive-integration
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cli-${{ matrix.target }}
+          path: release-cli/*
+          retention-days: 7
+          if-no-files-found: error
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-cli-${{ matrix.target }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_REPORT_DIR || format('{0}/cli-reports/{1}', runner.temp, matrix.target) }}
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Upload sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostics-cli-${{ matrix.target }}-${{ github.run_attempt }}
+          path: ${{ env.F5_CI_ARTIFACT_DIR || format('{0}/cli-diagnostics/{1}', runner.temp, matrix.target) }}
+          retention-days: 7
+          if-no-files-found: ignore

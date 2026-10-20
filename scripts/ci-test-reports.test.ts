@@ -103,4 +103,22 @@ describe("CI reports", () => {
       summarize(directory, expected).some((result) => result.detail.includes("Unexpected")),
     ).toBe(true);
   });
+  it("requires exactly one passed archive integration and zero skips", () => {
+    const directory = mkdtempSync(join(tmpdir(), "f5-archive-report-test-"));
+    directories.push(directory);
+    const expected = [{ packageName: "suites", event: "archive-integration" }];
+    const file = join(directory, reportPath(expected[0]!));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(fixture()));
+    expect(summarize(directory, expected)[0]!.verdict).toBe("passed");
+    for (const status of ["passed", "skipped"]) {
+      const report = fixture();
+      report.numTotalTests++;
+      if (status === "passed") report.numPassedTests++;
+      else report.numPendingTests++;
+      report.testResults[0]!.assertionResults.push({ status });
+      writeFileSync(file, JSON.stringify(report));
+      expect(summarize(directory, expected)[0]!.verdict).toBe("incomplete");
+    }
+  });
 });

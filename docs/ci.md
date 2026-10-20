@@ -8,24 +8,30 @@ It waits for all validation jobs and rejects failed, cancelled, or missing verdi
 intentionally skipped jobs pass. A policy test ensures new jobs join this gate,
 matrices finish every shard, and all jobs have timeouts.
 
-| Job                 | Scope                   | Work                                                                                                     | Timeout |
-| ------------------- | ----------------------- | -------------------------------------------------------------------------------------------------------- | ------- |
-| changes             | Every run               | PR code-change filter                                                                                    | 5 min   |
-| static              | Every run               | Formatting, lint, workflow lint, types, server boot, SDK/protocol audits, release smoke, tier/port drift | 15 min  |
-| test                | Every run               | Seven workspace suites, server Git smoke, integration, extended Git matrix                               | 20 min  |
-| server-unit         | Code changes            | Two Linux unit shards, four workers each                                                                 | 15 min  |
-| browser             | Code changes            | Discovered browser tests in Chromium                                                                     | 15 min  |
-| desktop             | Code changes            | Sandboxed Electron smoke, profile lifecycle, marketing build                                             | 20 min  |
-| windows-build       | Code changes            | Strict Rust checks, workspace/Git/integration suites, desktop build and smoke, profiles                  | 30 min  |
-| windows-server-unit | Code changes            | Two Windows unit shards, two workers each                                                                | 20 min  |
-| macos-profiles      | Code changes            | Swift, strict universal helper, selected profile tests                                                   | 15 min  |
-| macos-suite         | Main, nightly, dispatch | Strict native checks, all workspace/server suites, desktop and profile smoke                             | 60 min  |
-| CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
-| main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
+| Job                    | Scope                                | Work                                                                                                     | Timeout     |
+| ---------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------- |
+| changes                | Every run                            | PR code-change and PR/push packaging filters                                                             | 5 min       |
+| static                 | Every run                            | Formatting, lint, workflow lint, types, server boot, SDK/protocol audits, release smoke, tier/port drift | 15 min      |
+| test                   | Every run                            | Seven workspace suites, server Git smoke, integration, extended Git matrix                               | 20 min      |
+| server-unit            | Code changes                         | Two Linux unit shards, four workers each                                                                 | 15 min      |
+| browser                | Code changes                         | Discovered browser tests in Chromium                                                                     | 15 min      |
+| desktop                | Code changes                         | Sandboxed Electron smoke, profile lifecycle, marketing build                                             | 20 min      |
+| windows-build          | Code changes                         | Strict Rust checks, workspace/Git/integration suites, desktop build and smoke, profiles                  | 30 min      |
+| windows-server-unit    | Code changes                         | Two Windows unit shards, two workers each                                                                | 20 min      |
+| macos-profiles         | Code changes                         | Swift, strict universal helper, selected profile tests                                                   | 15 min      |
+| macos-suite            | Main, nightly, dispatch              | Strict native checks, all workspace/server suites, desktop and profile smoke                             | 60 min      |
+| windows-release-checks | Packaging changes, nightly, dispatch | Two native Windows CLI archives and installed-upgrade rehearsal                                          | 45 / 90 min |
+| CI result              | Every run                            | Aggregate verdict                                                                                        | 5 min       |
+| main-status            | Current main only                    | Reconcile the `ci-main-red` issue                                                                        | 5 min       |
 
 A docs-only PR (only Markdown or `docs/**`) skips the heavy jobs. Static checks
 and workspace/Git/integration tests still run, including environment documentation
 drift tests. Main pushes, nightly runs and dispatches always run heavy jobs.
+Packaging paths additionally run the reusable Windows release checks, including
+the installed-upgrade rehearsal. Docs-only changes skip these checks. The packaging
+filter includes the paths introduced by PR #157 plus the shared CI/release wiring.
+Packaging PRs have a 25-minute Windows wall-clock target; individual release-check
+timeouts remain longer to retain diagnostics when packaging stalls.
 The full macOS suite never runs on PRs. It feeds `CI result`, so release eligibility
 waits for it after each merge (with a 60-minute job timeout). Hosted timing targets for
 non-packaging PRs are at most 10 minutes on Linux and 12 minutes on Windows;
@@ -36,9 +42,12 @@ runtime checks.
 
 Only superseded PR runs are cancelled. Main commits use separate concurrency groups
 by SHA, so a later merge cannot cancel an earlier commit's release-eligibility run.
-Release preflight currently checks the exact SHA's successful main push run. The
-stricter explicit gate/attempt check and distribution workflow are deferred until
-PR #157 merges; see the existing release documentation for the current behavior.
+For both tags and dry runs, release preflight requires the latest `ci.yml` push run
+for the exact SHA, its latest attempt, and that attempt's `CI result` job all to have
+completed successfully. It pages through the attempt's jobs and rechecks the latest
+attempt before returning. It never waits or falls back to another SHA or older
+successful attempt. Release eligibility includes macOS and, on packaging changes,
+the Windows release checks.
 
 `main-status` ignores stale SHAs and deduplicates comments by run attempt. It has
 no shared concurrency group: [GitHub's concurrency rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/concurrency)
@@ -92,6 +101,10 @@ suppression is `SC2016` in release workflows for intentional single-quoted Node
 template literals. The composite setup action is validated by executing it on the
 hosted runners, since actionlint does not lint composite action definitions.
 
+CLI archive builds deliberately switch to `CLI_NODE_VERSION` from
+`scripts/build-cli-archive.ts` after installation; ordinary CI uses `.node-version`.
+Windows ARM64 alone installs Bun 1.3.11, since Bun 1.3.9 lacks a native build there.
+
 ## Reports and diagnostics
 
 Test jobs set `F5_CI_REPORT_DIR` to a job-specific runner-temp directory. Vitest
@@ -123,6 +136,39 @@ debugging. CI exports diagnostics before attempting cleanup; locked temporary fi
 produce a cleanup warning without changing the smoke verdict.
 Only these explicit files are uploaded. Profile directories, databases, provider
 homes, auth files and cookies must never be uploaded.
+
+## Distribution validation
+
+`distribution-checks.yml` runs on main every Sunday at 03:17 UTC and on manual
+dispatch. It reads the version/channel from the release manifests and calls the
+same five-target CLI builder and Windows installed-upgrade rehearsal as release.
+It also builds a Linux AppImage and runs `bun audit --json --audit-level=high`.
+Findings at high/critical severity, scanner failures, and missing or malformed
+JSON fail the audit job. Lower-severity findings remain visible in its sanitized
+artifact. This workflow has no signing/publication secrets and does not build
+unsigned macOS desktop packages.
+
+Every archive runs the clean-PATH smoke and mandatory real-archive integration
+with absolute input paths. Missing/unreadable inputs fail mandatory mode; ordinary
+server suites may still skip when no archive is supplied. The report inventory
+requires exactly one passed integration test and zero skipped tests. Archive smoke
+and integration export bounded sanitized process diagnostics before removing their
+fixtures. Artifacts and reports are retained for seven days; diagnostic names do
+not match `cli-*`, which release assembly uses for payloads.
+
+Scheduled failures create or comment on `[CI] Scheduled validation failing`, once
+per run ID/attempt, without raw logs. The notifier does not close the issue on
+recovery; manual runs do not notify. The maintainer reviews the issue and checks
+schedule activity monthly because GitHub can disable schedules after 60 days
+without repository activity.
+
+The distribution rehearsal on [PR #177, run 39226735921](https://github.com/lopes-felipe/f5/actions/runs/39226735921)
+passed clean-PATH smoke and mandatory integration on all five native archive targets,
+with exactly one passed integration and zero skips in each uploaded JSON report.
+Linux AppImage packaging and the unsigned Windows installed-upgrade rehearsal also
+passed. Temporary PR rehearsal jobs were removed in an additive follow-up commit.
+A protected release dry run and the main-only distribution dispatch remain maintainer
+validation after merge; the dependency audit already reports high/critical findings.
 
 ## Maintainer rollout
 
