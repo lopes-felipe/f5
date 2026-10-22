@@ -17,8 +17,7 @@ export const UPSTREAM_LISTS: ReadonlyArray<{ readonly id: UpstreamTopicList; rea
   { id: "skipped", label: "Skipped" },
 ];
 
-export const isUpstreamList = (value: unknown): value is UpstreamTopicList =>
-  UPSTREAM_LISTS.some((entry) => entry.id === value);
+export { isUpstreamList } from "./upstreamSearch";
 
 const formatConfidence = (value: number) => value.toFixed(2);
 

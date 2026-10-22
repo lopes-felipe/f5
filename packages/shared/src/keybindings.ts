@@ -7,6 +7,7 @@ import {
   MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   type ResolvedKeybindingRule,
   type ResolvedKeybindingsConfig,
+  UPSTREAM_KEYBINDING_COMMANDS,
 } from "@t3tools/contracts";
 
 type WhenToken =
@@ -19,6 +20,22 @@ type WhenToken =
 
 /** Upstream page list shortcuts; the list container provides `upstreamListFocus`. */
 const UPSTREAM_LIST_WHEN = "upstreamListFocus && !editableFocus && !dialogFocus";
+/** Default keys for `UPSTREAM_KEYBINDING_COMMANDS`, index for index. */
+const UPSTREAM_DEFAULT_KEYS = [
+  "j",
+  "k",
+  "x",
+  "shift+a",
+  "a",
+  "p",
+  "s",
+  "w",
+  "d",
+  "u",
+  "enter",
+  "o",
+  "shift+p",
+] as const satisfies { readonly length: (typeof UPSTREAM_KEYBINDING_COMMANDS)["length"] };
 
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+[", command: "navigation.back", when: "!terminalFocus && !dialogFocus" },
@@ -114,19 +131,11 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
   { key: "mod+/", command: "help.shortcuts", when: "!terminalFocus" },
   { key: "mod+enter", command: "chat.newBackground", when: "newThreadComposer && !dialogFocus" },
-  { key: "j", command: "upstream.next", when: UPSTREAM_LIST_WHEN },
-  { key: "k", command: "upstream.previous", when: UPSTREAM_LIST_WHEN },
-  { key: "x", command: "upstream.toggleSelect", when: UPSTREAM_LIST_WHEN },
-  { key: "shift+a", command: "upstream.selectAll", when: UPSTREAM_LIST_WHEN },
-  { key: "a", command: "upstream.acceptSuggestion", when: UPSTREAM_LIST_WHEN },
-  { key: "p", command: "upstream.port", when: UPSTREAM_LIST_WHEN },
-  { key: "s", command: "upstream.skip", when: UPSTREAM_LIST_WHEN },
-  { key: "w", command: "upstream.watch", when: UPSTREAM_LIST_WHEN },
-  { key: "d", command: "upstream.decline", when: UPSTREAM_LIST_WHEN },
-  { key: "u", command: "upstream.reopen", when: UPSTREAM_LIST_WHEN },
-  { key: "enter", command: "upstream.openDetail", when: UPSTREAM_LIST_WHEN },
-  { key: "o", command: "upstream.openUpstreamPr", when: UPSTREAM_LIST_WHEN },
-  { key: "shift+p", command: "upstream.startPort", when: UPSTREAM_LIST_WHEN },
+  ...UPSTREAM_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: UPSTREAM_DEFAULT_KEYS[index]!,
+    command,
+    when: UPSTREAM_LIST_WHEN,
+  })),
 ];
 
 export const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

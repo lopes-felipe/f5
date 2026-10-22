@@ -1,11 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ProjectId } from "@t3tools/contracts";
 
 import { AppTitlebar } from "../components/AppTitlebar";
 import { RouteErrorView } from "../components/RouteErrorView";
 import { SidebarInset } from "../components/ui/sidebar";
-import { UpstreamPage, type UpstreamSearch } from "../components/upstream/UpstreamPage";
-import { isUpstreamList } from "../components/upstream/upstreamPage.logic";
+import { UpstreamPage } from "../components/upstream/UpstreamPage";
+// Keep the eagerly loaded route definition free of page helpers.
+import { validateUpstreamSearch } from "../components/upstream/upstreamSearch";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 
 function UpstreamRouteView() {
@@ -35,16 +35,7 @@ function UpstreamRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/upstream")({
-  validateSearch: (search: Record<string, unknown>): UpstreamSearch => ({
-    ...(typeof search.project === "string" && search.project
-      ? { project: ProjectId.makeUnsafe(search.project) }
-      : {}),
-    ...(isUpstreamList(search.list) ? { list: search.list } : {}),
-    ...(typeof search.topic === "string" &&
-    /^(pr-[1-9][0-9]*(-[0-9a-f]{7})?|c-[0-9a-f]{12})$/u.test(search.topic)
-      ? { topic: search.topic }
-      : {}),
-  }),
+  validateSearch: validateUpstreamSearch,
   component: UpstreamRouteView,
   errorComponent: RouteErrorView,
 });

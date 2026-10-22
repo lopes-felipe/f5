@@ -4,7 +4,6 @@ import type {
   UpstreamOverview,
   UpstreamPortLinkSummary,
   UpstreamResolvePublicationInput,
-  UpstreamTopicList as UpstreamListId,
   UpstreamTopicRow,
 } from "@t3tools/contracts";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -45,12 +44,9 @@ import {
   UPSTREAM_LISTS,
   upstreamPrUrl,
 } from "./upstreamPage.logic";
+import type { UpstreamSearch } from "./upstreamSearch";
 
-export interface UpstreamSearch {
-  readonly project?: ProjectId;
-  readonly list?: UpstreamListId;
-  readonly topic?: string;
-}
+export type { UpstreamSearch };
 
 const EMPTY_ROWS: ReadonlyArray<UpstreamTopicRow> = [];
 
