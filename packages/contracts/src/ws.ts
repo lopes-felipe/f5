@@ -37,7 +37,7 @@ import {
   PreviewAutomationRequest,
 } from "./previewAutomation";
 import { PR_HUB_WS_CHANNELS, PrHubAdvisoriesChanged, PrHubChanged } from "./prHub";
-import { UPSTREAM_PORTS_WS_CHANNELS, UpstreamPortsChanged } from "./upstreamPorts";
+import { UPSTREAM_PORTS_WS_CHANNELS, UpstreamPortsChanged } from "./upstreamPortsWire";
 import { ProjectWatchedPathsChangedPayload } from "./project";
 import { ServerConfigUpdatedPayload, ServerProviderAdvisoriesUpdatedPayload } from "./server";
 import { DiskSpaceStatus, StorageStatus, StorageInvalidatedPayload } from "./storage";

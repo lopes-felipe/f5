@@ -13,7 +13,7 @@ import { ModelSelection, ProjectSkillScope, RuntimeMode } from "./orchestration"
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
 import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
 import { ComputerPasswordMasking } from "./computerAutomation";
-import { UpstreamPortsSettings } from "./upstreamPorts";
+import { UpstreamPortsSettings } from "./upstreamPortsWire";
 export { ThreadEnvMode };
 
 // ── Client Settings (local-only) ───────────────────────────────
