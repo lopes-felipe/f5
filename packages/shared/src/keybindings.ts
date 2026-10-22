@@ -17,6 +17,9 @@ type WhenToken =
   | { type: "lparen" }
   | { type: "rparen" };
 
+/** Upstream page list shortcuts; the list container provides `upstreamListFocus`. */
+const UPSTREAM_LIST_WHEN = "upstreamListFocus && !editableFocus && !dialogFocus";
+
 export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+[", command: "navigation.back", when: "!terminalFocus && !dialogFocus" },
   { key: "mod+]", command: "navigation.forward", when: "!terminalFocus && !dialogFocus" },
@@ -111,6 +114,19 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
   { key: "mod+/", command: "help.shortcuts", when: "!terminalFocus" },
   { key: "mod+enter", command: "chat.newBackground", when: "newThreadComposer && !dialogFocus" },
+  { key: "j", command: "upstream.next", when: UPSTREAM_LIST_WHEN },
+  { key: "k", command: "upstream.previous", when: UPSTREAM_LIST_WHEN },
+  { key: "x", command: "upstream.toggleSelect", when: UPSTREAM_LIST_WHEN },
+  { key: "shift+a", command: "upstream.selectAll", when: UPSTREAM_LIST_WHEN },
+  { key: "a", command: "upstream.acceptSuggestion", when: UPSTREAM_LIST_WHEN },
+  { key: "p", command: "upstream.port", when: UPSTREAM_LIST_WHEN },
+  { key: "s", command: "upstream.skip", when: UPSTREAM_LIST_WHEN },
+  { key: "w", command: "upstream.watch", when: UPSTREAM_LIST_WHEN },
+  { key: "d", command: "upstream.decline", when: UPSTREAM_LIST_WHEN },
+  { key: "u", command: "upstream.reopen", when: UPSTREAM_LIST_WHEN },
+  { key: "enter", command: "upstream.openDetail", when: UPSTREAM_LIST_WHEN },
+  { key: "o", command: "upstream.openUpstreamPr", when: UPSTREAM_LIST_WHEN },
+  { key: "shift+p", command: "upstream.startPort", when: UPSTREAM_LIST_WHEN },
 ];
 
 export const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [

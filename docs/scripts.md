@@ -56,8 +56,8 @@ If you want full control instead of hashing, set `F5_PORT_OFFSET` to a numeric o
 ## Upstream port ledger
 
 Upstream t3code tracking lives in ledger v7 under `upstream/`, declared by the
-`upstream` block in `f5.json`. F5's Upstream page will be the only writer of the
-ledger-state files.
+`upstream` block in `f5.json`. F5's Upstream page is the only writer of the
+ledger-state files; see [Upstream ports](user/upstream-ports.md) for the workflow.
 
 ```
 upstream/

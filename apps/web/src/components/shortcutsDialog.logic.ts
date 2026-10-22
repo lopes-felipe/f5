@@ -141,6 +141,25 @@ const SHORTCUT_SECTION_DEFINITIONS: ReadonlyArray<{
       "rightPanel.closeTab",
     ],
   },
+  {
+    id: "upstream",
+    title: "Upstream page",
+    commands: [
+      "upstream.next",
+      "upstream.previous",
+      "upstream.toggleSelect",
+      "upstream.selectAll",
+      "upstream.acceptSuggestion",
+      "upstream.port",
+      "upstream.skip",
+      "upstream.watch",
+      "upstream.decline",
+      "upstream.reopen",
+      "upstream.openDetail",
+      "upstream.openUpstreamPr",
+      "upstream.startPort",
+    ],
+  },
 ];
 
 const MODEL_PICKER_JUMP_COMMAND_SET = new Set<KeybindingCommand>(

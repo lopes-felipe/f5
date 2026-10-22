@@ -1,12 +1,16 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   GitForkIcon,
+  GitMergeIcon,
   GaugeIcon,
   GitPullRequestIcon,
   HomeIcon,
   type LucideIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
+
+import { upstreamProjectsQueryOptions } from "../../lib/upstreamPortsReactQuery";
 
 import { readNativeApi } from "../../nativeApi";
 import { SidebarThreadSearchInput } from "../SidebarThreadSearch";
@@ -36,6 +40,22 @@ function usePrHubNeedsYouCount(): number {
     return api.prHub.onChanged(updateCount);
   }, []);
   return count;
+}
+
+/** Projects with an `upstream` block and their inbox total; refreshed by `upstreamPorts.changed`. */
+function useUpstreamNav(): { readonly visible: boolean; readonly inbox: number } {
+  const query = useQuery({
+    ...upstreamProjectsQueryOptions(),
+    enabled: Boolean(readNativeApi()?.upstreamPorts),
+  });
+  const projects = query.data?.projects ?? [];
+  return {
+    visible: projects.length > 0,
+    inbox: projects.reduce(
+      (sum, project) => sum + (project.managedByThisProfile ? project.inboxCount : 0),
+      0,
+    ),
+  };
 }
 
 /** Navigation button with an optional shortcut tooltip and trailing status. */
@@ -70,7 +90,7 @@ function NavRow(props: {
   );
 }
 
-/** Home, thread search, Pull requests and Usage. */
+/** Home, thread search, Pull requests, Upstream, Worktrees and Usage. */
 export function SidebarNav(props: {
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
@@ -83,7 +103,9 @@ export function SidebarNav(props: {
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const isOnWorktrees = useLocation({ select: (loc) => loc.pathname === "/worktrees" });
   const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
+  const isOnUpstream = useLocation({ select: (loc) => loc.pathname === "/upstream" });
   const prHubNeedsYouCount = usePrHubNeedsYouCount();
+  const upstream = useUpstreamNav();
 
   return (
     <nav aria-label="Primary" className="shrink-0 px-2 pb-2">
@@ -127,6 +149,24 @@ export function SidebarNav(props: {
             }
           />
         </SidebarMenuItem>
+        {upstream.visible && (
+          <SidebarMenuItem>
+            <NavRow
+              icon={GitMergeIcon}
+              label="Upstream"
+              isActive={isOnUpstream}
+              onSelect={() => void navigate({ to: "/upstream" })}
+              trailing={
+                upstream.inbox > 0 ? (
+                  <Badge variant="outline" size="sm" className="tabular-nums">
+                    {upstream.inbox}
+                    <span className="sr-only"> to review</span>
+                  </Badge>
+                ) : null
+              }
+            />
+          </SidebarMenuItem>
+        )}
         <SidebarMenuItem>
           <NavRow
             icon={GitForkIcon}
