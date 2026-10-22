@@ -887,21 +887,17 @@ export function createWsNativeApi(): NativeApi {
       cancelTask: (input) => transport.request(AGENT_BRIDGE_WS_METHODS.cancelTask, input),
     },
     upstreamPorts: {
-      listProjects: () => transport.request(UPSTREAM_PORTS_WS_METHODS.listProjects, {}),
-      getOverview: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.getOverview, input),
-      listTopics: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.listTopics, input),
-      getTopic: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.getTopic, input),
-      decide: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.decide, input),
-      acceptSuggestions: (input) =>
-        transport.request(UPSTREAM_PORTS_WS_METHODS.acceptSuggestions, input),
-      run: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.run, input),
-      startPort: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.startPort, input),
-      unlinkPort: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.unlinkPort, input),
-      getPortPrompt: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.getPortPrompt, input),
-      resolvePublication: (input) =>
-        transport.request(UPSTREAM_PORTS_WS_METHODS.resolvePublication, input),
-      addRemote: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.addRemote, input),
-      takeOverWriter: (input) => transport.request(UPSTREAM_PORTS_WS_METHODS.takeOverWriter, input),
+      // Every method forwards its input (or `{}`) unchanged. Generated to keep
+      // the startup bundle small; the mapped type fails to compile if the
+      // method table and the NativeApi namespace drift apart.
+      ...(Object.fromEntries(
+        Object.entries(UPSTREAM_PORTS_WS_METHODS).map(([name, method]) => [
+          name,
+          (input?: unknown) => transport.request(method, input ?? {}),
+        ]),
+      ) as {
+        [Name in keyof typeof UPSTREAM_PORTS_WS_METHODS]: NativeApi["upstreamPorts"][Name];
+      }),
       onChanged: (callback) => {
         upstreamPortsChangedListeners.add(callback);
         return () => {
