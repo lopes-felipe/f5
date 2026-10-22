@@ -97,7 +97,7 @@ export function parseCheckedInProjectFile(raw: string): ParsedCheckedInProjectFi
       diagnostics.push({
         field: "upstream",
         message:
-          "upstream needs a https://github.com/<owner>/<repo> repository, a plain remote name, and a workspace-relative ledgerDir.",
+          "upstream needs a https://github.com/<owner>/<repo> repository, a plain remote name, a plain branch name, and a normalized workspace-relative ledgerDir.",
       });
     }
   }

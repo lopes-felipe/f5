@@ -101,10 +101,16 @@ With `F5_LEDGER_BASE_REF=<ref>` (set by CI on pull requests) it also rejects:
 - ledger-state changes mixed with any other path. This applies once the base contains
   `upstream/archive/schema6.json`. `policy.md` and `rules.json` may change in any PR.
 
+Both rules apply to the `ledgerDir` at HEAD and at the base, so moving the directory cannot
+sidestep them. `ledgerDir` must be a normalized relative path (no `.`, `..` or empty segments,
+no backslashes or trailing slash) so it matches the plain paths Git reports.
+
 Trailers on the checked commits that name unknown topics, or epochs above the ledger's,
 are warnings, because a port PR may merge before its ledger PR.
 
-Coverage refresh is paused until the F5 Upstream page ships. Do not hand-edit `upstream/`.
+Coverage refresh is paused until the F5 Upstream page ships. Do not hand-edit `upstream/intervals`,
+`upstream/legacy`, `upstream/topics` or `upstream/archive`; `policy.md` and `rules.json` are
+human-edited.
 
 ### Migrating from schema 6
 
@@ -117,4 +123,6 @@ pending records, moves `scripts/upstream-ports.json` byte for byte to
 `upstream/archive/schema6.json`, writes any missing seed files (`rules.json`, `policy.md`,
 the `f5.json` block), verifies the whole destination, and deletes the old file last. Each
 write is atomic, so an interrupted run resumes from where it stopped; a rerun on a migrated
-checkout only verifies.
+checkout only verifies. While `origin/main` (or `F5_UPSTREAM_MAIN_REF`) still has
+`scripts/upstream-ports.json`, a rerun also requires the archive to match it byte for byte,
+so an older archive cannot be frozen as immutable.

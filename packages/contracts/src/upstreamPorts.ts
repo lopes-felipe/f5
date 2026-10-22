@@ -9,6 +9,19 @@ import { ModelSelection, RuntimeMode } from "./orchestration";
 export const UPSTREAM_REPOSITORY_PATTERN =
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(\.git)?$/u;
 export const UPSTREAM_REMOTE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
+/**
+ * A conservative subset of Git ref names; the value reaches shell commands in
+ * port prompts, so the prompt quotes it as well.
+ */
+export const UPSTREAM_BRANCH_PATTERN =
+  /^(?![-/])(?!.*\.\.)(?!.*\/\/)(?!.*\/$)(?!.*\.lock$)[A-Za-z0-9._/-]+$/u;
+/**
+ * A normalized relative path: forward slashes, no empty, `.` or `..` segments.
+ * Git reports plain paths, so any other spelling would slip past the
+ * prefix-based CI rules.
+ */
+export const UPSTREAM_LEDGER_DIR_PATTERN =
+  /^(?!\.\.?(?:\/|$))(?!.*\/\.\.?(?:\/|$))[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/u;
 
 export const UpstreamProjectConfig = Schema.Struct({
   repository: Schema.String.check(Schema.isPattern(UPSTREAM_REPOSITORY_PATTERN)),
@@ -16,12 +29,14 @@ export const UpstreamProjectConfig = Schema.Struct({
     Schema.isPattern(UPSTREAM_REMOTE_NAME_PATTERN),
     Schema.isMaxLength(100),
   ).pipe(Schema.withDecodingDefault(() => "upstream")),
-  branch: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(200)).pipe(
-    Schema.withDecodingDefault(() => "main"),
-  ),
-  ledgerDir: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(200)).pipe(
-    Schema.withDecodingDefault(() => "upstream"),
-  ),
+  branch: Schema.String.check(
+    Schema.isPattern(UPSTREAM_BRANCH_PATTERN),
+    Schema.isMaxLength(200),
+  ).pipe(Schema.withDecodingDefault(() => "main")),
+  ledgerDir: Schema.String.check(
+    Schema.isPattern(UPSTREAM_LEDGER_DIR_PATTERN),
+    Schema.isMaxLength(200),
+  ).pipe(Schema.withDecodingDefault(() => "upstream")),
 });
 export type UpstreamProjectConfig = typeof UpstreamProjectConfig.Type;
 
@@ -43,6 +58,10 @@ export const UpstreamTopicId = Schema.String.check(
 );
 export type UpstreamTopicId = typeof UpstreamTopicId.Type;
 export const UpstreamDate = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u));
+/** UTC (`Z`) timestamps only; topic files are bucketed by the first seven characters. */
+export const UpstreamUtcTimestamp = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/u),
+);
 export const UpstreamMonth = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}$/u));
 
 export const UpstreamMembershipCommit = Schema.Struct({
@@ -59,7 +78,7 @@ export const UpstreamIntervalFile = Schema.Struct({
   baseSha: UpstreamSha,
   targetSha: UpstreamSha,
   selection: Schema.Literal("first-parent"),
-  createdAt: IsoDateTime,
+  createdAt: UpstreamUtcTimestamp,
   count: NonNegativeInt,
   digest: Schema.String,
   commits: Schema.Array(UpstreamMembershipCommit),
@@ -69,7 +88,7 @@ export type UpstreamIntervalFile = typeof UpstreamIntervalFile.Type;
 export const UpstreamLegacyBatchFile = Schema.Struct({
   schemaVersion: Schema.Literal(UPSTREAM_LEDGER_SCHEMA_VERSION),
   batch: PositiveInt,
-  createdAt: IsoDateTime,
+  createdAt: UpstreamUtcTimestamp,
   count: NonNegativeInt,
   digest: Schema.String,
   commits: Schema.Array(UpstreamMembershipCommit),
@@ -129,7 +148,7 @@ export type UpstreamEquivalence = typeof UpstreamEquivalence.Type;
 
 export const UpstreamTopic = Schema.Struct({
   id: UpstreamTopicId,
-  createdAt: IsoDateTime,
+  createdAt: UpstreamUtcTimestamp,
   title: Schema.String,
   summary: Schema.String,
   upstreamPrs: Schema.Array(PositiveInt),
@@ -139,7 +158,7 @@ export const UpstreamTopic = Schema.Struct({
   reason: Schema.optionalKey(Schema.String),
   scope: Schema.optionalKey(Schema.String),
   decidedBy: Schema.optionalKey(UpstreamDecidedBy),
-  decidedAt: Schema.optionalKey(IsoDateTime),
+  decidedAt: Schema.optionalKey(UpstreamUtcTimestamp),
   suggestion: Schema.optionalKey(UpstreamTopicSuggestion),
   relatedTopics: Schema.optionalKey(Schema.Array(UpstreamTopicId)),
   revisitAfter: Schema.optionalKey(UpstreamDate),

@@ -295,21 +295,50 @@ describe("validateLedger", () => {
     expect(parseRules(JSON.stringify(rules)).errors.join("\n")).toContain("mobile has no label");
     expect(parseRules(JSON.stringify(RULES)).errors).toEqual([]);
   });
+
+  it("requires the maintenance key when ignored path prefixes are set", () => {
+    const { reasonLabels, ...rest } = RULES;
+    const { maintenance: _maintenance, ...labels } = reasonLabels;
+    const rules = {
+      ...rest,
+      reasonKeys: RULES.reasonKeys.filter((key) => key !== "maintenance"),
+      reasonLabels: labels,
+      autoSkip: RULES.autoSkip.filter((rule) => rule.reasonKey !== "maintenance"),
+    };
+    expect(parseRules(JSON.stringify(rules)).errors.join("\n")).toContain(
+      "reasonKeys must include maintenance",
+    );
+    expect(
+      parseRules(JSON.stringify({ ...rules, ignoredPathPrefixes: [] })).errors.join("\n"),
+    ).not.toContain("maintenance");
+  });
+
+  it("rejects ledger timestamps that are not UTC", () => {
+    const ledger = baseLedger();
+    const local = {
+      ...ledger,
+      topics: ledger.topics.map((t) =>
+        t.id === "pr-1" ? { ...t, createdAt: "2026-10-21T08:00:00+02:00" } : t,
+      ),
+    };
+    expect(parseLedgerFiles(serializeLedgerFiles(local)).errors.join("\n")).toContain("createdAt");
+    expect(parseLedgerFiles(serializeLedgerFiles(ledger)).errors).toEqual([]);
+  });
 });
 
 describe("evaluateBaseRefRules", () => {
-  const ledgerDir = "upstream";
+  const ledgerDirs = ["upstream"];
   it("rejects modifying an immutable file and allows adding one", () => {
     expect(
       evaluateBaseRefRules({
-        ledgerDir,
+        ledgerDirs,
         baseHasArchive: true,
         changes: [{ path: "upstream/intervals/0001-aaaaaaaaaaaa.json", status: "M" }],
       }),
     ).toHaveLength(1);
     expect(
       evaluateBaseRefRules({
-        ledgerDir,
+        ledgerDirs,
         baseHasArchive: true,
         changes: [
           { path: "upstream/intervals/0002-aaaaaaaaaaaa.json", status: "A" },
@@ -319,7 +348,7 @@ describe("evaluateBaseRefRules", () => {
     ).toEqual([]);
     expect(
       evaluateBaseRefRules({
-        ledgerDir,
+        ledgerDirs,
         baseHasArchive: true,
         changes: [{ path: "upstream/archive/schema6.json", status: "D" }],
       }),
@@ -328,7 +357,7 @@ describe("evaluateBaseRefRules", () => {
 
   it("rejects ledger-state changes mixed with code", () => {
     const errors = evaluateBaseRefRules({
-      ledgerDir,
+      ledgerDirs,
       baseHasArchive: true,
       changes: [
         { path: "upstream/topics/2026-10.json", status: "M" },
@@ -341,7 +370,7 @@ describe("evaluateBaseRefRules", () => {
   it("exempts the migration PR whose base has no archive", () => {
     expect(
       evaluateBaseRefRules({
-        ledgerDir,
+        ledgerDirs,
         baseHasArchive: false,
         changes: [
           { path: "upstream/archive/schema6.json", status: "A" },
@@ -352,10 +381,23 @@ describe("evaluateBaseRefRules", () => {
     ).toEqual([]);
   });
 
+  it("guards the base location when ledgerDir moves", () => {
+    expect(
+      evaluateBaseRefRules({
+        ledgerDirs: ["tracking", "upstream"],
+        baseHasArchive: true,
+        changes: [
+          { path: "upstream/archive/schema6.json", status: "D" },
+          { path: "tracking/archive/schema6.json", status: "A" },
+        ],
+      }).join("\n"),
+    ).toContain("upstream/archive/schema6.json is immutable");
+  });
+
   it("allows policy and rules edits alongside code", () => {
     expect(
       evaluateBaseRefRules({
-        ledgerDir,
+        ledgerDirs,
         baseHasArchive: true,
         changes: [
           { path: "upstream/policy.md", status: "M" },
@@ -502,6 +544,37 @@ describe("applyOps and opEffectPresent", () => {
     expect(validate(applied.ledger)).toEqual([]);
     expect(opEffectPresent(applied.ledger, op)).toBe(true);
     expect(applyOps(applied.ledger, [op]).ledger).toEqual(applied.ledger);
+  });
+
+  it("rejects a decision made against an older epoch than the ledger's", () => {
+    const ledger = baseLedger();
+    const reopened = {
+      ...ledger,
+      topics: ledger.topics.map((t) => (t.id === "pr-1" ? { ...t, epoch: 2 } : t)),
+    };
+    const stale = {
+      kind: "decision" as const,
+      topicId: "pr-1",
+      fields: {
+        status: "skip" as const,
+        epoch: 1,
+        reasonKey: "mobile",
+        reason: "Mobile app only",
+        decidedBy: "user" as const,
+        decidedAt: "2026-10-21T08:00:00.000Z",
+      },
+    };
+    const applied = applyOps(reopened, [stale]);
+    expect(applied.conflicts.join("\n")).toContain("made at epoch 1, but the ledger is at epoch 2");
+    expect(applied.ledger.topics.find((t) => t.id === "pr-1")!.epoch).toBe(2);
+  });
+
+  it("names the missing topics when an interval is only partially present", () => {
+    const ledger = baseLedger();
+    const next = interval(2, sha("b2"), [{ sha: sha("c1"), topic: "pr-3" }]);
+    const partial = { ...ledger, intervals: [...ledger.intervals, next] };
+    const applied = applyOps(partial, [{ kind: "interval", file: next, topics: [topic("pr-3")] }]);
+    expect(applied.conflicts).toEqual(["interval 2 is present, but its topics pr-3 are missing"]);
   });
 
   it("flags a topic id collision with different content", () => {

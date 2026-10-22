@@ -72,11 +72,36 @@ describe("parseCheckedInProjectFile", () => {
       { repository: "https://gitlab.com/a/b" },
       { repository: "https://github.com/a/b", remote: "bad remote" },
       { repository: "https://github.com/a/b", ledgerDir: "../outside" },
+      // Non-normalized spellings would not match Git's plain paths in the CI rules.
+      { repository: "https://github.com/a/b", ledgerDir: "./upstream" },
+      { repository: "https://github.com/a/b", ledgerDir: "upstream/." },
+      { repository: "https://github.com/a/b", ledgerDir: "upstream/" },
+      { repository: "https://github.com/a/b", ledgerDir: "." },
+      { repository: "https://github.com/a/b", ledgerDir: "a//b" },
+      { repository: "https://github.com/a/b", ledgerDir: "a\\b" },
+      // The branch reaches a shell command in port prompts.
+      { repository: "https://github.com/a/b", branch: "main;printf${IFS}MARKER" },
+      { repository: "https://github.com/a/b", branch: "-main" },
+      { repository: "https://github.com/a/b", branch: "a..b" },
+      { repository: "https://github.com/a/b", branch: "a//b" },
+      { repository: "https://github.com/a/b", branch: "main.lock" },
+      { repository: "https://github.com/a/b", branch: "" },
     ]) {
       const result = parseCheckedInProjectFile(JSON.stringify({ upstream }));
       expect(result.upstream).toBeNull();
       expect(result.diagnostics.map((diagnostic) => diagnostic.field)).toEqual(["upstream"]);
     }
+    expect(
+      parseCheckedInProjectFile(
+        JSON.stringify({
+          upstream: {
+            repository: "https://github.com/a/b",
+            branch: "release/v1.2",
+            ledgerDir: "tracking/up-stream",
+          },
+        }),
+      ).upstream,
+    ).toMatchObject({ branch: "release/v1.2", ledgerDir: "tracking/up-stream" });
   });
 
   it("never lets a checked-in file set the upstream schedule", () => {

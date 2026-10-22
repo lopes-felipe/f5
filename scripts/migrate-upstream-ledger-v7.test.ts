@@ -58,6 +58,9 @@ function schema6(pending = false) {
 
 const fakeGit: RunGitSync = (args) => {
   if (args[0] === "remote") return "git@github.com:pingdotgg/t3code.git";
+  // Main has already dropped the schema-6 ledger unless a test says otherwise.
+  if (args[0] === "rev-parse" && args.at(-1)!.endsWith(`:${OLD_LEDGER_PATH}`))
+    throw new Error("missing");
   if (args[0] === "rev-parse") return sha("b2");
   if (args[0] === "rev-list") return [sha("b2"), sha("b1"), sha("a0")].join("\n");
   if (args[0] === "log")
@@ -137,6 +140,25 @@ describe("migrateUpstreamLedger", () => {
     rmSync(path.join(root, "upstream/policy.md"));
     expect(migrateUpstreamLedger({ root, runGit: fakeGit }).outcome).toBe("already-migrated");
     expect(read(root, "upstream/policy.md")).toBe(SEED_POLICY);
+  });
+
+  it("refuses an archive that is stale relative to main's schema-6 ledger", () => {
+    const root = fixtureRoot();
+    migrateUpstreamLedger({ root, runGit: fakeGit });
+    const withMain =
+      (mainBlob: string): RunGitSync =>
+      (args) => {
+        if (args[0] === "rev-parse" && args.at(-1) === `origin/main:${OLD_LEDGER_PATH}`)
+          return mainBlob;
+        if (args[0] === "hash-object") return "archive-blob";
+        return fakeGit(args);
+      };
+    expect(() => migrateUpstreamLedger({ root, runGit: withMain("newer-blob") })).toThrow(
+      "stale archive",
+    );
+    expect(migrateUpstreamLedger({ root, runGit: withMain("archive-blob") }).outcome).toBe(
+      "already-migrated",
+    );
   });
 
   it("fails on conflicting archive bytes", () => {

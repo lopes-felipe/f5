@@ -79,6 +79,18 @@ function readLedgerStateFiles(ledgerRoot: string, errors: string[]): Map<string,
   return files;
 }
 
+/** `git diff -z --name-status --no-renames`: NUL-separated status and path pairs, never quoted. */
+export function parseNameStatusZ(output: string): ChangedPath[] {
+  const fields = output.split("\0");
+  const changes: ChangedPath[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const status = fields[index]!;
+    if (!status) break;
+    changes.push({ status: status.slice(0, 1), path: fields[index + 1]! });
+  }
+  return changes;
+}
+
 function tryGit(runGit: RunGitSync, args: ReadonlyArray<string>): string | null {
   try {
     return runGit(args);
@@ -123,7 +135,12 @@ export function checkUpstreamPorts(options: CheckOptions): CheckResult {
     errors.push(`${config.ledgerDir}/${ARCHIVE_PATH}: ${String(error)}`);
     return { errors, warnings, summary: null };
   }
-  errors.push(...validateArchive(archive));
+  const archiveErrors = validateArchive(archive);
+  if (archiveErrors.length) {
+    // The archive context below assumes a structurally valid archive.
+    errors.push(...archiveErrors);
+    return { errors, warnings, summary: null };
+  }
   const pending = pendingArchiveShas(archive);
   if (pending.length) errors.push(`archive has pending records: ${pending.join(", ")}`);
   const context = archiveContext(archive);
@@ -160,26 +177,21 @@ export function checkUpstreamPorts(options: CheckOptions): CheckResult {
   }
 
   if (options.baseRef) {
-    const status = options.runGit([
-      "diff",
-      "--name-status",
-      "--no-renames",
-      `${options.baseRef}...HEAD`,
-    ]);
-    const changes: ChangedPath[] = status
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => {
-        const [code, ...rest] = line.split("\t");
-        return { status: code!.slice(0, 1), path: rest.join("\t") };
-      });
-    const baseHasArchive =
-      tryGit(options.runGit, [
-        "cat-file",
-        "-e",
-        `${options.baseRef}:${config.ledgerDir}/${ARCHIVE_PATH}`,
-      ]) !== null;
-    errors.push(...evaluateBaseRefRules({ ledgerDir: config.ledgerDir, changes, baseHasArchive }));
+    const changes = parseNameStatusZ(
+      options.runGit(["diff", "-z", "--name-status", "--no-renames", `${options.baseRef}...HEAD`]),
+    );
+    const baseProject = tryGit(options.runGit, ["show", `${options.baseRef}:f5.json`]);
+    const baseLedgerDir =
+      baseProject === null
+        ? null
+        : (parseCheckedInProjectFile(baseProject).upstream?.ledgerDir ?? null);
+    const ledgerDirs = [config.ledgerDir, ...(baseLedgerDir === null ? [] : [baseLedgerDir])];
+    const baseHasArchive = ledgerDirs.some(
+      (dir) =>
+        tryGit(options.runGit, ["cat-file", "-e", `${options.baseRef}:${dir}/${ARCHIVE_PATH}`]) !==
+        null,
+    );
+    errors.push(...evaluateBaseRefRules({ ledgerDirs, changes, baseHasArchive }));
   }
 
   const topics = new Map(ledger.topics.map((topic) => [topic.id, topic]));

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -106,8 +106,11 @@ function fixture(state: UpstreamLedger = ledger) {
 interface FakeGitOptions {
   readonly remote?: string | null;
   readonly subjects?: Record<string, string>;
+  /** `<status>\t<path>` lines; served in `-z` form. */
   readonly diff?: string;
   readonly baseHasArchive?: boolean;
+  /** `f5.json` at the base ref; absent by default. */
+  readonly baseProject?: string;
   readonly headMessage?: string;
 }
 
@@ -133,7 +136,15 @@ function fakeGit(options: FakeGitOptions = {}): RunGitSync {
     if (command === "log" && args.at(-1) === sha("a1"))
       return `${sha("a1")}\x1f${subjects[sha("a1")]}`;
     if (command === "log") return options.headMessage ?? "";
-    if (command === "diff") return options.diff ?? "";
+    if (command === "diff") {
+      if (!args.includes("-z")) throw new Error("diff must use -z");
+      const fields = (options.diff ?? "").split("\n").filter(Boolean);
+      return fields.map((line) => `${line.replace("\t", "\0")}\0`).join("");
+    }
+    if (command === "show") {
+      if (options.baseProject === undefined) throw new Error("missing");
+      return options.baseProject;
+    }
     if (command === "cat-file") {
       if (options.baseHasArchive === false) throw new Error("missing");
       return "";
@@ -209,6 +220,47 @@ describe("checkUpstreamPorts", () => {
       { baseRef: "origin/main" },
     );
     expect(migration.errors).toEqual([]);
+  });
+
+  it("applies the rules to the base ledgerDir when a PR moves it", () => {
+    const root = fixture();
+    renameSync(path.join(root, "upstream"), path.join(root, "tracking"));
+    writeFileSync(
+      path.join(root, "f5.json"),
+      JSON.stringify({
+        upstream: { repository: "https://github.com/pingdotgg/t3code.git", ledgerDir: "tracking" },
+      }),
+    );
+    const result = run(
+      root,
+      fakeGit({
+        diff: "D\tupstream/archive/schema6.json\nM\tf5.json",
+        baseProject: JSON.stringify({
+          upstream: { repository: "https://github.com/pingdotgg/t3code.git" },
+        }),
+      }),
+      { baseRef: "origin/main" },
+    );
+    expect(result.errors.join("\n")).toContain("upstream/archive/schema6.json is immutable");
+  });
+
+  it("reads paths Git would otherwise quote", () => {
+    const result = run(
+      fixture(),
+      fakeGit({ diff: 'M\tupstream/intervals/0001-"odd"\tname.json' }),
+      { baseRef: "origin/main" },
+    );
+    expect(result.errors.join("\n")).toContain('upstream/intervals/0001-"odd"\tname.json');
+  });
+
+  it("reports archive errors instead of crashing on an archive with no intervals", () => {
+    const root = fixture();
+    writeFileSync(
+      path.join(root, "upstream/archive/schema6.json"),
+      `${JSON.stringify({ ...JSON.parse(archive()), intervals: [] })}\n`,
+    );
+    const result = run(root, fakeGit());
+    expect(result.errors.join("\n")).toContain("at least one interval");
   });
 
   it("warns about trailers for unknown topics or future epochs", () => {

@@ -1047,6 +1047,7 @@ export function makeUpstreamPortsService(
           repository: config.repository,
           remote: config.remote,
           branch: config.branch,
+          ledgerDir: config.ledgerDir,
           base: snapshot.base.baseBranch,
           coverageTarget: coverageTarget(snapshot.view.ledger, archiveCtx) ?? "HEAD",
           policy: snapshot.base.policy,

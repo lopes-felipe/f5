@@ -100,7 +100,10 @@ jobs:
           git fetch --no-prune --no-tags upstream refs/heads/main:refs/remotes/upstream/main
           if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             # The full-history checkout already has the PR base; enforce immutability and ledger-only PRs.
-            git rev-parse --verify --quiet "refs/remotes/origin/${GITHUB_BASE_REF}" >/dev/null
+            if ! git rev-parse --verify --quiet "refs/remotes/origin/${GITHUB_BASE_REF}" >/dev/null; then
+              echo "::error::origin/${GITHUB_BASE_REF} is not in the checkout; the upstream ledger base-ref rules need it."
+              exit 1
+            fi
             export F5_LEDGER_BASE_REF="origin/${GITHUB_BASE_REF}"
           fi
           bun run upstream-ports:check

@@ -248,6 +248,11 @@ export function parseRules(text: string): ParsedRules {
     if (!rule.pathPrefixes?.length && !rule.pathSuffixes?.length)
       errors.push(`${RULES_PATH}: autoSkip rule ${rule.reasonKey} matches no paths`);
   }
+  // matchAutoSkipRule reports commits that touch only ignored paths as maintenance.
+  if (rules.ignoredPathPrefixes.length > 0 && !keys.has("maintenance"))
+    errors.push(
+      `${RULES_PATH}: reasonKeys must include maintenance when ignoredPathPrefixes is set`,
+    );
   if (!(rules.autoSkipConfidence >= 0 && rules.autoSkipConfidence <= 1))
     errors.push(`${RULES_PATH}: autoSkipConfidence must be between 0 and 1`);
   return { rules, errors };
@@ -520,13 +525,20 @@ export interface ChangedPath {
  * ledger-only PRs once the base already contains the v7 archive.
  */
 export function evaluateBaseRefRules(input: {
-  readonly ledgerDir: string;
+  /**
+   * Normalized ledger directories at HEAD and at the base. Checking both keeps
+   * a PR that moves `ledgerDir` from escaping the rules for the old location.
+   */
+  readonly ledgerDirs: ReadonlyArray<string>;
   readonly changes: ReadonlyArray<ChangedPath>;
   readonly baseHasArchive: boolean;
 }): string[] {
   const errors: string[] = [];
-  const prefix = `${input.ledgerDir.replace(/\/+$/u, "")}/`;
-  const relative = (path: string) => (path.startsWith(prefix) ? path.slice(prefix.length) : null);
+  const prefixes = [...new Set(input.ledgerDirs)].map((dir) => `${dir}/`);
+  const relative = (path: string) => {
+    const prefix = prefixes.find((candidate) => path.startsWith(candidate));
+    return prefix === undefined ? null : path.slice(prefix.length);
+  };
   for (const change of input.changes) {
     const inLedger = relative(change.path);
     if (inLedger === null) continue;
@@ -807,6 +819,14 @@ export function applyOps(base: UpstreamLedger, ops: ReadonlyArray<UpstreamLedger
         conflicts.push(`decision for unknown topic ${op.topicId}`);
         continue;
       }
+      // Epochs only grow, and a decision is made against the newest epoch it
+      // can see; a higher ledger epoch means another writer decided since.
+      if (topic.epoch > op.fields.epoch) {
+        conflicts.push(
+          `decision for ${op.topicId} was made at epoch ${op.fields.epoch}, but the ledger is at epoch ${topic.epoch}`,
+        );
+        continue;
+      }
       topics.set(op.topicId, applyDecisionFields(topic, op.fields));
       continue;
     }
@@ -817,7 +837,13 @@ export function applyOps(base: UpstreamLedger, ops: ReadonlyArray<UpstreamLedger
       (file) => ("interval" in file ? file.interval : file.batch) === number,
     );
     if (sameNumber) {
-      conflicts.push(`${label} already exists with different content`);
+      const ids = new Set(topics.keys());
+      const missing = op.topics.filter((topic) => !ids.has(topic.id)).map((topic) => topic.id);
+      conflicts.push(
+        canonicalJson(sameNumber) === canonicalJson(op.file)
+          ? `${label} is present, but its topics ${missing.join(", ")} are missing`
+          : `${label} already exists with different content`,
+      );
       continue;
     }
     if (number !== existing.length + 1) {

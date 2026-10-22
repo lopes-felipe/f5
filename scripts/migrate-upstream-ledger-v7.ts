@@ -157,6 +157,11 @@ export type MigrationStep = "archive" | "seeds" | "verified" | "old-removed";
 export interface MigrationOptions {
   readonly root: string;
   readonly runGit: RunGitSync;
+  /**
+   * The integration branch. When it still holds the schema-6 ledger, an
+   * existing archive must match it byte for byte (default `origin/main`).
+   */
+  readonly mainRef?: string;
   /** Test hook: called after each durable step. */
   readonly afterStep?: (step: MigrationStep) => void;
 }
@@ -288,6 +293,20 @@ export function migrateUpstreamLedger(options: MigrationOptions): MigrationResul
         throw new Error("archive bytes differ from the schema-6 ledger after writing");
     }
     options.afterStep?.("archive");
+  } else {
+    // Taking the deletion in a modify/delete conflict leaves an older archive
+    // that would verify and then become immutable; compare it with main's ledger.
+    const mainRef = options.mainRef ?? "origin/main";
+    let mainBlob: string | null = null;
+    try {
+      mainBlob = runGit(["rev-parse", "--verify", "--quiet", `${mainRef}:${OLD_LEDGER_PATH}`]);
+    } catch {
+      // Main no longer has the schema-6 ledger.
+    }
+    if (mainBlob !== null && runGit(["hash-object", "--no-filters", archivePath]) !== mainBlob)
+      throw new Error(
+        `stale archive: ${LEDGER_DIR}/${ARCHIVE_PATH} differs from ${mainRef}:${OLD_LEDGER_PATH}. Restore ${OLD_LEDGER_PATH} from ${mainRef}, git rm ${LEDGER_DIR}/${ARCHIVE_PATH}, and run the migration again.`,
+      );
   }
 
   const seeds: Array<[string, string | null]> = [
@@ -328,7 +347,11 @@ if (import.meta.main) {
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     }).trim();
   try {
-    const result = migrateUpstreamLedger({ root, runGit });
+    const result = migrateUpstreamLedger({
+      root,
+      runGit,
+      ...(process.env.F5_UPSTREAM_MAIN_REF ? { mainRef: process.env.F5_UPSTREAM_MAIN_REF } : {}),
+    });
     console.log(
       `${result.outcome === "migrated" ? "Migrated" : "Already migrated; verified"} the upstream ledger to ${LEDGER_DIR}/ (${result.legacyRemaining} archive deferred records remain for legacy triage).`,
     );
