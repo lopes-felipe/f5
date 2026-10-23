@@ -14,7 +14,7 @@
     "astro": "^6.0.4"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.7",
+    "@astrojs/check": "^0.9.11",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
