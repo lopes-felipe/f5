@@ -51,6 +51,8 @@ import type {
   ComputerGrant,
   ComputerActivity,
   ChromeNativeHostTransactionSummary,
+  ChromeNativeHostRestoreResult,
+  ChromeReadiness,
 } from "./computerAutomation";
 import type {
   NativeOperationInput,
@@ -790,7 +792,9 @@ export interface NativeApi {
     restoreNativeHost: (
       provider: "claude" | "codex",
       transactionId: string,
-    ) => Promise<{ restored: ReadonlyArray<string>; skipped: ReadonlyArray<string> }>;
+    ) => Promise<ChromeNativeHostRestoreResult>;
+    /** Read-only preflight for one provider instance: never spawns or writes. */
+    getReadiness: (input: { providerInstanceId: string }) => Promise<ChromeReadiness>;
   };
   computer?: {
     access: {

@@ -537,6 +537,31 @@ jobs:
           if-no-files-found: ignore
       - uses: ./.github/actions/assert-clean-worktree
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+  macos-descriptor-drift:
+    # macos-latest is arm64: the pinned Claude CLI binary for the certified record.
+    runs-on: macos-latest
+    timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        id: install
+      - name: Check Claude in Chrome descriptor drift
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check
+      - name: Certification record checks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          bun run --cwd packages/shared test src/providerIntegrationCertification.test.ts
+      - uses: ./.github/actions/assert-clean-worktree
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
   macos-suite:
     runs-on: macos-latest
     timeout-minutes: 60
@@ -654,6 +679,7 @@ jobs:
         desktop,
         windows-build,
         macos-profiles,
+        macos-descriptor-drift,
         macos-suite,
       ]
     steps:

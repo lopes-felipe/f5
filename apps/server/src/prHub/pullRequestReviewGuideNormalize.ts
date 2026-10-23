@@ -1,8 +1,34 @@
+import { Schema } from "effect";
 import { unquoteGitPatchPath } from "@t3tools/shared/gitPatchPath";
-import type { PullRequestReviewGuideExcerpt, PullRequestReviewGuideStop } from "@t3tools/contracts";
+import {
+  PullRequestReviewGuideStop,
+  TrimmedNonEmptyString,
+  type PullRequestReviewGuideExcerpt,
+} from "@t3tools/contracts";
 export interface ReviewGuideGenerationResult {
   readonly stops: ReadonlyArray<PullRequestReviewGuideStop>;
 }
+
+// What the model returns. Strict structured output (Codex) requires every
+// property, so a file note is nullable rather than optional.
+export const ReviewGuideModelOutput = Schema.Struct({
+  stops: Schema.Array(
+    Schema.Struct({
+      ...PullRequestReviewGuideStop.fields,
+      files: Schema.Array(
+        Schema.Struct({ path: TrimmedNonEmptyString, note: Schema.NullOr(Schema.String) }),
+      ),
+    }),
+  ).check(Schema.isMaxLength(32)),
+});
+
+type ReviewGuideDraft = {
+  readonly stops: ReadonlyArray<
+    Omit<PullRequestReviewGuideStop, "files"> & {
+      readonly files: ReadonlyArray<{ readonly path: string; readonly note?: string | null }>;
+    }
+  >;
+};
 
 const MAX_EXCERPT_LINES = 25;
 
@@ -109,7 +135,7 @@ function mergeExcerpts(
 const nonEmpty = (value: string) => value.trim() !== "";
 
 export function normalizeReviewGuide(
-  guide: ReviewGuideGenerationResult,
+  guide: ReviewGuideDraft,
   change: ReviewGuideChange,
 ): ReviewGuideGenerationResult {
   const changed = new Set(change.files);

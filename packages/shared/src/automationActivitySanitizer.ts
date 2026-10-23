@@ -17,7 +17,17 @@ const APPROVAL_LABELS: Record<typeof ProviderApprovalDecision.Type, string> = {
 export interface AutomationToolProvenance {
   readonly serverName: string;
   readonly verified: boolean;
-  readonly kind: "f5-computer" | "claude-builtin" | "codex-builtin";
+  /**
+   * `chrome-mask` is installed before Claude in Chrome is verified (and for lookalikes):
+   * it masks everything and grants no trusted provenance, image persistence or badge.
+   * `claude-chrome` is registered only after F5 verified the CLI's own server.
+   */
+  readonly kind:
+    | "f5-computer"
+    | "claude-builtin"
+    | "codex-builtin"
+    | "claude-chrome"
+    | "chrome-mask";
 }
 export function isComputerAutomationTool(
   toolName: string,
@@ -90,6 +100,7 @@ export function sanitizeAutomationActivity(
   };
   // cua_repl source and text output have no trustworthy field-level structure.
   if (provenance.kind === "codex-builtin") return { sanitized: true, backend: "codex-builtin" };
+  if (provenance.kind === "chrome-mask") return { sanitized: true };
   const safe = visit(value, 0);
   return Array.isArray(safe) ? safe : { ...(safe as object), sanitized: true };
 }
@@ -399,7 +410,15 @@ export class AutomationEventSanitizer {
     return visit(value, 0, this.overflow.has(threadId) ? servers[0] : undefined);
   }
   isComputerItem(threadId: string, itemId: string): boolean {
-    return this.overflow.has(threadId) || this.items.has(`${threadId}\0${itemId}`);
+    if (this.overflow.has(threadId)) return true;
+    const provenance = this.items.get(`${threadId}\0${itemId}`);
+    return provenance !== undefined && provenance.kind !== "chrome-mask";
+  }
+  /** Masks one server's events (by name) until a trusted registration replaces it. */
+  mask(threadId: string, serverName: string): void {
+    const current = this.servers.get(threadId)?.find((entry) => entry.serverName === serverName);
+    if (current && current.kind !== "chrome-mask") return;
+    this.register(threadId, { serverName, verified: true, kind: "chrome-mask" });
   }
 }
 export const automationEventSanitizer = new AutomationEventSanitizer();

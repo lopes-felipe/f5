@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { randomUUID } from "node:crypto";
 import { killProcessTreeAsync } from "@t3tools/shared/processTree";
+import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
 import { BoundedTerminalHistory } from "../BoundedTerminalHistory";
 import { readTerminalHistory } from "../historyPersistence";
 import { readTerminalProcessTable, type TerminalProcessTable } from "../processTable";
@@ -226,6 +227,17 @@ function createTerminalSpawnEnv(
   // Both terminal clients support 24-bit color; preserve explicit overrides.
   if (!spawnEnv.COLORTERM) spawnEnv.COLORTERM = "truecolor";
   return spawnEnv;
+}
+
+function projectScriptEnvOf(
+  runtimeEnv: Record<string, string> | null,
+): Record<string, string> | null {
+  if (!runtimeEnv) return null;
+  return Object.fromEntries(
+    Object.entries(runtimeEnv).filter(([key]) =>
+      PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()),
+    ),
+  );
 }
 
 function normalizedRuntimeEnv(
@@ -689,7 +701,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
               ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
             })
           : process.env,
-        this.accountConfig ? null : session.runtimeEnv,
+        // The account environment already holds the runtime env, but the spawn
+        // filter drops T3CODE_* keys, so restore the project script variables.
+        this.accountConfig ? projectScriptEnvOf(session.runtimeEnv) : session.runtimeEnv,
       );
       let lastSpawnError: unknown = null;
 

@@ -103,6 +103,22 @@ describe("certification inventory and coverage", () => {
     }
   });
 
+  it("runs the provider-native live checks only on a Mac and keeps Claude's built-in gated", () => {
+    const target = { repo: "/repo", platform: "darwin" as const };
+    const launch = { claude: { home: "/private/claude", binary: "/cli/claude" } };
+    const env = (key: string) => {
+      const commands = commandsFor(scenario(key), target, "/out", launch, "darwin");
+      return Array.isArray(commands) ? commands[0]?.env : commands;
+    };
+    expect(env("chrome.codex")).toMatchObject({ F5_CODEX_NATIVE_LIVE: "chrome" });
+    expect(env("builtin.codex")).toMatchObject({ F5_CODEX_NATIVE_LIVE: "computer" });
+    expect(env("chrome.claude")).toMatchObject({ F5_CLAUDE_CHROME_LIVE: "1" });
+    expect(env("builtin.claude")).toBe("supported-launch-consent-veto-unavailable");
+    expect(commandsFor(scenario("chrome.codex"), target, "/out", launch, "win32")).toBe(
+      "interactive-platform-unavailable",
+    );
+  });
+
   it("runs a selected new phase without redoing prior phases or hiding missing coverage", () => {
     expect(
       pending(manifest, [], "workflows", undefined, "real-apps.codex").map((s) => s.key),

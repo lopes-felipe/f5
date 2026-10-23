@@ -23,6 +23,7 @@ import {
   type ComputerApp,
   type DesktopComputerHostMessage,
   type ChromeLeaseHolder,
+  type ChromeProcessRegistration,
 } from "@t3tools/contracts";
 import {
   ComputerControlError,
@@ -196,10 +197,19 @@ export class ComputerAutomationBrokerRuntime {
   private chromeHolder: ChromeLeaseHolder | null = null;
   private readonly setupConsents = new Map<
     string,
-    { threadId: string; generation: string; settle: (allowed: boolean) => void }
+    {
+      threadId: string;
+      generation: string;
+      settle: (allowed: boolean) => void;
+      session: boolean;
+    }
   >();
+  /** In-memory per-generation grants for proxied integrations. */
+  private readonly sessionConsents = new Set<string>();
+  private readonly sessionConsentRequests = new Map<string, Promise<boolean>>();
   private nativeOtherProfile = false;
   private chromeOtherProfile = false;
+  private chromeRecovery = false;
   private readonly offHost: () => void;
   private readonly offPause: () => void;
   constructor(
@@ -300,6 +310,7 @@ export class ComputerAutomationBrokerRuntime {
       if (message.type === "chromeLeaseChanged") {
         this.chromeHolder = message.holder;
         this.chromeOtherProfile = message.otherProfile ?? false;
+        this.chromeRecovery = message.recoveryRequired ?? false;
         this.publishUse();
       }
       if (
@@ -323,7 +334,9 @@ export class ComputerAutomationBrokerRuntime {
         if (setup && message.answer.backendIncarnation === this.host.backendIncarnation)
           setup.settle(
             this.generation(setup.threadId) === setup.generation &&
-              message.answer.allowChromeSetup === true,
+              (setup.session
+                ? message.answer.allowChromeSession === true
+                : message.answer.allowChromeSetup === true),
           );
         else void this.access.answerFromHost(message.answer).catch(() => undefined);
       }
@@ -551,6 +564,56 @@ export class ComputerAutomationBrokerRuntime {
     generation: string,
     setup: NonNullable<ComputerAccessRequested["chromeSetup"]>,
   ): Promise<boolean> {
+    return this.requestIntegrationConsent(threadId, generation, {
+      kind: "chrome-setup",
+      chromeSetup: setup,
+      reason:
+        "Allow this provider to replace the browser's native messaging host? F5 can restore the original setup while its registration is unchanged.",
+    });
+  }
+  /** One dialog per session generation; the grant lives in memory only. */
+  requestChromeSession(
+    threadId: string,
+    generation: string,
+    integration: "codex-chrome" | "codex-computer",
+  ): Promise<boolean> {
+    const key = `${threadId}\0${generation}\0${integration}`;
+    if (this.sessionConsents.has(key)) return Promise.resolve(true);
+    const pending = this.sessionConsentRequests.get(key);
+    if (pending) return pending;
+    const request = this.requestIntegrationConsent(threadId, generation, {
+      kind: "chrome-session",
+      chromeSession: { integration },
+      reason: "Allow this provider integration for this session?",
+    }).then((allowed) => {
+      this.sessionConsentRequests.delete(key);
+      if (allowed && this.generation(threadId) === generation) this.sessionConsents.add(key);
+      return allowed && this.generation(threadId) === generation;
+    });
+    this.sessionConsentRequests.set(key, request);
+    return request;
+  }
+  /** desktop main stops and observes registered children without this server. */
+  registerIntegrationProcess(registration: ChromeProcessRegistration): Promise<void> {
+    return this.host
+      .correlated(
+        { type: "chromeProcessRegister", requestId: randomUUID(), registration },
+        5000,
+        false,
+      )
+      .then(() => undefined);
+  }
+  reportIntegrationExit(launchToken: string): void {
+    this.host.send({ type: "chromeProcessExited", launchToken });
+  }
+  chromeRecoveryRequired(): boolean {
+    return this.chromeRecovery;
+  }
+  private requestIntegrationConsent(
+    threadId: string,
+    generation: string,
+    input: Pick<ComputerAccessRequested, "kind" | "chromeSetup" | "chromeSession" | "reason">,
+  ): Promise<boolean> {
     if (this.generation(threadId) !== generation || !this.host.hasHost())
       return Promise.resolve(false);
     const requestId = randomUUID();
@@ -566,15 +629,17 @@ export class ComputerAutomationBrokerRuntime {
         });
         resolve(allowed);
       };
-      this.setupConsents.set(requestId, { threadId, generation, settle });
+      this.setupConsents.set(requestId, {
+        threadId,
+        generation,
+        settle,
+        session: input.kind === "chrome-session",
+      });
       const request: ComputerAccessRequested = {
         threadId,
         requestId,
-        kind: "chrome-setup",
         apps: [],
-        chromeSetup: setup,
-        reason:
-          "Allow this provider to replace the browser's native messaging host? F5 can restore the original setup while its registration is unchanged.",
+        ...input,
       };
       this.publish({
         channel: "computer.access.requested",
@@ -1280,6 +1345,8 @@ export class ComputerAutomationBrokerRuntime {
     // earlier must not expose an active native host to another profile.
     automationEventSanitizer.clear(threadId);
     this.nativePaused.delete(threadId);
+    for (const key of this.sessionConsents)
+      if (key.startsWith(`${threadId}\0${generation}\0`)) this.sessionConsents.delete(key);
     if (this.executionStates.delete(threadId)) this.publishUse();
     const grantVersion = this.access.version(threadId) + 1;
     this.host.send({
@@ -1317,7 +1384,9 @@ export class ComputerAutomationBrokerRuntime {
       try {
         const context = await this.options.resolve(threadId, binding.generation, binding.provider);
         computerEnabled = context.policy.computerUse;
-        chromeEnabled = binding.provider === "claude" && context.policy.claudeInChrome;
+        chromeEnabled =
+          (binding.provider === "claude" && context.policy.claudeInChrome) ||
+          (binding.provider === "codex" && context.policy.codexChrome);
         mode = context.policy.computerUseExecutionMode ?? "foreground";
         passwordMasking = context.policy.computerUsePasswordMasking ?? "fast";
       } catch {

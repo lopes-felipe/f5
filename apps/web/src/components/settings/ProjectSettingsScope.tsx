@@ -573,18 +573,32 @@ export function ProjectBrowserOverrides() {
               />
             }
           />
-          {/* Not certified yet (docs/agent-browser.md): they can only be switched off. */}
+          {/* Certification gates are enforced per launch; projects can only narrow access. */}
           <ProjectSettingRow
             title="Claude in Chrome"
             searchTarget="browser.chrome"
             source={badge("enableClaudeInChrome")}
-            description={UNCERTIFIED_CAPABILITY_DESCRIPTION}
+            description={CHROME_PROJECT_DESCRIPTION}
             control={
               <Switch
                 aria-label="Claude in Chrome"
-                disabled={saving || !settings.enableClaudeInChrome}
+                disabled={saving}
                 checked={settings.enableClaudeInChrome}
                 onCheckedChange={(checked) => set("enableClaudeInChrome", checked)}
+              />
+            }
+          />
+          <ProjectSettingRow
+            title="Codex Chrome control"
+            searchTarget="browser.codex-chrome"
+            source={badge("enableCodexChrome")}
+            description={CHROME_PROJECT_DESCRIPTION}
+            control={
+              <Switch
+                aria-label="Codex Chrome control"
+                disabled={saving}
+                checked={settings.enableCodexChrome}
+                onCheckedChange={(checked) => set("enableCodexChrome", checked)}
               />
             }
           />
@@ -681,14 +695,13 @@ export function ProjectGitOverrides() {
           searchTarget="git.worktree-disposable-paths"
           source={badge("worktreeDisposablePaths")}
           description="Uncommitted changes Storage cleanup may discard, such as regenerated files."
-          control={
-            <WorktreeDisposablePathsEditor
-              value={settings.worktreeDisposablePaths}
-              disabled={saving}
-              onSave={(paths) => set("worktreeDisposablePaths", paths)}
-            />
-          }
-        />
+        >
+          <WorktreeDisposablePathsEditor
+            value={settings.worktreeDisposablePaths}
+            disabled={saving}
+            onSave={(paths) => set("worktreeDisposablePaths", paths)}
+          />
+        </ProjectSettingRow>
       </SettingsCard>
       <SettingsCard title="Thread settlement">
         <ThreadSettlementFields
@@ -887,7 +900,8 @@ const SOURCE_CONTROL_TEXT_LABELS = {
 const NATIVE_CONTROL_CLASS =
   "h-8 rounded-md border border-input bg-background px-2.5 text-sm font-normal text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-60";
 
-const UNCERTIFIED_CAPABILITY_DESCRIPTION = "Not available in F5 yet.";
+const CHROME_PROJECT_DESCRIPTION =
+  "Available only where F5 has certified the agent's browser integration; readiness is shown in global Browser settings.";
 
 /** A settings row with the setting's source (global or project override) beside its title. */
 function ProjectSettingRow({

@@ -10,6 +10,8 @@ import {
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as processTree from "@t3tools/shared/processTree";
+import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
+import { projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 
 import {
   PtySpawnError,
@@ -1224,6 +1226,41 @@ describe("TerminalManager", () => {
 
     await manager.dispose();
   });
+
+  it.each([true, false])(
+    "passes project script env to profile terminals (Default=%s)",
+    async (isDefault) => {
+      const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-terminal-profile-"));
+      tempDirs.push(logsDir);
+      const config = makeServerConfig(logsDir);
+      const ptyAdapter = new FakePtyAdapter();
+      const manager = new TerminalManagerRuntime({
+        logsDir,
+        ptyAdapter,
+        processTableReader: async () => new Set(),
+        shellResolver: () => "/bin/bash",
+        accountConfig: {
+          ...config,
+          profile: { ...fallbackDefaultProfile(config.stateDir), isDefault },
+        },
+      });
+      const snapshot = await manager.open(
+        openInput({
+          env: projectScriptRuntimeEnv({
+            project: { cwd: "/repo" },
+            worktreePath: "/repo/worktree-a",
+          }),
+        }),
+      );
+
+      expect(snapshot.status).toBe("running");
+      expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_PROJECT_ROOT).toBe("/repo");
+      expect(ptyAdapter.spawnInputs[0]?.env.T3CODE_WORKTREE_PATH).toBe("/repo/worktree-a");
+      expect(ptyAdapter.spawnInputs[0]?.env.F5_PROFILE_ISOLATED).toBe(isDefault ? undefined : "1");
+
+      await manager.dispose();
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "starts zsh with prompt spacer disabled to avoid `%` end markers",

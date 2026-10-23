@@ -2,13 +2,14 @@
 
 > Contributors: the technical reference for agent browser and computer-use automation. For setup, see [Agent browser and computer use](user/agent-browser-and-computer-use.md).
 
-**Contents:** [macOS opt-in preview](#macos-opt-in-preview) · [Rule: tools installed, execution gated](#rule-tools-installed-execution-gated) · [F5 preview](#f5-preview) · [External sites allowlist](#external-sites-allowlist) · [Computer use v2 architecture](#computer-use-v2-architecture) · [Chrome integrations and native-host transactions](#chrome-integrations-and-native-host-transactions) · [Certification and validation](#certification-and-validation)
+**Contents:** [macOS opt-in preview](#macos-opt-in-preview) · [Rule: tools installed, execution gated](#rule-tools-installed-execution-gated) · [F5 preview](#f5-preview) · [External sites allowlist](#external-sites-allowlist) · [Computer use v2 architecture](#computer-use-v2-architecture) · [Provider-native integrations](#provider-native-integrations) · [Certification and validation](#certification-and-validation)
 
 How agents (Claude and Codex) see and drive web pages and, optionally, this computer, and
 the safety rules each path follows. Settings live in **Settings → Browser & Computer** and
 per project in the Browser & Computer category of project settings. Every flag below is ANDed with
 `enableAgentBrowserAccess`. A checked-in `f5.json` can never set `previewExternalHosts`,
-`enableClaudeInChrome`, or `enableAgentComputerUse` (`USER_ONLY_PROJECT_SETTING_KEYS`).
+`enableClaudeInChrome`, `enableCodexChrome`, or `enableAgentComputerUse`
+(`USER_ONLY_PROJECT_SETTING_KEYS`).
 
 ## macOS opt-in preview
 
@@ -23,7 +24,9 @@ remain available to explain the pause.
 This availability change does **not** certify the existing or new binaries. All
 `COMPUTER_CONTROL_CERTIFIED` constants remain false. Signed installed-build/TCC,
 full protection/display coverage and Windows interactive evidence remain pending.
-Windows, provider built-in computer control and Chrome integrations stay unavailable.
+Windows and provider built-in computer control stay unavailable. Provider-native Chrome
+integrations open only through a certification record (see
+[Provider-native integrations](#provider-native-integrations)); no record certifies yet.
 Prior machine receipts remain evidence for their recorded binaries only.
 
 Project grants contain opaque receipts issued and checked by Electron main. Editing
@@ -53,12 +56,12 @@ Preview tools are installed in every interactive desktop session. Each call reso
 live policy (`resolveAgentBrowserPolicy`), so toggling a setting applies on the next tool
 call without restarting the session. Policy lookups fail closed.
 
-| Capability                | Claude                                             | Codex                            | ACP (Cursor, Grok, Antigravity)                                         |
-| ------------------------- | -------------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------- |
-| F5 preview (`preview_*`)  | In-process SDK MCP `f5_preview`                    | Loopback HTTP MCP `__f5_preview` | Awaiting per-harness preview startup verification                       |
-| External sites in preview | Allowlist (`previewExternalHosts`)                 | Same allowlist                   | Same live allowlist                                                     |
-| Chrome integration        | Awaiting native-host certification (`--no-chrome`) | Awaiting plugin certification    | Unsupported                                                             |
-| Computer use              | F5 native; built-in gate closed                    | F5 native; built-in gate closed  | Awaiting per-harness live verification; no executable catalog installed |
+| Capability                | Claude                                                                                | Codex                                                                                             | ACP (Cursor, Grok, Antigravity)                                         |
+| ------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| F5 preview (`preview_*`)  | In-process SDK MCP `f5_preview`                                                       | Loopback HTTP MCP `__f5_preview`                                                                  | Awaiting per-harness preview startup verification                       |
+| External sites in preview | Allowlist (`previewExternalHosts`)                                                    | Same allowlist                                                                                    | Same live allowlist                                                     |
+| Chrome integration        | Claude in Chrome (`--chrome`) once `claude-chrome` certifies; `--no-chrome` otherwise | ChatGPT for Chrome through F5's `node_repl` proxy once `codex-chrome` certifies; Full access only | Unsupported                                                             |
+| Computer use              | F5 native; Claude's built-in starts only in interactive terminals                     | F5 native; Sky (`codex-builtin`) gate closed pending the spike                                    | Awaiting per-harness live verification; no executable catalog installed |
 
 ### ACP harnesses
 
@@ -566,46 +569,226 @@ Missing storage, unknown threads, plan mode, or exhausted image budgets produce 
 omitted count. Queued references survive session/provenance disposal. Central ingestion
 keeps these references when creating activities and still extracts other MCP images.
 
-## Chrome integrations and native-host transactions
+## Provider-native integrations
 
-Claude in Chrome and Codex's bundled Chrome plugin remain **uncertified**. Claude is
-launched with `--no-chrome`, user overrides are stripped, and built-in Chrome calls remain
-denied. No native-host registration is changed by this build.
+| Integration      | Record           | Path                                                       | Lease                | Status         |
+| ---------------- | ---------------- | ---------------------------------------------------------- | -------------------- | -------------- |
+| Claude in Chrome | `claude-chrome`  | CLI `--chrome`, native host registered by the CLI          | Whole session        | Gate closed    |
+| Codex Chrome     | `codex-chrome`   | F5 HTTP MCP `node_repl` proxying ChatGPT.app's `node_repl` | Child's lifetime     | Gate closed    |
+| Codex Sky        | `codex-computer` | Proxy to `SkyComputerUseClient mcp` (spike only)           | Foreground, per call | No record      |
+| Claude built-in  | none             | The CLI starts computer use only in interactive terminals  | n/a                  | Not applicable |
 
-`chromeSessionRuntime.ts` connects the shared inspection/transaction primitives to
-Claude's SDK launch, the mandatory pre-tool hook, trusted desktop setup consent and
-main's Chrome lease. Both the descriptor registry and main's platform/provider gates
-must certify an installed executable before `--chrome` can be selected. The descriptor
-pins its executable hash, browser roots, native-host names, expected profile target,
-server provenance verifier and evidence. User launch flags cannot bypass this decision.
+### Single certification source
 
-Setup consent names the previous and proposed host paths and travels only over the
-private host channel. After consent F5 rechecks registration hashes before launch and
-records post-launch changes, including safely recognized changes from a partial launch.
-Every call rechecks the main-owned lease, pause, live policy and registration drift;
-approval waits recheck them again. A failed or unverifiable server is denied for the
-session and changes its next-turn restart fingerprint. The lease survives until the
-CLI exits. The first release conservatively excludes **all** native input while a
-Chrome session holds the lease, rather than allowing concurrent input in other apps.
-Chrome admission also requires a healthy native helper/device lock and a registered
-emergency shortcut. Other profiles receive only anonymous lease ownership.
+`packages/shared/src/providerIntegrationCertification.ts` embeds the records in
+`packages/shared/src/certification/*.generated.json`. `isIntegrationCertified(integration,
+platform, arch)` is the only gate; desktop main's Chrome lease, the server's availability
+checks and computer backend selection all call it, so they cannot disagree. A record
+certifies only with an `evidenceId` naming a scrubbed report in
+`docs/computer-certification/<evidenceId>.json`, the `artifactSha256` of the packaged
+candidate build that run exercised, and what its runtime needs to work: `toolNames` for
+Claude, `toolInventorySha256` plus advertised definitions for every allowed tool for
+Codex Chrome, and `toolInventorySha256` for Sky. Runtime never reads `docs/`; the desktop
+smoke test asserts the records are bundled into main. No record in this build carries an
+`evidenceId`, so every gate is closed and each surface shows the specific reason
+(platform, architecture, custom binary, home mismatch, isolated profile, awaiting
+certification). A report supports a record only when every required assertion is `true`,
+versions and inventory match, and its `artifactSha256` equals the record's; a unit test
+re-checks every cited report with `evidenceMismatches`. Stamping a record changes the
+bundle, so the digest names the certified candidate; nothing compares it to the release
+that embeds the record.
 
-`chromeNativeHostStorage.ts` persists transactions atomically under server-owned
-`claude-chrome/transactions/` and `codex-chrome/transactions/` directories, with bounded
-reads and UUID/provider/profile identity checks. These files are not settings. Settings
-shows setup history for initialized certified runtimes. Restore stops the profile's
-Chrome sessions, reserves the machine lease, and restores only registrations whose
-post-launch hashes still match; externally changed entries are reported as skipped.
-File restoration is atomic. Windows restoration checks the certified registry key/view,
-restores the original manifest bytes and original default value, or deletes only an
-originally absent registration. OS-specific restoration and discovery still require the
-recorded machine tests. Runtime initialization after restart requires a matching
-certified installed version before its restoration history becomes available.
+`bun apps/server/scripts/generate-claude-chrome-descriptor.ts --check` (CI job
+`macos-descriptor-drift`) re-extracts the Claude descriptor from the pinned CLI and fails
+on drift, comparing parsed JSON so formatting never counts. Writing runs the repository
+formatter. Regenerating keeps older records, because journals reference them, and keeps
+any withdrawal. `--withdraw <id> --reason <note>` retires any record, including the
+current CLI's (the emergency off-switch); `--evidence` refuses a withdrawn record unless
+`--reinstate` is passed. `bun run sdk:audit` fails when a
+non-withdrawn `claude-chrome` record names an SDK version other than the pin, so support
+never disappears silently on an SDK bump.
+`COMPUTER_CHROME_APP_IDS` is the union of every record's browser bundle IDs; native
+control of those browsers is excluded while a Chrome lease is held, and other apps stay
+available.
 
-The shared coordinator supports both provider descriptors, but Codex's plugin launch
-and pre-execution veto bridge remain unavailable until a supported isolated runtime is
-identified and certified. No descriptor is fabricated for either provider. These code
-paths do not enable an integration while the gates remain closed.
+### Claude in Chrome
+
+Identity is the realpath of the bundled CLI, its platform package version and the
+instance home; the 240 MB binary is never hashed. A custom binary or a mismatched home
+reports unavailable. Disabled instances do no Chrome I/O, and warm admission reuses
+manifests and wrappers cached by metadata fingerprint. Claude launches with `--chrome`
+only when the record certifies, the toggle is on and setup is approved; otherwise with
+`--no-chrome`, and user overrides of either flag are stripped. Isolated F5 profiles set
+`HOME` to the profile's provider home, where the browser's native-messaging folders do
+not exist, so Claude in Chrome reports unavailable there with that reason. The session's
+restart fingerprint covers only the launch decision and wrapper target, never connection
+health, so a disconnect or reconnect does not restart the session.
+
+Admission widens `evaluateAgentBrowserToolPolicy()`. Every call needs the live policy, the
+current generation, a verified server and registration, healthy main-owned ownership with
+no `recovery-required`, an unchanged wrapper and registration snapshot and a recognized
+operation; unknown tools or action variants get `unsupported-operation`. Admission runs
+again after approval waits and immediately before launch, within a 1 s budget whose
+timeout denies with its own message. Chrome tool IDs and lookalikes
+are masked from the first SDK message; DOM text, typed values and raw screenshots stay out
+of logs and activity. Startup failure leaves the session running with Chrome `failed`;
+reconnecting is explicit and failed actions are never replayed.
+
+Ownership and coexistence: another F5 profile's registration is foreign and needs consent,
+reusable only for the same profile, instance, target and exact snapshot. If a terminal
+`claude --chrome` rewrites the registration during an F5 session, admission fails with
+`external-cli-conflict`; F5 never rewrites it back and never touches the terminal CLI. A
+standalone `claude --chrome` therefore reclaims the browser connection. In Full access
+Claude skips the extension's per-site permission prompts; the toggle, consent and user
+guide disclose this, along with the seven browser folders that get created.
+
+### Main-owned stop
+
+Chrome-enabled CLIs and proxied integration children are spawned in their own process
+group and registered with desktop main (`chromeProcessRegister`) before any stdio flows;
+a refused registration kills the child. Main accepts a registration only for a group
+leader that descends from that backend's own server process, so a server cannot have
+main signal an arbitrary group. `ChromeProcessSupervisor` reads `ps` in UTC under the C
+locale and guards against PID reuse with the observed start time. On ⌃⌘Esc, profile
+disconnect, backend replacement or shutdown, main invalidates the generation
+synchronously, sends `SIGTERM` to the group and `SIGKILL` after 1 s (normal shutdown gives
+2 s), even when the server is frozen. Exit means the whole group is gone: the lease is
+released only once no live member remains (zombies excluded), or the leader's PID now
+belongs to a different process. A failed `ps` read, or a row whose IDs are unreadable,
+counts as unknown and never as exit; a row with an unreadable start time still counts as a
+live member. If no exit is seen within 5 s the holder becomes `recovery-required`,
+persisted by desktop main, and new Chrome ownership and conflicting native control are
+refused. Main keeps sending `SIGKILL` to a recovery group (start time re-checked each time)
+and clears it once the group is gone. Live registrations are persisted too: after a
+crash, the next launch treats them as orphans, stops them the same way (`SIGTERM`, then
+`SIGKILL`) and blocks Chrome until they are gone. Quitting awaits the shutdown stop, until
+every group has exited or been persisted for recovery, within the 6 s cleanup budget.
+⌃⌘Esc also stops idle Chrome-enabled sessions; their generation stays invalidated,
+refusing new registrations and leases, until the user resumes. Main never signals Chrome,
+unrelated native hosts or terminal Claude. Server-side cleanup is an idempotent finalizer that runs even when
+event publication or SDK cleanup throws.
+
+### Journal and restore
+
+`chromeNativeHostStorage.ts` writes journal v2 transactions atomically under
+`claude-chrome/transactions/`. Before launch it persists identity, record, SDK version,
+executable realpath and immutable restoration slots holding each artifact's original
+bytes and mode or absence; after launch, the launch snapshot and `postLaunchHash`
+per artifact. States are `approved`, `launched`, `restoring`, `partially-restored`,
+`restored` and `recovery-required`. `reconcile` fills post-launch hashes on connection,
+startup timeout, in the finalizer and at server start.
+
+Listing and restore read storage directly, so history survives restarts, SDK upgrades
+and retired records. Restore validates each slot against the transaction's own record
+rules, never runs an old wrapper and restores an artifact only when its current bytes
+equal `postLaunchHash` or its target equals the transaction's. Each artifact persists a
+`restoring` intent, rechecks ownership, writes atomically and persists `restored`;
+external changes are skipped and stay retryable. Restoring an older transaction while a
+newer unresolved one owns an overlapping artifact is refused with the blocking ID before
+anything is stopped. Restore takes a storage-only lease from main
+(`chromeRestoreAcquire`) that needs no certification, so a closed or withdrawn gate never
+strands written files, but it is still exclusive: if another profile holds Chrome,
+restore retries for 5 s, then returns `busy` and writes nothing. Any other refusal is
+reported with its reason and "No files were changed." Settings marks **stale** transactions (wrapper
+missing or its target gone) with "Restore recommended", and shows legacy v1 journals,
+whose unprovable slots are reported as unresolved.
+
+### Codex Chrome: the proxy veto
+
+Codex skips MCP approvals in Full access, so its approvals cannot act as a veto. F5
+instead serves the integration itself: Codex sees an HTTP MCP server named `node_repl`
+on F5's loopback MCP server (`/mcp/integration`), and `IntegrationProxyCatalog.ts`
+lazily spawns ChatGPT.app's `Contents/Resources/cua_node/bin/node_repl` as a registered
+child. Every call is admitted in F5's own transport:
+
+- `tools/list` answers from the record's `advertisedTools`, so listing never starts
+  `node_repl`; only `js` and `js_reset` are exposed;
+- the user consents once per session generation (consent kind `chrome-session`) before
+  the child is first spawned; declining never starts it;
+- the app, plugin, `node_repl` and helper are inspected again (signatures through a cache
+  keyed by the bundle's identity and seal) right before each spawn, which can be hours
+  after session start; a change refuses the spawn;
+- the paged live inventory hashes to the record's `toolInventorySha256` and its schemas
+  match the advertised ones; until then every call is denied, and `tools/list_changed`
+  re-lists (without a second `initialize`) and re-verifies;
+- a call is tracked from its first await, so a cancel during consent, checks or
+  verification stops it before it is forwarded;
+- live policy, session generation and pause are checked on every call, and again after
+  the lease wait and immediately before forwarding;
+- the native-host registrations, the helper link's realpath and the helper binary's file
+  fingerprint still match the snapshot taken at session start;
+- a Chrome lease is acquired before the first forwarded call and held for the child's
+  whole life, because `node_repl` keeps state and code a call started (timers,
+  listeners) can outlive it. An idle child is stopped after 60 s, like an idle native
+  lease. The proxy releases when the child exits, and main keeps the lease until every
+  process in its group is gone, stopping whatever remains.
+
+Pause, interrupts and turning the integration off cancel in-flight calls and stop the
+child (`SIGTERM`, then `SIGKILL` after 3 s), so background work stops too. The client's
+own `notifications/cancelled` and a 120 s per-call deadline cancel just that call; a
+child that doesn't answer within 10 s is killed. Late responses after a generation change
+are discarded. Requests the child sends to F5 get "method not found", and an output line
+over 16 MB kills the child. Each MCP connection has its own id space, so a late
+cancellation from a previous connection never names a live call. Stdio errors on a dead
+child's pipes are absorbed rather than crashing the server. The `node_repl` source and
+output are fully masked in F5's activity.
+
+Requirements: an isolated effective Codex home (the instance's `homePath`, else an
+inherited `CODEX_HOME`, else `~/.codex`, which never qualifies), Full access (`node_repl` runs
+unsandboxed JavaScript that an approval UI cannot meaningfully show), an interactive
+desktop session (workflow profiles and synthetic threads never get it) and a verified
+ChatGPT.app. Inspection is read-only: the app and `node_repl` signatures (team
+`2DC432GLL2`), app and plugin versions, `extension-ids.json`, and the native-host
+manifests in the record's browser folders with their `latest` helper target. F5 never
+reads Codex's `config.toml` or auth and never writes the registrations. A helper whose
+version lags the app reports "Open the ChatGPT app once to update its Chrome helper."
+Toggling `enableCodexChrome` restarts the session before the next turn.
+
+### Codex Computer Use (Sky)
+
+No `codex-computer` record exists. `inspectCodexComputer` reads nothing without one and
+reports "awaiting a live safety certification". The spike
+(`integration/codexComputerSpike.live.test.ts`) runs `SkyComputerUseClient mcp`
+through the same proxy with a dev-only candidate record and checks launch, enforced and
+refused targets, cancellation timing and the inventory; a performed case passes only with
+its positive control (`mustContain`) in the observation. It cannot observe a launch from
+F5's sandboxed backend or F5's window exclusion, so `launch` and `f5-windows-excluded`
+stay false until the packaged-app run. Any failure keeps the gate closed. Backend selection
+already requires a certified record, `auto`, Full access and an installed client;
+otherwise F5's native control is used. Desktop main refuses the built-in's foreground
+lease while `codex-computer` is uncertified.
+
+### Side effects and live checks
+
+Claude in Chrome creates or rewrites the Claude native-host manifest in each of the
+record's browser folders and a wrapper in the instance home; restore puts the original
+bytes back. Codex integrations change nothing on disk.
+
+Live checks run from Terminal outside F5 and refuse `F5_AGENT_PROCESS=1`. An F5 agent
+sandbox cannot run them: `sandbox-exec` inside the already-sandboxed backend exits 71,
+and the browser folders are unreachable. Each writes a scrubbed report (no credentials,
+DOM text or screenshots) for the operator gate and never stamps a record:
+
+- `F5_CLAUDE_CHROME_LIVE=1 bun run --cwd apps/server test:file integration/claudeChromeNative.live.test.ts`
+  with `CLAUDE_CONFIG_DIR` set to an authenticated isolated config and
+  `F5_CLAUDE_CHROME_REPORT=<file>`;
+- `F5_CODEX_NATIVE_LIVE=chrome … integration/codexChromeNative.live.test.ts` with
+  `F5_CODEX_CHROME_REPORT=<file>`;
+- `F5_CODEX_NATIVE_LIVE=computer … integration/codexComputerSpike.live.test.ts` with
+  `F5_CODEX_COMPUTER_SPIKE=<spike file>` and `F5_CODEX_COMPUTER_REPORT=<file>`.
+
+The certification runner (`scripts/computer-certification`) wraps these as its manual
+`chrome` and `builtin` scenarios. `generate-claude-chrome-descriptor.ts --evidence`
+validates a report against its record before stamping. Before release, the maintainer
+runs them against the packaged, signed build and passes its digest
+(`F5_CLAUDE_CHROME_ARTIFACT_SHA256`, `F5_CODEX_CHROME_ARTIFACT_SHA256` or
+`F5_CODEX_COMPUTER_ARTIFACT_SHA256`). Every assertion is computed from an observation;
+the Claude harness records manifest and `connected` timings, compares the origins it
+reads back and the bytes of two real launches, and lists the assertions it cannot yet
+observe (permission mode, routing isolation, stale native host, terminal coexistence,
+frozen-server stop) under `notAutomated`. Those stay `false`, so its report cannot certify
+until they are automated; never edit a report by hand.
+`bun apps/server/scripts/probe-computer-builtins.ts` prints read-only availability.
 
 ## Observation lifetime and turn ownership
 

@@ -1,118 +1,77 @@
-import { describe, expect, it } from "vitest";
-import {
-  selectComputerBackend,
-  type BuiltinComputerCertification,
-} from "./computerBackendSelection";
-const certification: BuiltinComputerCertification = {
-  provider: "claude",
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as certification from "@t3tools/shared/providerIntegrationCertification";
+import { certifiedBuiltin, selectComputerBackend } from "./computerBackendSelection";
+
+const base = {
+  enabled: true,
+  preference: "auto" as const,
+  provider: "codex" as const,
   platform: "darwin",
-  minVersion: "1",
-  maxVersion: "2",
-  manifestHash: "a".repeat(64),
-  evidence: "record",
-  consent: true,
-  preExecutionVeto: true,
-  stop: true,
-  observation: true,
-  f5Isolation: true,
-  profileIsolation: true,
+  arch: "arm64",
+  fullAccess: true,
+  nativeStatus: { available: true as const },
+  builtin: { available: true, version: "1.0" },
 };
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+const certify = () => vi.spyOn(certification, "isIntegrationCertified").mockReturnValue(true);
+
 describe("computer backend selection", () => {
-  it.each([
-    { version: "0.9", manifestHash: certification.manifestHash },
-    { version: "2.1", manifestHash: certification.manifestHash },
-    { version: "1.5-beta", manifestHash: certification.manifestHash },
-    { version: "1.5", manifestHash: "b".repeat(64) },
-    {},
-  ])("refuses version or manifest drift: %j", (observed) => {
+  it("never selects a built-in without a certified record", () => {
+    expect(certifiedBuiltin("codex", "darwin", "arm64")).toBe(
+      certification.isIntegrationCertified("codex-computer", "darwin", "arm64"),
+    );
+    expect(certifiedBuiltin("claude", "darwin", "arm64")).toBe(false);
+    if (!certification.isIntegrationCertified("codex-computer", "darwin", "arm64"))
+      expect(selectComputerBackend(base)).toMatchObject({
+        selection: { kind: "native", fallbackFrom: { kind: "codex-builtin" } },
+      });
+  });
+
+  it("selects the certified, installed built-in only in auto and Full access", () => {
+    certify();
+    expect(selectComputerBackend(base)).toEqual({
+      selection: { kind: "codex-builtin" },
+      status: { available: true },
+    });
+    expect(selectComputerBackend({ ...base, preference: "f5" })).toEqual({
+      selection: { kind: "native" },
+      status: { available: true },
+    });
+    expect(selectComputerBackend({ ...base, fullAccess: false })).toMatchObject({
+      selection: { kind: "native", fallbackFrom: { reason: "needs-full-access" } },
+    });
     expect(
       selectComputerBackend({
-        enabled: true,
-        preference: "auto",
-        provider: "claude",
-        platform: "darwin",
-        nativeStatus: { available: true },
-        builtin: { available: true, certification, ...observed },
+        ...base,
+        builtin: { available: false, reason: "Set up Computer Use" },
       }),
-    ).toMatchObject({ selection: { kind: "native" } });
+    ).toMatchObject({
+      selection: { kind: "native", fallbackFrom: { reason: "Set up Computer Use" } },
+    });
   });
-  it("prefers certified built-in and never returns both catalogs", () => {
-    expect(
-      selectComputerBackend({
-        enabled: true,
-        preference: "auto",
-        provider: "claude",
-        platform: "darwin",
-        nativeStatus: { available: true },
-        builtin: {
-          available: true,
-          certification,
-          version: "1.5",
-          manifestHash: certification.manifestHash,
-        },
-      }),
-    ).toMatchObject({ selection: { kind: "claude-builtin" } });
+
+  it("keeps Windows Codex and every Claude built-in native", () => {
+    certify();
+    expect(selectComputerBackend({ ...base, platform: "win32" })).toMatchObject({
+      selection: { kind: "native", fallbackFrom: { reason: "unsupported-platform" } },
+    });
+    expect(selectComputerBackend({ ...base, provider: "claude" })).toMatchObject({
+      selection: { kind: "native", fallbackFrom: { kind: "claude-builtin" } },
+    });
   });
-  it.each([
-    "consent",
-    "preExecutionVeto",
-    "stop",
-    "observation",
-    "f5Isolation",
-    "profileIsolation",
-  ] as const)("falls back when %s fails", (key) => {
-    expect(
-      selectComputerBackend({
-        enabled: true,
-        preference: "auto",
-        provider: "claude",
-        platform: "darwin",
-        nativeStatus: { available: true },
-        builtin: {
-          available: true,
-          reason: key,
-          certification: { ...certification, [key]: false },
-        },
-      }),
-    ).toMatchObject({ selection: { kind: "native", fallbackFrom: { reason: key } } });
-  });
-  it("honors F5-only and keeps Windows Codex native", () => {
-    for (const [provider, platform, preference] of [
-      ["claude", "darwin", "f5"],
-      ["codex", "win32", "auto"],
-    ] as const) {
-      expect(
-        selectComputerBackend({
-          enabled: true,
-          preference,
-          provider,
-          platform,
-          nativeStatus: { available: true },
-          builtin: { available: true, certification },
-        }),
-      ).toMatchObject({ selection: { kind: "native" } });
-    }
-  });
+
   it("reports both blockers and policy off", () => {
     expect(
       selectComputerBackend({
-        enabled: true,
-        preference: "auto",
-        provider: "claude",
-        platform: "darwin",
+        ...base,
         nativeStatus: { available: false, reason: "helper-missing" },
-        builtin: { available: false, reason: "SDK consent" },
+        builtin: { available: false, reason: "not installed" },
       }),
-    ).toMatchObject({ status: { reason: "helper-missing" }, builtinReason: "SDK consent" });
-    expect(
-      selectComputerBackend({
-        enabled: false,
-        preference: "auto",
-        provider: "claude",
-        platform: "darwin",
-        nativeStatus: { available: true },
-        builtin: { available: true, certification },
-      }),
-    ).toEqual({ status: { available: false, reason: "disabled" } });
+    ).toMatchObject({ status: { reason: "helper-missing" }, builtinReason: "not installed" });
+    expect(selectComputerBackend({ ...base, enabled: false })).toEqual({
+      status: { available: false, reason: "disabled" },
+    });
   });
 });

@@ -181,6 +181,16 @@ describe("normalizeReviewGuide", () => {
     expect(result.stops[0]?.files).toEqual([{ path: "src/a.ts", note: "edited" }]);
   });
 
+  it("omits a null file note from the model", () => {
+    const result = normalizeReviewGuide(
+      {
+        stops: [{ ...stop({}), files: [{ path: "src/a.ts", note: null }] }],
+      },
+      change,
+    );
+    expect(result.stops[0]?.files).toEqual([{ path: "src/a.ts" }]);
+  });
+
   it("puts changed files the tour left out into a closing stop", () => {
     const result = normalizeReviewGuide(
       guide({ stops: [stop({ excerpts: [excerpt("src/a.ts", 10, 12)] })] }),

@@ -4,6 +4,7 @@ import type {
   ComputerElementAction,
   ComputerLeaseScope,
 } from "@t3tools/contracts";
+import { integrationBrowserBundleIds } from "./providerIntegrationCertification";
 
 /**
  * Operations a background (accessibility-only) generation may execute. Everything else needs
@@ -34,8 +35,12 @@ const APP_SCOPED_OPS: ReadonlySet<ComputerAutomationOperation> = new Set([
   "type",
   "openApp",
 ]);
-/** Native-messaging hosts are owned by Chrome; a background lease there conflicts with Chrome control. */
-export const COMPUTER_CHROME_APP_IDS: ReadonlyArray<string> = ["com.google.Chrome"];
+/**
+ * Every browser a provider integration registers a native-messaging host for. Native
+ * control of any of them conflicts with Chrome control; background leases on other apps
+ * coexist with it.
+ */
+export const COMPUTER_CHROME_APP_IDS: ReadonlyArray<string> = integrationBrowserBundleIds();
 
 export function computerBackgroundOpAllowed(
   op: ComputerAutomationOperation,

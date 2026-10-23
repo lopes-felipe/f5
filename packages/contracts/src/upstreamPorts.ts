@@ -9,7 +9,8 @@ import { UpstreamSchedule } from "./upstreamPortsWire";
 /** GitHub only in v1; SSH and HTTPS remote URLs are compared after normalization. */
 export const UPSTREAM_REPOSITORY_PATTERN =
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?(\.git)?$/u;
-export const UPSTREAM_REMOTE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
+/** A leading `-` would read as an option in the git commands the name reaches. */
+export const UPSTREAM_REMOTE_NAME_PATTERN = /^(?!-)[A-Za-z0-9._-]+$/u;
 /**
  * A conservative subset of Git ref names; the value reaches shell commands in
  * port prompts, so the prompt quotes it as well.

@@ -53,7 +53,18 @@ import type { AgentBrowserPolicy } from "../../mcp/browserAccess.ts";
 import { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
 import { DesktopComputerHost } from "../../computer/DesktopComputerHost";
 import { ChromeSessionRuntime } from "../chromeSessionRuntime";
-import { parseNativeHostManifest, type ChromeNativeHostTransaction } from "../chromeNativeHost";
+import { ChromeArtifactCache } from "../chromeArtifactCache";
+import {
+  claudeChromeDescriptor,
+  parseNativeHostManifest,
+  sha256,
+  type ChromeNativeHostDescriptor,
+} from "../chromeNativeHost";
+import type { ChromeNativeHostTransaction } from "../chromeNativeHostJournal";
+import {
+  PROVIDER_INTEGRATION_RECORDS,
+  type ClaudeChromeRecord,
+} from "@t3tools/shared/providerIntegrationCertification";
 import { makePreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 
 type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
@@ -555,6 +566,7 @@ describe("ClaudeAdapter agent browser", () => {
         previewAutomation: true,
         externalHosts: [],
         claudeInChrome: false,
+        codexChrome: false,
         computerUse: false,
         ...initial,
       },
@@ -1475,10 +1487,23 @@ describe("ClaudeAdapter agent browser", () => {
   it.effect(
     "routes a certified Chrome launch through its lease, status verifier and live veto",
     () => {
-      let registrations = [parseNativeHostManifest("chrome", "user", null)];
+      const artifacts = new Map<string, string>();
       const saved = new Map<string, ChromeNativeHostTransaction>();
       const release = vi.fn();
       const acquire = vi.fn(async () => {});
+      const record: ClaudeChromeRecord = {
+        ...PROVIDER_INTEGRATION_RECORDS["claude-chrome"][0]!,
+        evidenceId: "fixture-evidence",
+        toolNames: ["navigate"],
+        artifactSha256: "a".repeat(64),
+      };
+      const descriptor: ChromeNativeHostDescriptor = {
+        ...claudeChromeDescriptor(record),
+        expectedTarget: () => "/test/host",
+        verifyWrapper: async (bytes) => bytes === "wrapper",
+        verifyServer: async (status) => status?.source === "dynamic",
+      };
+      let browserPolicy: { current: AgentBrowserPolicy } | undefined;
       const host = new DesktopComputerHost("profile", "incarnation", undefined, false);
       const computerBroker = new ComputerAutomationBrokerRuntime(host, {
         platform: "darwin",
@@ -1489,32 +1514,43 @@ describe("ClaudeAdapter agent browser", () => {
       });
       const runtime = new ChromeSessionRuntime({
         profileId: "profile",
-        descriptor: {
-          provider: "claude",
-          certified: true,
-          browsers: ["chrome"],
-          hostNames: ["test-host"],
-          expectedTarget: () => "/test/host",
-          verifyServer: (status) => (status as McpServerStatus)?.source === "dynamic",
-        },
+        descriptor,
+        record,
+        userHome: "/Users/me",
+        executableRealpath: "/bundle/claude",
         acquire,
         release,
+        validate: async () => {},
         consent: async () => true,
         paused: () => computerBroker.pause.has(THREAD_ID),
+        policyEnabled: async () => browserPolicy?.current.claudeInChrome ?? false,
+        currentGeneration: (threadId) => computerBroker.generation(threadId),
+        cache: new ChromeArtifactCache({
+          fingerprint: async (path) => artifacts.get(path) ?? null,
+          read: async (path) => artifacts.get(path) ?? null,
+          hash: sha256,
+        }),
         storage: {
-          inspect: async () => registrations,
+          inspect: async () => [
+            parseNativeHostManifest("chrome", "user", artifacts.get("user") ?? null),
+          ],
+          readArtifact: async (location) => ({ bytes: artifacts.get(location) ?? null }),
+          writeArtifact: async (location, bytes) => {
+            if (bytes === null) artifacts.delete(location);
+            else artifacts.set(location, bytes);
+          },
           saveTransaction: async (entry) => {
             saved.set(entry.id, entry);
           },
           listTransactions: async () => [...saved.values()],
           loadTransaction: async (_, id) => saved.get(id),
-          restoreRegistration: async () => {},
         },
       });
       const { harness, policy } = makeBrowserHarness(
         { claudeInChrome: true },
         { computerAutomationBroker: computerBroker, chromeRuntime: runtime },
       );
+      browserPolicy = policy;
       harness.query.mcpServerStatusValue = [
         { name: "claude-in-chrome", status: "connected", source: "dynamic" },
       ];
@@ -1531,18 +1567,17 @@ describe("ClaudeAdapter agent browser", () => {
         });
         assert.deepEqual(harness.getLastCreateQueryInput()!.options.extraArgs, { chrome: null });
         assert.equal(acquire.mock.calls.length, 1);
-        registrations = [
-          parseNativeHostManifest(
-            "chrome",
-            "user",
-            JSON.stringify({
-              name: "test-host",
-              type: "stdio",
-              path: "/test/host",
-              allowed_origins: [],
-            }),
-          ),
-        ];
+        // The CLI writes its registration and wrapper after it connects.
+        artifacts.set(
+          "user",
+          JSON.stringify({
+            name: record.identity.hostName,
+            type: "stdio",
+            path: "/test/host",
+            allowed_origins: record.identity.allowedOrigins,
+          }),
+        );
+        artifacts.set("/test/host", "wrapper");
         yield* Effect.promise(() =>
           vi.waitFor(() =>
             assert.ok(

@@ -20,7 +20,12 @@ import { Effect } from "effect";
 
 import { GitCommandError, TextGenerationError } from "../../git/Errors.ts";
 import type { CommitNumstat, FirstParentCommit, UpstreamGit } from "../git.ts";
-import type { LedgerPullRequest, UpstreamGitHub } from "../github.ts";
+import type {
+  GitHubRepoRef,
+  LedgerPullRequest,
+  UpstreamGitHub,
+  UpstreamGitHubError,
+} from "../github.ts";
 import type { UpstreamPortsHost } from "../service.ts";
 
 interface FakeCommit {
@@ -39,6 +44,8 @@ export class FakeGitRepo {
   readonly commits = new Map<string, FakeCommit>();
   readonly refs = new Map<string, string>();
   readonly remotes = new Map<string, string>();
+  /** Server-side branch tips (`origin/main`) that only a fetch copies into `refs`. */
+  readonly remoteTips = new Map<string, string>();
   readonly calls: string[] = [];
   private counter = 0;
   pushFailure: string | null = null;
@@ -132,6 +139,8 @@ export class FakeGitRepo {
     fetchBranch: (_cwd, remote, branch) =>
       Effect.sync(() => {
         this.calls.push(`fetch ${remote}/${branch}`);
+        const tip = this.remoteTips.get(`${remote}/${branch}`);
+        if (tip) this.refs.set(`refs/remotes/${remote}/${branch}`, tip);
       }),
     revParse: (_cwd, ref) => Effect.succeed(this.resolve(ref)),
     readFilesAtRef: ({ ref, pathPrefixes }) =>
@@ -215,11 +224,18 @@ export class FakeGitRepo {
         this.refs.set(`refs/remotes/${remote}/${branch}`, this.refs.get(`refs/heads/${branch}`)!);
         return Effect.void;
       }),
+    deleteBranch: (_cwd, branch, expectedTip) =>
+      Effect.sync(() => {
+        this.calls.push(`deleteBranch ${branch}`);
+        if (this.refs.get(`refs/heads/${branch}`) === expectedTip)
+          this.refs.delete(`refs/heads/${branch}`);
+      }),
   };
 }
 
 export class FakeGitHub {
   readonly prs: Array<{
+    repo: string;
     number: number;
     url: string;
     state: LedgerPullRequest["state"];
@@ -227,26 +243,42 @@ export class FakeGitHub {
     body: string;
     title: string;
   }> = [];
+  /** Each PR call, prefixed with the `owner/name` it targeted. */
   readonly calls: string[] = [];
   available = true;
+  failure: UpstreamGitHubError | null = null;
+
+  private find(repo: GitHubRepoRef, match: (pr: FakeGitHub["prs"][number]) => boolean) {
+    const name = `${repo.owner}/${repo.name}`;
+    const pr = this.prs.findLast((entry) => entry.repo === name && match(entry));
+    return pr ? { number: pr.number, url: pr.url, state: pr.state } : null;
+  }
+
+  private call<A>(entry: string, run: () => A) {
+    return Effect.suspend(() => {
+      this.calls.push(entry);
+      return this.failure ? Effect.fail(this.failure) : Effect.sync(run);
+    });
+  }
 
   readonly github: UpstreamGitHub = {
     available: () => Effect.succeed(this.available),
-    findPullRequest: (_cwd, reference) =>
-      Effect.sync(() => {
-        this.calls.push(`find ${reference}`);
-        const pr = this.prs.find(
-          (entry) => String(entry.number) === reference || entry.head === reference,
-        );
-        return pr ? { number: pr.number, url: pr.url, state: pr.state } : null;
-      }),
+    findPullRequest: ({ repo, number }) =>
+      this.call(`find ${repo.owner}/${repo.name}#${number}`, () =>
+        this.find(repo, (entry) => entry.number === number),
+      ),
+    findPullRequestForBranch: ({ repo, branch }) =>
+      this.call(`find ${repo.owner}/${repo.name}:${branch}`, () =>
+        this.find(repo, (entry) => entry.head === branch),
+      ),
     createPullRequest: (input) =>
-      Effect.sync(() => {
-        this.calls.push(`create ${input.head}`);
+      this.call(`create ${input.repo.owner}/${input.repo.name}:${input.head}`, () => {
         const number = this.prs.length + 100;
+        const repo = `${input.repo.owner}/${input.repo.name}`;
         const pr = {
+          repo,
           number,
-          url: `https://github.com/o/f5/pull/${number}`,
+          url: `https://github.com/${repo}/pull/${number}`,
           state: "open" as const,
           head: input.head,
           body: input.body,
@@ -256,10 +288,14 @@ export class FakeGitHub {
         return { number, url: pr.url, state: pr.state };
       }),
     updatePullRequestBody: (input) =>
-      Effect.sync(() => {
-        this.calls.push(`update ${input.number}`);
+      this.call(`update ${input.number}`, () => {
         const pr = this.prs.find((entry) => entry.number === input.number);
         if (pr) pr.body = input.body;
+      }),
+    closePullRequest: (input) =>
+      this.call(`close ${input.number}`, () => {
+        const pr = this.prs.find((entry) => entry.number === input.number);
+        if (pr) pr.state = "closed";
       }),
     fetchPullRequestBodies: () =>
       Effect.sync(() => {

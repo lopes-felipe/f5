@@ -1,5 +1,6 @@
 import { ComputerSettings } from "./ComputerSettings";
 import { ChromeSetupSettings } from "./ChromeSetupSettings";
+import { ChromeIntegrationRows } from "./ChromeIntegrationSettings";
 import { useEffect, useState } from "react";
 import type {
   DesktopBrowserProfile,
@@ -160,20 +161,9 @@ export function BrowserSettings() {
             onSave={(hosts) => updateSettings({ previewExternalHosts: hosts })}
           />
         </div>
-        {/* Not certified yet (docs/agent-browser.md): they can only be switched off. */}
-        <SettingsRow
-          title="Claude in Chrome"
-          searchTarget="browser.chrome"
-          description="Let Claude use Google Chrome through its extension. Not available in F5 yet."
-          control={
-            <Switch
-              aria-label="Let Claude use Google Chrome"
-              checked={settings.enableClaudeInChrome ?? false}
-              disabled={!settings.enableClaudeInChrome}
-              onCheckedChange={(checked) => updateSettings({ enableClaudeInChrome: checked })}
-            />
-          }
-        />
+        {/* Gated by the shared certification records (docs/agent-browser.md). */}
+        <ChromeIntegrationRows provider="claude" />
+        <ChromeIntegrationRows provider="codex" />
         <ChromeSetupSettings />
       </SettingsCard>
 

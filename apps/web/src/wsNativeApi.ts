@@ -538,6 +538,7 @@ export function createWsNativeApi(): NativeApi {
             : WS_METHODS.codexChromeRestoreNativeHost,
           { transactionId },
         ),
+      getReadiness: requestMethod(WS_METHODS.chromeGetReadiness),
     },
     computer: {
       access: {

@@ -96,6 +96,7 @@ import {
   restoreChromeSessionSetup,
   listChromeSessionSetups,
   isChromeRuntimeSession,
+  reconcileChromeSessionSetups,
 } from "./provider/chromeSessionRuntimeFactory";
 import { finishAcknowledgedNativeRewind } from "./orchestration/nativeRewindAcknowledgement.ts";
 import { ProviderValidationError } from "./provider/Errors.ts";
@@ -152,6 +153,7 @@ import {
 } from "./profiles/RepositorySharing";
 import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import { profileStateDir } from "@t3tools/shared/profilePaths";
+import { integrationUnavailableDetail } from "@t3tools/shared/providerIntegrationCertification";
 import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
@@ -1251,6 +1253,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   if (Option.isSome(computerAutomationBroker)) {
     const computer = computerAutomationBroker.value;
+    // Settle crashed or timed-out Chrome launches before any session can reuse them.
+    yield* reconcileChromeSessionSetups(serverConfig.stateDir).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.catchDefect(() => Effect.void),
+    );
     yield* Effect.acquireRelease(
       Effect.sync(() =>
         computer.subscribe((event) => {
@@ -6287,34 +6295,75 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           request.body._tag === WS_METHODS.claudeChromeRestoreNativeHost ? "claude" : "codex";
         const service = yield* ProviderService;
         const sessions = yield* service.listSessions();
-        return yield* Effect.tryPromise({
-          try: () =>
-            restoreChromeSessionSetup(
-              serverConfig.stateDir,
-              provider,
-              body.transactionId,
-              async () => {
-                for (const session of sessions)
-                  if (
-                    isChromeRuntimeSession(session.threadId) &&
-                    ((provider === "claude" && session.provider === "claudeAgent") ||
-                      (provider === "codex" && session.provider === "codex"))
-                  )
-                    await Effect.runPromise(service.stopSession({ threadId: session.threadId }));
-              },
+        // Storage-only: works without a live runtime, after restarts and SDK upgrades.
+        return yield* restoreChromeSessionSetup({
+          stateDir: serverConfig.stateDir,
+          provider,
+          transactionId: body.transactionId,
+          broker: Option.getOrUndefined(computerAutomationBroker),
+          stopSessions: async () => {
+            for (const session of sessions)
+              if (
+                isChromeRuntimeSession(session.threadId) &&
+                ((provider === "claude" && session.provider === "claudeAgent") ||
+                  (provider === "codex" && session.provider === "codex"))
+              )
+                await Effect.runPromise(service.stopSession({ threadId: session.threadId }));
+          },
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchDefect((cause) =>
+            Effect.fail(
+              new RouteRequestError({
+                message: cause instanceof Error ? cause.message : "Chrome restoration failed.",
+              }),
             ),
-          catch: (cause) =>
-            new RouteRequestError({
-              message: cause instanceof Error ? cause.message : "Chrome restoration failed.",
-            }),
-        });
+          ),
+        );
       }
       case WS_METHODS.chromeNativeHostListTransactions: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.tryPromise({
-          try: () => listChromeSessionSetups(serverConfig.stateDir, body.provider),
-          catch: () => new RouteRequestError({ message: "Chrome transactions could not be read." }),
-        });
+        return yield* listChromeSessionSetups(serverConfig.stateDir, body.provider).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchDefect(() =>
+            Effect.fail(
+              new RouteRequestError({ message: "Chrome transactions could not be read." }),
+            ),
+          ),
+        );
+      }
+      case WS_METHODS.chromeGetReadiness: {
+        const body = stripRequestTag(request.body);
+        const instanceId = ProviderInstanceId.make(body.providerInstanceId);
+        const instance = yield* providerInstanceRegistry.getInstance(instanceId);
+        const settings = yield* serverSettings.getSettings;
+        const checkedAt = new Date().toISOString();
+        const provider = instance?.driverKind === "codex" ? "codex" : "claude";
+        const enabled =
+          provider === "claude" ? settings.enableClaudeInChrome : settings.enableCodexChrome;
+        // Disabled instances and settings answer cheaply without touching disk; a closed
+        // certification gate is static, so its reason is reported even while off.
+        if (!instance?.enabled || !enabled || !instance.adapter.getChromeReadiness) {
+          const reason =
+            instance && !instance.adapter.getChromeReadiness
+              ? "This agent has no provider-native Chrome integration."
+              : integrationUnavailableDetail(
+                  provider === "claude" ? "claude-chrome" : "codex-chrome",
+                  process.platform,
+                  process.arch,
+                );
+          return {
+            providerInstanceId: body.providerInstanceId,
+            provider,
+            eligibility: "off" as const,
+            ...(reason ? { reason } : {}),
+            checkedAt,
+          };
+        }
+        const readiness = yield* instance.adapter.getChromeReadiness();
+        return { providerInstanceId: body.providerInstanceId, provider, checkedAt, ...readiness };
       }
 
       case WS_METHODS.serverReportClientDiagnostics:

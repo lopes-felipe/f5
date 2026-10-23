@@ -98,6 +98,7 @@ import {
   PUBLISH_DEBOUNCE_MS,
   PUBLISH_INTERVAL_MS,
   publishStep,
+  unparsedLedgerMessage,
 } from "./publisher.ts";
 import { runTriage, type ViewSnapshot } from "./runs.ts";
 import {
@@ -229,13 +230,18 @@ interface BaseState {
   readonly archive: Schema6Archive | null;
   readonly trailers: TrailerIndex;
   readonly errors: ReadonlyArray<string>;
+  /** Repo-relative ledger files that failed to decode and are missing from `ledger`. */
+  readonly unparsed: ReadonlyArray<string>;
 }
 
 const decodeSettings = Schema.decodeUnknownSync(UpstreamPortsSettings);
 
-/** Decision fields without the timestamp/author, to detect no-op decisions. */
+/**
+ * Decision fields without the timestamp, to detect no-op decisions. The author
+ * stays in, so confirming an automatic decision records it as the user's.
+ */
 const decisionSignature = (fields: DecisionFields) => {
-  const { decidedAt: _at, decidedBy: _by, ...rest } = fields;
+  const { decidedAt: _at, ...rest } = fields;
   return canonicalJson(rest);
 };
 
@@ -391,10 +397,19 @@ export function makeUpstreamPortsService(
 
     const claimFile = (cwd: string) =>
       commonDirFor(cwd).pipe(Effect.map((dir) => writerClaimPath(deps.baseDir, dir)));
+    const claimIo = <A>(run: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: run,
+        catch: (error) =>
+          new UpstreamPortsError({
+            code: "unavailable",
+            message: `The upstream writer claim is unavailable: ${describe(error)}`,
+          }),
+      });
 
     const isWriter = (cwd: string) =>
       claimFile(cwd).pipe(
-        Effect.flatMap((file) => Effect.promise(() => readWriterClaim(file))),
+        Effect.flatMap((file) => claimIo(() => readWriterClaim(file))),
         Effect.map((claim) => claim !== null && isSameWriter(claim, me)),
         Effect.orElseSucceed(() => false),
       );
@@ -403,9 +418,9 @@ export function makeUpstreamPortsService(
     const requireWriter = (cwd: string) =>
       Effect.gen(function* () {
         const file = yield* claimFile(cwd);
-        const mine = yield* Effect.promise(() => ensureWriterClaim(file, me, now().toISOString()));
+        const mine = yield* claimIo(() => ensureWriterClaim(file, me, now().toISOString()));
         if (!mine) {
-          const claim = yield* Effect.promise(() => readWriterClaim(file));
+          const claim = yield* claimIo(() => readWriterClaim(file));
           return yield* fail(
             "read-only",
             `Managed by profile ${claim?.profileId ?? "unknown"}${claim?.hostname ? ` on ${claim.hostname}` : ""}.`,
@@ -433,7 +448,10 @@ export function makeUpstreamPortsService(
 
     // ── Base ledger and view ──
 
-    const loadBase = (context: ProjectContext, options: { readonly fetch: boolean }) =>
+    const loadBase = (
+      context: ProjectContext,
+      options: { readonly fetch: boolean; readonly refresh?: boolean },
+    ) =>
       Effect.gen(function* () {
         const config = yield* requireConfig(context);
         const baseBranch =
@@ -441,7 +459,7 @@ export function makeUpstreamPortsService(
           "main";
         if (options.fetch) {
           const last = lastBaseFetch.get(context.projectId) ?? 0;
-          if (now().getTime() - last >= BASE_FETCH_MIN_INTERVAL_MS) {
+          if (options.refresh || now().getTime() - last >= BASE_FETCH_MIN_INTERVAL_MS) {
             yield* git
               .fetchBranch(context.cwd, "origin", baseBranch)
               .pipe(Effect.mapError(internal));
@@ -463,6 +481,7 @@ export function makeUpstreamPortsService(
             archive: null,
             trailers: EMPTY_TRAILERS,
             errors: [`origin/${baseBranch} is missing; fetch the repository first.`],
+            unparsed: [],
           };
           baseCache.set(context.projectId, empty);
           return empty;
@@ -503,6 +522,7 @@ export function makeUpstreamPortsService(
           archive,
           trailers,
           errors,
+          unparsed: parsed.unparsed.map((file) => `${prefix}${file}`),
         };
         baseCache.set(context.projectId, next);
         viewCache.delete(context.projectId);
@@ -539,6 +559,12 @@ export function makeUpstreamPortsService(
         return { base, view, rows, links, publication, revision, maxSeq };
       });
 
+    /** Recording over a partial ledger would drop or rewrite the files that failed to parse. */
+    const requireParsedLedger = (base: BaseState) =>
+      base.unparsed.length === 0
+        ? Effect.void
+        : fail("unavailable", unparsedLedgerMessage(base.baseBranch, base.unparsed));
+
     const requireRules = (base: BaseState) =>
       base.rules
         ? Effect.succeed(base.rules)
@@ -561,6 +587,7 @@ export function makeUpstreamPortsService(
           Effect.gen(function* () {
             yield* requireWriter(context.cwd);
             const snapshot = yield* currentView(context);
+            yield* requireParsedLedger(snapshot.base);
             const check = buildView(
               snapshot.base.baseSha,
               snapshot.view.ledger,
@@ -623,9 +650,14 @@ export function makeUpstreamPortsService(
               store,
               now,
               today,
-              loadBase: loadBase(context, { fetch: true }).pipe(
-                Effect.map((base) => ({ baseSha: base.baseSha, ledger: base.ledger })),
-              ),
+              loadBase: ({ refresh }) =>
+                loadBase(context, { fetch: true, refresh }).pipe(
+                  Effect.map((base) => ({
+                    baseSha: base.baseSha,
+                    ledger: base.ledger,
+                    unparsed: base.unparsed,
+                  })),
+                ),
               deriveRows: (view) =>
                 Effect.gen(function* () {
                   const base = baseCache.get(projectId);
@@ -765,114 +797,116 @@ export function makeUpstreamPortsService(
         yield* requireWriter(context.cwd);
         if (activeRuns.has(context.projectId))
           return yield* fail("busy", "A run is already in progress for this project.");
-        const active = yield* store.activeRun(context.projectId).pipe(Effect.mapError(internal));
-        if (active) return yield* fail("busy", "A run is already in progress for this project.");
-        if (input.kind === "upstream") {
-          const remote = yield* remoteStatus(context, config);
-          if (remote.status !== "ok")
-            return yield* fail(
-              "invalid",
-              remote.status === "missing"
-                ? `The ${config.remote} remote is missing; add it first.`
-                : `The ${config.remote} remote points at ${remote.url}, not ${config.repository}.`,
-            );
-        }
-        let triage: TriageCall | null = null;
-        let model = "rules";
-        if (input.triage === "llm") {
-          const selection = yield* resolveTriageModel(context);
-          triage = selection ? triageCallFor(selection) : null;
-          if (!selection || !triage)
-            return yield* fail(
-              "unavailable",
-              "No Claude instance is available for triage. Run rules only instead.",
-            );
-          model = selection.model;
-        }
-        const snapshot = yield* currentView(context);
-        const rules = yield* requireRules(snapshot.base);
-        const runId = mintId();
-        const record: RunRecord = {
-          runId,
-          projectId: context.projectId,
-          kind: input.kind,
-          trigger: input.trigger,
-          triage: input.triage,
-          occurrenceDueAt: input.occurrenceDueAt ?? null,
-          status: "running",
-          startedAt: now().toISOString(),
-          finishedAt: null,
-          failureKind: null,
-          targetSha: null,
-          commitCount: 0,
-          inboxCount: 0,
-          autoDecidedCount: 0,
-          remainingCount: 0,
-          llmCalls: 0,
-          errorMessage: null,
-        };
+        // Reserve before anything yields, so a double click or a racing scheduler
+        // tick cannot start a second run. The forked run releases it when it ends.
         activeRuns.add(context.projectId);
-        yield* store.insertRun(record).pipe(
-          Effect.mapError(internal),
-          Effect.tapError(() => Effect.sync(() => activeRuns.delete(context.projectId))),
-        );
-        if (record.occurrenceDueAt) {
-          const occurrence = yield* store
-            .getOccurrence(context.projectId, record.occurrenceDueAt)
-            .pipe(Effect.orElseSucceed(() => null));
-          if (occurrence)
-            yield* store
-              .saveOccurrence({ ...occurrence, status: "running", lastRunId: runId })
-              .pipe(Effect.ignore);
-        }
-        yield* emit(context.projectId, "run-started");
-        const prBodies =
-          deps.github && parseGitHubRepo(config.repository)
-            ? (numbers: ReadonlyArray<number>) =>
-                deps.github!.fetchPullRequestBodies({
-                  cwd: context.cwd,
-                  repo: parseGitHubRepo(config.repository)!,
-                  numbers,
-                })
-            : null;
-        const viewSnapshot = (fetch: boolean) =>
-          currentView(context, { fetch }).pipe(
-            Effect.map((value): ViewSnapshot => ({ view: value.view, rows: value.rows })),
+        return yield* Effect.gen(function* () {
+          const active = yield* store.activeRun(context.projectId).pipe(Effect.mapError(internal));
+          if (active) return yield* fail("busy", "A run is already in progress for this project.");
+          if (input.kind === "upstream") {
+            const remote = yield* remoteStatus(context, config);
+            if (remote.status !== "ok")
+              return yield* fail(
+                "invalid",
+                remote.status === "missing"
+                  ? `The ${config.remote} remote is missing; add it first.`
+                  : `The ${config.remote} remote points at ${remote.url}, not ${config.repository}.`,
+              );
+          }
+          let triage: TriageCall | null = null;
+          let model = "rules";
+          if (input.triage === "llm") {
+            const selection = yield* resolveTriageModel(context);
+            triage = selection ? triageCallFor(selection) : null;
+            if (!selection || !triage)
+              return yield* fail(
+                "unavailable",
+                "No Claude instance is available for triage. Run rules only instead.",
+              );
+            model = selection.model;
+          }
+          const snapshot = yield* currentView(context);
+          yield* requireParsedLedger(snapshot.base);
+          const rules = yield* requireRules(snapshot.base);
+          const runId = mintId();
+          const record: RunRecord = {
+            runId,
+            projectId: context.projectId,
+            kind: input.kind,
+            trigger: input.trigger,
+            triage: input.triage,
+            occurrenceDueAt: input.occurrenceDueAt ?? null,
+            status: "running",
+            startedAt: now().toISOString(),
+            finishedAt: null,
+            failureKind: null,
+            targetSha: null,
+            commitCount: 0,
+            inboxCount: 0,
+            autoDecidedCount: 0,
+            remainingCount: 0,
+            llmCalls: 0,
+            errorMessage: null,
+          };
+          yield* store.insertRun(record).pipe(Effect.mapError(internal));
+          if (record.occurrenceDueAt) {
+            const occurrence = yield* store
+              .getOccurrence(context.projectId, record.occurrenceDueAt)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (occurrence)
+              yield* store
+                .saveOccurrence({ ...occurrence, status: "running", lastRunId: runId })
+                .pipe(Effect.ignore);
+          }
+          yield* emit(context.projectId, "run-started");
+          const prBodies =
+            deps.github && parseGitHubRepo(config.repository)
+              ? (numbers: ReadonlyArray<number>) =>
+                  deps.github!.fetchPullRequestBodies({
+                    cwd: context.cwd,
+                    repo: parseGitHubRepo(config.repository)!,
+                    numbers,
+                  })
+              : null;
+          const viewSnapshot = (fetch: boolean) =>
+            currentView(context, { fetch }).pipe(
+              Effect.map((value): ViewSnapshot => ({ view: value.view, rows: value.rows })),
+            );
+          const work = runTriage(
+            {
+              cwd: context.cwd,
+              config,
+              baseBranch: snapshot.base.baseBranch,
+              git,
+              prBodies,
+              rules,
+              policy: snapshot.base.policy,
+              archive: snapshot.base.archive,
+              triage,
+              model,
+              now,
+              today,
+              refreshView: viewSnapshot(true),
+              currentView: viewSnapshot(false),
+              record: (op, newInbox) => recordOps(context, [op], "background", newInbox),
+              progress: (run) => store.updateRun(run).pipe(Effect.ignore),
+              ...(deps.runLimits ? { limits: deps.runLimits } : {}),
+            },
+            record,
+          ).pipe(
+            Effect.tap((finished) =>
+              Effect.gen(function* () {
+                yield* store.updateRun(finished).pipe(Effect.ignore);
+                yield* finishScheduled(finished).pipe(Effect.ignore);
+                yield* emit(context.projectId, "run-finished", finished.inboxCount);
+                schedulePublish(context.projectId, 0);
+              }),
+            ),
+            Effect.ensuring(Effect.sync(() => activeRuns.delete(context.projectId))),
           );
-        const work = runTriage(
-          {
-            cwd: context.cwd,
-            config,
-            baseBranch: snapshot.base.baseBranch,
-            git,
-            prBodies,
-            rules,
-            policy: snapshot.base.policy,
-            archive: snapshot.base.archive,
-            triage,
-            model,
-            now,
-            today,
-            refreshView: viewSnapshot(true),
-            currentView: viewSnapshot(false),
-            record: (op, newInbox) => recordOps(context, [op], "background", newInbox),
-            progress: (run) => store.updateRun(run).pipe(Effect.ignore),
-            ...(deps.runLimits ? { limits: deps.runLimits } : {}),
-          },
-          record,
-        ).pipe(
-          Effect.tap((finished) =>
-            Effect.gen(function* () {
-              yield* store.updateRun(finished).pipe(Effect.ignore);
-              yield* finishScheduled(finished).pipe(Effect.ignore);
-              yield* emit(context.projectId, "run-finished", finished.inboxCount);
-              schedulePublish(context.projectId, 0);
-            }),
-          ),
-          Effect.ensuring(Effect.sync(() => activeRuns.delete(context.projectId))),
-        );
-        yield* track(work);
-        return { runId };
+          yield* track(work);
+          return { runId };
+        }).pipe(Effect.onError(() => Effect.sync(() => activeRuns.delete(context.projectId))));
       });
 
     // ── Scheduler ──
@@ -886,8 +920,7 @@ export function makeUpstreamPortsService(
           const context = yield* resolveContext(project.id);
           if (!context.config || context.settings.schedule.mode === "off") return;
           const file = yield* claimFile(context.cwd);
-          if (!(yield* Effect.promise(() => ensureWriterClaim(file, me, now().toISOString()))))
-            return;
+          if (!(yield* claimIo(() => ensureWriterClaim(file, me, now().toISOString())))) return;
           const due = lastDueAt(context.settings.schedule, now());
           if (!due) return;
           const dueAt = due.toISOString();
@@ -1035,9 +1068,10 @@ export function makeUpstreamPortsService(
       Effect.gen(function* () {
         const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
         const commitsFor = (topic: UpstreamTopic) =>
-          [...(snapshot.view.members.get(topic.id) ?? [])]
-            .toReversed()
-            .map((member) => ({ sha: member.sha, subject: member.subject }));
+          (snapshot.view.members.get(topic.id) ?? []).map((member) => ({
+            sha: member.sha,
+            subject: member.subject,
+          }));
         const shas = topics.flatMap((topic) => commitsFor(topic).map((commit) => commit.sha));
         const topicPaths = yield* git
           .topicPaths(context.cwd, shas)
@@ -1095,13 +1129,12 @@ export function makeUpstreamPortsService(
         if (outcome.status === "pending") return { ...group, reason: outcome.reason };
         yield* store.setGroupStatus(group, outcome.status, outcome.reason, now().toISOString());
         if (outcome.status === "rejected") {
-          for (const topicId of group.topicIds)
-            yield* store.setLinkState(
-              { projectId: group.projectId, topicId, threadId: group.threadId },
-              "unlinked",
-              { clientRequestId: group.clientRequestId, groupIndex: group.groupIndex },
-            );
-          yield* store.bumpLinksVersion(group.projectId);
+          // The filter unlinks every topic in the group and bumps the links version once.
+          yield* store.setLinkState(
+            { projectId: group.projectId, topicId: group.topicIds[0]!, threadId: group.threadId },
+            "unlinked",
+            { clientRequestId: group.clientRequestId, groupIndex: group.groupIndex },
+          );
         }
         return { ...group, status: outcome.status, reason: outcome.reason };
       });
@@ -1131,6 +1164,7 @@ export function makeUpstreamPortsService(
         yield* requireConfig(context);
         yield* requireWriter(context.cwd);
         const snapshot = yield* currentView(context);
+        yield* requireParsedLedger(snapshot.base);
         const rules = yield* requireRules(snapshot.base);
         const rowsById = new Map(snapshot.rows.map((row) => [row.topic.id, row]));
         const ops: UpstreamLedgerOp[] = [];
@@ -1177,7 +1211,7 @@ export function makeUpstreamPortsService(
       Effect.gen(function* () {
         const context = yield* resolveContext(projectId);
         const claim = yield* claimFile(context.cwd).pipe(
-          Effect.flatMap((file) => Effect.promise(() => describeWriterClaim(file, me))),
+          Effect.flatMap((file) => claimIo(() => describeWriterClaim(file, me))),
           Effect.orElseSucceed(() => ({
             claimed: false,
             managedByThisProfile: false,
@@ -1252,7 +1286,9 @@ export function makeUpstreamPortsService(
           occurrence?.status === "pending" && occurrence.nextAttemptAt
             ? new Date(occurrence.nextAttemptAt)
             : null;
-        const ghAvailable = deps.github ? yield* deps.github.available(context.cwd) : false;
+        const ghAvailable = deps.github
+          ? yield* deps.github.available(context.cwd).pipe(Effect.orElseSucceed(() => false))
+          : false;
         const triageModel = yield* resolveTriageModel(context);
         const rules = snapshot.base.rules;
         const strip = (run: RunRecord | null) => {
@@ -1513,11 +1549,26 @@ export function makeUpstreamPortsService(
     const unlinkPort: UpstreamPortsService["unlinkPort"] = (input) =>
       Effect.gen(function* () {
         const context = yield* resolveContext(input.projectId);
+        yield* requireConfig(context);
+        yield* requireWriter(context.cwd);
+        const links = yield* store.listLinks(context.projectId);
+        if (
+          !links.some(
+            (link) =>
+              link.topicId === input.topicId &&
+              link.threadId === input.threadId &&
+              link.state === "active",
+          )
+        )
+          return yield* fail(
+            "not-found",
+            `Topic ${input.topicId} is not linked to thread ${input.threadId}.`,
+          );
+        // Also bumps the links version.
         yield* store.setLinkState(
           { projectId: context.projectId, topicId: input.topicId, threadId: input.threadId },
           "unlinked",
         );
-        yield* store.bumpLinksVersion(context.projectId);
         yield* emit(context.projectId, "ports-updated");
         return { revision: (yield* currentView(context)).revision };
       }).pipe(Effect.mapError(internal));
@@ -1536,6 +1587,25 @@ export function makeUpstreamPortsService(
         return { prompt: yield* portPrompt(context, config, snapshot, topics) };
       }).pipe(Effect.mapError(internal));
 
+    const closeLedgerPullRequest = (context: ProjectContext, number: number) =>
+      Effect.gen(function* () {
+        const refuse = (detail: string) =>
+          fail("unavailable", `Close ledger PR #${number} before discarding: ${detail}`);
+        const originUrl = yield* git
+          .remoteUrl(context.cwd, "origin")
+          .pipe(Effect.orElseSucceed(() => null));
+        const repo = originUrl ? parseGitHubRepo(originUrl) : null;
+        if (!deps.github || !repo) return yield* refuse("GitHub is unavailable.");
+        const github = deps.github;
+        const pr = yield* github
+          .findPullRequest({ cwd: context.cwd, repo, number })
+          .pipe(Effect.catch((error) => refuse(error.detail)));
+        if (pr?.state !== "open") return;
+        yield* github
+          .closePullRequest({ cwd: context.cwd, repo, number })
+          .pipe(Effect.catch((error) => refuse(error.detail)));
+      });
+
     const resolvePublication: UpstreamPortsService["resolvePublication"] = (input) =>
       Effect.gen(function* () {
         const context = yield* resolveContext(input.projectId);
@@ -1546,8 +1616,12 @@ export function makeUpstreamPortsService(
             "user",
             Effect.gen(function* () {
               yield* requireWriter(context.cwd);
-              yield* store.discardOpenOps(context.projectId, now().toISOString());
               const publication = yield* store.getPublication(context.projectId);
+              // The open ledger PR still carries the discarded ops; close it first so
+              // it cannot merge them later.
+              if (publication.prNumber !== null && publication.prState !== "merged")
+                yield* closeLedgerPullRequest(context, publication.prNumber);
+              yield* store.discardOpenOps(context.projectId, now().toISOString());
               yield* store.savePublication({
                 ...DEFAULT_PUBLICATION(context.projectId),
                 linksVersion: publication.linksVersion,
@@ -1593,7 +1667,7 @@ export function makeUpstreamPortsService(
           "user",
           Effect.gen(function* () {
             const file = yield* claimFile(context.cwd);
-            yield* Effect.promise(() => takeOverWriterClaim(file, me, now().toISOString()));
+            yield* claimIo(() => takeOverWriterClaim(file, me, now().toISOString()));
           }),
         );
         const publication = yield* store.getPublication(context.projectId);

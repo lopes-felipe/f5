@@ -38,6 +38,28 @@ describe("Chrome device lease", () => {
     expect(() => lease.acquire(holder, { profileId: "other" } as ComputerLeaseHolder)).toThrow();
     expect(lease.current()).toBeNull();
   });
+  it("keeps a Codex lease after its leader exits until the whole group is gone", () => {
+    let alive = true;
+    const stop = vi.fn(() => []);
+    const lease = new ChromeLeaseAuthority(vi.fn(), {
+      alive: () => alive,
+      stop,
+      recoveryRequired: () => false,
+    });
+    const codex = { ...holder, provider: "codex" as const };
+    lease.acquire(codex, null);
+    // The proxy releases when `node_repl` exits; a worker it started is still running.
+    lease.release(codex);
+    expect(stop).toHaveBeenCalledWith(expect.any(Function), "release");
+    expect(lease.current()).toEqual(codex);
+    expect(() => lease.acquire({ ...holder, profileId: "profile-b" }, null)).toThrow();
+    expect(() => lease.assertNativeAvailable("profile-b")).toThrow();
+    lease.processExited();
+    expect(lease.current()).toEqual(codex);
+    alive = false;
+    lease.processExited();
+    expect(lease.current()).toBeNull();
+  });
   it("main's pause veto survives reacquire attempts until explicit resume", () => {
     const lease = new ChromeLeaseAuthority(vi.fn());
     lease.acquire(holder, null);

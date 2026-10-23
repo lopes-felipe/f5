@@ -368,6 +368,14 @@
       "types": "./src/agentAutomationSupport.ts",
       "import": "./src/agentAutomationSupport.ts"
     },
+    "./providerIntegrationCertification": {
+      "types": "./src/providerIntegrationCertification.ts",
+      "import": "./src/providerIntegrationCertification.ts"
+    },
+    "./codeSignature": {
+      "types": "./src/codeSignature.ts",
+      "import": "./src/codeSignature.ts"
+    },
     "./computerAction": {
       "types": "./src/computerAction.ts",
       "import": "./src/computerAction.ts"

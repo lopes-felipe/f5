@@ -65,16 +65,15 @@ it("keeps settled work reachable and sends an explicit wake without starting a t
     .element(page.getByRole("button", { name: "Unsettle", exact: true }))
     .not.toBeInTheDocument();
 });
-it("persists the per-thread opt-out and reflects server pushes", async () => {
+it("renders nothing in the header for unsettled threads", async () => {
+  useStore.setState({ threads: [{ ...thread, settledAt: null, settledBy: null }] });
   active = await render(<ThreadSettlementControl threadId={threadId} />);
-  const toggle = page.getByRole("switch", { name: "Auto-settle this thread" });
-  await expect.element(toggle).toBeChecked();
-  await toggle.click();
-  expect(api.dispatchCommand).toHaveBeenCalledExactlyOnceWith(
-    expect.objectContaining({ type: "thread.auto-settle.set", enabled: false, threadId }),
-  );
-  useStore.setState({ threads: [{ ...thread, autoSettleDisabled: true }] });
-  await expect.element(toggle).not.toBeChecked();
+  await expect
+    .element(page.getByRole("button", { name: "Unsettle", exact: true }))
+    .not.toBeInTheDocument();
+  await expect
+    .element(page.getByRole("switch", { name: "Auto-settle this thread" }))
+    .not.toBeInTheDocument();
 });
 it("bounds idle settlement to 365 days and leaves clearing the rule explicit", async () => {
   const change = vi.fn();

@@ -1,0 +1,108 @@
+[
+  {
+    "integration": "codex-chrome",
+    "id": "codex-chrome-darwin-arm64-26.1013.40934",
+    "platform": "darwin",
+    "arch": "arm64",
+    "versions": {
+      "appMin": "26.1013.40934",
+      "appMax": "26.1013.40934",
+      "pluginMin": "26.1013.40934",
+      "pluginMax": "26.1013.40934"
+    },
+    "identity": {
+      "teamId": "2DC432GLL2",
+      "appIdentifier": "com.openai.codex",
+      "hostName": "com.openai.codexextension",
+      "allowedOrigins": [
+        "chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/",
+        "chrome-extension://odlomjlbamekndcpllcnffbgeohgkmjh/"
+      ],
+      "hostIdentifier": "extension-host",
+      "mcpServerName": "node_repl",
+      "allowedTools": ["js", "js_reset"]
+    },
+    "browsers": [
+      {
+        "id": "chrome",
+        "bundleId": "com.google.Chrome",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "Google",
+          "Chrome",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "chromium",
+        "bundleId": "org.chromium.Chromium",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "Chromium",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "chrome-for-testing",
+        "bundleId": "com.google.chrome.for.testing",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "Google",
+          "ChromeForTesting",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "chrome-for-testing-legacy",
+        "bundleId": "com.google.chrome.for.testing",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "Google",
+          "Chrome for Testing",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "edge",
+        "bundleId": "com.microsoft.edgemac",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "Microsoft Edge",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "brave",
+        "bundleId": "com.brave.Browser",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "BraveSoftware",
+          "Brave-Browser",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "opera",
+        "bundleId": "com.operasoftware.Opera",
+        "nativeMessagingPath": [
+          "Library",
+          "Application Support",
+          "com.operasoftware.Opera",
+          "NativeMessagingHosts"
+        ]
+      },
+      {
+        "id": "vivaldi",
+        "bundleId": "com.vivaldi.Vivaldi",
+        "nativeMessagingPath": ["Library", "Application Support", "Vivaldi", "NativeMessagingHosts"]
+      }
+    ],
+    "profileIsolation": "isolated"
+  }
+]

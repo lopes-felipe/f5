@@ -3,59 +3,18 @@ import type {
   ComputerBackendKind,
   ComputerBackendSelection,
 } from "@t3tools/contracts";
+import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 
-/** Certification records are evidence, never a feature flag a project can set. */
-export interface BuiltinComputerCertification {
-  readonly provider: "claude" | "codex";
-  readonly platform: "darwin" | "win32";
-  readonly minVersion: string;
-  readonly maxVersion: string;
-  readonly manifestHash: string;
-  readonly evidence: string;
-  readonly consent: boolean;
-  readonly preExecutionVeto: boolean;
-  readonly stop: boolean;
-  readonly observation: boolean;
-  readonly f5Isolation: boolean;
-  readonly profileIsolation: boolean;
-}
-export const BUILTIN_COMPUTER_CERTIFICATIONS: ReadonlyArray<BuiltinComputerCertification> = [];
-export const CODEX_COMPUTER_USE_CERTIFIED = false;
-function versionParts(version: string): number[] | undefined {
-  if (!/^\d+(?:\.\d+){0,3}$/.test(version)) return undefined;
-  return version.split(".").map(Number);
-}
-function compareVersion(a: number[], b: number[]): number {
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    const delta = (a[index] ?? 0) - (b[index] ?? 0);
-    if (delta) return delta;
-  }
-  return 0;
-}
+/**
+ * The shared certification records are the only gate. Claude's built-in computer use has
+ * no integration (the CLI starts it only in interactive terminals), so it never qualifies.
+ */
 export function certifiedBuiltin(
-  record: BuiltinComputerCertification | undefined,
-  observed?: { version?: string; manifestHash?: string },
+  provider: "claude" | "codex",
+  platform: string,
+  arch: string = process.arch,
 ): boolean {
-  const version = versionParts(observed?.version ?? "");
-  const min = versionParts(record?.minVersion ?? "");
-  const max = versionParts(record?.maxVersion ?? "");
-  return (
-    !!record &&
-    !!version &&
-    !!min &&
-    !!max &&
-    compareVersion(version, min) >= 0 &&
-    compareVersion(version, max) <= 0 &&
-    /^[a-f0-9]{64}$/.test(record.manifestHash) &&
-    observed?.manifestHash === record.manifestHash &&
-    !!record.evidence &&
-    record.consent &&
-    record.preExecutionVeto &&
-    record.stop &&
-    record.observation &&
-    record.f5Isolation &&
-    record.profileIsolation
-  );
+  return provider === "codex" && isIntegrationCertified("codex-computer", platform, arch);
 }
 export type ComputerBackendDecision =
   | {
@@ -67,18 +26,23 @@ export type ComputerBackendDecision =
       readonly status: ComputerAutomationBackendStatus;
       readonly builtinReason?: string;
     };
+/**
+ * One catalog per session. `auto` with a certified, installed built-in selects it; F5-only,
+ * background execution (folded into `f5` by the caller) and anything but Full access
+ * select F5's native control.
+ */
 export function selectComputerBackend(input: {
   enabled: boolean;
   preference: "auto" | "f5";
   provider: "claude" | "codex";
   platform: string;
+  arch?: string;
+  fullAccess?: boolean;
   nativeStatus: ComputerAutomationBackendStatus;
   builtin: {
     available: boolean;
     reason?: string;
-    certification?: BuiltinComputerCertification;
     version?: string;
-    manifestHash?: string;
   };
 }): ComputerBackendDecision {
   if (!input.enabled) return { status: { available: false, reason: "disabled" } };
@@ -86,17 +50,16 @@ export function selectComputerBackend(input: {
     input.provider === "claude" ? "claude-builtin" : "codex-builtin";
   const platformSupported =
     input.platform === "darwin" || (input.platform === "win32" && input.provider === "claude");
+  const certified = certifiedBuiltin(input.provider, input.platform, input.arch);
   const qualifies =
-    platformSupported &&
-    input.builtin.available &&
-    input.builtin.certification?.provider === input.provider &&
-    input.builtin.certification.platform === input.platform &&
-    certifiedBuiltin(input.builtin.certification, input.builtin);
+    platformSupported && input.builtin.available && certified && input.fullAccess === true;
   if (input.preference === "auto" && qualifies)
     return { selection: { kind }, status: { available: true } };
   const reason = !platformSupported
     ? "unsupported-platform"
-    : (input.builtin.reason ?? "not-certified");
+    : input.builtin.available && certified && input.fullAccess !== true
+      ? "needs-full-access"
+      : (input.builtin.reason ?? "not-certified");
   if (input.nativeStatus.available)
     return {
       selection: {

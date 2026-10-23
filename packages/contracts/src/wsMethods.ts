@@ -93,6 +93,7 @@ export const WS_METHODS = {
   claudeChromeRestoreNativeHost: "claudeChrome.restoreNativeHost",
   codexChromeRestoreNativeHost: "codexChrome.restoreNativeHost",
   chromeNativeHostListTransactions: "chrome.listNativeHostTransactions",
+  chromeGetReadiness: "chrome.getReadiness",
 
   // Server meta
   serverProbe: "server.probe",

@@ -56,6 +56,7 @@ const broker = new ComputerAutomationBrokerRuntime(host, {
     policy: {
       computerUse: true,
       claudeInChrome: false,
+      codexChrome: false,
       previewAutomation: false,
       externalHosts: [],
     },

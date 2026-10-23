@@ -145,13 +145,12 @@ function WorktreeSettings() {
         title="Disposable worktree changes"
         searchTarget="git.worktree-disposable-paths"
         description="Uncommitted changes Storage cleanup may discard, such as regenerated files. Projects can override this list."
-        control={
-          <WorktreeDisposablePathsEditor
-            value={settings.worktreeDisposablePaths}
-            onSave={(paths) => updateSettings({ worktreeDisposablePaths: paths })}
-          />
-        }
-      />
+      >
+        <WorktreeDisposablePathsEditor
+          value={settings.worktreeDisposablePaths}
+          onSave={(paths) => updateSettings({ worktreeDisposablePaths: paths })}
+        />
+      </SettingsRow>
     </SettingsCard>
   );
 }

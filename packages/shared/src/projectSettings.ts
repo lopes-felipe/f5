@@ -30,6 +30,7 @@ const USER_ONLY_PROJECT_SETTING_KEYS: ReadonlySet<string> = new Set([
   // Capabilities that widen what an agent can reach must never come from a checked-in file.
   "previewExternalHosts",
   "enableClaudeInChrome",
+  "enableCodexChrome",
   "enableAgentComputerUse",
   // A checked-in file must never enable scheduled upstream runs.
   "upstreamPorts",
@@ -116,6 +117,8 @@ export interface AgentBrowserPolicy {
   readonly previewAutomation: boolean;
   readonly externalHosts: ReadonlyArray<string>;
   readonly claudeInChrome: boolean;
+  /** Codex Chrome through F5's integration proxy. */
+  readonly codexChrome: boolean;
   readonly computerUse: boolean;
   /**
    * Global preference; missing means foreground. Background still needs every peer's
@@ -129,6 +132,7 @@ export const DISABLED_AGENT_BROWSER_POLICY: AgentBrowserPolicy = {
   previewAutomation: false,
   externalHosts: [],
   claudeInChrome: false,
+  codexChrome: false,
   computerUse: false,
   computerUseExecutionMode: "foreground",
   computerUsePasswordMasking: "fast",
@@ -151,6 +155,7 @@ export function agentBrowserPolicyFromSettings(
       (pattern) => parsePreviewHostPattern(pattern).ok,
     ),
     claudeInChrome: overrides?.enableClaudeInChrome ?? settings.enableClaudeInChrome,
+    codexChrome: overrides?.enableCodexChrome ?? settings.enableCodexChrome,
     computerUse: overrides?.enableAgentComputerUse ?? settings.enableAgentComputerUse,
     // No project override: the execution mode is a machine-wide choice.
     computerUseExecutionMode: settings.computerUseExecutionMode ?? "foreground",

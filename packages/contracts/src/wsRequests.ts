@@ -573,6 +573,10 @@ const WebSocketRequestBody = Schema.Union([
     WS_METHODS.chromeNativeHostListTransactions,
     Schema.Struct({ provider: Schema.Literals(["claude", "codex"]) }),
   ),
+  tagRequestBody(
+    WS_METHODS.chromeGetReadiness,
+    Schema.Struct({ providerInstanceId: Schema.String.check(Schema.isMaxLength(256)) }),
+  ),
   tagRequestBody(WS_METHODS.computerAccessListRemembered, Schema.Struct({ projectId: ProjectId })),
   tagRequestBody(
     WS_METHODS.computerAccessForgetRemembered,

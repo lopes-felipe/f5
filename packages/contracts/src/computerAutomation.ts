@@ -430,7 +430,13 @@ export const ComputerAccessRequested = Schema.Struct({
   requestId: Id,
   threadId: Id,
   reason: Schema.String.check(Schema.isMaxLength(500)),
-  kind: Schema.Literals(["apps", "session-actions", "chrome-setup", "foreground-takeover"]),
+  kind: Schema.Literals([
+    "apps",
+    "session-actions",
+    "chrome-setup",
+    "chrome-session",
+    "foreground-takeover",
+  ]),
   typingRequested: Schema.optionalKey(Schema.Boolean),
   /** Session approval that also covers background control while the user works elsewhere. */
   background: Schema.optionalKey(Schema.Boolean),
@@ -442,6 +448,10 @@ export const ComputerAccessRequested = Schema.Struct({
       turnId: Id,
       reason: Schema.String.check(Schema.isMaxLength(500)),
     }),
+  ),
+  /** Per-session consent for an F5-proxied provider integration (Codex Chrome / Sky). */
+  chromeSession: Schema.optionalKey(
+    Schema.Struct({ integration: Schema.Literals(["codex-chrome", "codex-computer"]) }),
   ),
   chromeSetup: Schema.optionalKey(
     Schema.Struct({
@@ -476,6 +486,7 @@ export const ComputerAccessAnswer = Schema.Struct({
   ).check(Schema.isMaxLength(10)),
   allowSessionActions: Schema.optional(Schema.Boolean),
   allowChromeSetup: Schema.optionalKey(Schema.Boolean),
+  allowChromeSession: Schema.optionalKey(Schema.Boolean),
   allowForegroundTakeover: Schema.optionalKey(Schema.Boolean),
   /** Minted by Electron main only; renderer and model input never supply it. */
   sessionReceipt: Schema.optionalKey(Id),
@@ -525,14 +536,80 @@ export const ChromeLeaseHolder = Schema.Struct({
   provider: Schema.Literals(["claude", "codex"]),
 });
 export type ChromeLeaseHolder = typeof ChromeLeaseHolder.Type;
+export const ProviderIntegrationKind = Schema.Literals([
+  "claude-chrome",
+  "codex-chrome",
+  "codex-computer",
+]);
+export type ProviderIntegrationKind = typeof ProviderIntegrationKind.Type;
+/**
+ * A provider-integration child (Claude CLI with Chrome, or an F5-proxied stdio server),
+ * registered with desktop main before any stdio flows so main can stop it and observe
+ * its exit even when the profile server is frozen.
+ */
+export const ChromeProcessRegistration = Schema.Struct({
+  profileId: Id,
+  backendIncarnation: Id,
+  threadId: Id,
+  sessionGeneration: Id,
+  launchToken: Id,
+  integration: ProviderIntegrationKind,
+  pid: Positive,
+  pgid: Positive,
+  /** Epoch milliseconds when the backend spawned the process. */
+  startTime: NonNegative,
+});
+export type ChromeProcessRegistration = typeof ChromeProcessRegistration.Type;
+export const ChromeNativeHostTransactionState = Schema.Literals([
+  "approved",
+  "launched",
+  "restoring",
+  "partially-restored",
+  "restored",
+  "recovery-required",
+]);
+export type ChromeNativeHostTransactionState = typeof ChromeNativeHostTransactionState.Type;
 export const ChromeNativeHostTransactionSummary = Schema.Struct({
   id: Id,
   provider: Schema.Literals(["claude", "codex"]),
   targetPath: Schema.String,
   createdAt: Schema.String,
-  state: Schema.Literals(["approved", "launched", "restored"]),
+  state: ChromeNativeHostTransactionState,
+  /** Wrapper missing or its exec target gone: Restore is recommended. */
+  stale: Schema.optionalKey(Schema.Boolean),
+  legacy: Schema.optionalKey(Schema.Boolean),
+  /** Newer unresolved setup that must be restored first. */
+  blockedBy: Schema.optionalKey(Id),
+  unresolved: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type ChromeNativeHostTransactionSummary = typeof ChromeNativeHostTransactionSummary.Type;
+export const ChromeNativeHostRestoreResult = Schema.Struct({
+  restored: Schema.Array(Schema.String),
+  skipped: Schema.Array(Schema.String),
+  unresolved: Schema.optionalKey(Schema.Array(Schema.String)),
+  state: Schema.optionalKey(ChromeNativeHostTransactionState),
+  /** Set when restore was refused before anything was stopped or written. */
+  blockingTransactionId: Schema.optionalKey(Id),
+  busy: Schema.optionalKey(Schema.Boolean),
+  /** Main refused ownership for another reason (for example `recovery-required`). */
+  failure: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type ChromeNativeHostRestoreResult = typeof ChromeNativeHostRestoreResult.Type;
+export const ChromeReadinessEligibility = Schema.Literals([
+  "off",
+  "ready",
+  "unavailable",
+  "recovery-required",
+]);
+export const ChromeReadiness = Schema.Struct({
+  providerInstanceId: Id,
+  provider: Schema.Literals(["claude", "codex"]),
+  eligibility: ChromeReadinessEligibility,
+  reason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(500))),
+  recordId: Schema.optionalKey(Id),
+  checkedAt: Schema.String,
+});
+export type ChromeReadiness = typeof ChromeReadiness.Type;
 export const ComputerToolOutcomeCode = Schema.Literals([
   "Unavailable",
   "Busy",
@@ -573,7 +650,17 @@ export const ComputerActivity = Schema.Struct({
 export type ComputerActivity = typeof ComputerActivity.Type;
 export const DesktopComputerHostMessage = Schema.Union([
   Schema.Struct({
-    type: Schema.Literals(["chromeLeaseAcquire", "chromeLeaseRelease", "chromeLeaseValidate"]),
+    /**
+     * `chromeRestoreAcquire` takes the same exclusive lease for a storage-only restore. It
+     * skips the launch certification gate, so history stays restorable after an SDK
+     * upgrade or a withdrawn record.
+     */
+    type: Schema.Literals([
+      "chromeLeaseAcquire",
+      "chromeRestoreAcquire",
+      "chromeLeaseRelease",
+      "chromeLeaseValidate",
+    ]),
     requestId: Id,
     holder: ChromeLeaseHolder,
   }),
@@ -581,6 +668,20 @@ export const DesktopComputerHostMessage = Schema.Union([
     type: Schema.Literal("chromeLeaseChanged"),
     holder: Schema.NullOr(ChromeLeaseHolder),
     otherProfile: Schema.optionalKey(Schema.Boolean),
+    /** Main could not observe a registered process exit; Chrome ownership is refused. */
+    recoveryRequired: Schema.optionalKey(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("chromeProcessRegister"),
+    requestId: Id,
+    registration: ChromeProcessRegistration,
+  }),
+  Schema.Struct({ type: Schema.Literal("chromeProcessExited"), launchToken: Id }),
+  // Built-in (provider-native) computer use holds the shared foreground lease per call.
+  Schema.Struct({
+    type: Schema.Literals(["builtinLeaseAcquire", "builtinLeaseValidate", "builtinLeaseRelease"]),
+    requestId: Id,
+    holder: ComputerLeaseHolder,
   }),
   Schema.Struct({ type: Schema.Literal("chromeInterrupted"), threadId: Id, sessionGeneration: Id }),
   Schema.Struct({

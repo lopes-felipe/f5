@@ -1,44 +1,44 @@
 import { describe, expect, it, vi } from "vitest";
 import { probeComputerBuiltin } from "./computerBuiltinAvailability";
+import type { CodexInspectionIo } from "./codexNativeIntegrations";
+
+const io = (): CodexInspectionIo => ({
+  readText: vi.fn(async () => {
+    throw new Error("not read");
+  }),
+  isFile: vi.fn(async () => false),
+  realpath: vi.fn(async (path: string) => path),
+  fingerprint: vi.fn(async (path: string) => path),
+  verify: vi.fn(async () => ({ ok: false as const, reason: "invalid" as const })),
+  inspectRegistrations: vi.fn(async () => []),
+});
+
 describe("installed provider computer-use compatibility", () => {
-  it("does not inspect plugins for unsupported SDK/platform combinations", async () => {
-    const read = vi.fn();
+  it("does not inspect anything for unsupported SDK/platform combinations", async () => {
+    const fixture = io();
     expect(
-      (await probeComputerBuiltin({ provider: "claude", platform: "darwin", read })).reason,
-    ).toContain("terminal app's consent");
+      (await probeComputerBuiltin({ provider: "claude", platform: "darwin", io: fixture })).reason,
+    ).toContain("interactive terminal sessions");
     expect(
-      (await probeComputerBuiltin({ provider: "codex", platform: "win32", read })).reason,
+      (await probeComputerBuiltin({ provider: "codex", platform: "win32", io: fixture })).reason,
     ).toContain("unsupported");
-    expect(read).not.toHaveBeenCalled();
+    expect(fixture.readText).not.toHaveBeenCalled();
   });
-  it("reports the observed plugin version/hash without treating presence as a gate pass", async () => {
-    const read = async (path: string) =>
-      path.endsWith("plugin.json")
-        ? JSON.stringify({ name: "unified-computer-use", version: "26.930.51102" })
-        : JSON.stringify({
-            mcpServers: { cua_repl: { enabled: false, command: "node", args: [] } },
-          });
+
+  it("reads nothing while no Codex Computer Use record exists", async () => {
+    const fixture = io();
     const result = await probeComputerBuiltin({
       provider: "codex",
       platform: "darwin",
-      chatGptResources: "/fixture",
-      read,
+      arch: "arm64",
+      userHome: "/Users/me",
+      io: fixture,
     });
-    expect(result.available).toBe(false);
-    expect(result.version).toBe("26.930.51102");
-    expect(result.manifestHash).toMatch(/^[a-f0-9]{64}$/);
-    expect(result.reason).toContain("runtime configuration");
-  });
-  it("fails closed for missing or malformed plugin configuration", async () => {
-    for (const read of [
-      async () => {
-        throw Object.assign(new Error(), { code: "ENOENT" });
-      },
-      async () => "not JSON",
-      async () => "{}",
-    ])
-      expect(
-        (await probeComputerBuiltin({ provider: "codex", platform: "darwin", read })).available,
-      ).toBe(false);
+    expect(result).toEqual({
+      available: false,
+      reason: "Codex Computer Use is awaiting a live safety certification for this F5 build.",
+    });
+    expect(fixture.readText).not.toHaveBeenCalled();
+    expect(fixture.verify).not.toHaveBeenCalled();
   });
 });

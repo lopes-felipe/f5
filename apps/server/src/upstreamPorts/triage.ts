@@ -116,6 +116,15 @@ export interface TriageChunkInput {
   readonly semaphore?: Semaphore.Semaphore;
   /** Consecutive provider failures, shared across a run's chunks. */
   readonly circuit?: { consecutiveFailures: number };
+  /**
+   * The run's remaining LLM calls and its deadline, checked before every
+   * batch and retry. Commits whose batch would exceed either fall back to the inbox.
+   */
+  readonly budget?: {
+    readonly calls: number;
+    readonly deadlineAt: number;
+    readonly now: () => number;
+  };
 }
 
 export interface TriageChunkResult {
@@ -125,7 +134,11 @@ export interface TriageChunkResult {
 }
 
 export class ProviderUnavailableError extends Error {
-  constructor(readonly detail: string) {
+  constructor(
+    readonly detail: string,
+    /** Calls the chunk made before the circuit opened. */
+    readonly llmCalls = 0,
+  ) {
     super(`Triage provider unavailable: ${detail}`);
     this.name = "ProviderUnavailableError";
   }
@@ -148,6 +161,28 @@ export function moreConservative(
   b: UpstreamTopicSuggestion,
 ): UpstreamTopicSuggestion {
   return CONSERVATIVE_ORDER[a.status] <= CONSERVATIVE_ORDER[b.status] ? a : b;
+}
+
+/**
+ * Combines two suggestions for one topic. The more conservative status wins,
+ * and every source of doubt survives: the lower confidence, any question or
+ * triage error, and a conflict when the statuses differ.
+ */
+export function mergeSuggestions(
+  a: UpstreamTopicSuggestion,
+  b: UpstreamTopicSuggestion,
+): UpstreamTopicSuggestion {
+  const kept = moreConservative(a, b);
+  const other = kept === a ? b : a;
+  const question = kept.question ?? other.question;
+  const triageError = kept.triageError ?? other.triageError;
+  return {
+    ...kept,
+    confidence: Math.min(a.confidence, b.confidence),
+    ...(question !== undefined ? { question } : {}),
+    ...(triageError !== undefined ? { triageError } : {}),
+    ...(a.status !== b.status || a.conflict || b.conflict ? { conflict: true as const } : {}),
+  };
 }
 
 function inboxFallback(commit: ChunkCommit, model: string, triageError: string): DraftGroup {
@@ -549,7 +584,21 @@ export function triageChunk(
 
     type BatchOutcome =
       | { readonly ok: true; readonly value: ValidatedBatch }
-      | { readonly ok: false; readonly kind: "batch" | "provider"; readonly detail: string };
+      | {
+          readonly ok: false;
+          readonly kind: "batch" | "provider" | "budget";
+          readonly detail: string;
+        };
+
+    const budget = input.budget;
+    /** Reserves one call, or reports why the run has no budget left. */
+    const reserveCall = Effect.gen(function* () {
+      if (budget && budget.now() >= budget.deadlineAt) return "the run deadline was reached";
+      const reserved = yield* Ref.modify(calls, (n) =>
+        budget && n >= budget.calls ? [false, n] : [true, n + 1],
+      );
+      return reserved ? null : "the run's call budget was reached";
+    });
 
     const runBatch = (shas: ReadonlyArray<string>, newRows: ReadonlyArray<TriageTopicRow>) =>
       Effect.gen(function* () {
@@ -562,7 +611,9 @@ export function triageChunk(
           commits: shas.map(digestFor),
         });
         if (truncated) yield* Ref.set(policyTruncated, true);
-        yield* Ref.update(calls, (n) => n + 1);
+        const exhausted = yield* reserveCall;
+        if (exhausted !== null)
+          return { ok: false, kind: "budget", detail: exhausted } satisfies BatchOutcome;
         return yield* semaphore
           .withPermits(1)(call(prompt))
           .pipe(
@@ -594,7 +645,9 @@ export function triageChunk(
         }
         circuit.consecutiveFailures += 1;
         if (circuit.consecutiveFailures >= PROVIDER_FAILURE_LIMIT)
-          return yield* Effect.fail(new ProviderUnavailableError(outcome.detail));
+          return yield* Effect.fail(
+            new ProviderUnavailableError(outcome.detail, yield* Ref.get(calls)),
+          );
       });
 
     /** One batch with the split-once retry for timeouts and invalid output. */
@@ -604,7 +657,7 @@ export function triageChunk(
         yield* noteProvider(first);
         if (first.ok)
           return { validated: [first.value], failed: [] as Array<{ sha: string; detail: string }> };
-        if (first.kind === "provider")
+        if (first.kind === "provider" || first.kind === "budget")
           return { validated: [], failed: shas.map((sha) => ({ sha, detail: first.detail })) };
         const halves =
           shas.length > 1
@@ -667,11 +720,8 @@ export function triageChunk(
               existingNew.commits = input.commits
                 .map((commit) => commit.sha)
                 .filter((sha) => existingNew.commits.includes(sha) || group.commits.includes(sha));
-              if (existingNew.suggestion && existingNew.suggestion.status !== suggestion.status)
-                existingNew.suggestion = {
-                  ...moreConservative(existingNew.suggestion, suggestion),
-                  conflict: true,
-                };
+              if (existingNew.suggestion)
+                existingNew.suggestion = mergeSuggestions(existingNew.suggestion, suggestion);
               existingNew.revertChain = existingNew.revertChain || chain;
               continue;
             }

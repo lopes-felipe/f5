@@ -3,16 +3,18 @@ import { delimiter } from "node:path";
 import { writeCliCommand } from "../../testUtils/cli.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { expect } from "vitest";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { PositiveInt, ProviderInstanceId } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { ReviewGuideModelOutput } from "../../prHub/pullRequestReviewGuideNormalize.ts";
 import {
   CodexTextGenerationLive,
   makeCodexTextGeneration,
   resolveCodexTextGenerationReasoningEffort,
+  toCodexOutputJsonSchema,
 } from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
@@ -43,10 +45,20 @@ function fail(message, code) { console.error(message); process.exit(code); }
 const schemaIndex = args.indexOf("--output-schema");
 if (schemaIndex < 0 || !args[schemaIndex + 1]) fail("missing --output-schema input", 7);
 const schema = JSON.parse(fs.readFileSync(args[schemaIndex + 1], "utf8"));
-if (schema.additionalProperties !== false) fail("output schema must disallow additional properties", 7);
-for (const key of Object.keys(schema.properties ?? {})) {
-  if (!schema.required?.includes(key)) fail("output schema must require every property: " + key, 7);
-}
+// Mirrors the OpenAI strict structured-output rules Codex enforces.
+(function checkStrict(node) {
+  if (Array.isArray(node)) return node.forEach(checkStrict);
+  if (typeof node !== "object" || node === null) return;
+  if ("allOf" in node) fail("output schema must not use allOf in strict mode", 7);
+  if (node.properties) {
+    if (node.additionalProperties !== false) fail("output schema must disallow additional properties", 7);
+    for (const key of Object.keys(node.properties)) {
+      if (!node.required?.includes(key)) fail("output schema must require every property: " + key, 7);
+    }
+    Object.values(node.properties).forEach(checkStrict);
+  }
+  for (const [key, value] of Object.entries(node)) if (key !== "properties") checkStrict(value);
+})(schema);
 if (env.T3_FAKE_CODEX_REQUIRE_IMAGE === "1" && (!args.includes("--image") || !args[args.indexOf("--image") + 1])) fail("missing --image input", 2);
 if (env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK === "1" && !args.includes("--skip-git-repo-check")) fail("missing --skip-git-repo-check", 5);
 if (env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 3);
@@ -816,4 +828,47 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       }),
     ),
   );
+
+  it.effect("sends the review guide schema in strict form and decodes a nullable file note", () => {
+    const output = {
+      stops: [
+        {
+          title: "Settings layout",
+          summary: "Widens the editor.",
+          attention: null,
+          excerpts: [{ path: "a.ts", side: "new", start: 1, end: 5, caption: "" }],
+          files: [{ path: "a.ts", note: null }],
+          notes: [],
+          questions: ["Does it wrap?"],
+        },
+      ],
+    };
+    return withFakeCodexEnv(
+      { output: JSON.stringify(output) },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+
+        const generated = yield* textGeneration.generateStructuredJson({
+          operation: "prHub.reviewGuide",
+          cwd: process.cwd(),
+          prompt: "Write a review guide.",
+          outputSchema: ReviewGuideModelOutput,
+        });
+
+        expect(generated).toEqual(output);
+      }),
+    );
+  });
+});
+
+it("folds checked constraints into their schema instead of emitting allOf", () => {
+  expect(toCodexOutputJsonSchema(Schema.Struct({ line: PositiveInt }))).toEqual({
+    type: "object",
+    properties: { line: { type: "integer", minimum: 1 } },
+    required: ["line"],
+    additionalProperties: false,
+  });
+  expect(
+    toCodexOutputJsonSchema(Schema.Array(Schema.String).check(Schema.isMaxLength(32))),
+  ).toEqual({ type: "array", items: { type: "string" }, maxItems: 32 });
 });

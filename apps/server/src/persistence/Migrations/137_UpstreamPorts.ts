@@ -61,6 +61,9 @@ export default Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX upstream_port_runs_project
     ON upstream_port_runs(project_id, started_at)`;
+  // At most one running triage run per project, even if two starts race.
+  yield* sql`CREATE UNIQUE INDEX upstream_port_runs_one_running
+    ON upstream_port_runs(project_id) WHERE status = 'running'`;
   yield* sql`CREATE TABLE upstream_port_occurrences (
     project_id TEXT NOT NULL,
     due_at TEXT NOT NULL,

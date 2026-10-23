@@ -402,8 +402,14 @@ export function runTriage(context: RunContext, initial: RunRecord): Effect.Effec
         presetGroups,
         triage: context.triage,
         circuit,
+        budget: {
+          calls: limits.callBudget - run.llmCalls,
+          deadlineAt: startedAt + limits.deadlineMs,
+          now: () => context.now().getTime(),
+        },
         ...(limits.batchSize !== undefined ? { batchSize: limits.batchSize } : {}),
       }).pipe(
+        Effect.tapError((error) => update({ llmCalls: run.llmCalls + error.llmCalls })),
         Effect.mapError((error: ProviderUnavailableError) =>
           runFailure("provider-unavailable", error.detail),
         ),

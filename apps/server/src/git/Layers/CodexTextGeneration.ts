@@ -85,15 +85,50 @@ export function resolveCodexTextGenerationReasoningEffort(
   return resolveCodexReasoningEffortForModel(model, requested);
 }
 
-function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
+const STRUCTURAL_JSON_SCHEMA_KEYS = new Set([
+  "type",
+  "properties",
+  "items",
+  "$ref",
+  "anyOf",
+  "oneOf",
+  "allOf",
+]);
+
+/**
+ * Effect emits each `.check(...)` as an `allOf` member (for example
+ * `{ type: "integer", allOf: [{ minimum: 1 }] }`), which OpenAI strict
+ * structured output rejects. Fold members that only add keyword constraints
+ * into their parent; anything else is left for the API to judge.
+ */
+function foldKeywordAllOf(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(foldKeywordAllOf);
+  if (typeof node !== "object" || node === null) return node;
+  const folded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) folded[key] = foldKeywordAllOf(value);
+  const members = folded.allOf;
+  if (!Array.isArray(members)) return folded;
+  const { allOf: _allOf, ...merged } = folded;
+  for (const member of members) {
+    if (typeof member !== "object" || member === null || Array.isArray(member)) return folded;
+    for (const [key, value] of Object.entries(member)) {
+      if (STRUCTURAL_JSON_SCHEMA_KEYS.has(key)) return folded;
+      if (key in merged && JSON.stringify(merged[key]) !== JSON.stringify(value)) return folded;
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+export function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
   const document = Schema.toJsonSchemaDocument(schema);
   if (document.definitions && Object.keys(document.definitions).length > 0) {
-    return {
+    return foldKeywordAllOf({
       ...document.schema,
       $defs: document.definitions,
-    };
+    });
   }
-  return document.schema;
+  return foldKeywordAllOf(document.schema);
 }
 
 function normalizeCodexError(

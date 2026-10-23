@@ -121,6 +121,7 @@ import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroke
 import { resolveAgentBrowserPolicy } from "../../mcp/browserAccess";
 import { resolveProviderComputerBackendSelection } from "../../computer/computerBackendPolicy";
 import { chromeSessionFingerprint } from "../../provider/chromeSessionRuntimeFactory";
+import { codexChromeFingerprint } from "../../provider/codexChromeIntegration";
 import {
   formatThreadTitleRegenerationContext,
   resolveBestEffortGeneratedTitleResult,
@@ -975,6 +976,7 @@ const make = Effect.gen(function* () {
       const supportsComputer = preferredProvider === "claudeAgent" || preferredProvider === "codex";
       const computerSelection = (yield* resolveProviderComputerBackendSelection(preferredProvider, {
         enabled: computerPolicy.computerUse,
+        fullAccess: thread.runtimeMode === "full-access",
         nativeStatus: Option.isSome(computerBroker)
           ? computerBroker.value.host.status()
           : { available: false, reason: "no-host" },
@@ -988,10 +990,13 @@ const make = Effect.gen(function* () {
       if (computerSelection !== undefined) computerSelections.set(threadId, computerSelection);
       else computerSelections.delete(threadId);
       const shouldRestartForChromeLaunchChange =
-        activeSession?.provider === "claudeAgent" &&
-        activeSession.chromeConfigurationFingerprint !== undefined &&
-        activeSession.chromeConfigurationFingerprint !==
-          chromeSessionFingerprint(threadId, computerPolicy.claudeInChrome);
+        activeSession?.chromeConfigurationFingerprint !== undefined &&
+        ((activeSession.provider === "claudeAgent" &&
+          activeSession.chromeConfigurationFingerprint !==
+            chromeSessionFingerprint(threadId, computerPolicy.claudeInChrome)) ||
+          (activeSession.provider === "codex" &&
+            activeSession.chromeConfigurationFingerprint !==
+              codexChromeFingerprint(computerPolicy.codexChrome)));
       const existingSessionThreadId =
         thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
       if (existingSessionThreadId) {

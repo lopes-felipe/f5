@@ -39,6 +39,8 @@ export type SharedInstructionInput = {
   readonly currentDate?: string;
   readonly model?: string;
   readonly effort?: string;
+  /** F5-verified guidance for provider-native integrations installed in this session. */
+  readonly integrationInstructions?: ReadonlyArray<string>;
 };
 
 const SHARED_BASE_CONTRACT = `You are the assistant running inside F5, a coding-focused agent UI.
@@ -718,6 +720,9 @@ export function buildCodexAssistantInstructions(input: SharedInstructionInput): 
     .join("\n\n");
   const dynamicSections = [
     buildRuntimeContextSection(input),
+    input.integrationInstructions?.length
+      ? `## F5 Integrations\n${input.integrationInstructions.map((line) => `- ${line}`).join("\n")}`
+      : undefined,
     buildProjectMemorySection(input),
     buildResumedContextSection(input),
   ].filter((section): section is string => section !== undefined);

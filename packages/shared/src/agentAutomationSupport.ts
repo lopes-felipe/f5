@@ -50,13 +50,12 @@ export const AGENT_AUTOMATION_SUPPORT: Record<
     preview: { state: "available" },
     computer: { state: "available", reason: "F5 native" },
     builtin:
-      "Claude's built-in computer use needs its terminal app's consent, which F5 can't answer safely.",
+      "Claude Code starts its own computer use only in interactive terminal sessions, not the SDK sessions F5 runs; F5's computer control is used instead.",
   },
+  // Codex's built-in reason comes from the live probe (`probeComputerBuiltin`).
   codex: {
     preview: { state: "available" },
     computer: { state: "available", reason: "F5 native" },
-    builtin:
-      "Codex's built-in computer use has no supported isolated launch with a per-call veto yet.",
   },
   cursor: { preview: acpPreview("cursor"), computer: awaitingVerification },
   grok: { preview: acpPreview("grok"), computer: awaitingVerification },

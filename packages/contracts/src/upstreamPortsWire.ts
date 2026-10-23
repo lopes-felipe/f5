@@ -14,15 +14,14 @@ import { ModelSelection } from "./orchestration";
 export const UpstreamScheduleMode = Schema.Literals(["off", "daily", "weekly"]);
 export type UpstreamScheduleMode = typeof UpstreamScheduleMode.Type;
 
+const UpstreamScheduleHour = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 23 }));
+const UpstreamScheduleWeekday = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }));
+
 export const UpstreamSchedule = Schema.Struct({
   mode: UpstreamScheduleMode.pipe(Schema.withDecodingDefault(() => "off" as const)),
-  hour: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 23 })).pipe(
-    Schema.withDecodingDefault(() => 7),
-  ),
+  hour: UpstreamScheduleHour.pipe(Schema.withDecodingDefault(() => 7)),
   /** 0 is Sunday; used only by the weekly mode. */
-  weekday: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 })).pipe(
-    Schema.withDecodingDefault(() => 1),
-  ),
+  weekday: UpstreamScheduleWeekday.pipe(Schema.withDecodingDefault(() => 1)),
 });
 export type UpstreamSchedule = typeof UpstreamSchedule.Type;
 
@@ -32,6 +31,24 @@ export const UpstreamPortsSettings = Schema.Struct({
   portModelSelection: Schema.NullOr(ModelSelection).pipe(Schema.withDecodingDefault(() => null)),
 });
 export type UpstreamPortsSettings = typeof UpstreamPortsSettings.Type;
+
+/**
+ * A partial settings update with no decoding defaults: omitted fields keep
+ * their current values, schedule fields merge, and a model selection given
+ * (or null) replaces the current one.
+ */
+export const UpstreamPortsSettingsPatch = Schema.Struct({
+  schedule: Schema.optionalKey(
+    Schema.Struct({
+      mode: Schema.optionalKey(UpstreamScheduleMode),
+      hour: Schema.optionalKey(UpstreamScheduleHour),
+      weekday: Schema.optionalKey(UpstreamScheduleWeekday),
+    }),
+  ),
+  triageModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  portModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+});
+export type UpstreamPortsSettingsPatch = typeof UpstreamPortsSettingsPatch.Type;
 
 // ── RPC names and push payload ──────────────────────────────────────────
 

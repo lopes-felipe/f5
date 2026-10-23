@@ -1,5 +1,6 @@
 import type { ComputerAccessAnswer, ComputerAccessRequested } from "@t3tools/contracts";
 import { appTier, restrictComputerTier, type ComputerPlatform } from "@t3tools/shared/computerApps";
+import { INTEGRATION_DISCLOSURES } from "@t3tools/shared/providerIntegrationCertification";
 import type { MessageBoxOptions, MessageBoxReturnValue } from "electron";
 
 const quoteUntrusted = (value: string) =>
@@ -46,16 +47,31 @@ export class ComputerConsentAuthority {
         answer = { ...answer, allowForegroundTakeover: choice.response === 1 };
       } else if (request.kind !== "apps") {
         const setup = request.chromeSetup;
+        const session = request.kind === "chrome-session" ? request.chromeSession : undefined;
+        // Disclosures are F5-authored; the backend chooses only which integration applies.
+        const disclosures = setup
+          ? setup.provider === "claude"
+            ? INTEGRATION_DISCLOSURES["claude-chrome"]
+            : []
+          : session
+            ? INTEGRATION_DISCLOSURES[session.integration]
+            : [];
         const choice = await this.options.show(profileId, {
           type: "warning",
           title: "F5 computer access",
           message:
             request.kind === "chrome-setup"
               ? "Allow browser integration setup?"
-              : "Allow session computer actions?",
+              : request.kind === "chrome-session"
+                ? session?.integration === "codex-computer"
+                  ? "Allow Codex Computer Use for this session?"
+                  : "Allow Codex to use Chrome for this session?"
+                : "Allow session computer actions?",
           detail: setup
-            ? `Current browser targets:\n${setup.previousTargets.join("\n")}\nNew target:\n${setup.targetPath}\nThis integration can act on sites you are signed in to.`
-            : `Allow this agent session to control apps you separately approve?${request.background ? "\nF5 may keep acting in granted apps while you work elsewhere." : ""}\nAgent’s unverified reason: ${quoteUntrusted(request.reason)}`,
+            ? `Current browser targets:\n${setup.previousTargets.map(quoteUntrusted).join("\n")}\nNew target:\n${quoteUntrusted(setup.targetPath)}\nThis integration can act on sites you are signed in to.${disclosures.map((line) => `\n• ${line}`).join("")}`
+            : session
+              ? `This integration can act on sites and apps you are signed in to.${disclosures.map((line) => `\n• ${line}`).join("")}`
+              : `Allow this agent session to control apps you separately approve?${request.background ? "\nF5 may keep acting in granted apps while you work elsewhere." : ""}\nAgent’s unverified reason: ${quoteUntrusted(request.reason)}`,
           buttons: ["Deny", "Allow"],
           defaultId: 0,
           cancelId: 0,
@@ -63,6 +79,8 @@ export class ComputerConsentAuthority {
         });
         if (request.kind === "chrome-setup")
           answer = { ...answer, allowChromeSetup: choice.response === 1 };
+        else if (request.kind === "chrome-session")
+          answer = { ...answer, allowChromeSession: choice.response === 1 };
         else answer = { ...answer, allowSessionActions: choice.response === 1 };
       } else {
         const decisions: ComputerAccessAnswer["decisions"][number][] = [];

@@ -4,6 +4,7 @@ import { readFile, readdir, realpath, lstat, readlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, relative, isAbsolute, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { readCodeSignature } from "@t3tools/shared/codeSignature";
 import type { Identity } from "./model";
 import type { Platform } from "./catalog";
 
@@ -177,16 +178,8 @@ export async function identify(target: Target): Promise<Identity> {
 }
 export async function signature(path: string, platform: Platform): Promise<boolean> {
   if (process.platform !== platform) return false;
+  if (platform === "darwin") return (await readCodeSignature(resolve(path))).ok;
   try {
-    if (platform === "darwin") {
-      await exec("/usr/bin/codesign", ["--verify", "--deep", "--strict", resolve(path)], {
-        timeout: 10000,
-      });
-      const details = await exec("/usr/bin/codesign", ["-dv", "--verbose=4", resolve(path)], {
-        timeout: 10000,
-      });
-      return /^TeamIdentifier=(?!not set)[^\r\n]+$/m.test(details.stderr);
-    }
     await exec("signtool", ["verify", "/pa", resolve(path)], { timeout: 10000, windowsHide: true });
     return true;
   } catch {

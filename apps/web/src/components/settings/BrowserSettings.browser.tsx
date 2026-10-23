@@ -14,7 +14,17 @@ const api = vi.hoisted(() => ({
   cancel: vi.fn(),
   status: vi.fn(),
 }));
-const nativeApi = vi.hoisted(() => ({ chrome: { listTransactions: async () => [] } }));
+const nativeApi = vi.hoisted(() => ({
+  chrome: {
+    listTransactions: async () => [],
+    getReadiness: async ({ providerInstanceId }: { providerInstanceId: string }) => ({
+      providerInstanceId,
+      provider: "claude" as const,
+      eligibility: "off" as const,
+      checkedAt: "2026-10-22T00:00:00.000Z",
+    }),
+  },
+}));
 vi.mock("../../nativeApi", () => ({
   readNativeApi: () => nativeApi,
 }));

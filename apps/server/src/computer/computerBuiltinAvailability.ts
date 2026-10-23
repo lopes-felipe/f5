@@ -1,20 +1,22 @@
+import { userInfo } from "node:os";
 import { AGENT_AUTOMATION_SUPPORT } from "@t3tools/shared/agentAutomationSupport";
-import { probeCodexBundledRuntime } from "./codexBundledRuntime";
+import { inspectCodexComputer, type CodexInspectionIo } from "./codexNativeIntegrations";
 
 export interface BuiltinAvailability {
-  readonly available: false;
-  readonly reason: string;
+  readonly available: boolean;
+  readonly reason?: string;
   readonly version?: string;
-  readonly manifestHash?: string;
 }
 
-/** Read-only compatibility probe. A bundled plugin's presence is not certification,
- * and it never enables plugins or imports a user's global provider home. */
+/** Read-only identity probe. Installation is not certification: selection also requires
+ * a certified record. It never enables plugins or imports a user's provider home. */
 export async function probeComputerBuiltin(input: {
   provider: "claude" | "codex";
   platform: string;
-  chatGptResources?: string;
-  read?: (path: string) => Promise<string>;
+  arch?: string;
+  chatGptApp?: string;
+  userHome?: string;
+  io?: CodexInspectionIo;
 }): Promise<BuiltinAvailability> {
   if (input.platform !== "darwin")
     return {
@@ -26,5 +28,14 @@ export async function probeComputerBuiltin(input: {
       available: false,
       reason: AGENT_AUTOMATION_SUPPORT.claudeAgent.builtin!,
     };
-  return probeCodexBundledRuntime({ ...input, capability: "computer" });
+  const inspected = await inspectCodexComputer({
+    platform: input.platform,
+    ...(input.arch ? { arch: input.arch } : {}),
+    ...(input.chatGptApp ? { chatGptApp: input.chatGptApp } : {}),
+    userHome: input.userHome ?? userInfo().homedir,
+    ...(input.io ? { io: input.io } : {}),
+  });
+  return inspected.available
+    ? { available: true, version: inspected.version }
+    : { available: false, reason: inspected.reason };
 }

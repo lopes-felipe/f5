@@ -293,6 +293,52 @@ describe("triageChunk", () => {
     expect(exit._tag).toBe("Failure");
     expect(String(exit)).toContain("ProviderUnavailableError");
     expect(ProviderUnavailableError.name).toBe("ProviderUnavailableError");
+    const error = await Effect.runPromise(
+      Effect.flip(triageChunk({ ...baseInput(commits, call), batchSize: 1, concurrency: 1 })),
+    );
+    expect(error.llmCalls).toBe(3);
+  });
+
+  it("stops calling at the remaining budget and deadline, sending the rest to the inbox", async () => {
+    let calls = 0;
+    const call: TriageCall = (prompt) => {
+      calls += 1;
+      return Effect.succeed({
+        groups: [
+          group({ commits: commits.filter((c) => prompt.includes(c.sha)).map((c) => c.sha) }),
+        ],
+      });
+    };
+    const budgeted = await run(
+      triageChunk({
+        ...baseInput(commits, call),
+        batchSize: 1,
+        budget: { calls: 2, deadlineAt: Number.POSITIVE_INFINITY, now: () => 0 },
+      }),
+    );
+    expect(calls).toBe(2);
+    expect(budgeted.llmCalls).toBe(2);
+    const fallback = budgeted.groups.filter((entry) => entry.suggestion?.triageError);
+    expect(fallback).toHaveLength(commits.length - 2);
+    expect(fallback[0]!.suggestion?.triageError).toContain("call budget");
+
+    calls = 0;
+    let clock = 0;
+    const late = await run(
+      triageChunk({
+        ...baseInput(commits, (prompt) => {
+          clock = 10;
+          return call(prompt);
+        }),
+        batchSize: 1,
+        concurrency: 1,
+        budget: { calls: 100, deadlineAt: 5, now: () => clock },
+      }),
+    );
+    expect(calls).toBe(1);
+    expect(
+      late.groups.filter((entry) => entry.suggestion?.triageError)[0]!.suggestion?.triageError,
+    ).toContain("deadline");
   });
 
   it("attaches later waves to earlier new groups and marks disagreeing merges as conflicts", async () => {
@@ -320,6 +366,36 @@ describe("triageChunk", () => {
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0]!.commits).toEqual([sha(1), sha(2)]);
     expect(result.groups[0]!.suggestion).toMatchObject({ status: "port", conflict: true });
+    expect(result.groups[0]!.decision).toBeNull();
+  });
+
+  it("keeps a same-status follow-up's lower confidence and question, so it is not auto-skipped", async () => {
+    const skip = { suggestion: "skip" as const, reasonKey: "maintenance" };
+    const call: TriageCall = (prompt) =>
+      Effect.succeed({
+        groups: prompt.includes(sha(1))
+          ? [group({ key: "cleanup", commits: [sha(1)], ...skip, confidence: 0.99 })]
+          : [
+              group({
+                key: "followup",
+                commits: [sha(2)],
+                attachTo: "cleanup",
+                ...skip,
+                confidence: 0.4,
+                question: "Does this remove a setting F5 still uses?",
+              }),
+            ],
+      });
+    const result = await run(
+      triageChunk({ ...baseInput(commits.slice(0, 2), call), batchSize: 1, concurrency: 1 }),
+    );
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]!.suggestion).toMatchObject({
+      status: "skip",
+      confidence: 0.4,
+      question: "Does this remove a setting F5 still uses?",
+    });
+    expect(result.groups[0]!.suggestion?.conflict).toBeUndefined();
     expect(result.groups[0]!.decision).toBeNull();
   });
 

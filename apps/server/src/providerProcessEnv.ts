@@ -5,6 +5,7 @@ import { appendGitConfigPairs, profileSessionGitConfigPairs } from "./git/gitCon
 import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
+import { PROJECT_SCRIPT_ENV_NAMES } from "@t3tools/shared/projectScripts";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_", "F5_LAUNCHER_", "F5_UPDATE_"] as const;
 
 function isBlockedProviderEnvKey(key: string): boolean {
@@ -128,7 +129,15 @@ export function buildAccountExecutionEnvironment(input: {
   );
   if (isolated) {
     assertAccountEnvironmentOverrides(instance);
-    if (input.overrides) assertAccountEnvironmentOverrides(input.overrides);
+    // F5 sets the project script variables itself; configured instance env still may not.
+    if (input.overrides)
+      assertAccountEnvironmentOverrides(
+        Object.fromEntries(
+          Object.entries(input.overrides).filter(
+            ([key]) => !PROJECT_SCRIPT_ENV_NAMES.some((name) => name === key.toUpperCase()),
+          ),
+        ),
+      );
   }
   const environment = profileGithubEnvironment(
     buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),

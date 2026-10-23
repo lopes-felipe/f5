@@ -113,11 +113,54 @@ export function commandsFor(
         : []),
     ];
   }
-  if (s.runner === "builtin") return "supported-launch-consent-veto-unavailable";
-  if (s.runner === "chrome")
-    return s.selectedProvider === "codex"
-      ? "supported-isolated-chrome-runtime-unavailable"
-      : "chrome-certification-descriptor-missing";
+  // Codex Chrome and the Sky spike run through F5's proxy outside F5 and never stamp a record.
+  const codexNativeLive = (mode: "chrome" | "computer", file: string): Command => ({
+    executable: "bun",
+    args: ["run", "--cwd", "apps/server", "test:file", file],
+    check: `codex-${mode}-live`,
+    timeoutMs: 300000,
+    env: {
+      F5_CODEX_NATIVE_LIVE: mode,
+      [mode === "chrome" ? "F5_CODEX_CHROME_REPORT" : "F5_CODEX_COMPUTER_REPORT"]: join(
+        output,
+        `codex-${mode}-report.json`,
+      ),
+    },
+  });
+  if (s.runner === "builtin") {
+    if (s.selectedProvider !== "codex") return "supported-launch-consent-veto-unavailable";
+    if (hostPlatform !== "darwin" || target.platform !== "darwin")
+      return "interactive-platform-unavailable";
+    return [codexNativeLive("computer", "integration/codexComputerSpike.live.test.ts")];
+  }
+  if (s.runner === "chrome") {
+    if (hostPlatform !== "darwin" || target.platform !== "darwin")
+      return "interactive-platform-unavailable";
+    if (s.selectedProvider === "codex")
+      return [codexNativeLive("chrome", "integration/codexChromeNative.live.test.ts")];
+    const launch = launches.claude;
+    if (!launch) return "provider-launch-not-configured";
+    // Real browser folders: the runner refuses to start from an F5 agent process.
+    return [
+      {
+        executable: "bun",
+        args: [
+          "run",
+          "--cwd",
+          "apps/server",
+          "test:file",
+          "integration/claudeChromeNative.live.test.ts",
+        ],
+        check: "claude-chrome-live",
+        timeoutMs: 300000,
+        env: {
+          F5_CLAUDE_CHROME_LIVE: "1",
+          F5_CLAUDE_CHROME_REPORT: join(output, "claude-chrome-report.json"),
+          CLAUDE_CONFIG_DIR: launch.home,
+        },
+      },
+    ];
+  }
   if (s.runner === "package")
     return target.app ? "installed-attribution-proof-required" : "signing-deferred";
   if (hostPlatform !== target.platform) return "interactive-platform-unavailable";

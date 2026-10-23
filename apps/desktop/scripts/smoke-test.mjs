@@ -12,6 +12,21 @@ const { writeDiagnostics } = createRequire(import.meta.url)(
   "../../../scripts/lib/ci-diagnostics.cjs",
 );
 const artifactDirectory = process.env.F5_CI_ARTIFACT_DIR;
+// Certification records are bundled into main; a packaged app never reads docs/.
+{
+  const main = readFileSync(join(desktopDir, "dist-electron/main.js"), "utf8");
+  const certificationDir = resolve(desktopDir, "../../packages/shared/src/certification");
+  for (const file of ["claude-chrome", "codex-chrome", "codex-computer"]) {
+    const records = JSON.parse(
+      readFileSync(join(certificationDir, `${file}.generated.json`), "utf8"),
+    );
+    for (const record of records)
+      if (!main.includes(record.id))
+        throw new Error(`Certification record ${record.id} is not bundled into desktop main`);
+  }
+  if (main.includes("docs/computer-certification"))
+    throw new Error("Desktop main must not resolve certification records from docs/");
+}
 const { _electron } = requireWeb("playwright");
 const directory = mkdtempSync(join(tmpdir(), "f5-desktop-smoke-"));
 const overlayModule = join(directory, "computer-overlay.cjs");

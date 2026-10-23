@@ -43,6 +43,7 @@ const KIND_LABEL: Record<AccessRequest["kind"], string> = {
   apps: "Apps",
   "session-actions": "Session actions",
   "chrome-setup": "Browser setup",
+  "chrome-session": "Browser session",
   "foreground-takeover": "Foreground takeover",
 };
 

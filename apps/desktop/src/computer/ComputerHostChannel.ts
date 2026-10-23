@@ -12,10 +12,13 @@ import {
   type ComputerBackgroundStatus,
   type ComputerLeaseHolder,
   type ChromeLeaseHolder,
+  type ChromeProcessRegistration,
 } from "@t3tools/contracts";
 import { computerError, ComputerControlError } from "@t3tools/shared/computerControl";
 import type { ComputerController, ComputerExecutionStateUpdate } from "./ComputerController";
 import { ChromeLeaseAuthority } from "./ChromeLeaseAuthority";
+import type { ChromeProcessSupervisor } from "./ChromeProcessSupervisor";
+import { sameComputerHolder } from "./ComputerLeaseAuthority";
 import { ComputerExecutionAuthority } from "./ComputerExecutionAuthority";
 import { ComputerTakeoverCoordinator } from "./ComputerTakeoverCoordinator";
 
@@ -30,10 +33,9 @@ interface Backend {
 /** Inherited private process IPC is the only registration, execute and consent transport. */
 export class ComputerHostChannel {
   private readonly backends = new Map<string, Backend>();
-  readonly chrome = new ChromeLeaseAuthority((holder) => {
-    for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
-    this.chromeOptions?.changed?.(holder);
-  });
+  readonly chrome: ChromeLeaseAuthority;
+  /** Builtin (Sky) holders kept after a disconnect until main observes the child exit. */
+  private readonly builtinQuarantine = new Map<string, ComputerLeaseHolder[]>();
   readonly execution: ComputerExecutionAuthority;
   readonly takeovers: ComputerTakeoverCoordinator;
   constructor(
@@ -42,7 +44,10 @@ export class ComputerHostChannel {
     private readonly attention: (profileId: string, request: ComputerAccessRequested) => void,
     private readonly chromeOptions?: {
       certified: (provider: "claude" | "codex") => boolean;
+      /** Codex Computer Use (Sky); absent means closed. */
+      builtinCertified?: () => boolean;
       changed?: (holder: ChromeLeaseHolder | null) => void;
+      supervisor?: ChromeProcessSupervisor;
     },
     private readonly grants = new ComputerGrantAuthority(
       process.platform === "win32" ? "win32" : "darwin",
@@ -59,6 +64,10 @@ export class ComputerHostChannel {
       advertiseBackground?: boolean;
     } = {},
   ) {
+    this.chrome = new ChromeLeaseAuthority((holder) => {
+      for (const profileId of this.backends.keys()) this.sendChromeLease(profileId, holder);
+      this.chromeOptions?.changed?.(holder);
+    }, chromeOptions?.supervisor);
     this.execution = options.execution ?? new ComputerExecutionAuthority();
     this.takeovers = new ComputerTakeoverCoordinator(controller, this.execution, {
       state: (profileId, holder, state) =>
@@ -87,11 +96,53 @@ export class ComputerHostChannel {
     };
   }
   private disconnectProfile(profileId: string): void {
+    const builtin = this.controller.lease
+      .holders()
+      .filter((holder) => holder.profileId === profileId && holder.backend !== "native");
     this.takeovers.cancelThread(profileId);
     this.controller.disconnect(profileId);
     this.grants.disconnect(profileId);
     this.execution.disconnect(profileId);
-    this.chrome.releaseProfile(profileId);
+    // Main stops the profile's registered children and keeps Chrome until they exit.
+    this.chrome.releaseProfile(profileId, "unresponsive");
+    this.quarantineBuiltin(profileId, builtin);
+  }
+  /** A disconnected Sky client may still act: keep its foreground lease until it exits. */
+  private quarantineBuiltin(profileId: string, holders: ReadonlyArray<ComputerLeaseHolder>): void {
+    const supervisor = this.chromeOptions?.supervisor;
+    if (
+      !holders.length ||
+      !supervisor?.alive(
+        (registration) =>
+          registration.profileId === profileId && registration.integration === "codex-computer",
+      )
+    )
+      return;
+    const kept: ComputerLeaseHolder[] = [];
+    for (const holder of holders) {
+      try {
+        kept.push(this.controller.lease.acquire(holder));
+      } catch {
+        // Another holder already owns the machine; nothing to quarantine.
+      }
+    }
+    if (kept.length) this.builtinQuarantine.set(profileId, kept);
+  }
+  /** Main observed a registered integration process exit. */
+  processExited(registration: ChromeProcessRegistration): void {
+    this.chrome.processExited();
+    const supervisor = this.chromeOptions?.supervisor;
+    const quarantined = this.builtinQuarantine.get(registration.profileId);
+    if (
+      quarantined &&
+      !supervisor?.alive(
+        (entry) =>
+          entry.profileId === registration.profileId && entry.integration === "codex-computer",
+      )
+    ) {
+      this.builtinQuarantine.delete(registration.profileId);
+      for (const holder of quarantined) this.controller.lease.release(holder);
+    }
   }
   register(profileId: string, incarnation: string, child: ChildProcess): void {
     // Replacing an incarnation also revokes the old process's device authority.
@@ -144,7 +195,8 @@ export class ComputerHostChannel {
           });
         this.send(profileId, { type: "status", status: this.statusFor(backend) });
         this.sendLeases(profileId);
-        if (this.chrome.current()) this.sendChromeLease(profileId, this.chrome.current());
+        if (this.chrome.current() || this.chrome.recoveryRequired())
+          this.sendChromeLease(profileId, this.chrome.current());
         return;
       }
       const fail = (requestId: string, error: unknown) =>
@@ -296,7 +348,32 @@ export class ComputerHostChannel {
             const status = this.status();
             if (!status.available)
               throw new ComputerControlError({ _tag: "Unavailable", reason: status.reason });
+            // ⌃⌘Esc stopped this generation; nothing in it may act until the user resumes.
+            if (
+              this.chromeOptions?.supervisor?.invalidated(
+                profileId,
+                message.holder.threadId,
+                message.holder.sessionGeneration,
+              )
+            )
+              throw new ComputerControlError({ _tag: "Interrupted", cause: "kill-switch" });
             // Released native holders may still be executing; Chrome waits for their drain.
+            if (this.controller.nativeWorkConflicts("chrome"))
+              throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
+            this.chrome.acquire(message.holder, this.controller.lease.chromeConflict(profileId));
+            this.send(profileId, { type: "response", requestId: message.requestId, result: true });
+          } catch (error) {
+            fail(message.requestId, error);
+          }
+          break;
+        case "chromeRestoreAcquire":
+          if (message.holder.profileId !== profileId) {
+            child.disconnect();
+            return;
+          }
+          try {
+            // Restoring setup files launches nothing, so it needs no certified record or
+            // helper; it still excludes Chrome sessions, native work and recovery.
             if (this.controller.nativeWorkConflicts("chrome"))
               throw new ComputerControlError({ _tag: "Busy", holder: "same-profile" });
             this.chrome.acquire(message.holder, this.controller.lease.chromeConflict(profileId));
@@ -309,6 +386,92 @@ export class ComputerHostChannel {
           if (message.holder.profileId === profileId) this.chrome.release(message.holder);
           this.send(profileId, { type: "response", requestId: message.requestId, result: true });
           break;
+        case "chromeProcessRegister": {
+          const registration = message.registration;
+          if (
+            registration.profileId !== profileId ||
+            registration.backendIncarnation !== incarnation
+          ) {
+            child.disconnect();
+            return;
+          }
+          const supervisor = this.chromeOptions?.supervisor;
+          if (!supervisor || child.pid === undefined) {
+            fail(
+              message.requestId,
+              new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" }),
+            );
+            break;
+          }
+          void supervisor.register(registration, child.pid).then(
+            () =>
+              this.send(profileId, {
+                type: "response",
+                requestId: message.requestId,
+                result: true,
+              }),
+            (error: unknown) =>
+              fail(
+                message.requestId,
+                new ComputerControlError({
+                  _tag: "Execution",
+                  message: error instanceof Error ? error.message : "Registration failed.",
+                }),
+              ),
+          );
+          break;
+        }
+        case "chromeProcessExited":
+          this.chromeOptions?.supervisor?.reportedExit(message.launchToken);
+          break;
+        case "builtinLeaseAcquire":
+        case "builtinLeaseValidate":
+        case "builtinLeaseRelease": {
+          if (
+            message.holder.profileId !== profileId ||
+            message.holder.backend === "native" ||
+            message.holder.scope.kind !== "foreground"
+          ) {
+            child.disconnect();
+            return;
+          }
+          try {
+            if (message.type === "builtinLeaseRelease") {
+              this.controller.lease.release(message.holder);
+              this.send(profileId, {
+                type: "response",
+                requestId: message.requestId,
+                result: true,
+              });
+              break;
+            }
+            if (message.type === "builtinLeaseValidate") {
+              if (
+                !this.controller.lease
+                  .holders()
+                  .some((entry) => sameComputerHolder(entry, message.holder))
+              )
+                throw new ComputerControlError({ _tag: "Interrupted", cause: "turn-ended" });
+              this.send(profileId, {
+                type: "response",
+                requestId: message.requestId,
+                result: true,
+              });
+              break;
+            }
+            // Sky stays closed until its spike passes and `codex-computer` is certified.
+            if (!this.chromeOptions?.builtinCertified?.())
+              throw new ComputerControlError({ _tag: "Unavailable", reason: "not-certified" });
+            this.chrome.assertNativeAvailable(profileId);
+            if (this.controller.nativeWorkConflicts(message.holder.scope))
+              throw new ComputerControlError({ _tag: "TargetBlocked", kind: "foreground-busy" });
+            const result = this.controller.lease.acquire(message.holder);
+            this.send(profileId, { type: "response", requestId: message.requestId, result });
+          } catch (error) {
+            fail(message.requestId, error);
+          }
+          break;
+        }
         case "chromeLeaseValidate":
           if (message.holder.profileId !== profileId) {
             child.disconnect();
@@ -400,7 +563,13 @@ export class ComputerHostChannel {
       type: "chromeLeaseChanged",
       holder: holder?.profileId === profileId ? holder : null,
       otherProfile: holder !== null && holder.profileId !== profileId,
+      ...(this.chrome.recoveryRequired() ? { recoveryRequired: true } : {}),
     });
+  }
+  /** Recovery state changed: every backend re-learns Chrome ownership. */
+  publishChrome(): void {
+    for (const profileId of this.backends.keys())
+      this.sendChromeLease(profileId, this.chrome.current());
   }
   pauseChrome(profileId: string, threadId: string, paused: boolean): boolean {
     const holder = this.chrome.current();

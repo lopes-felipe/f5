@@ -1,5 +1,24 @@
 import ts from "typescript";
 
+/**
+ * Claude in Chrome records that no longer describe the pinned SDK. A record must be
+ * regenerated (and re-certified) or marked withdrawn whenever the pin moves; withdrawn
+ * records stay so restore can still find their historical rules.
+ */
+export function staleClaudeChromeRecords(
+  records: ReadonlyArray<{
+    readonly id: string;
+    readonly versions: Readonly<Record<string, string>>;
+    /** The CHANGELOG note explaining the withdrawal. */
+    readonly withdrawn?: string;
+  }>,
+  pinnedSdkVersion: string,
+): string[] {
+  return records
+    .filter((record) => !record.withdrawn && record.versions.sdkVersion !== pinnedSdkVersion)
+    .map((record) => record.id);
+}
+
 function literalValues(type: ts.Type): string[] {
   if (type.isUnion()) return type.types.flatMap(literalValues);
   return type.isStringLiteral() ? [type.value] : [];

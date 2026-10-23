@@ -5,10 +5,12 @@ import { Effect } from "effect";
 import { DISABLED_AGENT_BROWSER_POLICY } from "./browserAccess.ts";
 import { makePreviewAutomationBroker, PreviewAutomationBroker } from "./PreviewAutomationBroker.ts";
 import { makePreviewMcpHttpServer } from "./PreviewMcpHttpServer.ts";
+import type { IntegrationProxySession } from "./IntegrationProxyCatalog.ts";
 
 interface McpHttpResult {
   readonly status: number;
   readonly body: unknown;
+  readonly sessionId: string | null;
 }
 
 function postMcpHttp(
@@ -16,10 +18,12 @@ function postMcpHttp(
   token: string | null,
   body: unknown,
   method = "POST",
+  extraHeaders: Record<string, string> = {},
 ): Effect.Effect<McpHttpResult, never, never> {
   return Effect.promise(async () => {
     const headers: Record<string, string> = {
       "content-type": "application/json",
+      ...extraHeaders,
     };
     if (token !== null) {
       headers.authorization = `Bearer ${token}`;
@@ -36,6 +40,7 @@ function postMcpHttp(
     return {
       status: response.status,
       body: text.length > 0 ? JSON.parse(text) : null,
+      sessionId: response.headers.get("mcp-session-id"),
     };
   });
 }
@@ -381,6 +386,107 @@ it.effect("keeps evaluated values object-shaped and forwards snapshot saving", (
         artifactId: "saved-image",
       });
       assert.equal(response.result.content.length, 2);
+    }),
+  ),
+);
+
+it.effect("routes the integration catalog to its proxy session and revokes it on dispose", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const calls: unknown[] = [];
+      const cancelled: string[] = [];
+      let disposed = 0;
+      const proxy = {
+        listTools: async () => [{ name: "js", inputSchema: { type: "object" } }],
+        callTool: async (name: string, args: unknown, callId: string) => {
+          calls.push([name, args, callId]);
+          return { content: [{ type: "text" as const, text: "ok" }] };
+        },
+        cancelCall: (callId: string) => cancelled.push(callId),
+        dispose: async () => {
+          disposed += 1;
+        },
+      } as unknown as IntegrationProxySession;
+      const session = server.createSessionConfig({
+        threadId: ThreadId.makeUnsafe("thread-integration"),
+        catalog: "integration",
+        serverName: "node_repl",
+        integration: proxy,
+      });
+      assert.equal(session.serverName, "node_repl");
+      const token = Object.values(session.env)[0]!;
+      const url = server.getUrl("integration");
+      // Another catalog's endpoint never accepts this credential.
+      assert.equal((yield* postMcpHttp(server.getUrl("preview"), token, {})).status, 401);
+      const list = (yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/list",
+      })) as {
+        result: { tools: Array<{ name: string }> };
+      };
+      assert.deepEqual(
+        list.result.tools.map((tool) => tool.name),
+        ["js"],
+      );
+      yield* postMcp(url, token, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "js", arguments: { code: "1" } },
+      });
+      assert.equal(calls.length, 1);
+      const [name, args, callId] = calls[0] as [string, unknown, string];
+      assert.deepEqual([name, args], ["js", { code: "1" }]);
+      assert.match(callId, /:2$/);
+      // A client cancellation reaches the call it names, under the same connection key.
+      yield* postMcpHttp(url, token, {
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId: 2, reason: "user" },
+      });
+      assert.deepEqual(cancelled, [callId]);
+      // Each connection has its own id space: after a reconnect, a late cancel from the
+      // old connection never names the new connection's call with the same id.
+      const first = yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 1, method: "initialize" });
+      const second = yield* postMcpHttp(url, token, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+      });
+      assert.ok(first.sessionId && second.sessionId && first.sessionId !== second.sessionId);
+      yield* postMcpHttp(
+        url,
+        token,
+        {
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/call",
+          params: { name: "js", arguments: { code: "2" } },
+        },
+        "POST",
+        { "mcp-session-id": second.sessionId! },
+      );
+      yield* postMcpHttp(
+        url,
+        token,
+        { jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7 } },
+        "POST",
+        { "mcp-session-id": first.sessionId! },
+      );
+      const liveCallId = (calls[1] as [string, unknown, string])[2];
+      assert.equal(liveCallId, `${second.sessionId}:7`);
+      assert.deepEqual(cancelled, [callId, `${first.sessionId}:7`]);
+      session.dispose();
+      assert.equal(disposed, 1);
+      assert.equal(
+        (yield* postMcpHttp(url, token, { jsonrpc: "2.0", id: 3, method: "tools/list" })).status,
+        401,
+      );
     }),
   ),
 );

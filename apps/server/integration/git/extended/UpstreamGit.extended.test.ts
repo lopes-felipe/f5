@@ -66,6 +66,23 @@ const runExit = <A, E>(
     }).pipe(Effect.provide(layer)),
   );
 
+describe("deleteBranch", () => {
+  it("deletes a branch only at the expected tip", async () => {
+    const cwd = repo();
+    write(cwd, "a.txt", "a\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "base");
+    const head = git(cwd, "rev-parse", "HEAD");
+    git(cwd, "branch", "f5/upstream-ledger-old", head);
+    await runExit((upstream) =>
+      upstream.deleteBranch(cwd, "f5/upstream-ledger-old", "0".repeat(39) + "1"),
+    );
+    expect(git(cwd, "rev-parse", "refs/heads/f5/upstream-ledger-old")).toBe(head);
+    await runWith((upstream) => upstream.deleteBranch(cwd, "f5/upstream-ledger-old", head));
+    expect(git(cwd, "branch", "--list", "f5/upstream-ledger-old")).toBe("");
+  });
+});
+
 describe("commitFilesToBranch", () => {
   it("leaves the working tree, index, and HEAD untouched", async () => {
     const cwd = repo();

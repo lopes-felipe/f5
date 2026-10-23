@@ -1,4 +1,5 @@
 import type { ComputerAutomationBackendStatus, ComputerBackgroundStatus } from "@t3tools/contracts";
+import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { release } from "node:os";
 
 /** Only signed, installed certification runs may open these gates. */
@@ -20,10 +21,18 @@ export function computerBackgroundGate(
     return { available: false, reason: "preview-off" };
   return { available: true };
 }
-export const CHROME_CONTROL_CERTIFIED = {
-  claude: { darwin: false, win32: false },
-  codex: { darwin: false, win32: false },
-} as const;
+/** Provider-native Chrome control reads the shared certification records, like the server. */
+export function chromeControlCertified(
+  provider: "claude" | "codex",
+  platform: string = process.platform,
+  arch: string = process.arch,
+): boolean {
+  return isIntegrationCertified(
+    provider === "claude" ? "claude-chrome" : "codex-chrome",
+    platform,
+    arch,
+  );
+}
 export function computerCertificationStatus(
   platform: string,
   packaged: boolean,

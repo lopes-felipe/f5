@@ -5,8 +5,10 @@ import {
   CLAUDE_SDK_BASELINE_VERSION,
   CLAUDE_SDK_MESSAGE_DISPOSITIONS,
 } from "@t3tools/shared/claudeSdkManifest";
+import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import {
   deprecatedClaudeSdkReferences,
+  staleClaudeChromeRecords,
   extractClaudeSdkMessageSurface,
   handledClaudeMessageCases,
   unclassifiedClaudeMessages,
@@ -59,11 +61,20 @@ for (const reference of deprecated)
 for (const key of unclassified) console.error(`Unclassified message: ${key}`);
 for (const key of absent) console.error(`Manifest message absent from pinned SDK: ${key}`);
 for (const key of uncovered) console.error(`Missing explicit adapter case: ${key}`);
+const staleChromeRecords = staleClaudeChromeRecords(
+  PROVIDER_INTEGRATION_RECORDS["claude-chrome"],
+  sdkPackage.version,
+);
+for (const id of staleChromeRecords)
+  console.error(
+    `Claude in Chrome record ${id} does not match the pinned SDK: run generate-claude-chrome-descriptor.ts or mark it withdrawn`,
+  );
 if (
   sdkPackage.version !== CLAUDE_SDK_BASELINE_VERSION ||
   unclassified.length ||
   absent.length ||
-  uncovered.length
+  uncovered.length ||
+  staleChromeRecords.length
 )
   process.exitCode = 1;
 else console.log("All SDK messages classified and adapter cases covered.");

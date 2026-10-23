@@ -51,15 +51,53 @@ On macOS 14 or later, the agent can also see and control apps you approve:
 Any input from you pauses the agent. Press **⌃⌘Esc** to stop it. While paused, the agent can't
 take screenshots or inspect apps either.
 
+## Your own Chrome (macOS)
+
+Agents can also use the Chrome you already run, with your tabs and sign-ins, through each
+provider's own browser extension. Each option shows per agent whether it's ready and, if not, why.
+They become available on this Mac once F5 has certified the installed version. Until then the
+toggles stay off and say what is missing.
+
+**Claude in Chrome**
+
+1. Install the Claude in Chrome extension and sign in to Claude with a claude.ai account. API-key
+   sign-in isn't supported.
+2. In **Settings → Browser & Computer**, turn on **Claude in Chrome**.
+3. Start a new Claude session and approve the browser setup when F5 asks. Open Chrome before asking
+   Claude to use it.
+
+Claude Code creates its browser connection in seven browser folders (Chrome, Brave, Arc, Edge,
+Chromium, Vivaldi and Opera). **Settings → Browser & Computer** lists each setup and can restore the
+earlier files, even after F5 restarts. Running `claude --chrome` in a terminal takes the connection
+back; reconnect in F5 afterwards. In Full access, Claude skips the extension's per-site permission
+prompts. Claude in Chrome works only in profiles that use your real home folder; isolated F5
+profiles keep their own and show it as unavailable.
+
+**Codex Chrome**
+
+1. Install the ChatGPT app and set up its Chrome extension under **Settings → Computer use** in
+   ChatGPT. If F5 says the helper is out of date, open the ChatGPT app once.
+2. Give the Codex agent its own home folder (not `~/.codex`) and run the thread in **Full access**.
+   Codex's browser runtime runs code F5 can't show you in an approval.
+3. In **Settings → Browser & Computer**, turn on **Codex Chrome control**, then start a new session and allow
+   Chrome for that session when asked.
+
+F5 checks every browser action itself, holds the browser only while an action runs, and never
+changes ChatGPT's files or registrations. Pausing or **⌃⌘Esc** stops the running action.
+
+Codex's own Computer Use (the ChatGPT app's) isn't available yet. Codex uses F5's computer control
+instead.
+
 ## Good to know
 
 > [!WARNING]
-> Computer use is an uncertified, opt-in preview. Windows, the providers' own built-in computer
-> control and the Chrome integrations are not available.
+> Computer use is an uncertified, opt-in preview. Windows and Claude's own built-in computer
+> control are not available.
 
 - Turning off **Agent browser access** stops automation on the next tool call, even for agents
   already running.
-- A checked-in `f5.json` can never turn on external sites, Claude in Chrome or computer use.
+- A checked-in `f5.json` can never turn on external sites, Claude in Chrome, Codex Chrome or
+  computer use.
 - After you restart F5, app approvals have to be granted again.
 - **Screenshot password masking** defaults to **Fast — best effort**. It searches browser
   accessibility for password fields and masks those it finds. Password fields Chrome omits from

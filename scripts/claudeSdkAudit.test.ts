@@ -3,8 +3,10 @@ import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { CLAUDE_SDK_MESSAGE_DISPOSITIONS } from "@t3tools/shared/claudeSdkManifest";
+import { PROVIDER_INTEGRATION_RECORDS } from "@t3tools/shared/providerIntegrationCertification";
 import {
   deprecatedClaudeSdkReferences,
+  staleClaudeChromeRecords,
   extractClaudeSdkMessageSurface,
   handledClaudeMessageCases,
   unclassifiedClaudeMessages,
@@ -60,5 +62,29 @@ describe("Claude SDK drift guardrail", () => {
         : ts.createSourceFile(file, files[file]!, languageVersion, true);
     const program = ts.createProgram([client, declarations], { noLib: true }, host);
     expect(deprecatedClaudeSdkReferences(program)).toEqual([`${client}:1 setMaxThinkingTokens`]);
+  });
+
+  it("requires Claude in Chrome records to follow the SDK pin unless withdrawn", () => {
+    const record = (id: string, sdkVersion: string, withdrawn?: string) => ({
+      id,
+      versions: { sdkVersion },
+      ...(withdrawn ? { withdrawn } : {}),
+    });
+    expect(
+      staleClaudeChromeRecords(
+        [
+          record("current", "0.3.295"),
+          record("old", "0.3.200"),
+          record("retired", "0.3.100", "Withdrawn with SDK 0.3.200"),
+        ],
+        "0.3.295",
+      ),
+    ).toEqual(["old"]);
+    const pin = JSON.parse(
+      readFileSync(path.join(import.meta.dirname, "../apps/server/package.json"), "utf8"),
+    ).dependencies["@anthropic-ai/claude-agent-sdk"];
+    expect(staleClaudeChromeRecords(PROVIDER_INTEGRATION_RECORDS["claude-chrome"], pin)).toEqual(
+      [],
+    );
   });
 });

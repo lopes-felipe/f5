@@ -389,18 +389,18 @@ export function ComputerSettings() {
                 description={[
                   entry.preview.reason,
                   entry.computer.reason,
-                  entry.builtin ? `Built-in awaiting certification: ${entry.builtin}` : undefined,
+                  entry.builtin ? `Built-in: ${entry.builtin}` : undefined,
                 ]
                   .filter(Boolean)
                   .join(" · ")}
               />
-              {kind === "claudeAgent" ? (
+              {kind === "claudeAgent" && readiness.claudeAgent?.chrome ? (
                 <SettingsRow
                   control={null}
-                  title="Claude in Chrome: awaiting certification"
+                  title={`Claude in Chrome: ${readiness.claudeAgent.chrome.state}`}
                   description={
-                    readiness.claudeAgent?.chrome?.detail ??
-                    "Off by default. Chrome native-messaging setup is awaiting certification for this build and architecture."
+                    readiness.claudeAgent.chrome.detail ??
+                    "Per-agent readiness is shown under Browser › Agent access."
                   }
                 />
               ) : null}

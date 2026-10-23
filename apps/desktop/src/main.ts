@@ -48,7 +48,7 @@ import { installDesktopAttention } from "./desktopAttention";
 import {
   computerBackgroundGate,
   computerCertificationStatus,
-  CHROME_CONTROL_CERTIFIED,
+  chromeControlCertified,
 } from "./computer/certification";
 import { COMPUTER_BACKGROUND_CAPABILITY, type ComputerBackgroundStatus } from "@t3tools/contracts";
 import { ComputerHelperClient } from "./computer/ComputerHelperClient";
@@ -57,6 +57,8 @@ import { ComputerController } from "./computer/ComputerController";
 import { ComputerOverlay } from "./computer/ComputerOverlay";
 import { ComputerConsentAuthority } from "./computer/ComputerConsentAuthority";
 import { ComputerHostChannel } from "./computer/ComputerHostChannel";
+import { ChromeProcessSupervisor } from "./computer/ChromeProcessSupervisor";
+import { isIntegrationCertified } from "@t3tools/shared/providerIntegrationCertification";
 import { registerComputerIpc } from "./computer/registerComputerIpc";
 import { capturePermissions, openComputerPermissionSettings } from "./computer/permissions";
 import type { ProfileRecord } from "@t3tools/contracts";
@@ -300,6 +302,7 @@ let computerSystem:
       controller: ComputerController;
       channel: ComputerHostChannel;
       overlay: ComputerOverlay;
+      supervisor: ChromeProcessSupervisor;
     }
   | undefined;
 function initializeComputerSystem(): void {
@@ -414,10 +417,27 @@ function initializeComputerSystem(): void {
   // One owner-aware registration covers native holders, the Chrome lease and a pending
   // takeover. Returns false when the chord could not be registered.
   let killChordRegistered = false;
+  // Provider-integration children are registered here so main can stop them and observe
+  // their exit without the (possibly frozen) profile server.
+  const supervisor = new ChromeProcessSupervisor({
+    statePath: Path.join(app.getPath("userData"), "computer", "chrome-recovery.json"),
+    registered: () => {
+      // The emergency shortcut must cover every live integration process.
+      if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
+    },
+    exited: (registration) => {
+      computerSystem?.channel.processExited(registration);
+      syncKillChord();
+    },
+    recoveryChanged: () => computerSystem?.channel.publishChrome(),
+  });
   const syncKillChord = (): boolean => {
     const chromeHolder = computerSystem?.channel.chrome.current() ?? null;
     const needed =
-      lease.holders().length > 0 || lease.pendingTakeover() !== null || chromeHolder !== null;
+      lease.holders().length > 0 ||
+      lease.pendingTakeover() !== null ||
+      chromeHolder !== null ||
+      supervisor.registrations().length > 0;
     if (!needed) {
       if (killChordRegistered) globalShortcut.unregister(killChord);
       killChordRegistered = false;
@@ -427,13 +447,39 @@ function initializeComputerSystem(): void {
     try {
       killChordRegistered = globalShortcut.register(killChord, () => {
         controller.stop("kill-switch");
-        const chrome = computerSystem?.channel.chrome.current();
-        if (chrome) {
-          computerSystem?.channel.pauseChrome(chrome.profileId, chrome.threadId, true);
-          computerSystem?.channel.send(chrome.profileId, {
+        // Invalidate synchronously and stop every registered integration group here;
+        // the server is told afterwards, but nothing depends on it answering.
+        const chrome = computerSystem?.channel.chrome.interrupt("emergency") ?? null;
+        // Idle integrations (Codex holds the lease only per call) are stopped too; their
+        // generations stay invalidated in main until the user resumes the thread.
+        const stopped = supervisor.stop(() => true, "emergency");
+        const threads = new Map<
+          string,
+          { profileId: string; threadId: string; generation: string }
+        >();
+        for (const entry of [
+          ...(chrome
+            ? [
+                {
+                  profileId: chrome.profileId,
+                  threadId: chrome.threadId,
+                  generation: chrome.sessionGeneration,
+                },
+              ]
+            : []),
+          ...stopped.map((registration) => ({
+            profileId: registration.profileId,
+            threadId: registration.threadId,
+            generation: registration.sessionGeneration,
+          })),
+        ])
+          threads.set(`${entry.profileId}\0${entry.threadId}\0${entry.generation}`, entry);
+        for (const { profileId, threadId, generation } of threads.values()) {
+          computerSystem?.channel.send(profileId, { type: "pauseChanged", threadId, paused: true });
+          computerSystem?.channel.send(profileId, {
             type: "chromeInterrupted",
-            threadId: chrome.threadId,
-            sessionGeneration: chrome.sessionGeneration,
+            threadId,
+            sessionGeneration: generation,
           });
         }
       });
@@ -452,11 +498,13 @@ function initializeComputerSystem(): void {
         body:
           request.kind === "chrome-setup"
             ? "An agent wants to change a browser's native messaging setup."
-            : request.kind === "session-actions"
-              ? "An agent wants permission to control approved apps."
-              : request.kind === "foreground-takeover"
-                ? `An agent wants the foreground in ${request.takeover?.appName ?? "an app"}.`
-                : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
+            : request.kind === "chrome-session"
+              ? "An agent wants to use a provider browser or computer integration."
+              : request.kind === "session-actions"
+                ? "An agent wants permission to control approved apps."
+                : request.kind === "foreground-takeover"
+                  ? `An agent wants the foreground in ${request.takeover?.appName ?? "an app"}.`
+                  : `An agent wants to use ${request.apps.map((app) => app.name).join(", ")}.`,
       });
       notice.on("click", () => {
         void openProfile(profileId);
@@ -464,8 +512,10 @@ function initializeComputerSystem(): void {
       notice.show();
     },
     {
-      certified: (provider) =>
-        CHROME_CONTROL_CERTIFIED[provider][process.platform === "win32" ? "win32" : "darwin"],
+      certified: (provider) => chromeControlCertified(provider),
+      builtinCertified: () =>
+        isIntegrationCertified("codex-computer", process.platform, process.arch),
+      supervisor,
       changed: () => {
         if (!syncKillChord()) throw new Error("The computer-control kill shortcut is unavailable.");
       },
@@ -480,7 +530,7 @@ function initializeComputerSystem(): void {
       ).available,
     },
   );
-  computerSystem = { helper, controller, channel, overlay };
+  computerSystem = { helper, controller, channel, overlay, supervisor };
   lease.subscribe(() => {
     channel.publishLeases();
     if (syncKillChord()) return;
@@ -562,6 +612,7 @@ function initializeComputerSystem(): void {
       }
       if (!channel.pauseChrome(profileId, threadId, paused))
         controller.setPaused(profileId, threadId, paused);
+      if (!paused) supervisor.resumed(profileId, threadId);
       channel.send(profileId, { type: "pauseChanged", threadId, paused });
     },
   });
@@ -4105,6 +4156,10 @@ function cancelQuit(): void {
 
 async function cleanupBeforeExit(): Promise<void> {
   writeDesktopLogHeader("cleanup: closing computer control");
+  // Normal shutdown: 2 s grace, then SIGTERM and SIGKILL for registered integration groups.
+  // Awaited below (exit, or persisted recovery by 5 s) so no group outlives F5 untracked.
+  const integrationsStopped =
+    computerSystem?.supervisor.stopAndWait(() => true, "shutdown") ?? Promise.resolve();
   computerSystem?.channel.close();
   computerSystem?.controller.close();
   computerSystem?.overlay.close();
@@ -4117,6 +4172,7 @@ async function cleanupBeforeExit(): Promise<void> {
       Promise.allSettled([
         ...[...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
         previewRuntime.dispose(),
+        integrationsStopped,
       ]),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, 6000);

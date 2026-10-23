@@ -10,6 +10,7 @@ export function resolveProviderComputerBackendSelection(
   input: {
     enabled: boolean;
     nativeStatus: ComputerAutomationBackendStatus;
+    fullAccess?: boolean;
   },
 ) {
   return provider === "claudeAgent" || provider === "codex"
@@ -20,11 +21,13 @@ export function resolveProviderComputerBackendSelection(
     : Effect.succeed(undefined);
 }
 
-/** Built-in enablement remains unavailable until a supported, certified mechanism is recorded. */
+/** A built-in backend is selected only with a certified record (`codex-computer`). */
 export function resolveComputerBackendSelection(input: {
   provider: "claude" | "codex";
   enabled: boolean;
   nativeStatus: ComputerAutomationBackendStatus;
+  /** Built-ins run unsandboxed, outside F5's approvals: Full access only. */
+  fullAccess?: boolean;
 }) {
   return Effect.gen(function* () {
     const service = yield* Effect.serviceOption(ServerSettingsService);
@@ -43,6 +46,7 @@ export function resolveComputerBackendSelection(input: {
       ...input,
       preference,
       platform: process.platform,
+      arch: process.arch,
       builtin:
         input.enabled && preference === "auto"
           ? yield* Effect.promise(() =>

@@ -280,6 +280,10 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "browser",
     scope: "both",
   },
+  "browser.codex-chrome": {
+    category: "browser",
+    scope: "both",
+  },
   "browser.computer-use": {
     category: "browser",
     scope: "both",

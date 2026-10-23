@@ -160,6 +160,12 @@ export interface UpstreamGit {
     remote: string,
     branch: string,
   ) => Effect.Effect<void, GitCommandError>;
+  /** Deletes a local branch only while it still points at `expectedTip`. */
+  readonly deleteBranch: (
+    cwd: string,
+    branch: string,
+    expectedTip: string,
+  ) => Effect.Effect<void, GitCommandError>;
 }
 
 // ── Streaming parsers (pure; exported for tests) ────────────────────────
@@ -655,6 +661,11 @@ export function makeUpstreamGit(
       timeoutMs: timeouts.network,
     }).pipe(Effect.asVoid);
 
+  const deleteBranch: UpstreamGit["deleteBranch"] = (cwd, branch, expectedTip) =>
+    run("deleteBranch", cwd, ["update-ref", "-d", `refs/heads/${branch}`, expectedTip]).pipe(
+      Effect.asVoid,
+    );
+
   return {
     remoteUrl,
     addRemote,
@@ -674,6 +685,7 @@ export function makeUpstreamGit(
     signingEnabled,
     commitFilesToBranch,
     push,
+    deleteBranch,
   };
 }
 

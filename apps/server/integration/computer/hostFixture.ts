@@ -132,6 +132,7 @@ export async function computerHostFixture(
       policy: {
         computerUse,
         claudeInChrome: false,
+        codexChrome: false,
         previewAutomation: true,
         externalHosts: [],
       },

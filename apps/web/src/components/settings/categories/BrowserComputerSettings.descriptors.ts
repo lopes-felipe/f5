@@ -38,6 +38,13 @@ export const BROWSER_SETTINGS_DESCRIPTORS = [
     targetSelector: '[data-settings-search-target="browser.chrome"]',
   },
   {
+    ...SETTINGS_ITEM_ROUTES["browser.codex-chrome"],
+    label: "Codex Chrome control",
+    description: "Let Codex use Chrome through the ChatGPT app's extension.",
+    keywords: ["chrome", "extension", "codex", "chatgpt"],
+    targetSelector: '[data-settings-search-target="browser.codex-chrome"]',
+  },
+  {
     ...SETTINGS_ITEM_ROUTES["browser.computer-use"],
     label: "Computer use",
     description: "Let agents see and control the desktop apps you approve.",

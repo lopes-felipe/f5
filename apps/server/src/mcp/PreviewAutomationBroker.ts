@@ -251,6 +251,7 @@ const UNRESTRICTED_POLICY: AgentBrowserPolicy = {
   previewAutomation: true,
   externalHosts: [],
   claudeInChrome: false,
+  codexChrome: false,
   computerUse: false,
 };
 

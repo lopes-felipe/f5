@@ -325,7 +325,6 @@ export interface UpstreamStore {
     projectId: string,
   ) => Effect.Effect<PublicationRecord, UpstreamStoreError>;
   readonly savePublication: (record: PublicationRecord) => Effect.Effect<void, UpstreamStoreError>;
-  readonly bumpLinksVersion: (projectId: string) => Effect.Effect<void, UpstreamStoreError>;
 
   readonly insertRun: (run: RunRecord) => Effect.Effect<void, UpstreamStoreError>;
   readonly updateRun: (run: RunRecord) => Effect.Effect<void, UpstreamStoreError>;
@@ -476,13 +475,6 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
         next_attempt_at = excluded.next_attempt_at, attempts = excluded.attempts`.pipe(
       Effect.asVoid,
       Effect.mapError(fail("savePublication")),
-    );
-
-  const bumpLinksVersion: UpstreamStore["bumpLinksVersion"] = (projectId) =>
-    sql`INSERT INTO upstream_ledger_publication (project_id, links_version) VALUES (${projectId}, 1)
-      ON CONFLICT (project_id) DO UPDATE SET links_version = links_version + 1`.pipe(
-      Effect.asVoid,
-      Effect.mapError(fail("bumpLinksVersion")),
     );
 
   const insertRun: UpstreamStore["insertRun"] = (r) =>
@@ -672,7 +664,6 @@ export function makeUpstreamStore(sql: SqlClient.SqlClient): UpstreamStore {
     discardOpenOps,
     getPublication,
     savePublication,
-    bumpLinksVersion,
     insertRun,
     updateRun,
     latestRun,

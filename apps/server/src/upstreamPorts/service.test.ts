@@ -14,11 +14,12 @@ import {
   serializeLedgerFiles,
   type UpstreamLedger,
 } from "@t3tools/shared/upstreamPorts";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { TextGenerationError } from "../git/Errors.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { UpstreamGitHubError } from "./github.ts";
 import { makeUpstreamPortsService, type UpstreamPortsDeps } from "./service.ts";
 import { makeUpstreamStore } from "./store.ts";
 import {
@@ -226,6 +227,39 @@ layer("upstream ports service", (it) => {
     }),
   );
 
+  it.effect("starts one run when two starts race, and the database allows one running row", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      // Hold the first run in triage so it is still active when the second start runs.
+      const gate = yield* Deferred.make<void>();
+      const triage = triageAll(() => ({}));
+      fixture.host.triage = (prompt) => Deferred.await(gate).pipe(Effect.andThen(triage(prompt)));
+      const service = yield* fixture.make();
+      const start = service
+        .run({ projectId: PROJECT_ID, kind: "upstream", triage: "llm" })
+        .pipe(Effect.result);
+      const results = yield* Effect.all([start, start], { concurrency: "unbounded" });
+      yield* Deferred.succeed(gate, undefined);
+      yield* service.testing.awaitIdle;
+      // Either start may win; exactly one must, and the other is busy.
+      assert.deepStrictEqual(results.map((result) => result._tag).toSorted(), [
+        "Failure",
+        "Success",
+      ]);
+      const failure = results.find((result) => result._tag === "Failure")!;
+      assert.strictEqual(failure._tag === "Failure" ? failure.failure.code : null, "busy");
+      const sql = yield* SqlClient.SqlClient;
+      const runs = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM upstream_port_runs`;
+      assert.strictEqual(runs[0]!.count, 1);
+
+      const insert = (runId: string) =>
+        sql`INSERT INTO upstream_port_runs (run_id, project_id, kind, trigger, triage, started_at, status)
+          VALUES (${runId}, 'other', 'upstream', 'manual', 'rules-only', '2026-10-22', 'running')`;
+      yield* insert("running-1");
+      assert.strictEqual((yield* insert("running-2").pipe(Effect.result))._tag, "Failure");
+    }),
+  );
+
   it.effect("auto-skips confident LLM skips and keeps the rest in the inbox", () =>
     Effect.gen(function* () {
       const fixture = yield* setup({ count: 3 });
@@ -259,6 +293,18 @@ layer("upstream ports service", (it) => {
       const overview = yield* service.getOverview(PROJECT_ID);
       assert.strictEqual(overview.lastRun?.llmCalls, 1);
       assert.strictEqual(overview.lastRun?.autoDecidedCount, 1);
+
+      // Confirming the automatic skip unchanged attributes it to the user, once.
+      const topic = skipped.topics[0]!.topic;
+      const confirm = service.decide({
+        projectId: PROJECT_ID,
+        topicIds: [topic.id],
+        decision: { kind: "skip", reasonKey: topic.reasonKey!, reason: topic.reason! },
+      });
+      assert.deepStrictEqual((yield* confirm).updated, [topic.id]);
+      const confirmed = yield* service.getTopic({ projectId: PROJECT_ID, topicId: topic.id });
+      assert.strictEqual(confirmed.row.topic.decidedBy, "user");
+      assert.deepStrictEqual((yield* confirm).unchanged, [topic.id]);
     }),
   );
 
@@ -398,6 +444,7 @@ layer("upstream ports service", (it) => {
         assert.strictEqual(fixture.gh.prs[0]!.title, "Track upstream t3code changes (2026-10-22)");
         assert.ok(!fixture.gh.prs[0]!.body.includes("—"));
         const branchTip = fixture.repo.refs.get(`refs/heads/${overview.publication.branch}`)!;
+        const firstBranch = overview.publication.branch!;
 
         // A second decision lands on the same branch and refreshes the PR body.
         yield* service.decide({
@@ -417,17 +464,56 @@ layer("upstream ports service", (it) => {
           subject: "Squash",
           files: firstTree,
         });
-        fixture.repo.refs.set("refs/remotes/origin/main", merged);
+        // The merge is only on the server, and the base fetch is still throttled:
+        // observing the merged PR must refetch before replaying leftovers.
+        fixture.repo.remoteTips.set("origin/main", merged);
         fixture.gh.prs[0]!.state = "merged";
-        fixture.clock.now = new Date(fixture.clock.now.getTime() + 3 * 60_000);
         yield* service.testing.publishNow(PROJECT_ID);
         overview = yield* service.getOverview(PROJECT_ID);
+        assert.strictEqual(fixture.repo.refs.get("refs/remotes/origin/main"), merged);
         assert.strictEqual(overview.publication.unpublishedOps, 1);
         assert.strictEqual(overview.publication.prNumber, 101);
         assert.strictEqual(fixture.gh.prs.length, 2);
+        // Every PR call targets the origin fork, never the upstream remote.
+        assert.ok(fixture.gh.prs.every((pr) => pr.repo === "o/f5"));
+        assert.ok(fixture.gh.calls.every((call) => call === "bodies" || !call.includes("t3code")));
+        assert.ok(fixture.gh.calls.includes(`create o/f5:${overview.publication.branch}`));
+        // The merged PR's local branch is deleted.
+        assert.isFalse(fixture.repo.refs.has(`refs/heads/${firstBranch}`));
+        assert.notStrictEqual(overview.publication.branch, firstBranch);
         const ready = yield* service.listTopics({ projectId: PROJECT_ID, list: "ready" });
         assert.strictEqual(ready.topics[0]!.topic.scope, "API only");
       }),
+  );
+
+  it.effect("refuses to record or publish over a base ledger file it cannot parse", () =>
+    Effect.gen(function* () {
+      const fixture = yield* setup();
+      const service = yield* fixture.make();
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      const base = fixture.repo.refs.get("refs/remotes/origin/main")!;
+      const broken = fixture.repo.commit({
+        parent: base,
+        subject: "Break the ledger",
+        files: new Map([["upstream/topics/2026-10.json", "{not json"]]),
+      });
+      fixture.repo.refs.set("refs/remotes/origin/main", broken);
+      const refused = yield* service
+        .decide({ projectId: PROJECT_ID, topicIds: ["pr-1"], decision: { kind: "watch" } })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.code, "unavailable");
+      assert.include(refused.message, "upstream/topics/2026-10.json");
+      yield* service.testing.publishNow(PROJECT_ID);
+      const publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, "conflict");
+      assert.include(publication.lastError ?? "", "upstream/topics/2026-10.json");
+      assert.isFalse(fixture.repo.calls.some((call) => call.startsWith("push")));
+      assert.deepStrictEqual(fixture.gh.prs, []);
+    }),
   );
 
   it.effect("pauses on a closed PR until republish, and on push failures until retry", () =>
@@ -470,9 +556,49 @@ layer("upstream ports service", (it) => {
       publication = (yield* service.getOverview(PROJECT_ID)).publication;
       assert.strictEqual(publication.pausedReason, null);
       assert.strictEqual(publication.prNumber, 101);
+
+      // Transient push and GitHub failures keep retrying instead of pausing.
+      yield* service.decide({
+        projectId: PROJECT_ID,
+        topicIds: ["pr-1"],
+        decision: { kind: "port" },
+      });
+      fixture.repo.pushFailure = "ssh: connect to host github.com port 22: Operation timed out";
+      for (let attempt = 0; attempt < 5; attempt += 1)
+        yield* service.testing.publishNow(PROJECT_ID);
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.match(publication.lastError ?? "", /timed out/u);
+      fixture.repo.pushFailure = null;
+      fixture.gh.failure = new UpstreamGitHubError({
+        operation: "pull request lookup",
+        detail: "GitHub pull request lookup failed (502).",
+        transient: true,
+      });
+      yield* service.resolvePublication({ projectId: PROJECT_ID, action: "retry" });
+      publication = (yield* service.getOverview(PROJECT_ID)).publication;
+      assert.strictEqual(publication.pausedReason, null);
+      assert.strictEqual(publication.lastError, "GitHub pull request lookup failed (502).");
+
+      // Discard closes the open ledger PR, and refuses while it cannot.
+      fixture.gh.failure = new UpstreamGitHubError({
+        operation: "pull request close",
+        detail: "GitHub pull request close failed (403).",
+        transient: false,
+      });
+      const refused = yield* service
+        .resolvePublication({ projectId: PROJECT_ID, action: "discard" })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused.code, "unavailable");
+      assert.strictEqual(fixture.gh.prs[1]!.state, "open");
+      assert.ok((yield* service.getOverview(PROJECT_ID)).publication.unpublishedOps > 0);
+      fixture.gh.failure = null;
       yield* service.resolvePublication({ projectId: PROJECT_ID, action: "discard" });
+      assert.strictEqual(fixture.gh.prs[1]!.state, "closed");
+      assert.ok(fixture.gh.calls.includes("close 101"));
       const after = yield* service.getOverview(PROJECT_ID);
       assert.strictEqual(after.publication.unpublishedOps, 0);
+      assert.strictEqual(after.publication.prNumber, null);
       assert.strictEqual(after.counts.inbox, 1);
     }),
   );
@@ -565,12 +691,23 @@ layer("upstream ports service", (it) => {
 
         const linked = yield* service.getTopic({ projectId: PROJECT_ID, topicId: ids[0]! });
         assert.strictEqual(linked.row.links.length, 1);
-        yield* service.unlinkPort({
+        const sql = yield* SqlClient.SqlClient;
+        const linksVersion = () =>
+          sql<{
+            version: number;
+          }>`SELECT links_version AS version FROM upstream_ledger_publication WHERE project_id = ${PROJECT_ID}`.pipe(
+            Effect.map((rows) => rows[0]!.version),
+          );
+        const before = yield* linksVersion();
+        const unlink = service.unlinkPort({
           projectId: PROJECT_ID,
           topicId: ids[0]!,
           threadId: first.groups[0]!.threadId,
         });
+        yield* unlink;
+        assert.strictEqual(yield* linksVersion(), before + 1);
         assert.strictEqual((yield* service.getOverview(PROJECT_ID)).counts["in-progress"], 0);
+        assert.strictEqual((yield* Effect.flip(unlink)).code, "not-found");
       }),
   );
 

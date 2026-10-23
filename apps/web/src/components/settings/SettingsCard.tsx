@@ -47,7 +47,8 @@ export function SettingsCard({
 /**
  * Standard settings row: a title, optional description and a right-aligned
  * control (switch, select, button), separated from the next row by a hairline
- * divider rather than its own box.
+ * divider rather than its own box. Wide editors (textareas, lists) go in
+ * `children`, which renders full width below the title.
  */
 export function SettingsRow({
   title,
@@ -55,13 +56,32 @@ export function SettingsRow({
   control,
   searchTarget,
   className,
+  children,
 }: {
   readonly title: ReactNode;
   readonly description?: ReactNode;
-  readonly control: ReactNode;
+  readonly control?: ReactNode;
   readonly searchTarget?: string;
   readonly className?: string;
+  readonly children?: ReactNode;
 }) {
+  if (children) {
+    return (
+      <div
+        className={cn("border-b border-border py-2 last:border-b-0", className)}
+        data-settings-search-target={searchTarget}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">{title}</p>
+            {description ? <p className="text-ui text-muted-foreground">{description}</p> : null}
+          </div>
+          {control ? <div className="shrink-0">{control}</div> : null}
+        </div>
+        <div className="mt-2">{children}</div>
+      </div>
+    );
+  }
   return (
     <div
       className={cn(

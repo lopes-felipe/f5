@@ -285,6 +285,15 @@ export interface ProviderAdapterShape<TError> {
    * report the observed result. Servers the provider loads from its own
    * settings or plugins are never removed by omission.
    */
+  /**
+   * Read-only provider-native Chrome preflight for this instance: resolves its
+   * executable and environment without spawning, writing or reading credentials.
+   */
+  readonly getChromeReadiness?: () => Effect.Effect<{
+    readonly eligibility: "ready" | "unavailable" | "recovery-required";
+    readonly reason?: string;
+    readonly recordId?: string;
+  }>;
   readonly getOwnedMcpServerNames?: (
     threadId: ThreadId,
   ) => Effect.Effect<ReadonlyArray<string>, TError>;

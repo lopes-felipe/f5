@@ -85,6 +85,7 @@ async function harness() {
       externalHosts: [],
       computerUse: true,
       claudeInChrome: false,
+      codexChrome: false,
     },
   };
   const broker = new ComputerAutomationBrokerRuntime(host, {
@@ -364,6 +365,7 @@ describe("computer broker safety boundaries", () => {
           externalHosts: [],
           computerUse: false,
           claudeInChrome: true,
+          codexChrome: false,
         },
       });
       const consent = h.broker.requestChromeSetup("t", "s", {
@@ -411,6 +413,7 @@ describe("computer broker safety boundaries", () => {
           externalHosts: [],
           computerUse: false,
           claudeInChrome: false,
+          codexChrome: false,
         },
       });
       await h.broker.refreshPolicies();
@@ -558,6 +561,7 @@ describe("background delivery", () => {
         externalHosts: [],
         computerUse: true,
         claudeInChrome: false,
+        codexChrome: false,
         computerUseExecutionMode: "background",
       },
     });
@@ -602,6 +606,7 @@ describe("background delivery", () => {
           externalHosts: [],
           computerUse: true,
           claudeInChrome: false,
+          codexChrome: false,
           computerUseExecutionMode: "background",
         },
       });
@@ -852,6 +857,7 @@ describe("background delivery", () => {
             externalHosts: [],
             computerUse: true,
             claudeInChrome: false,
+            codexChrome: false,
             computerUseExecutionMode: "foreground",
           },
         });
