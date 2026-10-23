@@ -25,6 +25,7 @@ import { GitCore, type GitCoreShape } from "../Services/GitCore.ts";
 import { GitCommandError } from "../Errors.ts";
 import { type ProcessRunResult, runProcess } from "../../processRunner.ts";
 import { makeLocalPushFriendlyGitServiceLayer } from "../testUtils.ts";
+import { parseWorktreeListPorcelain } from "../worktreeList.ts";
 
 // ── Helpers ──
 
@@ -1031,7 +1032,11 @@ it.layer(TestLayer)("git integration", (it) => {
         const cwd = yield* makeTmpDir();
         const { initialBranch } = yield* initRepoWithCommit(cwd);
         const core = yield* GitCore;
-        const target = path.join(cwd, "linked space \n");
+        // Windows filenames cannot contain newlines or end in a space.
+        const target = path.join(
+          cwd,
+          process.platform === "win32" ? "linked space ü" : "linked space \n",
+        );
         yield* core.createWorktree({
           cwd,
           branch: initialBranch,
@@ -1039,7 +1044,9 @@ it.layer(TestLayer)("git integration", (it) => {
           path: target,
         });
         const entry = (yield* core.listWorktrees(cwd)).find((entry) => entry.branch === "lossless");
-        expect(entry?.path).toBe(yield* (yield* FileSystem.FileSystem).realPath(target));
+        expect(entry && path.normalize(entry.path)).toBe(
+          yield* (yield* FileSystem.FileSystem).realPath(target),
+        );
         expect((yield* core.inspectCheckout(target)).canonicalRoot).toBe(entry?.canonicalPath);
         expect(yield* core.ensureWorktree({ cwd, path: target, branch: "lossless" })).toEqual({
           recreated: false,
@@ -1122,10 +1129,16 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* fs.remove(target, { recursive: true });
         const core = yield* GitCore;
         yield* core.removeWorktree({ cwd, path: path.join(root, "never-registered") });
-        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).toContain(target);
+        const registeredPaths = () =>
+          git(cwd, ["worktree", "list", "--porcelain", "-z"]).pipe(
+            Effect.map((output) =>
+              parseWorktreeListPorcelain(output).map((entry) => path.normalize(entry.path)),
+            ),
+          );
+        expect(yield* registeredPaths()).toContain(target);
         yield* core.removeWorktree({ cwd, path: target });
-        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).toContain(unrelated);
-        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).not.toContain(target);
+        expect(yield* registeredPaths()).toContain(unrelated);
+        expect(yield* registeredPaths()).not.toContain(target);
       }),
     );
   });

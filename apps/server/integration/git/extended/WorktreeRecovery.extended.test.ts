@@ -9,9 +9,14 @@ import { GitCoreTestLive as GitCoreLive } from "../../../src/git/testLayers.ts";
 import { GitServiceLive } from "../../../src/git/Layers/GitService.ts";
 import { GitCore } from "../../../src/git/Services/GitCore.ts";
 import { ServerConfig } from "../../../src/config.ts";
+import { parseWorktreeListPorcelain } from "../../../src/git/worktreeList.ts";
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const worktreePaths = (cwd: string) =>
+  parseWorktreeListPorcelain(git(cwd, "worktree", "list", "--porcelain", "-z")).map((entry) =>
+    path.normalize(entry.path),
+  );
 it.each(["directory", "symlink"])(
   "recreates a missing worktree through a %s root once for concurrent callers without moving its branch",
   async (rootKind) => {
@@ -64,7 +69,7 @@ it.each(["directory", "symlink"])(
           );
         }),
       );
-      expect(git(repo, "worktree", "list", "--porcelain")).toContain(other);
+      expect(worktreePaths(repo)).toContain(other);
       expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
       await expect(
         run(
@@ -99,7 +104,7 @@ it.each(["directory", "symlink"])(
         ),
       ).rejects.toThrow(/checked out at/);
       expect(fs.existsSync(target)).toBe(false);
-      expect(git(repo, "worktree", "list", "--porcelain")).toContain(registeredTarget);
+      expect(worktreePaths(repo)).toContain(registeredTarget);
       expect(fs.readFileSync(path.join(otherAdmin, "index"))).toEqual(otherIndex);
       expect(git(elsewhere, "rev-parse", "HEAD")).toBe(before);
     } finally {

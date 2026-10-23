@@ -137,7 +137,7 @@ describe("effective workspace claims and removal gate", () => {
                 Effect.andThen(gitService.removeWorktree(input)),
               ),
           }),
-          Effect.forkChild,
+          Effect.forkScoped,
         );
         yield* Deferred.await(entered).pipe(Effect.timeout("5 seconds"));
         const restoration = yield* lock
@@ -147,7 +147,7 @@ describe("effective workspace claims and removal gate", () => {
               world.threads = world.threads.map((thread) => ({ ...thread, archivedAt: null }));
             }),
           )
-          .pipe(Effect.forkChild);
+          .pipe(Effect.forkScoped);
         yield* Effect.yieldNow;
         const restoredDuringRemoval = restored;
         yield* Deferred.succeed(release, undefined);
@@ -180,7 +180,8 @@ describe("effective workspace claims and removal gate", () => {
         };
         const refused = yield* removeWorktreeSafely({
           ...input,
-          expectedRootIdentity: { dev: stat.dev, ino: stat.ino + 1 },
+          // NTFS file IDs can exceed Number.MAX_SAFE_INTEGER, where +1 rounds away.
+          expectedRootIdentity: { dev: stat.dev, ino: stat.ino === 0 ? 1 : 0 },
         });
         expect(refused.blockedReasons.join(" ")).toContain("replaced since inspection");
         expect((yield* Effect.promise(() => fs.lstat(target))).isDirectory()).toBe(true);

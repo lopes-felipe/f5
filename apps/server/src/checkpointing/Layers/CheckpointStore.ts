@@ -286,6 +286,10 @@ const makeCheckpointStore = Effect.gen(function* () {
                   ...exclusions,
                 ],
                 env: commitEnv,
+                // Durable object writes on NTFS can exceed the normal command
+                // deadline for large checkpoints. Keep staging bounded without
+                // weakening fsync or changing deadlines for other Git commands.
+                timeoutMs: process.platform === "win32" ? 120_000 : 30_000,
               });
             yield* stageFiles([]).pipe(
               Effect.catch((error) => {
