@@ -60,3 +60,13 @@ export const ApprovalRequestId = makeEntityId("ApprovalRequestId");
 export type ApprovalRequestId = typeof ApprovalRequestId.Type;
 export const CheckpointRef = makeEntityId("CheckpointRef");
 export type CheckpointRef = typeof CheckpointRef.Type;
+
+export const ScheduledTaskId = Schema.String.pipe(Schema.brand("ScheduledTaskId"));
+export type ScheduledTaskId = typeof ScheduledTaskId.Type;
+export const ScheduledTaskRunId = Schema.String.pipe(Schema.brand("ScheduledTaskRunId"));
+export type ScheduledTaskRunId = typeof ScheduledTaskRunId.Type;
+export const ScheduledOrigin = Schema.Struct({
+  taskId: ScheduledTaskId,
+  runId: ScheduledTaskRunId,
+});
+export type ScheduledOrigin = typeof ScheduledOrigin.Type;

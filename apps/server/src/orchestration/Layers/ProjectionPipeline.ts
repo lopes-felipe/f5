@@ -1,3 +1,8 @@
+import { makeScheduledTaskStore } from "../../scheduledTasks/Store.ts";
+import {
+  makeScheduledRunProjector,
+  SCHEDULED_RUN_EVENT_TYPES,
+} from "../../scheduledTasks/projector.ts";
 import { retainNativeTurnRows } from "@t3tools/shared/nativeHistoryReconciliation";
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import { makeStreamingProjectionUpdates } from "../../persistence/streamingProjectionUpdates.ts";
@@ -100,6 +105,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   codeReviewWorkflows: "projection.code-review-workflows",
   investigationWorkflows: "projection.investigation-workflows",
   usageFacts: "projection.usage-facts",
+  scheduledTaskRuns: "scheduledTaskRuns",
 } as const;
 
 type ProjectorName =
@@ -755,6 +761,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             estimatedContextTokens: null,
             modelContextWindowTokens: estimateModelContextWindowTokens(event.payload.model),
             sessionNotes: null,
+            scheduledOrigin: event.payload.scheduledOrigin ?? null,
             threadReferences: event.payload.threadReferences ?? [],
             archivedAt: null,
             pinnedAt: null,
@@ -2561,6 +2568,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   // requests (millions of events on long-lived profiles). Give it `eventTypes`
   // when it only reacts to a few event types, or ship a migration that seeds
   // its `projection_state` row.
+  const projectScheduledRunEvent = makeScheduledRunProjector(yield* makeScheduledTaskStore);
+  const applyScheduledRunProjection = (event: OrchestrationEvent) =>
+    projectScheduledRunEvent(event).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const projectors: ReadonlyArray<ProjectorDefinition> = [
     {
       name: ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -2733,6 +2743,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadPullRequests,
       eventTypes: ["thread.created", "thread.meta-updated"],
       apply: applyThreadPullRequestsProjection,
+    },
+    {
+      name: "scheduledTaskRuns",
+      eventTypes: SCHEDULED_RUN_EVENT_TYPES,
+      apply: applyScheduledRunProjection,
     },
   ];
 

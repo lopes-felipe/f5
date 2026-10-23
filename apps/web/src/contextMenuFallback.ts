@@ -17,6 +17,7 @@ export function showContextMenuFallback<T extends string>(
     menu.className =
       "fixed z-[10000] min-w-[140px] rounded-md border border-border bg-popover py-1 shadow-xl animate-in fade-in zoom-in-95";
 
+    menu.setAttribute("role", "menu");
     const x = position?.x ?? 0;
     const y = position?.y ?? 0;
     menu.style.top = `${y}px`;
@@ -40,13 +41,25 @@ export function showContextMenuFallback<T extends string>(
     document.addEventListener("keydown", onKeyDown);
 
     for (const item of items) {
+      if (item.separatorBefore && menu.childElementCount > 0) {
+        const separator = document.createElement("div");
+        separator.setAttribute("role", "separator");
+        separator.className = "my-1 border-t border-border";
+        menu.appendChild(separator);
+      }
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = item.label;
+      btn.setAttribute("role", "menuitem");
+      btn.disabled = item.disabled === true;
       const isDestructiveAction = item.destructive === true || item.id === "delete";
       btn.className = isDestructiveAction
         ? "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-destructive hover:bg-accent cursor-default"
         : "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-popover-foreground hover:bg-accent cursor-default";
+      if (item.disabled) {
+        btn.className =
+          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-2xs text-muted-foreground cursor-default";
+      }
       btn.addEventListener("click", () => cleanup(item.id));
       menu.appendChild(btn);
     }

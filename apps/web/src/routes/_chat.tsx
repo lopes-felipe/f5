@@ -1,3 +1,5 @@
+import { useScheduledInvalidation } from "../hooks/useScheduledInvalidation";
+import { ScheduledNotificationController } from "../components/scheduled/ScheduledNotificationController";
 import { WorktreeRemovalDialogHost } from "../components/WorktreeRemovalDialogHost";
 import { ComputerAccessInbox } from "../components/ComputerAccessCard";
 import { useServerUpdateOutcome } from "../hooks/useServerUpdateOutcome";
@@ -62,6 +64,7 @@ function WorkflowCreateDialogHost() {
 }
 
 function ChatRouteLayout() {
+  useScheduledInvalidation();
   useDesktopLinkRouting();
   useSnapShotRouting();
   useServerUpdateOutcome();
@@ -142,6 +145,7 @@ function ChatRouteLayout() {
         <ProjectCreateNewController />
         <DesktopPromptLinkController />
         <ModelRecencyController />
+        <ScheduledNotificationController />
         <ThreadStatusNotificationController />
         <QuitHoldOverlay />
         <NextTurnQueueController />

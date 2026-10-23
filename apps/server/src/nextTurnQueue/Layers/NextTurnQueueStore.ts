@@ -1,3 +1,8 @@
+import {
+  linkScheduledContinuation,
+  freezeScheduledContinuationCommand,
+  scheduledContinuationFor,
+} from "../../scheduledTasks/continuations.ts";
 import { requireAttachmentOwner } from "../../attachmentOwnership.ts";
 import { withAttachmentRetentionLease } from "../../storage/attachmentRetention.ts";
 import {
@@ -564,6 +569,22 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             let input = submission;
+            if (input.scheduledSourceTurnId)
+              input = {
+                ...input,
+                scheduledRun: yield* scheduledContinuationFor(
+                  input.command.threadId,
+                  input.scheduledSourceTurnId,
+                  "usage_limit",
+                ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+              };
+            if (input.scheduledRun) {
+              const command = yield* freezeScheduledContinuationCommand(
+                input.scheduledRun,
+                input.command,
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+              input = { ...input, command, requestHash: canonicalRequestHash(command) };
+            }
             const threadId = input.command.threadId;
             if (
               (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
@@ -652,6 +673,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
               });
               if (insertion.kind === "replay") return "already_scheduled" as const;
             }
+            if (input.scheduledRun)
+              yield* linkScheduledContinuation(input.scheduledRun, {
+                submissionId: input.submissionId,
+                messageId: input.command.message.messageId,
+                threadId,
+                notBefore: input.notBefore,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             yield* sql`UPDATE next_turn_queue SET schedule_provider_fingerprint=${input.providerFingerprint ?? null} WHERE item_id=${itemId}`;
             yield* sql`UPDATE next_turn_queue_state SET paused=0,pause_reason_code=NULL,pause_detail=NULL WHERE thread_id=${threadId} AND pause_reason_code='turn_failed'`;
             yield* sql`INSERT INTO usage_limit_resumes(thread_id,limit_key,state,source,auto_eligible_at_failure,item_id,not_before,prev_target,created_at,updated_at) VALUES(${threadId},${input.limitKey},'scheduled',${input.source},1,${itemId},${input.notBefore},${existing?.notBefore ?? null},${at},${at}) ON CONFLICT(thread_id,limit_key) DO UPDATE SET state='scheduled',source=excluded.source,item_id=excluded.item_id,prev_target=usage_limit_resumes.not_before,not_before=excluded.not_before,updated_at=excluded.updated_at`;
@@ -763,10 +791,19 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
     getBySubmissionId: (submissionId) =>
       readSubmission(submissionId).pipe(Effect.mapError(normalizeError)),
 
-    insertSubmission: (input) =>
+    insertSubmission: (submission) =>
       sql
         .withTransaction(
           Effect.gen(function* () {
+            const frozen = submission.scheduledRun
+              ? yield* freezeScheduledContinuationCommand(
+                  submission.scheduledRun,
+                  submission.command,
+                ).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+              : null;
+            const input = frozen
+              ? { ...submission, command: frozen, requestHash: canonicalRequestHash(frozen) }
+              : submission;
             const existing = yield* readSubmission(input.submissionId);
             if (existing) {
               if (existing.requestHash !== input.requestHash) {
@@ -837,6 +874,13 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
                 ${input.itemId}, ${input.command.message.messageId}, 'pending', ${at}
               )
             `;
+            if (input.scheduledRun)
+              yield* linkScheduledContinuation(input.scheduledRun, {
+                submissionId: input.submissionId,
+                messageId: input.command.message.messageId,
+                threadId: input.command.threadId,
+                notBefore: input.notBefore,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             if (input.submissionSource)
               yield* stampSubmissionSource(
                 input.command.commandId,

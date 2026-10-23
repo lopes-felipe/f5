@@ -8,6 +8,8 @@ import Migration0131 from "./Migrations/131_ThreadSettlement.ts";
 import Migration0130 from "./Migrations/130_ThreadPullRequestWatches.ts";
 import Migration0129 from "./Migrations/129_PrHubReviewGuides.ts";
 import Migration0128 from "./Migrations/128_ProviderTurnDeliveryBoundaryIndex.ts";
+import Migration0138 from "./Migrations/138_ScheduledTasks.ts";
+import Migration0139 from "./Migrations/139_ScheduledTaskQuarantine.ts";
 import Migration0127 from "./Migrations/127_ClearPlanningWorkflowLaneBranches.ts";
 import Migration0126 from "./Migrations/126_ProviderTerminalRecoveryIndexes.ts";
 import Migration0124 from "./Migrations/124_ProviderTerminalRetry.ts";
@@ -185,6 +187,8 @@ export const MIGRATIONS = {
   "126_ProviderTerminalRecoveryIndexes": Migration0126,
   "127_ClearPlanningWorkflowLaneBranches": Migration0127,
   "128_ProviderTurnDeliveryBoundaryIndex": Migration0128,
+  "138_ScheduledTasks": Migration0138,
+  "139_ScheduledTaskQuarantine": Migration0139,
   "122_StorageActivity": Migration0122,
   "123_WorkspaceMoveRecoveryIndex": Migration0123,
   "121_AttachmentDeletionGuards": Migration0121,

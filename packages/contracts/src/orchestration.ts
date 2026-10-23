@@ -1,3 +1,4 @@
+import { ScheduledOrigin } from "./baseSchemas";
 import { OrchestrationProposedPlanId, OrchestrationProposedPlan } from "./proposedPlan";
 import { FilesystemPath } from "./baseSchemas";
 import { ThreadSearchInput, ThreadSearchResult } from "./threadSearch";
@@ -958,6 +959,7 @@ export const ThreadSettledBy = Schema.Literals(["user", "auto", "agent"]);
 export type ThreadSettledBy = typeof ThreadSettledBy.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   settledAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -1252,6 +1254,7 @@ export const ThreadPullRequestLink = Schema.Struct({
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 const ThreadCreateCommand = Schema.Struct({
+  scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   sharedFilesystemConfirmed: Schema.optional(Schema.Boolean),
   pullRequest: Schema.optional(ThreadPullRequestLink),
   type: Schema.Literal("thread.create"),
@@ -1401,6 +1404,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 export const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+  scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   sharedFilesystemConfirmed: Schema.optional(Schema.Boolean),
   pullRequest: Schema.optional(ThreadPullRequestLink),
   projectId: ProjectId,
@@ -2153,6 +2157,7 @@ export const ProjectInvestigationWorkflowDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  scheduledOrigin: Schema.optional(Schema.NullOr(ScheduledOrigin)),
   pullRequest: Schema.optional(ThreadPullRequestLink),
   threadId: ThreadId,
   projectId: ProjectId,

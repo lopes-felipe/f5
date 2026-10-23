@@ -109,6 +109,7 @@ export const scheduleUsageLimitResumeFor = (input: {
       : null;
     const config = settings?.providerInstances[limit.providerInstanceId];
     const result = yield* store.scheduleUsageLimitResume({
+      scheduledSourceTurnId: limit.turnId,
       command,
       itemId: id,
       submissionId: id,

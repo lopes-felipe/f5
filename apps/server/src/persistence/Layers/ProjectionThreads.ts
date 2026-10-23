@@ -23,6 +23,9 @@ import {
 
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
+    scheduledOrigin: Schema.optional(
+      Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.scheduledOrigin)),
+    ),
     autoSettleDisabled: Schema.BooleanFromBit,
     tasks: Schema.fromJsonString(ProjectionThread.fields.tasks),
     tasksTracking: Schema.optional(Schema.NullOr(Schema.fromJsonString(ThreadTaskTracking))).pipe(
@@ -43,6 +46,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: (row) =>
       sql`
         INSERT INTO projection_threads (
+          scheduled_origin_json,
           thread_id,
           project_id,
           title,
@@ -81,6 +85,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           deleted_at
         )
         VALUES (
+          ${row.scheduledOrigin == null ? null : JSON.stringify(row.scheduledOrigin)},
           ${row.threadId},
           ${row.projectId},
           ${row.title},
@@ -120,6 +125,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         )
         ON CONFLICT (thread_id)
         DO UPDATE SET
+          scheduled_origin_json = excluded.scheduled_origin_json,
           project_id = excluded.project_id,
           title = excluded.title,
           model = excluded.model,
@@ -186,6 +192,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: ({ threadId }) =>
       sql`
         SELECT
+          scheduled_origin_json AS "scheduledOrigin",
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
@@ -233,6 +240,7 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
     execute: ({ projectId }) =>
       sql`
         SELECT
+          scheduled_origin_json AS "scheduledOrigin",
           thread_id AS "threadId",
           project_id AS "projectId",
           title,

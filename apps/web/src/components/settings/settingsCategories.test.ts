@@ -121,14 +121,16 @@ describe("settings item descriptors", () => {
     expect(getSettingsItemDescriptor("missing.setting")).toBeNull();
   });
 
-  it("keeps Agent Bridge out of search and current or legacy deep links", () => {
-    expect(filterSettingsItems("Agent Bridge")).toEqual([]);
+  it("restores the local Bridge settings and search without restoring the bot board", () => {
+    expect(
+      filterSettingsItems("Agent Bridge").some((item) => item.id === "tools.agent-bridge"),
+    ).toBe(true);
     expect(filterSettingsItems("bots")).toEqual([]);
     for (const item of ["tools.agent-bridge", "integrations.agent-bridge"]) {
-      expect(getSettingsItemDescriptor(item)).toBeNull();
-      expect(resolveSettingsSearch({ category: "tools", item })).toEqual({ category: "tools" });
-      expect(resolveSettingsSearch({ category: "integrations", item })).toEqual({
+      expect(getSettingsItemDescriptor(item)?.id).toBe("tools.agent-bridge");
+      expect(resolveSettingsSearch({ category: "tools", item })).toEqual({
         category: "tools",
+        item: "tools.agent-bridge",
       });
     }
   });

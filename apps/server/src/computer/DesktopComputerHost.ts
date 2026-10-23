@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Schema } from "effect";
 import {
+  SCHEDULED_NOTIFICATIONS_CAPABILITY,
   COMPUTER_BACKGROUND_CAPABILITY,
   COMPUTER_AGENT_IDENTITY_CAPABILITY,
   COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
@@ -49,6 +50,7 @@ export class DesktopComputerHost {
       backendIncarnation,
       protocolVersion: 1,
       capabilities: [
+        SCHEDULED_NOTIFICATIONS_CAPABILITY,
         COMPUTER_BACKGROUND_CAPABILITY,
         COMPUTER_AGENT_IDENTITY_CAPABILITY,
         COMPUTER_ACTIVITY_CORRELATION_CAPABILITY,
@@ -67,6 +69,9 @@ export class DesktopComputerHost {
   }
   supportsActivityCorrelation(): boolean {
     return this.connected && this.hostCapabilities.has(COMPUTER_ACTIVITY_CORRELATION_CAPABILITY);
+  }
+  notificationsCapable(): boolean {
+    return this.connected && this.hostCapabilities.has(SCHEDULED_NOTIFICATIONS_CAPABILITY);
   }
   hasHost(): boolean {
     return this.connected;
@@ -106,6 +111,7 @@ export class DesktopComputerHost {
     this.connected = false;
     this.hostCapabilities = new Set();
     this.state = { available: false, reason: "no-host" };
+    for (const listener of this.listeners) listener({ type: "status", status: this.state });
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(

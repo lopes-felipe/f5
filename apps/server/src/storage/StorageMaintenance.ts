@@ -1,4 +1,4 @@
-import { purgeThreadRows } from "./threadPurgePolicy.ts";
+import { assertScheduledThreadPurgeable, purgeThreadRows } from "./threadPurgePolicy.ts";
 import {
   retainedWorkflowThreadIds as workflowRetention,
   workflowEntries,
@@ -2724,6 +2724,11 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
   const purgeBlockReason = (thread: ThreadRow) =>
     Effect.gen(function* () {
+      const scheduledBlock = yield* assertScheduledThreadPurgeable(sql, thread.threadId).pipe(
+        Effect.as<string | undefined>(undefined),
+        Effect.catchTag("ScheduledThreadPurgeBlocked", (error) => Effect.succeed(error.message)),
+      );
+      if (scheduledBlock) return scheduledBlock;
       if ((yield* retainedWorkflowThreadIds()).has(thread.threadId))
         return "Referenced by a workflow; delete the workflow before permanently purging its threads.";
       const rows = yield* sql<{ reason: string }>`

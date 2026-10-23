@@ -1,4 +1,18 @@
+import { SCHEDULED_TASK_WS_METHODS } from "./scheduledTasks";
 export const WS_METHODS = {
+  scheduledTasksList: SCHEDULED_TASK_WS_METHODS.list,
+  scheduledTasksGet: SCHEDULED_TASK_WS_METHODS.get,
+  scheduledTasksCreate: SCHEDULED_TASK_WS_METHODS.create,
+  scheduledTasksUpdate: SCHEDULED_TASK_WS_METHODS.update,
+  scheduledTasksDelete: SCHEDULED_TASK_WS_METHODS.delete,
+  scheduledTasksSetEnabled: SCHEDULED_TASK_WS_METHODS.setEnabled,
+  scheduledTasksRunNow: SCHEDULED_TASK_WS_METHODS.runNow,
+  scheduledTasksListRuns: SCHEDULED_TASK_WS_METHODS.listRuns,
+  scheduledTasksPreviewSchedule: SCHEDULED_TASK_WS_METHODS.previewSchedule,
+  scheduledTasksResolveRun: SCHEDULED_TASK_WS_METHODS.resolveRun,
+  scheduledTasksClaimNotifications: SCHEDULED_TASK_WS_METHODS.claimNotifications,
+  scheduledTasksAcknowledgeNotifications: SCHEDULED_TASK_WS_METHODS.acknowledgeNotifications,
+
   githubLoginStart: "githubAccount.loginStart",
   githubLoginStatus: "githubAccount.loginStatus",
   githubLoginCancel: "githubAccount.loginCancel",

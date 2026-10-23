@@ -1,3 +1,4 @@
+import { AgentBridgeSettings } from "../AgentBridgeSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { McpServersSettings } from "../McpServersSettings";
 
@@ -8,12 +9,15 @@ export function ToolsSettings() {
   const { hasProjects, settings } = useSettingsRouteContext();
 
   return (
-    <McpServersSettings
-      selectedProject={null}
-      hasProjects={hasProjects}
-      codexBinaryPath={settings.codexBinaryPath}
-      codexHomePath={settings.codexHomePath}
-      claudeBinaryPath={settings.claudeBinaryPath}
-    />
+    <>
+      <AgentBridgeSettings />
+      <McpServersSettings
+        selectedProject={null}
+        hasProjects={hasProjects}
+        codexBinaryPath={settings.codexBinaryPath}
+        codexHomePath={settings.codexHomePath}
+        claudeBinaryPath={settings.claudeBinaryPath}
+      />
+    </>
   );
 }

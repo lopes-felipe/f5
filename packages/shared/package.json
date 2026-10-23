@@ -386,6 +386,14 @@
     },
     "./mcpTools": "./src/mcpTools.ts",
     "./mcpSecrets": "./src/mcpSecrets.ts",
+    "./cronSchedule": {
+      "types": "./src/cronSchedule.ts",
+      "import": "./src/cronSchedule.ts"
+    },
+    "./scheduledTasks": {
+      "types": "./src/scheduledTasks.ts",
+      "import": "./src/scheduledTasks.ts"
+    },
     "./observability": "./src/observability.ts",
     "./htmlRender": {
       "types": "./src/htmlRender.ts",
@@ -438,6 +446,8 @@
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
+    "croner": "10.0.1",
+    "cronstrue": "3.37.0",
     "effect": "catalog:",
     "mdast-util-from-markdown": "2.0.3",
     "mdast-util-gfm": "3.1.0",

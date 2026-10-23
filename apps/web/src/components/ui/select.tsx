@@ -35,6 +35,26 @@ const selectTriggerVariants = cva(
   },
 );
 
+function NativeSelect({ className, ...props }: React.ComponentProps<"select">) {
+  return (
+    <span className="relative flex w-full">
+      <select
+        data-slot="native-select"
+        className={cn(
+          selectTriggerVariants(),
+          "appearance-none pe-9 disabled:pointer-events-none disabled:opacity-64",
+          className,
+        )}
+        {...props}
+      />
+      <ChevronDownIcon
+        aria-hidden="true"
+        className="pointer-events-none absolute end-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+      />
+    </span>
+  );
+}
+
 const selectTriggerIconClassName = "-me-1 size-4.5 opacity-80 sm:size-4";
 
 interface SelectButtonProps extends useRender.ComponentProps<"button"> {
@@ -221,6 +241,7 @@ function SelectGroupLabel(props: SelectPrimitive.GroupLabel.Props) {
 }
 
 export {
+  NativeSelect,
   Select,
   SelectTrigger,
   SelectButton,

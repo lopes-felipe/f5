@@ -1,3 +1,4 @@
+import { buildNewThreadSubmission } from "../turnSubmission.ts";
 import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { isListedModel, pickPreferredModel } from "@t3tools/shared/model";
 /**
@@ -13,7 +14,6 @@ import {
   BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
   CommandId,
   DEFAULT_MODEL_BY_PROVIDER,
-  DEFAULT_NEW_THREAD_TITLE,
   EventId,
   isKnownProviderKind,
   isProviderAvailable,
@@ -33,9 +33,7 @@ import {
   type TurnSubmissionResult,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import {
   Clock,
   Data,
@@ -335,6 +333,59 @@ const writes = {
 
 // ── tools ─────────────────────────────────────────────────────────────
 
+export const resolveBridgeProvider = (
+  providers: ReadonlyArray<ServerProvider>,
+  settings: ServerSettings,
+  requested: { readonly instanceId?: string; readonly model?: string },
+): Effect.Effect<{ provider: ServerProvider; model: string }, AgentBridgeToolError> =>
+  Effect.gen(function* () {
+    const usable = providers.filter(isProviderUsable);
+    const textDefault = settings.textGenerationModelSelection;
+    let provider: ServerProvider | undefined;
+    if (requested.instanceId !== undefined) {
+      const requestedProvider = providers.find(
+        (entry) => entry.enabled && entry.instanceId === requested.instanceId,
+      );
+      if (!requestedProvider) return yield* toolError("Provider not found or not enabled.");
+      if (!isProviderUsable(requestedProvider))
+        return yield* toolError(
+          `${providerLabel(requestedProvider)} is not ready in F5 (not installed, not signed in, or failing its health check).`,
+        );
+      provider = requestedProvider;
+      if (!supportsSupervisedTurns(provider.driver))
+        return yield* toolError(
+          `${providerLabel(provider)} cannot run supervised turns, so the Agent Bridge cannot use it.`,
+        );
+    } else {
+      provider =
+        usable.find(
+          (entry) =>
+            entry.instanceId === textDefault.instanceId && supportsSupervisedTurns(entry.driver),
+        ) ?? usable.find((entry) => supportsSupervisedTurns(entry.driver));
+      if (!provider) return yield* toolError("No ready provider in F5 supports supervised turns.");
+    }
+    if (requested.model !== undefined) {
+      if (
+        provider.models.length > 0 &&
+        !provider.models.some((model) => model.slug === requested.model && isListedModel(model))
+      )
+        return yield* toolError(`Unknown model for ${providerLabel(provider)}.`);
+      return { provider, model: requested.model };
+    }
+    // The text-generation setting picks the provider only: its model is the
+    // small one F5 uses for titles and commit messages, not for coding turns.
+    const driverDefault = isKnownProviderKind(provider.driver)
+      ? DEFAULT_MODEL_BY_PROVIDER[provider.driver as ProviderKind]
+      : undefined;
+    const model =
+      pickPreferredModel(provider.models, driverDefault ? [driverDefault] : [])?.slug ??
+      (provider.models.length === 0 ? driverDefault : undefined);
+    if (!model) return yield* toolError(`${providerLabel(provider)} reports no models.`);
+    return { provider, model };
+  });
+
+export const decodeAgentBridgeArgs = decodeArgs;
+
 export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridgeToolDefinition> {
   const { host, store, limiters } = deps;
   const mintId = deps.mintId ?? (() => crypto.randomUUID());
@@ -598,58 +649,6 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
           ),
         ),
       );
-    });
-
-  const resolveProvider = (
-    providers: ReadonlyArray<ServerProvider>,
-    settings: ServerSettings,
-    requested: { readonly instanceId?: string; readonly model?: string },
-  ): Effect.Effect<{ provider: ServerProvider; model: string }, AgentBridgeToolError> =>
-    Effect.gen(function* () {
-      const usable = providers.filter(isProviderUsable);
-      const textDefault = settings.textGenerationModelSelection;
-      let provider: ServerProvider | undefined;
-      if (requested.instanceId !== undefined) {
-        const requestedProvider = providers.find(
-          (entry) => entry.enabled && entry.instanceId === requested.instanceId,
-        );
-        if (!requestedProvider) return yield* toolError("Provider not found or not enabled.");
-        if (!isProviderUsable(requestedProvider))
-          return yield* toolError(
-            `${providerLabel(requestedProvider)} is not ready in F5 (not installed, not signed in, or failing its health check).`,
-          );
-        provider = requestedProvider;
-        if (!supportsSupervisedTurns(provider.driver))
-          return yield* toolError(
-            `${providerLabel(provider)} cannot run supervised turns, so the Agent Bridge cannot use it.`,
-          );
-      } else {
-        provider =
-          usable.find(
-            (entry) =>
-              entry.instanceId === textDefault.instanceId && supportsSupervisedTurns(entry.driver),
-          ) ?? usable.find((entry) => supportsSupervisedTurns(entry.driver));
-        if (!provider)
-          return yield* toolError("No ready provider in F5 supports supervised turns.");
-      }
-      if (requested.model !== undefined) {
-        if (
-          provider.models.length > 0 &&
-          !provider.models.some((model) => model.slug === requested.model && isListedModel(model))
-        )
-          return yield* toolError(`Unknown model for ${providerLabel(provider)}.`);
-        return { provider, model: requested.model };
-      }
-      // The text-generation setting picks the provider only: its model is the
-      // small one F5 uses for titles and commit messages, not for coding turns.
-      const driverDefault = isKnownProviderKind(provider.driver)
-        ? DEFAULT_MODEL_BY_PROVIDER[provider.driver as ProviderKind]
-        : undefined;
-      const model =
-        pickPreferredModel(provider.models, driverDefault ? [driverDefault] : [])?.slug ??
-        (provider.models.length === 0 ? driverDefault : undefined);
-      if (!model) return yield* toolError(`${providerLabel(provider)} reports no models.`);
-      return { provider, model };
     });
 
   /**
@@ -1110,7 +1109,7 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
               host.listProviderInstances,
               host.getSettings.pipe(hostError),
             ]);
-            const { provider, model: modelSlug } = yield* resolveProvider(
+            const { provider, model: modelSlug } = yield* resolveBridgeProvider(
               projectProviderSnapshots(providers, settings, project.id),
               settings,
               {
@@ -1127,47 +1126,21 @@ export function makeThreadTools(deps: ThreadToolsDeps): ReadonlyArray<AgentBridg
             const submissionId = `${AGENT_BRIDGE_COMMAND_PREFIX}${mintId()}`;
             const modelSelection = createModelSelection(provider.instanceId, modelSlug);
             const interactionMode = input.interactionMode ?? "default";
-            const command: ClientThreadTurnStartCommand = {
-              type: "thread.turn.start",
-              commandId: CommandId.makeUnsafe(submissionId),
+            const command = buildNewThreadSubmission({
+              project,
               threadId: ThreadId.makeUnsafe(threadId),
-              message: {
-                messageId: MessageId.makeUnsafe(mintId()),
-                role: "user",
-                text: input.prompt,
-                attachments: [],
-              },
-              ...(isKnownProviderKind(provider.driver) ? { provider: provider.driver } : {}),
-              model: modelSlug,
+              commandId: CommandId.makeUnsafe(submissionId),
+              messageId: MessageId.makeUnsafe(mintId()),
+              prompt: input.prompt,
               modelSelection,
-              titleSourceText: input.prompt,
               runtimeMode: "approval-required",
               interactionMode,
-              bootstrap: {
-                createThread: {
-                  projectId: ProjectId.makeUnsafe(project.id),
-                  title: input.title ?? DEFAULT_NEW_THREAD_TITLE,
-                  model: modelSlug,
-                  modelSelection,
-                  runtimeMode: "approval-required",
-                  interactionMode,
-                  branch,
-                  worktreePath: null,
-                  createdAt,
-                },
-                ...(useWorktree && branch !== null
-                  ? {
-                      prepareWorktree: {
-                        projectCwd: project.workspaceRoot,
-                        baseBranch: branch,
-                        branch: buildTemporaryWorktreeBranchName(),
-                      },
-                      ...(setupProjectScript(project.scripts) ? { runSetupScript: true } : {}),
-                    }
-                  : {}),
-              },
+              branch,
+              useWorktree,
               createdAt,
-            };
+              ...(input.title ? { title: input.title } : {}),
+              ...(isKnownProviderKind(provider.driver) ? { provider: provider.driver } : {}),
+            });
             return {
               command,
               submissionId,

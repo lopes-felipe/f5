@@ -522,6 +522,32 @@ function initializeComputerSystem(): void {
     },
     undefined,
     {
+      notificationAvailable: () => Notification.isSupported(),
+      notification: (profileId, payload) => {
+        if (!Notification.isSupported()) return false;
+        const notice = new Notification({ title: payload.title, body: payload.body });
+        notice.on("click", () => {
+          void openProfile(profileId)
+            .then(() => {
+              const window = BrowserWindow.getAllWindows().find(
+                (w) => profileByWebContentsId.get(w.webContents.id) === profileId,
+              );
+              if (!window || window.isDestroyed()) return;
+              const base = window.webContents.getURL().split("#")[0]!;
+              const target = payload.threadId
+                ? rendererUrlForThread(base, payload.threadId)
+                : `${base}#/scheduled?taskId=${encodeURIComponent(payload.taskId)}`;
+              void window.loadURL(target);
+            })
+            .catch((error) =>
+              writeDesktopLogHeader(
+                `scheduled notification navigation failed: ${formatErrorMessage(error)}`,
+              ),
+            );
+        });
+        notice.show();
+        return true;
+      },
       background: backgroundStatus,
       advertiseBackground: computerBackgroundGate(
         process.platform,
@@ -3409,6 +3435,8 @@ function registerIpcHandlers(): void {
           id: item.id,
           label: item.label,
           destructive: item.destructive === true,
+          disabled: item.disabled === true,
+          separatorBefore: item.separatorBefore === true,
         }));
       if (normalizedItems.length === 0) {
         return null;
@@ -3425,12 +3453,16 @@ function registerIpcHandlers(): void {
         const template: MenuItemConstructorOptions[] = [];
         let hasInsertedDestructiveSeparator = false;
         for (const item of normalizedItems) {
-          if (item.destructive && !hasInsertedDestructiveSeparator && template.length > 0) {
+          if (
+            template.length > 0 &&
+            (item.separatorBefore || (item.destructive && !hasInsertedDestructiveSeparator))
+          ) {
             template.push({ type: "separator" });
-            hasInsertedDestructiveSeparator = true;
           }
+          if (item.destructive) hasInsertedDestructiveSeparator = true;
           const itemOption: MenuItemConstructorOptions = {
             label: item.label,
+            enabled: !item.disabled,
             click: () => resolve(item.id),
           };
           if (item.destructive) {

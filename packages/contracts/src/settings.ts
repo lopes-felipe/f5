@@ -567,6 +567,14 @@ export const ServerSettings = Schema.Struct({
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
   prHub: PrHubSettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  scheduledTasks: Schema.Struct({
+    epoch: Schema.Int.pipe(Schema.withDecodingDefault(() => 0)),
+    cutoverAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+    enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+    maxConcurrentRuns: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })).pipe(
+      Schema.withDecodingDefault(() => 2),
+    ),
+  }).pipe(Schema.withDecodingDefault(() => ({}))),
   agentBridge: AgentBridgeSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
@@ -711,6 +719,14 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   prHub: Schema.optionalKey(PrHubSettingsPatch),
+  scheduledTasks: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      maxConcurrentRuns: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10 })),
+      ),
+    }),
+  ),
   agentBridge: Schema.optionalKey(AgentBridgeSettingsPatch),
   providers: Schema.optionalKey(
     Schema.Struct({

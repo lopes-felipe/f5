@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ThreadId } from "@t3tools/contracts";
 import { resolveThreadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { useNavigate } from "@tanstack/react-router";
@@ -6,6 +7,7 @@ import { useCallback } from "react";
 import { useAppSettingsSelector } from "~/appSettings";
 import { deleteThreadsWithCleanup, setThreadArchived } from "~/archiveActions";
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { scheduledTasksQueryOptions } from "~/lib/scheduledTasksQuery";
 import { isSnoozedThread } from "~/lib/threadOrdering";
 import { resolveSnoozePreset } from "~/lib/snoozePresets";
 import { newCommandId } from "~/lib/utils";
@@ -24,6 +26,9 @@ import { toastManager } from "~/components/ui/toast";
 
 import { useCopyToClipboard } from "./useCopyToClipboard";
 
+export type ScheduledTaskMenuState =
+  | { state: "available"; name: string }
+  | { state: "loading" | "unavailable" | "removed" };
 /** The server's reason a settle was refused, without the invariant prefix or a stack. */
 export function settlementErrorDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
@@ -32,6 +37,8 @@ export function settlementErrorDetail(error: unknown): string {
 }
 
 export type ThreadActionId =
+  | "scheduled-origin"
+  | "edit-schedule"
   | "rename"
   | "regenerate-title"
   | "title-regeneration-pending"
@@ -55,16 +62,44 @@ export interface ThreadActionMenuItem {
   readonly label: string;
   readonly destructive?: boolean;
   readonly disabled?: boolean;
+  readonly separatorBefore?: boolean;
 }
 
 export function buildThreadActionMenuItems(input: {
-  readonly thread: Pick<Thread, "archivedAt" | "titleRegeneration" | "settledAt">;
+  readonly thread: Pick<
+    Thread,
+    "archivedAt" | "titleRegeneration" | "scheduledOrigin" | "settledAt"
+  >;
   readonly pinned: boolean;
   readonly snoozed: boolean;
+  readonly schedule?: ScheduledTaskMenuState;
 }): ThreadActionMenuItem[] {
   const { thread, pinned, snoozed } = input;
   return [
-    { id: "rename", label: "Rename thread" },
+    ...(thread.scheduledOrigin
+      ? [
+          {
+            id: "scheduled-origin" as const,
+            label:
+              input.schedule?.state === "available"
+                ? `Scheduled task: ${input.schedule.name}`
+                : input.schedule?.state === "removed"
+                  ? "Scheduled task removed"
+                  : input.schedule?.state === "unavailable"
+                    ? "Scheduled task unavailable"
+                    : "Loading scheduled task…",
+            disabled: true,
+          },
+          ...(input.schedule?.state === "available"
+            ? [{ id: "edit-schedule" as const, label: "Edit scheduled task…" }]
+            : []),
+        ]
+      : []),
+    {
+      id: "rename",
+      label: "Rename thread",
+      ...(thread.scheduledOrigin ? { separatorBefore: true } : {}),
+    },
     thread.titleRegeneration
       ? { id: "title-regeneration-pending", label: "Regenerating title…", disabled: true }
       : { id: "regenerate-title", label: "Regenerate title" },
@@ -102,11 +137,13 @@ export function buildThreadActionMenuItems(input: {
 
 export function nativeThreadActionMenuItems(
   items: ReadonlyArray<ThreadActionMenuItem>,
-): ReadonlyArray<{ id: ThreadActionId; label: string; destructive?: boolean }> {
-  return items.map(({ id, label, destructive }) => ({
+): ReadonlyArray<import("@t3tools/contracts").ContextMenuItem<ThreadActionId>> {
+  return items.map(({ id, label, destructive, disabled, separatorBefore }) => ({
     id,
     label,
     ...(destructive === true ? { destructive: true } : {}),
+    ...(disabled === true ? { disabled: true } : {}),
+    ...(separatorBefore === true ? { separatorBefore: true } : {}),
   }));
 }
 
@@ -117,6 +154,16 @@ export function useThreadActionController(input: {
   // Threads are read from the store when a handler runs, so this hook does not
   // re-render its host for every streaming delta.
   const projects = useStore((state) => state.projects);
+  const activeScheduledTaskId = useStore((state) =>
+    input.activeThreadId
+      ? selectThreadById(state, input.activeThreadId)?.scheduledOrigin?.taskId
+      : undefined,
+  );
+  const queryClient = useQueryClient();
+  const schedules = useQuery({
+    ...scheduledTasksQueryOptions(),
+    enabled: activeScheduledTaskId !== undefined,
+  });
   const pinRevision = useStore((state) => state.pinRevision ?? 0);
   const markThreadUnread = useStore((state) => state.markThreadUnread);
   const confirmThreadDelete = useAppSettingsSelector((settings) => settings.confirmThreadDelete);
@@ -162,14 +209,50 @@ export function useThreadActionController(input: {
     },
   });
 
-  const menuItemsForThread = useCallback(
-    (thread: ThreadListItem): ThreadActionMenuItem[] =>
+  const buildMenu = useCallback(
+    (thread: ThreadListItem, schedule: ScheduledTaskMenuState) =>
       buildThreadActionMenuItems({
         thread,
         pinned: orderedPinnedThreadIds(useStore.getState().threads).includes(thread.id),
         snoozed: isSnoozedThread(thread),
+        schedule,
       }),
     [],
+  );
+
+  const menuItemsForThread = useCallback(
+    (thread: ThreadListItem): ThreadActionMenuItem[] => {
+      const task = schedules.data?.tasks.find(
+        (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+      )?.task;
+      return buildMenu(
+        thread,
+        schedules.isError
+          ? { state: "unavailable" }
+          : task
+            ? { state: "available", name: task.name }
+            : { state: schedules.data ? "removed" : "loading" },
+      );
+    },
+    [buildMenu, schedules.data, schedules.isError],
+  );
+  const loadMenuItemsForThread = useCallback(
+    async (thread: ThreadListItem) => {
+      if (!thread.scheduledOrigin) return menuItemsForThread(thread);
+      try {
+        const data = await queryClient.fetchQuery(scheduledTasksQueryOptions());
+        const task = data.tasks.find(
+          (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+        )?.task;
+        return buildMenu(
+          thread,
+          task ? { state: "available", name: task.name } : { state: "removed" },
+        );
+      } catch {
+        return buildMenu(thread, { state: "unavailable" });
+      }
+    },
+    [buildMenu, menuItemsForThread, queryClient],
   );
 
   const renameThread = useCallback(
@@ -256,6 +339,31 @@ export function useThreadActionController(input: {
       const api = readNativeApi();
       if (!api) return;
 
+      if (actionId === "scheduled-origin") return;
+      if (actionId === "edit-schedule") {
+        if (!thread.scheduledOrigin) return;
+        try {
+          const data = await queryClient.fetchQuery({
+            ...scheduledTasksQueryOptions(),
+            staleTime: 0,
+          });
+          const task = data.tasks.find(
+            (entry) => entry.task.id === thread.scheduledOrigin?.taskId,
+          )?.task;
+          if (!task) {
+            toastManager.add({ type: "warning", title: "Scheduled task removed" });
+            return;
+          }
+          await navigate({ to: "/scheduled", search: { taskId: task.id, edit: true } });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Unable to open scheduled task",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          });
+        }
+        return;
+      }
       if (actionId === "rename") {
         input.onRenameRequested?.(threadId);
         return;
@@ -390,6 +498,7 @@ export function useThreadActionController(input: {
       navigate,
       pinRevision,
       projects,
+      queryClient,
       confirmThreadDelete,
     ],
   );
@@ -400,6 +509,7 @@ export function useThreadActionController(input: {
     deleteThreads,
     executeAction,
     menuItemsForThread,
+    loadMenuItemsForThread,
     renameThread,
   } as const;
 }
