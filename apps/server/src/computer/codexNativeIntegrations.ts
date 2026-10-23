@@ -74,21 +74,38 @@ export const defaultCodexInspectionIo: CodexInspectionIo = {
     inspectChromeNativeHosts(descriptor.locations("", userHome)),
 };
 
-/** Dotted numeric versions (`26.1013.40934`); non-numeric parts make the range unsatisfiable. */
-export function versionInRange(version: string, min: string, max: string): boolean {
-  const parse = (value: string) => {
-    const parts = value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN));
-    return parts.some(Number.isNaN) ? undefined : parts;
-  };
-  const compare = (a: number[], b: number[]) => {
-    for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
-      const delta = (a[index] ?? 0) - (b[index] ?? 0);
-      if (delta) return delta;
-    }
-    return 0;
-  };
-  const [value, low, high] = [parse(version), parse(min), parse(max)];
-  return !!value && !!low && !!high && compare(value, low) >= 0 && compare(value, high) <= 0;
+const parseVersion = (value: string | undefined) => {
+  if (value === undefined) return undefined;
+  const parts = value.split(".").map((part) => (/^\d+$/.test(part) ? Number(part) : Number.NaN));
+  return parts.some(Number.isNaN) ? undefined : parts;
+};
+const compareVersions = (a: number[], b: number[]) => {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const delta = (a[index] ?? 0) - (b[index] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+};
+
+/**
+ * Dotted numeric versions (`26.1013.40934`); non-numeric parts make the range
+ * unsatisfiable. A missing `max` is a certified floor with no ceiling: newer builds stay
+ * open while the live checks (signatures, origins, inventory digest, schemas) still pass.
+ */
+export function versionInRange(version: string, min: string | undefined, max?: string): boolean {
+  const [value, low] = [parseVersion(version), parseVersion(min)];
+  if (!value || !low || compareVersions(value, low) < 0) return false;
+  if (max === undefined) return true;
+  const high = parseVersion(max);
+  return !!high && compareVersions(value, high) <= 0;
+}
+
+/** Informational readiness copy when the running ChatGPT is newer than its certified floor. */
+export function codexVersionNote(floor: string | undefined, running: string): string | undefined {
+  const [low, value] = [parseVersion(floor), parseVersion(running)];
+  return low && value && compareVersions(value, low) > 0
+    ? `Certified on ChatGPT ${floor}; running ${running}.`
+    : undefined;
 }
 
 function plistString(plist: string, key: string): string | undefined {
@@ -186,7 +203,7 @@ export async function inspectCodexChrome(input: {
   const appPath = input.chatGptApp ?? DEFAULT_CHATGPT_APP;
   const app = await inspectApp(appPath, identity, io);
   if ("available" in app) return app;
-  if (!versionInRange(app.version, record.versions.appMin!, record.versions.appMax!))
+  if (!versionInRange(app.version, record.versions.appMin, record.versions.appMax))
     return fail(
       "version",
       `This ChatGPT app version (${app.version}) isn't certified with F5 yet.`,
@@ -230,7 +247,7 @@ export async function inspectCodexChrome(input: {
       "The ChatGPT app's Chrome plugin is incomplete. Reinstall the ChatGPT app.",
     );
   }
-  if (!versionInRange(pluginVersion, record.versions.pluginMin!, record.versions.pluginMax!))
+  if (!versionInRange(pluginVersion, record.versions.pluginMin, record.versions.pluginMax))
     return fail(
       "version",
       `This ChatGPT Chrome plugin version (${pluginVersion}) isn't certified with F5 yet.`,
@@ -382,6 +399,9 @@ export interface CodexComputerInstallation {
   readonly appPath: string;
   readonly serviceAppPath: string;
   readonly clientPath: string;
+  /** The ChatGPT app's version. */
+  readonly appVersion: string;
+  /** The Computer Use service app's version. */
   readonly version: string;
 }
 
@@ -420,7 +440,7 @@ export async function inspectCodexComputer(input: {
   const app = await inspectApp(appPath, identity, io);
   if ("available" in app) return app;
   const versions = record.versions;
-  if (!versionInRange(app.version, versions.appMin!, versions.appMax!))
+  if (!versionInRange(app.version, versions.appMin, versions.appMax))
     return fail(
       "version",
       `This ChatGPT app version (${app.version}) isn't certified with F5 yet.`,
@@ -442,7 +462,7 @@ export async function inspectCodexComputer(input: {
     return fail("not-installed", "Set up Computer Use in the ChatGPT app first.");
   }
   const version = plistString(plist, "CFBundleShortVersionString");
-  if (!version || !versionInRange(version, versions.serviceMin!, versions.serviceMax!))
+  if (!version || !versionInRange(version, versions.serviceMin, versions.serviceMax))
     return fail("version", "This Computer Use version isn't certified with F5 yet.");
   const signature = await io.verify(serviceAppPath, {
     teamId: identity.teamId,
@@ -452,5 +472,13 @@ export async function inspectCodexComputer(input: {
   const client = await io.verify(clientPath, { teamId: identity.teamId });
   if (!client.ok)
     return fail("signature", "Computer Use's client signature could not be verified.");
-  return { available: true, record, appPath, serviceAppPath, clientPath, version };
+  return {
+    available: true,
+    record,
+    appPath,
+    serviceAppPath,
+    clientPath,
+    appVersion: app.version,
+    version,
+  };
 }

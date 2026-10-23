@@ -22,6 +22,7 @@ import {
   readChromeArtifact,
 } from "../src/provider/chromeNativeHostStorage";
 import { resolveBundledClaudeExecutable } from "../src/provider/claudeSdkExecutable";
+import { evidenceSource } from "./fixtures/evidenceSource";
 
 /**
  * Live Claude in Chrome certification run. It writes the real browser native-messaging
@@ -42,6 +43,8 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       (entry) => entry.platform === process.platform && entry.arch === process.arch,
     );
     if (!record) throw new Error(`No Claude in Chrome record for darwin-${process.arch}.`);
+    // Taken before anything runs; the report file written at the end doesn't count.
+    const source = evidenceSource();
     const descriptor = claudeChromeDescriptor(record);
     const userHome = userInfo().homedir;
     const providerHome = process.env.CLAUDE_CONFIG_DIR ?? join(userHome, ".claude");
@@ -258,9 +261,7 @@ describe.skipIf(!optedIn)("Claude in Chrome live certification", () => {
       versions: { ...record.versions },
       assertions,
       toolNames,
-      ...(process.env.F5_CLAUDE_CHROME_ARTIFACT_SHA256
-        ? { artifactSha256: process.env.F5_CLAUDE_CHROME_ARTIFACT_SHA256 }
-        : {}),
+      ...source,
       observations,
       notAutomated: Object.keys(assertions).filter(
         (name) =>
