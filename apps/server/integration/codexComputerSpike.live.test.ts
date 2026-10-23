@@ -9,6 +9,7 @@ import {
 
 import { inspectCodexComputer } from "../src/computer/codexNativeIntegrations";
 import { IntegrationProxySession, type IntegrationTool } from "../src/mcp/IntegrationProxyCatalog";
+import { evidenceSource } from "./fixtures/evidenceSource";
 
 /**
  * Sky (Codex Computer Use) spike through F5's integration proxy, outside F5. The gate
@@ -50,6 +51,8 @@ describe.skipIf(!optedIn)("Codex Computer Use spike", () => {
     const spikePath = process.env.F5_CODEX_COMPUTER_SPIKE;
     if (!spikePath) throw new Error("Set F5_CODEX_COMPUTER_SPIKE to the spike file.");
     const spike = JSON.parse(await readFile(spikePath, "utf8")) as SpikeFile;
+    // Taken before anything runs; keep the spike file outside the checkout.
+    const source = evidenceSource();
     const installation = await inspectCodexComputer({
       userHome: userInfo().homedir,
       record: spike.record,
@@ -135,7 +138,6 @@ describe.skipIf(!optedIn)("Codex Computer Use spike", () => {
 
     const record = spike.record;
     const report: IntegrationEvidenceReport & {
-      readonly toolSchemas: ReadonlyArray<IntegrationTool>;
       readonly timings: Record<string, number>;
       readonly observations: Record<string, unknown>;
     } = {
@@ -143,14 +145,25 @@ describe.skipIf(!optedIn)("Codex Computer Use spike", () => {
       evidenceId: process.env.F5_CODEX_COMPUTER_EVIDENCE_ID ?? "uncommitted",
       platform: process.platform,
       arch: process.arch,
-      versions: { ...record.versions, service: installation.version },
+      // The record's paths, and the exercised versions stamped as its floors.
+      versions: {
+        ...Object.fromEntries(
+          Object.entries(record.versions).filter(
+            ([key]) => !key.endsWith("Min") && !key.endsWith("Max"),
+          ),
+        ),
+        appMin: installation.appVersion,
+        serviceMin: installation.version,
+      },
       assertions,
       toolNames: names,
       toolInventorySha256: observed.sha256,
-      toolSchemas: observed.tools.map(({ name, inputSchema }) => ({ name, inputSchema })),
-      ...(process.env.F5_CODEX_COMPUTER_ARTIFACT_SHA256
-        ? { artifactSha256: process.env.F5_CODEX_COMPUTER_ARTIFACT_SHA256 }
-        : {}),
+      toolSchemas: observed.tools.map(({ name, description, inputSchema }) => ({
+        name,
+        ...(description !== undefined ? { description } : {}),
+        inputSchema,
+      })),
+      ...source,
       timings,
       observations,
     };

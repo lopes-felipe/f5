@@ -141,6 +141,7 @@ import {
   CODEX_CHROME_SERVER_NAME,
   codexChromeEligibility,
   codexChromeFingerprint,
+  codexChromeReadyDetail,
   effectiveCodexHome,
   makeCodexChromeProxy,
 } from "../codexChromeIntegration.ts";
@@ -3745,7 +3746,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         return eligibility.eligible
           ? {
               eligibility: "ready" as const,
-              reason: "Sessions also need Full access.",
+              reason: codexChromeReadyDetail(eligibility.installation),
               recordId: eligibility.installation.record.id,
             }
           : {

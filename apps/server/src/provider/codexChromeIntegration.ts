@@ -15,6 +15,7 @@ import {
   codexChromeInstructions,
   codexChromeInstallationUnchanged,
   codexChromeRegistrationsUnchanged,
+  codexVersionNote,
   inspectCodexChrome,
   type CodexChromeInstallation,
 } from "../computer/codexNativeIntegrations";
@@ -91,6 +92,12 @@ export async function codexChromeEligibility(input: {
   if (!installation.available)
     return { eligible: false, reason: installation.reason, recordId: record.id };
   return { eligible: true, installation, codexHome: home };
+}
+
+/** Settings copy for a ready preflight; a newer-than-certified ChatGPT is noted, never blocked. */
+export function codexChromeReadyDetail(installation: CodexChromeInstallation): string {
+  const note = codexVersionNote(installation.record.versions.appMin, installation.appVersion);
+  return note ? `Sessions also need Full access. ${note}` : "Sessions also need Full access.";
 }
 
 /**
