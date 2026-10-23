@@ -55,8 +55,8 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -69,7 +69,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - id: runtime
         run: echo "version=$(node --input-type=module -e 'import { CLI_NODE_VERSION } from "./scripts/build-cli-archive.ts"; console.log(CLI_NODE_VERSION)')" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.runtime.outputs.version }}
       - env:
@@ -80,7 +80,7 @@ jobs:
           node scripts/cli-archive-smoke.ts "release-cli/f5-$VERSION-$TARGET.tar.gz" "release-cli/f5-$VERSION-$TARGET.json"
       # Only release runs ship the archives.
       - if: inputs.version
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: release-cli/*
@@ -96,8 +96,8 @@ jobs:
       T3CODE_DESKTOP_UPDATE_CHANNEL: ${{ inputs.channel || 'latest' }}
     steps:
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24.13.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -131,7 +131,7 @@ jobs:
           cp "$(command -v node)" "$RUNNER_TEMP/rehearsal-node/node.exe"
           "$RUNNER_TEMP/rehearsal-node/node.exe" scripts/windows-update-rehearsal.ts --baseline-dir "rehearsal/$BASELINE" --target-dir "rehearsal/$TARGET" --baseline "$BASELINE" --target "$TARGET" --channel "$CHANNEL" --log-dir rehearsal-logs
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-update-rehearsal-logs
           path: rehearsal-logs/**
